@@ -256,6 +256,8 @@ class App:
         base.update({
             "DISPLAY": f":{self.num}", "XDG_SESSION_TYPE": "x11", "TELINHA_QA": self.qa_dir,
             "XDG_CONFIG_HOME": self.cfg, "TELINHA_SEM_SOM": "1", "ALSA_CONFIG_PATH": alsa,
+            # clipes e gravações na pasta do teste (nunca nos Vídeos de verdade)
+            "TELINHA_PASTA_CLIPES": os.path.join(self.dir, "clipes"),
         })
         if not self.audio:
             # sem áudio isolado: o app não pode achar o PipeWire de verdade

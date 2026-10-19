@@ -529,6 +529,64 @@ def notificacoes():
         expect(b.state()["notifications_sent"] == n1, "notificou com as notificações desligadas")
 
 
+def probe(path):
+    """(quadros de vídeo, duração em s, tem som?) pelo ffprobe; erro de decodificação vira QAError."""
+    import subprocess
+    out = subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-show_entries", "stream=codec_name,nb_read_frames:format=duration",
+                          "-of", "json", path], capture_output=True, text=True, timeout=60)
+    if out.returncode != 0:
+        raise QAError(f"ffprobe falhou em {path}: {out.stderr[-400:]}")
+    import json as _json
+    j = _json.loads(out.stdout)
+    frames = sum(int(st.get("nb_read_frames", 0)) for st in j["streams"] if st["codec_name"] == "h264")
+    audio = any(st["codec_name"] == "opus" for st in j["streams"])
+    dec = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-fps_mode", "passthrough", "-f", "null", "-"], capture_output=True, text=True, timeout=60)
+    # o muxer nulo do ffmpeg põe vídeo de taxa variável num relógio grosso e
+    # reclama de quadros próximos; isso não é erro do arquivo nem de decodificação
+    errs = [ln for ln in dec.stderr.splitlines() if ln.strip() and "non monotonically increasing dts to muxer" not in ln and "Last message repeated" not in ln]
+    if errs:
+        raise QAError(f"ffmpeg reclamou de {path}: {chr(10).join(errs)[-400:]}")
+    return frames, float(j["format"].get("duration", 0)), audio
+
+
+@test
+def clipes_e_gravacao():
+    """Clipe dos últimos 30 s e gravação (de quem assiste e da própria transmissão), conferidos no ffprobe/ffmpeg."""
+    with Session("clipes", audio=True) as s:
+        s.play_tone()
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"])
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        aid = b.member_id("Ana")
+        b.wait(lambda st: any(v["stream"] == aid and v["clip_secs"] >= 3 for v in st["views"]), 20, "guardar uns segundos")
+        tile = b.tile(aid)
+        mid = center(tile)
+        b.click("##clip", within=tile, hover_first=mid)
+        st = b.wait(lambda st: st["last_saved"] and st["clip_jobs"] == 0 and os.path.exists(st["last_saved"]), 10, "salvar o clipe")
+        frames, dur, has_audio = probe(st["last_saved"])
+        log(f"clipe do Bruno: {frames} quadros, {dur:.1f} s, som={has_audio} ({os.path.basename(st['last_saved'])})")
+        expect(frames >= 10 and dur >= 2.5 and has_audio, "clipe curto demais ou sem som")
+        # gravação
+        b.click("##rec", within=tile, hover_first=mid)
+        b.wait(lambda st: any(v["stream"] == aid and v["recording"] for v in st["views"]), 3, "começar a gravar")
+        time.sleep(4)
+        b.click("##rec", within=tile, hover_first=mid)
+        st = b.wait(lambda st: not any(v["recording"] for v in st["views"]), 3, "parar de gravar")
+        rec = st["last_saved"]
+        expect("_gravacao" in rec and os.path.exists(rec), f"gravação não apareceu: {rec}")
+        frames, dur, has_audio = probe(rec)
+        log(f"gravação do Bruno: {frames} quadros, {dur:.1f} s, som={has_audio}")
+        # começa no clique (IDR pedido na hora): ~4 s, nada de antes
+        expect(frames >= 10 and 3.0 <= dur <= 5.5 and has_audio, "gravação com duração errada ou sem som")
+        # clipe da própria transmissão (quem transmite)
+        atile = a.tile(0)
+        a.click("##clip", within=atile, hover_first=center(atile))
+        st = a.wait(lambda st: st["last_saved"] and st["clip_jobs"] == 0 and os.path.exists(st["last_saved"]), 10, "a Ana salvar o próprio clipe")
+        frames, dur, has_audio = probe(st["last_saved"])
+        log(f"clipe da Ana: {frames} quadros, {dur:.1f} s, som={has_audio}")
+        expect(frames >= 10, "clipe da própria transmissão vazio")
+
+
 # ---------------------------------------------------------------------------
 
 

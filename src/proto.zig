@@ -29,7 +29,7 @@ pub const Type = enum(u8) {
     stream_stop = 7, // C→S u8 tipo
     frame = 8, // C→S frame | S→C u32 stream + frame
     watch = 9, // C→S u32 stream, u8 ligado, u8 opções (watch_*)
-    keyreq = 10, // S→C u8 tipo: manda um quadro completo (IDR) | C→S u32 stream: perdi a referência
+    keyreq = 10, // S→C u8 tipo: manda um quadro completo (IDR) | C→S u32 stream, u8 motivo (keyreq_*)
     ping = 11, // C→S u64 t
     pong = 12, // S→C u64 t, u64 relógio_do_servidor_us
     kick = 13, // C→S u32 alvo (só admin; o mesmo que admin/admin_kick)
@@ -107,6 +107,10 @@ pub const notice_admin_off: u8 = 5;
 
 /// chat
 pub const chat_history: u8 = 1; // mensagem antiga (quem acabou de entrar): sem som nem notificação
+
+/// keyreq (de quem assiste): por que precisa de um IDR
+pub const keyreq_lost: u8 = 0; // o decoder perdeu a referência (atrasou ou deu erro)
+pub const keyreq_record: u8 = 1; // gravação começando (sem efeito no controle de atraso)
 
 /// watch: opções
 pub const watch_clips: u8 = 1; // guardando os últimos segundos pra clipe: quer IDR de vez em quando

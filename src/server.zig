@@ -685,11 +685,17 @@ pub const Server = struct {
                 if (cn.findFlow(stream)) |f| f.win.acked(seq, sync.nowUs());
             },
             .keyreq => {
-                // o espectador perdeu a referência (decoder atrasou ou deu erro)
+                // o espectador perdeu a referência (decoder atrasou ou deu erro),
+                // ou vai começar uma gravação (aí é só pedir o IDR)
                 const stream = try r.u32_();
+                const reason: u8 = r.u8_() catch proto.keyreq_lost;
                 s.mutex.lock();
                 defer s.mutex.unlock();
                 if (!contains(&cn.watching, stream)) return;
+                if (reason == proto.keyreq_record) {
+                    s.requestKey(stream, false);
+                    return;
+                }
                 const f = cn.flow(stream) orelse return;
                 f.win.dropNewest(cn.queue.dropFrames(stream));
                 addUnique(&cn.waiting_key, stream);

@@ -18,6 +18,7 @@ const codec = @import("codec.zig");
 const audio = @import("audio.zig");
 const RateControl = @import("ratectl.zig").RateControl;
 const Client = @import("client.zig").Client;
+const clip = @import("clip.zig");
 const c = @cImport({
     @cInclude("capture.h");
     @cInclude("camera.h");
@@ -80,6 +81,7 @@ pub const Settings = struct {
     mode: codec.Mode = .screen,
     hardware: bool = true, // tenta NVENC antes do encoder em software
     audio: bool = true, // compartilha o som do computador
+    clips: bool = true, // guarda os últimos 30 s (clipe da própria transmissão)
     kind: u8 = proto.kind_screen, // tela ou câmera (não muda com a transmissão rolando)
 };
 
@@ -185,10 +187,13 @@ pub const Sharer = struct {
     preview_bgr: bool = true,
     preview_new: bool = false,
     preview_tex: u32 = 0, // só a UI mexe
+    /// Os últimos ~30 s do que codificamos (clipe) e a gravação. null = sem clipes.
+    clip: ?*clip.Buffer = null,
 
     pub fn start(client: *Client, settings: Settings) !*Sharer {
         const s = try gpa.create(Sharer);
         s.* = .{ .client = client.retain(), .settings = settings, .kind = settings.kind };
+        if (settings.clips) s.clip = clip.Buffer.create() catch null;
         sync.spawn(run, .{s}) catch {
             client.release();
             gpa.destroy(s);
@@ -212,6 +217,7 @@ pub const Sharer = struct {
 
     fn release(s: *Sharer) void {
         if (s.refs.fetchSub(1, .acq_rel) == 1) {
+            if (s.clip) |cb| cb.destroy();
             gpa.free(s.preview);
             s.client.release();
             gpa.destroy(s);
@@ -693,6 +699,7 @@ const Pipeline = struct {
         var stat_since = sync.nowUs();
         var stat_frames: u32 = 0;
         var stat_bytes: u64 = 0;
+        var last_key_us: u64 = 0;
 
         while (true) {
             // espera um quadro novo (ou um pedido de IDR)
@@ -702,6 +709,8 @@ const Pipeline = struct {
                 p.mutex.unlock();
                 return;
             }
+            // clipe da própria transmissão: um IDR a cada 20 s (o clipe começa num)
+            if (s.clip != null and last_key_us != 0 and sync.nowUs() - last_key_us > 20_000_000) s.client.keyreq[kind].store(true, .release);
             const key = s.client.keyreq[kind].swap(false, .acq_rel);
             const idx: ?usize = if (p.ready) |r| r else if (key) p.last else null;
             p.ready_was_null = p.ready == null;
@@ -813,6 +822,8 @@ const Pipeline = struct {
             const m = try msg.finish();
             stat_bytes += m.data.len;
             stat_frames += 1;
+            if (is_key) last_key_us = sync.nowUs();
+            if (s.clip) |cb| cb.addVideo(out.items, if (resend) s.client.serverNowUs() else sl.ts, is_key, @intCast(sl.w), @intCast(sl.h));
             // registra antes de enfileirar: a confirmação pode voltar muito rápido
             s.client.frameSent(kind, frame_seq, is_key);
             s.client.queue.pushOwned(m);
@@ -870,7 +881,9 @@ const Pipeline = struct {
         std.mem.writeInt(u32, pl[0..4], p.audio_seq, .little);
         p.audio_seq +%= 1;
         // o pacote cobre os últimos 10 ms: a captura foi ~10 ms atrás
-        std.mem.writeInt(u64, pl[4..12], s.client.serverNowUs() -| 10_000, .little);
+        const ts = s.client.serverNowUs() -| 10_000;
+        std.mem.writeInt(u64, pl[4..12], ts, .little);
+        if (s.clip) |cb| cb.addAudio(packet, ts);
         @memcpy(pl[12..], packet);
         s.client.queue.pushOwned(m);
     }

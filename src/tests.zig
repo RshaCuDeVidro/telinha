@@ -897,3 +897,140 @@ test "NVENC: duas camadas temporais (quem decide o tipo do quadro somos nós)" {
         _ = (try dec.decode(out.items)) orelse return error.NoPicture;
     }
 }
+
+// ------------------------------------------------------------------- MP4
+
+const mp4 = @import("mp4.zig");
+extern "c" fn popen(cmd: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque;
+extern "c" fn pclose(f: *anyopaque) c_int;
+extern "c" fn fgets(buf: [*]u8, n: c_int, f: *anyopaque) ?[*]u8;
+extern "c" fn access(path: [*:0]const u8, mode: c_int) c_int;
+extern "c" fn unlink(path: [*:0]const u8) c_int;
+extern "c" fn getpid() c_int;
+
+/// Roda um comando e devolve a saída (testes; vazio se falhar).
+fn run(cmd: [:0]const u8, out: []u8) []const u8 {
+    const f = popen(cmd.ptr, "r") orelse return out[0..0];
+    var n: usize = 0;
+    while (n + 1 < out.len) {
+        const line = fgets(out[n..].ptr, @intCast(out.len - n), f) orelse break;
+        n += std.mem.len(@as([*:0]u8, @ptrCast(line)));
+    }
+    _ = pclose(f);
+    return out[0..n];
+}
+
+/// 45 quadros (1,5 s) com um buraco de 400 ms (tela parada) e um IDR no meio,
+/// e som de 1,5 s com um buraco (silêncio que não foi enviado).
+const TestMedia = struct {
+    video: std.ArrayList(mp4.VideoSample) = .empty,
+    audio: std.ArrayList(mp4.AudioSample) = .empty,
+
+    fn make() !TestMedia {
+        initPool();
+        const gpa = std.heap.c_allocator;
+        var m: TestMedia = .{};
+        const w = 320;
+        const h = 240;
+        const img = try gpa.alloc(u8, w * h * 4);
+        defer gpa.free(img);
+        var enc = try codec.Encoder.init(.{ .width = w, .height = h, .fps = 30, .bitrate = 800_000, .threads = 1 });
+        defer enc.deinit();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(gpa);
+        var ts: u64 = 1_000_000;
+        for (0..45) |f| {
+            movingSquare(img, w, h, f % 30);
+            out.clearRetainingCapacity();
+            if (f == 30) enc.forceKey();
+            const key = try enc.encode(img.ptr, w * 4, .bgrx, &out) orelse continue;
+            try m.video.append(gpa, .{ .data = try gpa.dupe(u8, out.items), .ts_us = ts, .key = key });
+            ts += if (f == 20) 400_000 else 33_333;
+        }
+        var err: c_int = 0;
+        const oe = audio.c.opus_encoder_create(48000, 2, audio.c.OPUS_APPLICATION_AUDIO, &err) orelse return error.Opus;
+        defer audio.c.opus_encoder_destroy(oe);
+        var pcm: [480 * 2]f32 = undefined;
+        var pkt: [1500]u8 = undefined;
+        for (0..190) |i| {
+            for (0..480) |k| {
+                const t: f32 = @as(f32, @floatFromInt(i * 480 + k)) / 48000.0;
+                const v = 0.3 * @sin(2 * std.math.pi * 440 * t);
+                pcm[k * 2] = v;
+                pcm[k * 2 + 1] = v;
+            }
+            const n = audio.c.opus_encode_float(oe, &pcm, 480, &pkt, pkt.len);
+            if (n <= 0) return error.Opus;
+            if (i >= 60 and i < 80) continue; // buraco de 200 ms
+            try m.audio.append(gpa, .{ .data = try gpa.dupe(u8, pkt[0..@intCast(n)]), .ts_us = 1_000_000 + @as(u64, i) * 10_000 });
+        }
+        return m;
+    }
+
+    fn deinit(m: *TestMedia) void {
+        const gpa = std.heap.c_allocator;
+        for (m.video.items) |s| gpa.free(s.data);
+        for (m.audio.items) |s| gpa.free(s.data);
+        m.video.deinit(gpa);
+        m.audio.deinit(gpa);
+    }
+};
+
+test "mp4: clipe (H.264 + Opus, duração variável) abre e decodifica no ffmpeg" {
+    var m = try TestMedia.make();
+    defer m.deinit();
+    try testing.expect(m.video.items[0].key);
+    var path_buf: [96]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/telinha-teste-clipe-{d}.mp4", .{getpid()});
+    defer _ = unlink(path.ptr);
+    try mp4.writeClip(path, 320, 240, m.video.items, m.audio.items);
+    if (access("/usr/bin/ffprobe", 0) != 0) return; // sem ffmpeg na máquina: só confere que escreveu
+    var cmd_buf: [256]u8 = undefined;
+    var out: [2048]u8 = undefined;
+    const probe = run(try std.fmt.bufPrintZ(&cmd_buf, "ffprobe -v error -count_frames -show_entries stream=codec_name,width,height,nb_read_frames -of csv=p=0 {s} 2>&1", .{path}), &out);
+    try testing.expect(std.mem.find(u8, probe, "h264,320,240,45") != null);
+    try testing.expect(std.mem.find(u8, probe, "opus,") != null);
+    // duração ~1,9 s (1,5 s de quadros + o buraco de 400 ms)
+    const dur = run(try std.fmt.bufPrintZ(&cmd_buf, "ffprobe -v error -show_entries format=duration -of csv=p=0 {s}", .{path}), &out);
+    const secs = std.fmt.parseFloat(f64, std.mem.trim(u8, dur, " \n")) catch 0;
+    try testing.expect(secs > 1.7 and secs < 2.1);
+    // decodifica inteiro sem erro
+    const errs = run(try std.fmt.bufPrintZ(&cmd_buf, "ffmpeg -v error -i {s} -f null - 2>&1", .{path}), &out);
+    try testing.expectEqualStrings("", errs);
+}
+
+test "mp4: gravação fragmentada abre e decodifica no ffmpeg (inclusive sem o fim)" {
+    var m = try TestMedia.make();
+    defer m.deinit();
+    var path_buf: [96]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/telinha-teste-grav-{d}.mp4", .{getpid()});
+    defer _ = unlink(path.ptr);
+    const r = try mp4.Recorder.start(path, 320, 240, m.video.items[0], true);
+    var ai: usize = 0;
+    for (m.video.items[1..]) |s| {
+        while (ai < m.audio.items.len and m.audio.items[ai].ts_us <= s.ts_us) : (ai += 1) try r.addAudio(m.audio.items[ai]);
+        try r.addVideo(s);
+    }
+    try testing.expect(r.durationMs() > 1500);
+    r.finish();
+    if (access("/usr/bin/ffprobe", 0) != 0) return;
+    var cmd_buf: [256]u8 = undefined;
+    var out: [2048]u8 = undefined;
+    const probe = run(try std.fmt.bufPrintZ(&cmd_buf, "ffprobe -v error -count_frames -show_entries stream=codec_name,nb_read_frames -of csv=p=0 {s} 2>&1", .{path}), &out);
+    try testing.expect(std.mem.find(u8, probe, "h264,45") != null);
+    try testing.expect(std.mem.find(u8, probe, "opus,") != null);
+    const errs = run(try std.fmt.bufPrintZ(&cmd_buf, "ffmpeg -v error -i {s} -f null - 2>&1", .{path}), &out);
+    try testing.expectEqualStrings("", errs);
+}
+
+test "mp4: NAL units do Annex B, SPS/PPS e conversão pra tamanho+NAL" {
+    const bs = [_]u8{ 0, 0, 0, 1, 0x67, 0x64, 0, 0x1f, 0xAA, 0, 0, 1, 0x68, 0xEE, 0, 0, 0, 1, 0x65, 0x88, 0x84, 0, 0, 1, 0x09, 0x10 };
+    const ps = mp4.paramSets(&bs);
+    try testing.expectEqualSlices(u8, &.{ 0x67, 0x64, 0, 0x1f, 0xAA }, ps.sps);
+    try testing.expectEqualSlices(u8, &.{ 0x68, 0xEE }, ps.pps);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(std.heap.c_allocator);
+    try mp4.toAvcc(&out, &bs);
+    // só a fatia IDR (SPS/PPS vão no avcC; AUD sai)
+    try testing.expectEqualSlices(u8, &.{ 0, 0, 0, 3, 0x65, 0x88, 0x84 }, out.items);
+}

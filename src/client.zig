@@ -9,6 +9,7 @@ const codec = @import("codec.zig");
 const gl = @import("gl.zig");
 const audio = @import("audio.zig");
 const voice = @import("voice.zig");
+const clip = @import("clip.zig");
 const gpa = proto.gpa;
 
 /// A UI liga isso quando o shader de YUV→RGB compilou: aí a thread de decode
@@ -153,6 +154,9 @@ pub const View = struct {
     stat_since: u64 = 0,
     last_shown_us: u64 = 0, // último quadro entregue pra tela
 
+    /// Os últimos ~30 s (clipe) e a gravação. null = clipes desligados.
+    clip: ?*clip.Buffer = null,
+
     // áudio (a thread de rede decodifica, o mixer toca)
     audio_ring: audio.Ring = .{},
     audio_dec: ?audio.Decoder = null,
@@ -179,6 +183,7 @@ pub const View = struct {
     pub fn release(v: *View) void {
         if (v.refs.fetchSub(1, .acq_rel) == 1) {
             if (v.audio_dec) |*d| d.deinit();
+            if (v.clip) |cb| cb.destroy();
             v.audio_ring.deinit();
             for (v.frames.items) |f| gpa.free(f);
             v.frames.deinit(gpa);
@@ -194,6 +199,16 @@ pub const View = struct {
     const max_decode_backlog_us = 150_000;
 
     fn enqueue(v: *View, frame: []u8) void {
+        // clipe/gravação: guarda o quadro como veio (antes de qualquer descarte do decoder)
+        if (v.clip) |cb| {
+            if (frame.len > proto.frame_header_len) {
+                const flags = frame[4];
+                const ts = std.mem.readInt(u64, frame[5..13], .little);
+                const fw = std.mem.readInt(u16, frame[13..15], .little);
+                const fh = std.mem.readInt(u16, frame[15..17], .little);
+                cb.addVideo(frame[proto.frame_header_len..], ts, flags & proto.frame_key != 0, fw, fh);
+            }
+        }
         v.qmutex.lock();
         defer v.qmutex.unlock();
         if (v.stop) {
@@ -241,8 +256,9 @@ pub const View = struct {
         audio.mixer.remove(&v.audio_ring);
     }
 
-    /// Pacote Opus recebido (thread de rede).
-    fn pushAudio(v: *View, packet: []const u8) void {
+    /// Pacote Opus recebido (thread de rede), com a hora da captura.
+    fn pushAudio(v: *View, packet: []const u8, ts_us: u64) void {
+        if (v.clip) |cb| cb.addAudio(packet, ts_us);
         v.qmutex.lock();
         defer v.qmutex.unlock();
         if (v.stop) return;
@@ -880,8 +896,8 @@ pub const Client = struct {
                 const v = cl.viewRetained(try r.u32_()) orelse return;
                 defer v.release();
                 _ = try r.u32_(); // seq
-                _ = try r.u64_(); // hora da captura
-                v.pushAudio(r.rest());
+                const ts = try r.u64_(); // hora da captura
+                v.pushAudio(r.rest(), ts);
             },
             .keyreq => {
                 const kind: u8 = r.u8_() catch proto.kind_screen;
@@ -1012,8 +1028,14 @@ pub const Client = struct {
 
     /// Pede um quadro completo de quem estamos assistindo (perdemos a referência).
     pub fn sendKeyreq(cl: *Client, stream: u32) void {
-        const m = proto.Msg.alloc(.keyreq, 4) catch return;
+        cl.sendKeyreqReason(stream, proto.keyreq_lost);
+    }
+
+    /// keyreq com motivo (proto.keyreq_*): gravação começando só pede o IDR.
+    pub fn sendKeyreqReason(cl: *Client, stream: u32, reason: u8) void {
+        const m = proto.Msg.alloc(.keyreq, 5) catch return;
         std.mem.writeInt(u32, m.payload()[0..4], stream, .little);
+        m.payload()[4] = reason;
         cl.queue.pushOwned(m);
     }
 
@@ -1079,6 +1101,7 @@ pub const Client = struct {
         if (cl.findView(stream)) |v| return v;
         const v = try gpa.create(View);
         v.* = .{ .stream = stream, .client = cl.retain() };
+        if (opts & proto.watch_clips != 0) v.clip = clip.Buffer.create() catch null;
         sync.spawn(View.decodeLoop, .{v}) catch {
             cl.release();
             gpa.destroy(v);

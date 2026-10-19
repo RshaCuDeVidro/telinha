@@ -17,6 +17,8 @@ const proto = @import("proto.zig");
 const audio = @import("audio.zig");
 const voice = @import("voice.zig");
 const qa = @import("qa.zig");
+const clip = @import("clip.zig");
+const mp4 = @import("mp4.zig");
 pub const version_string = "2.1.0";
 const Sharer = sharer_mod.Sharer;
 
@@ -414,6 +416,9 @@ pub const App = struct {
     /// na tela mesmo com o mouse fora do quadro).
     tile_controls: ?u32 = null,
     zooms: [24]Zoom = [_]Zoom{.{}} ** 24,
+    clip_jobs: [6]?*ClipJob = [_]?*ClipJob{null} ** 6,
+    last_saved: [512]u8 = undefined, // último clipe/gravação salvo (modo de testes)
+    last_saved_len: usize = 0,
     /// Transmissão com o ponteiro "olha aqui" ligado (o mouse vira o ponteiro).
     pointer_tile: ?u32 = null,
     pointer_sent_us: u64 = 0,
@@ -1029,6 +1034,7 @@ pub const App = struct {
             .mode = if (a.cfg.mode == 1) .motion else .screen,
             .hardware = a.cfg.hardware,
             .audio = a.cfg.audio,
+            .clips = a.cfg.clips,
         };
     }
 
@@ -1083,6 +1089,7 @@ pub const App = struct {
             .mode = .motion,
             .hardware = a.cfg.hardware,
             .audio = false,
+            .clips = a.cfg.clips,
         };
         config.setStr(&st.camera_id, config.getStr(&a.cfg.camera_device));
         a.camera = Sharer.start(cl, st) catch {
@@ -1138,6 +1145,7 @@ pub const App = struct {
         const cl = a.client orelse return;
         for (a.views.items, 0..) |v, i| {
             if (v.stream != stream) continue;
+            if (v.clip) |cb| if (cb.recState().active) a.stopRecording(cb, "");
             freeViewGpu(v);
             cl.unwatch(v);
             _ = a.views.orderedRemove(i);
@@ -1334,6 +1342,7 @@ pub const App = struct {
     }
 
     pub fn frame(a: *App) void {
+        a.checkClipJobs();
         a.n_tile_rects = 0;
         a.n_member_rects = 0;
         a.checkState();
@@ -2149,6 +2158,18 @@ pub const App = struct {
         if (iconButton("##gear", ic.gear, bs, col.text, col.hover, "Configurações")) a.openSettings();
     }
 
+    /// Liga/desliga os clipes das transmissões que já estão sendo assistidas.
+    fn applyClips(a: *App) void {
+        const cl = a.client orelse return;
+        for (a.views.items) |v| {
+            const on = a.cfg.clips;
+            // (só liga em quem não tinha; desligar mantém o buffer até parar de assistir,
+            // e pra de pedir IDR periódico)
+            if (on and v.clip == null) v.clip = clip.Buffer.create() catch null;
+            cl.sendWatch(v.stream, true, if (on) proto.watch_clips else 0);
+        }
+    }
+
     fn openSettings(a: *App) void {
         a.n_mic_names = @intCast(audio.c.audio_list_mics(&a.mic_names, a.mic_names.len));
         a.settings_modal = true;
@@ -2172,6 +2193,7 @@ pub const App = struct {
         loading: bool,
         ring: ?*audio.Ring = null, // áudio dessa transmissão (null = sem áudio / minha prévia)
         view: ?*View = null, // null = minha prévia
+        clipbuf: ?*clip.Buffer = null, // últimos 30 s + gravação dessa transmissão
         /// Stream de verdade (o ponteiro "olha aqui" vai com ele; nas minhas
         /// prévias é o meu id + tipo).
         ptr_stream: u32 = 0,
@@ -2243,6 +2265,7 @@ pub const App = struct {
                 .loading = v.tex == 0,
                 .ring = if (v.audio_registered) &v.audio_ring else null,
                 .view = v,
+                .clipbuf = v.clip,
                 .ptr_stream = v.stream,
                 .cur_x = v.cursor_x.load(.monotonic),
                 .cur_y = v.cursor_y.load(.monotonic),
@@ -2254,14 +2277,14 @@ pub const App = struct {
         if (a.sharer) |s| {
             s.mutex.lock();
             const st = std.fmt.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d} kbit/s{s} · {s} {d:.1} ms · {s}", .{ s.w, s.h, s.fps, s.bitrate_kbps, if (s.congested) " (rede lenta)" else if (s.slow_viewer) " (espectador lento)" else "", s.encoder_name, s.encode_ms, s.backendSlice() }) catch "";
-            tiles[n] = .{ .stream = proto.streamId(0, proto.kind_screen), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = "Você", .stats = st, .loading = s.preview_tex == 0, .ptr_stream = proto.streamId(my_id, proto.kind_screen) };
+            tiles[n] = .{ .stream = proto.streamId(0, proto.kind_screen), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = "Você", .stats = st, .loading = s.preview_tex == 0, .ptr_stream = proto.streamId(my_id, proto.kind_screen), .clipbuf = s.clip };
             s.mutex.unlock();
             n += 1;
         }
         if (a.camera) |s| {
             s.mutex.lock();
             const st = std.fmt.bufPrintZ(&stat_bufs[n], "câmera · {d}x{d} · {d:.0} fps · {d} kbit/s · {s} · {s}", .{ s.w, s.h, s.fps, s.bitrate_kbps, s.encoder_name, s.backendSlice() }) catch "";
-            tiles[n] = .{ .stream = proto.streamId(0, proto.kind_camera), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = "Você (câmera)", .stats = st, .loading = s.preview_tex == 0, .ptr_stream = proto.streamId(my_id, proto.kind_camera) };
+            tiles[n] = .{ .stream = proto.streamId(0, proto.kind_camera), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = "Você (câmera)", .stats = st, .loading = s.preview_tex == 0, .ptr_stream = proto.streamId(my_id, proto.kind_camera), .clipbuf = s.clip };
             s.mutex.unlock();
             n += 1;
         }
@@ -2498,6 +2521,21 @@ pub const App = struct {
             drawTextF(d, font_semibold, 12, v2(lx + ns.x + S(78), ly + S(5)), col.white, zt);
         }
 
+        if (t.clipbuf) |cb| {
+            const rs = cb.recState();
+            if (rs.active) {
+                const secs = rs.ms / 1000;
+                const rt = if (rs.waiting) fmtZ("REC (esperando quadro completo)", .{}) else fmtZ("REC {d:0>2}:{d:0>2}", .{ secs / 60, secs % 60 });
+                const rts = textSizeF(font_bold, 11, rt);
+                const rx0 = x + w - rts.x - S(28);
+                const ry0 = y + h - S(70);
+                rectFill(d, rx0, ry0, rx0 + rts.x + S(20), ry0 + rts.y + S(8), col.overlay, S(5));
+                const blink = @mod(c.igGetTime(), 1.0) < 0.6;
+                if (blink) c.ImDrawList_AddCircleFilled(d, v2(rx0 + S(8), ry0 + (rts.y + S(8)) / 2), S(4), col.red, 0);
+                drawTextF(d, font_bold, 11, v2(rx0 + S(15), ry0 + S(4)), col.white, rt);
+                wakeUi();
+            }
+        }
         if ((hovered or a.cfg.stats_always) and !small) {
             const ss = textSizeF(font_regular, 12, t.stats);
             rectFill(d, x + S(10), y + S(10), x + S(22) + ss.x, y + S(16) + ss.y, col.overlay, S(6));
@@ -2543,6 +2581,20 @@ pub const App = struct {
                     }
                 }
                 bx -= bs + S(6);
+                // clipe (últimos 30 s) e gravação
+                if (t.clipbuf) |cb| {
+                    const rs = cb.recState();
+                    c.igSetCursorScreenPos(v2(bx, by));
+                    rectFill(d, bx, by, bx + bs, by + bs, if (rs.active) col.red else col.overlay, S(6));
+                    if (iconButton("##rec", ic.record, bs, col.white, rgba(0xED4245, 200), if (rs.active) "Parar de gravar (salva o arquivo)" else "Gravar (MP4, com o som da transmissão, a partir de agora)")) {
+                        if (rs.active) a.stopRecording(cb, t.name) else a.startRecording(cb, t.name);
+                    }
+                    bx -= bs + S(6);
+                    c.igSetCursorScreenPos(v2(bx, by));
+                    rectFill(d, bx, by, bx + bs, by + bs, col.overlay, S(6));
+                    if (iconButton("##clip", ic.scissors, bs, col.white, rgba(0x5865F2, 200), "Salvar clipe dos últimos 30 s")) a.saveClip(cb, t.name);
+                    bx -= bs + S(6);
+                }
                 // zoom: seguir o cursor de quem transmite / voltar pro tamanho normal
                 if (t.view != null) {
                     c.igSetCursorScreenPos(v2(bx, by));
@@ -2691,6 +2743,118 @@ pub const App = struct {
         c.igSetMouseCursor(c.ImGuiMouseCursor_None);
         const ping_age: f32 = if (a.my_ping_us != 0) @as(f32, @floatFromInt(now - a.my_ping_us)) / 1e6 else -1;
         drawPointerAt(drawList(), mouse, col.blurple, "você", ping_age);
+    }
+
+    // ------------------------------------------------------ clipes e gravação
+
+    /// Escrita de um clipe numa thread (o arquivo pode ter dezenas de MB).
+    const ClipJob = struct {
+        done: std.atomic.Value(bool) = .init(false),
+        ok: bool = false,
+        secs: f32 = 0,
+        path: [512:0]u8 = undefined,
+        snap: clip.Buffer.Snapshot,
+
+        fn run(j: *ClipJob) void {
+            const n = std.mem.len(@as([*:0]const u8, &j.path));
+            if (mp4.writeClip(j.path[0..n :0], j.snap.w, j.snap.h, j.snap.video, j.snap.audio)) |_| {
+                j.ok = true;
+            } else |_| {}
+            j.snap.deinit();
+            j.done.store(true, .release);
+            wakeUi();
+        }
+    };
+
+    fn saveClip(a: *App, cb: *clip.Buffer, who: []const u8) void {
+        const slot = for (&a.clip_jobs) |*sl| {
+            if (sl.* == null) break sl;
+        } else {
+            a.toast("Calma: ainda salvando os clipes anteriores.", .{}, true);
+            return;
+        };
+        const secs = cb.seconds();
+        var snap = cb.snapshot() catch {
+            a.toast("Ainda não tem nada pra clipar (espera uns segundos).", .{}, true);
+            return;
+        };
+        const j = std.heap.c_allocator.create(ClipJob) catch {
+            snap.deinit();
+            return;
+        };
+        j.* = .{ .snap = snap, .secs = @min(secs, @as(f32, @floatFromInt(clip.keep_us / 1_000_000))) };
+        const path = clip.newPath(&j.path, if (who.len > 0) who else "clipe", "_clipe") catch {
+            j.snap.deinit();
+            std.heap.c_allocator.destroy(j);
+            a.toast("Não achei a pasta de vídeos pra salvar o clipe.", .{}, true);
+            return;
+        };
+        _ = path;
+        sync.spawn(ClipJob.run, .{j}) catch {
+            j.snap.deinit();
+            std.heap.c_allocator.destroy(j);
+            return;
+        };
+        slot.* = j;
+        a.toast("Salvando o clipe...", .{}, false);
+    }
+
+    /// Clipes que terminaram de ser escritos (todo quadro).
+    fn checkClipJobs(a: *App) void {
+        for (&a.clip_jobs) |*sl| {
+            const j = sl.* orelse continue;
+            if (!j.done.load(.acquire)) continue;
+            const path = std.mem.sliceTo(&j.path, 0);
+            if (j.ok) {
+                a.rememberSaved(path);
+                a.toast("Clipe salvo ({d:.0} s): {s}", .{ j.secs, baseName(path) }, false);
+            } else a.toast("Não consegui salvar o clipe em {s}", .{path}, true);
+            std.heap.c_allocator.destroy(j);
+            sl.* = null;
+        }
+    }
+
+    fn startRecording(a: *App, cb: *clip.Buffer, who: []const u8) void {
+        var buf: [512:0]u8 = undefined;
+        const path = clip.newPath(&buf, if (who.len > 0) who else "gravacao", "_gravacao") catch {
+            a.toast("Não achei a pasta de vídeos pra gravar.", .{}, true);
+            return;
+        };
+        cb.startRecording(path);
+        // a gravação começa no próximo quadro completo: pede um agora
+        for (a.views.items) |v| if (v.clip == cb) if (a.client) |cl| cl.sendKeyreqReason(v.stream, proto.keyreq_record);
+        for ([_]?*Sharer{ a.sharer, a.camera }) |maybe| if (maybe) |sh| if (sh.clip == cb) sh.client.keyreq[sh.kind].store(true, .release);
+        const rs = cb.recState();
+        if (rs.failed) a.toast("Não consegui criar o arquivo da gravação em {s}", .{path}, true) else a.toast("Gravando: {s}", .{baseName(path)}, false);
+        a.rememberSaved(path);
+    }
+
+    fn stopRecording(a: *App, cb: *clip.Buffer, who: []const u8) void {
+        _ = who;
+        const ms = cb.stopRecording();
+        if (ms == 0) {
+            a.toast("Gravação cancelada (não chegou nenhum quadro completo).", .{}, true);
+            return;
+        }
+        a.toast("Gravação salva ({d}:{d:0>2}): {s}", .{ ms / 60000, (ms / 1000) % 60, baseName(a.last_saved[0..a.last_saved_len]) }, false);
+    }
+
+    fn rememberSaved(a: *App, path: []const u8) void {
+        a.last_saved_len = @min(path.len, a.last_saved.len);
+        @memcpy(a.last_saved[0..a.last_saved_len], path[0..a.last_saved_len]);
+    }
+
+    fn baseName(path: []const u8) []const u8 {
+        const i = std.mem.findLastAny(u8, path, "/\\") orelse return path;
+        return path[i + 1 ..];
+    }
+
+    /// Abre a pasta dos clipes no gerenciador de arquivos.
+    fn openClipsFolder(a: *App) void {
+        var buf: [512]u8 = undefined;
+        const dir = clip.folder(&buf);
+        if (dir.len == 0) return;
+        if (!openPath(dir)) a.toast("Pasta dos clipes: {s}", .{dir}, false);
     }
 
     fn stopPointer(a: *App) void {
@@ -3187,6 +3351,9 @@ pub const App = struct {
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         _ = c.igCheckbox("Mostrar estatísticas sempre (não só com o mouse em cima)", &a.cfg.stats_always);
         _ = c.igCheckbox("Notificações com o telinha em segundo plano (chat, ao vivo, quem entrou)", &a.cfg.notifications);
+        if (c.igCheckbox("Clipes: guardar os últimos 30 s do que você assiste", &a.cfg.clips)) a.applyClips();
+        c.igSameLine(0, S(8));
+        if (c.igSmallButton("Abrir a pasta")) a.openClipsFolder();
         c.igPopStyleColor(1);
         c.igDummy(v2(0, S(16)));
 
@@ -3308,9 +3475,14 @@ pub const App = struct {
         try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d}}}", .{
             cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res,
         });
-        const clip: [*c]const u8 = c.glfwGetClipboardString(a.window);
-        try w.print(",\"clipboard\":{f},\"chat_input\":{f}", .{ s(if (clip != null) std.mem.span(clip) else ""), s(std.mem.sliceTo(&a.chat_input, 0)) });
+        const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);
+        try w.print(",\"clipboard\":{f},\"chat_input\":{f}", .{ s(if (cb_text != null) std.mem.span(cb_text) else ""), s(std.mem.sliceTo(&a.chat_input, 0)) });
         try w.print(",\"notifications_sent\":{d},\"away\":{}", .{ a.notifications_sent, a.away() });
+        try w.print(",\"last_saved\":{f},\"clip_jobs\":{d}", .{ s(a.last_saved[0..a.last_saved_len]), blk: {
+            var n: usize = 0;
+            for (a.clip_jobs) |j| n += @intFromBool(j != null);
+            break :blk n;
+        } });
         try w.print(",\"hosting\":{},\"leave_confirm\":{},\"admin_muted\":{},\"pointer_tile\":{d}", .{ a.server != null, a.leave_confirm, a.admin_muted, if (a.pointer_tile) |pt| @as(i64, pt) else -1 });
         if (a.camera) |cam| {
             cam.mutex.lock();
@@ -3361,8 +3533,9 @@ pub const App = struct {
         for (a.views.items, 0..) |v, i| {
             if (i > 0) try w.writeByte(',');
             const has_audio = v.audio_registered;
-            try w.print("{{\"stream\":{d},\"fps\":{d:.1},\"w\":{d},\"h\":{d},\"shown\":{},\"audio\":{},\"volume\":{d:.2},\"muted\":{}}}", .{
-                v.stream, v.fps, v.tex_w, v.tex_h, v.tex != 0, has_audio, v.audio_ring.getVolume(), v.audio_ring.isMuted(),
+            const rs: clip.Buffer.RecState = if (v.clip) |cb| cb.recState() else .{ .active = false, .waiting = false, .ms = 0, .failed = false };
+            try w.print("{{\"stream\":{d},\"fps\":{d:.1},\"w\":{d},\"h\":{d},\"shown\":{},\"audio\":{},\"volume\":{d:.2},\"muted\":{},\"clip_secs\":{d:.1},\"recording\":{},\"rec_ms\":{d}}}", .{
+                v.stream, v.fps, v.tex_w, v.tex_h, v.tex != 0, has_audio, v.audio_ring.getVolume(), v.audio_ring.isMuted(), if (v.clip) |cb| cb.seconds() else -1, rs.active, rs.ms,
             });
         }
         try w.writeAll("]");
@@ -3439,6 +3612,26 @@ pub const App = struct {
 // ---------------------------------------------------------------------------
 
 extern fn glfwGetWin32Window(window: *c.GLFWwindow) ?*anyopaque;
+extern "shell32" fn ShellExecuteW(hwnd: ?*anyopaque, op: [*:0]const u16, file: [*:0]const u16, params: ?[*:0]const u16, dir: ?[*:0]const u16, show: c_int) callconv(.winapi) ?*anyopaque;
+extern "c" fn posix_spawnp(pid: *c_int, file: [*:0]const u8, fa: ?*const anyopaque, attr: ?*const anyopaque, argv: [*:null]const ?[*:0]const u8, envp: [*:null]const ?[*:0]const u8) c_int;
+extern "c" var environ: [*:null]const ?[*:0]const u8;
+
+/// Abre uma pasta/arquivo no programa padrão (xdg-open / Explorer).
+fn openPath(path: []const u8) bool {
+    if (sync.is_windows) {
+        var w: [1024:0]u16 = undefined;
+        const n = std.unicode.utf8ToUtf16Le(&w, path) catch return false;
+        if (n >= w.len) return false;
+        w[n] = 0;
+        const r = ShellExecuteW(null, std.unicode.utf8ToUtf16LeStringLiteral("open"), &w, null, null, 1);
+        return @intFromPtr(r) > 32;
+    }
+    var z: [1024:0]u8 = undefined;
+    const pz = std.fmt.bufPrintZ(&z, "{s}", .{path}) catch return false;
+    var pid: c_int = 0;
+    const argv = [_:null]?[*:0]const u8{ "xdg-open", pz.ptr };
+    return posix_spawnp(&pid, "xdg-open", null, null, &argv, environ) == 0;
+}
 
 /// HWND da janela no Windows (pra piscar na barra de tarefas); null no Linux.
 fn nativeWindow(w: *c.GLFWwindow) ?*anyopaque {

@@ -122,6 +122,22 @@ pub fn localTimeAgo(seconds: i64) struct { h: u8, m: u8 } {
     }
 }
 
+pub const DateTime = struct { year: u16, month: u8, day: u8, h: u8, m: u8, s: u8 };
+
+/// Data e hora locais (nome de arquivo dos clipes).
+pub fn dateTime() DateTime {
+    if (is_windows) {
+        var st: c.SYSTEMTIME = undefined;
+        c.GetLocalTime(&st);
+        return .{ .year = st.wYear, .month = @intCast(st.wMonth), .day = @intCast(st.wDay), .h = @intCast(st.wHour), .m = @intCast(st.wMinute), .s = @intCast(st.wSecond) };
+    } else {
+        var t: c.time_t = c.time(null);
+        var tm: c.struct_tm = undefined;
+        _ = c.localtime_r(&t, &tm);
+        return .{ .year = @intCast(tm.tm_year + 1900), .month = @intCast(tm.tm_mon + 1), .day = @intCast(tm.tm_mday), .h = @intCast(tm.tm_hour), .m = @intCast(tm.tm_min), .s = @intCast(@min(tm.tm_sec, 59)) };
+    }
+}
+
 extern "advapi32" fn SystemFunction036(buf: [*]u8, len: u32) callconv(.winapi) u8; // RtlGenRandom
 extern "c" fn getrandom(buf: [*]u8, len: usize, flags: c_uint) isize;
 
