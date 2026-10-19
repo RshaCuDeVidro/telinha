@@ -610,19 +610,34 @@ test "eco: o cancelador tira a voz que voltou da caixa e deixa a sua passar" {
 /// dois lados atrasam até `jitter` amostras. Devolve o ERLE (dB) do último
 /// 1,5 s.
 fn liveEchoErle(drift_ppm: f64, jitter: u32) !f64 {
-    return liveEcho(drift_ppm, jitter, 8, false);
+    return liveEcho(.{ .drift_ppm = drift_ppm, .jitter = jitter });
 }
 
-fn liveEcho(drift_ppm: f64, jitter: u32, seconds: usize, per_second: bool) !f64 {
+const EchoSim = struct {
+    drift_ppm: f64 = 0,
+    jitter: u32 = 0,
+    seconds: usize = 8,
+    /// Atraso a mais no caminho até a caixa (Bluetooth: ~200 ms).
+    extra_delay_ms: usize = 0,
+    /// Fala irregular (sílabas e pausas aleatórias) em vez da vogal contínua.
+    speech: bool = false,
+    per_second: bool = false,
+};
+
+fn liveEcho(o: EchoSim) !f64 {
+    const drift_ppm = o.drift_ppm;
+    const jitter = o.jitter;
+    const per_second = o.per_second;
     aec.reference.clear();
+    aec.reference.base = 0;
     var cn = try aec.Canceller.init();
     defer cn.deinit();
-    const total = 48000 * seconds;
+    const total = 48000 * o.seconds;
     const far = try std.heap.c_allocator.alloc(f32, total);
     defer std.heap.c_allocator.free(far);
-    vowel(far, 0, 140, 0.25);
+    if (o.speech) speechLike(far, 7) else vowel(far, 0, 140, 0.25);
     const ratio = 1.0 / (1.0 + drift_ppm * 1e-6); // tempo da saída por amostra do microfone
-    const l_out: f64 = 1024 + 240;
+    const l_out: f64 = @floatFromInt(1024 + 240 + o.extra_delay_ms * 48);
     var stereo: [2048]f32 = undefined;
     var block: [480]f32 = undefined;
     var out: [480]f32 = undefined;
@@ -668,7 +683,7 @@ fn liveEcho(drift_ppm: f64, jitter: u32, seconds: usize, per_second: bool) !f64 
                     e_in = 0;
                     e_out = 0;
                 }
-            } else if (blocks > total / 480 - 150) for (block, out) |a, b| {
+            } else if (blocks > total / 480 - 200) for (block, out) |a, b| {
                 e_in += a * a;
                 e_out += b * b;
             };
@@ -677,6 +692,28 @@ fn liveEcho(drift_ppm: f64, jitter: u32, seconds: usize, per_second: bool) !f64 
         if (jitter > 0) jit_mic = @floatFromInt(rnd.uintLessThan(u32, jitter));
     }
     return 10 * std.math.log10(e_in / @max(e_out, 1e-12));
+}
+
+/// Fala sintética irregular: sílabas com duração, tom, volume e pausas
+/// aleatórios (o envelope não se repete, como na fala de verdade).
+fn speechLike(buf: []f32, seed: u64) void {
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rnd = prng.random();
+    var i: usize = 0;
+    while (i < buf.len) {
+        const syl = 48 * (80 + rnd.uintLessThan(usize, 220)); // 80–300 ms
+        const long_pause = rnd.uintLessThan(u8, 6) == 0;
+        const gap = 48 * (20 + rnd.uintLessThan(usize, if (long_pause) 700 else 120));
+        const f0 = 100 + rnd.float(f32) * 120;
+        const amp = 0.1 + rnd.float(f32) * 0.2;
+        const n = @min(syl, buf.len - i);
+        vowel(buf[i..][0..n], i, f0, amp);
+        for (buf[i..][0..n], 0..) |*v, j| v.* *= @sin(std.math.pi * @as(f32, @floatFromInt(j)) / @as(f32, @floatFromInt(syl)));
+        i += n;
+        const g = @min(gap, buf.len - i);
+        @memset(buf[i..][0..g], 0);
+        i += g;
+    }
 }
 
 fn lerp(x: []const f32, t: f64) f32 {
@@ -697,10 +734,19 @@ test "eco: referência alinhada com blocos diferentes e relógios desencontrados
     try testing.expect(aec.reference.level() < 48000 * 30 / 1000);
 }
 
+test "eco: atraso grande (caixa Bluetooth) medido e compensado" {
+    // o eco chega ~220 ms depois: fora da cauda do filtro (100 ms), que
+    // sozinho não tiraria nada. O detector de atraso acha e atrasa a referência
+    const erle = try liveEcho(.{ .extra_delay_ms = 200, .speech = true, .seconds = 14, .jitter = 96 });
+    const base = aec.reference.baseMs();
+    try testing.expect(base > 180 and base < 230); // medido: 211 ms (200 + 26 do caminho - 15 de alvo)
+    try testing.expect(erle > 15); // medido: ~20 dB
+}
+
 test "eco: deriva entre os relógios medida e compensada" {
     // microfone 120 ppm mais rápido: depois de ~25 s a deriva é medida e a
     // referência reamostrada (medido: ~33 dB; sem compensar, ~19 dB)
-    const erle = try liveEcho(120, 96, 40, false);
+    const erle = try liveEcho(.{ .drift_ppm = 120, .jitter = 96, .seconds = 40 });
     const ppm = aec.reference.driftPpm();
     try testing.expect(ppm < -105 and ppm > -135);
     try testing.expect(erle > 25);

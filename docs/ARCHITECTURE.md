@@ -155,23 +155,41 @@ indicador de microfone do sistema apaga quando desliga).
 volta a voz dos outros (e o som das transmissões que você assiste). O mixer
 guarda o que acabou de tocar num anel de referência, e o filtro adaptativo do
 SpeexDSP (MDF, cauda de 100 ms) mais a supressão do eco que sobra tiram isso do
-microfone antes do RNNoise. Cuidados: (1) a referência tem que chegar ao
-filtro *antes* do eco aparecer no microfone, então o anel guarda só ~5 ms de
-folga (medida pelo menor nível dos últimos 4 s, que não depende do tamanho dos
-blocos de cada lado): centra uma vez logo que a saída começa a tocar e depois só
-mexe se secar ou passar de 10 ms — todo ajuste obriga o filtro a reaprender;
-(2) caixa e microfone muitas vezes andam em
-relógios diferentes (USB × placa onboard, até ~100 ppm): deixado solto, o eco
-"escorrega" em relação à referência e o filtro, correndo atrás, perde uns
-15 dB. A deriva é medida por regressão (quanto a saída produziu × quanto o
-microfone consumiu, último minuto; só vale quando passa de 3σ) e a referência é
-reamostrada nessa proporção; (3) o que sobra de eco é baixinho mas continua
-parecendo voz, e o RNNoise não liga pro volume: com a caixa tocando, bloco em
-que o cancelador tirou mais de 10 dB não abre o portão. Nos testes (simulando
-blocos de 1024 × 441 amostras, atraso nos callbacks e deriva): ~35 dB de eco a
-menos com o mesmo relógio, ~33 dB com 120 ppm de deriva (sem a compensação,
-~19 dB). De ponta a ponta (PipeWire de verdade, a saída voltando inteira pro
-microfone): o portão fica fechado depois de uns 5 s de fala do outro lado.
+microfone antes do RNNoise. O difícil não é o filtro, é alimentar ele direito:
+
+1. *A referência tem que chegar antes do eco* (o filtro é causal) e o eco tem
+   que cair dentro da cauda. Um detector de atraso correlaciona os envelopes de
+   energia (1 ms por ponto, de −30 a +500 ms) do microfone e da referência —
+   envelope não tem a ambiguidade do tom da voz, que é periódico — e, se o eco
+   estiver fora de 1–40 ms, atrasa ou adianta a referência pra ele ficar em
+   15 ms. É o que faz caixa Bluetooth (150–250 ms de atraso) funcionar.
+2. *O anel não mexe sozinho*: todo ajuste obriga o filtro a reaprender, e o
+   nível mínimo engana (com blocos grandes dos dois lados — 900 × 1200 amostras
+   no PipeWire, por exemplo — o vale de verdade aparece pouco). Ele só põe 5 ms
+   de folga quando seca (o que acontece logo que a saída começa a tocar).
+3. *Relógios diferentes* (USB × placa onboard, até ~100 ppm): deixado solto, o
+   eco "escorrega" em relação à referência e o filtro, correndo atrás, perde
+   uns 15 dB. A deriva é medida por regressão (quanto a saída produziu × quanto
+   o microfone consumiu, último minuto; só vale quando passa de 3σ) e a
+   referência é reamostrada nessa proporção.
+4. *O resto do eco continua parecendo voz*, e o RNNoise não liga pro volume:
+   com a caixa tocando (ou até 120 ms depois — o eco chega atrasado e
+   reverbera), bloco em que o cancelador tirou mais de 6 dB não conta como voz
+   (falando junto, a sua voz não é cancelada e a saída fica perto da entrada),
+   e o portão só abre com 30 ms seguidos de voz.
+5. O preprocess do SpeexDSP só aplica a supressão do eco residual com o
+   "denoise" ligado; fica ligado com 0 dB de supressão de ruído (ruído é com o
+   RNNoise).
+
+Testes: simulação (blocos de 1024 × 441 amostras, atraso nos callbacks,
+deriva): ~35 dB com o mesmo relógio, ~33 dB com 120 ppm (sem compensar, ~19);
+eco a 220 ms achado e compensado (~20 dB). De ponta a ponta, num PipeWire
+isolado com a saída voltando inteira pro "microfone" (`voicebot --ouvinte`):
+sem cancelamento, 440 pacotes de eco vazam em 12 s de fala do outro lado; com
+ele, 68, todos nos 2 primeiros segundos (depois 21–32 dB, portão fechado). Com
+um `pw-loopback` de 200 ms no caminho (Bluetooth): sem cancelamento, 523
+pacotes; com ele, o detector acha ~215 ms, e vazam 139 nos primeiros 5 s
+(medir o atraso + o filtro aprender de novo), depois nada.
 
 **UI que dorme.** O loop usa `glfwWaitEventsTimeout`; threads de rede e decode
 acordam a UI com `glfwPostEmptyEvent` quando há quadro novo. Sem transmissão,

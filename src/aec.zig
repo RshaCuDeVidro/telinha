@@ -5,19 +5,18 @@
 //!
 //! A referência é a saída do mixer, guardada num anel (a thread de saída
 //! escreve, a do microfone lê). Ela tem que chegar ao cancelador ANTES do eco
-//! aparecer no microfone (o filtro é causal), então o anel fica quase vazio:
-//! uns 5 ms de folga, medidos pelo menor nível dos últimos 4 s (que não
-//! depende do tamanho dos blocos de cada lado). O atraso de verdade — buffer
-//! de saída + ar + buffer de entrada, uns 20–80 ms — o filtro (cauda de
-//! 100 ms) descobre sozinho.
+//! aparecer no microfone (o filtro é causal), e o eco tem que cair dentro da
+//! cauda do filtro (100 ms). Quem cuida disso é o detector de atraso
+//! (`DelayEstimator`): mede onde o eco está e, se precisar, atrasa ou adianta
+//! a referência. O anel em si só guarda uns 5 ms de folga, posta quando ele
+//! seca, e não mexe sozinho: todo ajuste obriga o filtro a aprender de novo.
 //!
 //! Os dois dispositivos andam em relógios próprios (USB e placa onboard
 //! chegam a ~100 ppm de diferença). Deixado solto, o eco "escorrega" devagar
 //! em relação à referência e o filtro, correndo atrás, perde uns 15 dB. Então
 //! a diferença é medida (regressão de quanto a saída produziu contra quanto o
 //! microfone consumiu, no último minuto) e a referência é reamostrada nessa
-//! proporção. Ajuste grosso no anel (que obriga o filtro a aprender de novo)
-//! só quando secou ou passou de 10 ms: no começo, ou se algo travar.
+//! proporção.
 const std = @import("std");
 const sync = @import("sync.zig");
 const sp = @cImport({
@@ -32,12 +31,15 @@ pub const frame = 480;
 /// muito mais pra aprender (medido com voz de verdade passando pelo Opus:
 /// 200 ms chegava a 5 dB em 2 s de fala; 100 ms, a 17 dB).
 const tail = rate / 10;
-const ring_cap = rate / 2;
-/// Folga depois de um ajuste.
+const ring_cap = rate;
+/// Folga que entra quando o anel seca.
 const ring_target = rate * 5 / 1000;
-/// Folga máxima: mais que isso arrisca a referência chegar depois do eco.
-const ring_high = rate * 10 / 1000;
-/// Uma janela = 50 leituras de 10 ms; o mínimo vale sobre as 8 últimas (4 s).
+/// Atraso extra que o detector de atraso pode pôr na referência (caixa
+/// Bluetooth: 150–250 ms).
+const max_base = rate * 400 / 1000;
+/// Uma janela = 50 leituras de 10 ms (0,5 s): a cada uma, um ponto da deriva
+/// e o menor nível do anel (os das 8 últimas limitam quanto dá pra adiantar
+/// a referência sem secar).
 const window_pops = 50;
 const windows = 8;
 
@@ -59,9 +61,8 @@ pub const RefRing = struct {
     cur_low: usize = std.math.maxInt(usize),
     pops: u32 = 0,
     win_pushes: u32 = 0, // escritas da saída na janela atual
-    settle: u32 = 0, // janelas desde que a saída começou a tocar
-    centered: bool = false, // já centrou depois que a saída começou
     pending: isize = 0, // ajuste a fazer na próxima leitura: > 0 tira amostras, < 0 põe silêncio
+    base: isize = 0, // atraso extra da referência (amostras), posto pelo detector de atraso
     // deriva entre os relógios
     pushed: u64 = 0, // amostras que a saída produziu
     delivered: u64 = 0, // amostras entregues ao microfone
@@ -82,6 +83,8 @@ pub const RefRing = struct {
         inserted: usize = 0,
         dropped: usize = 0,
         max_level: usize = 0,
+        level_sum: u64 = 0, // soma do nível depois de cada leitura (média = level_sum / pops)
+        min_level: usize = std.math.maxInt(usize),
     };
 
     /// Diagnóstico desde a última chamada.
@@ -120,19 +123,20 @@ pub const RefRing = struct {
         defer rg.mutex.unlock();
         var dst = out;
         if (rg.pending > 0) {
+            // adianta a referência: tira de uma vez o que o anel tiver
             const d = @min(@as(usize, @intCast(rg.pending)), rg.len);
             rg.stat.dropped += d;
             rg.skip(d);
-            rg.shiftLows(-@as(isize, @intCast(d)));
-            rg.pending = 0;
+            rg.pending -= @intCast(d);
+            if (rg.pending == 0) rg.restartLows();
         } else if (rg.pending < 0) {
-            // silêncio no lugar de amostras que o anel tinha: ele fica mais cheio
-            const k = @min(@as(usize, @intCast(-rg.pending)), dst.len, rg.len);
+            // atrasa: silêncio no lugar dela (o anel enche, já que nada sai)
+            const k = @min(@as(usize, @intCast(-rg.pending)), dst.len);
             rg.stat.inserted += k;
             @memset(dst[0..k], 0);
             dst = dst[k..];
-            rg.shiftLows(@intCast(k));
             rg.pending += @intCast(k);
+            if (rg.pending == 0) rg.restartLows();
         }
         // reamostra na proporção dos relógios (interpolação linear: a deriva
         // é tão pequena que a posição fracionária quase não muda num bloco)
@@ -149,6 +153,8 @@ pub const RefRing = struct {
         @memset(dst[i..], 0); // secou
         rg.stat.dry += dst.len - i;
         rg.stat.pops += 1;
+        rg.stat.level_sum += rg.len;
+        rg.stat.min_level = @min(rg.stat.min_level, rg.len);
         rg.delivered += out.len;
         rg.cur_gap = @min(rg.cur_gap, @as(i64, @intCast(rg.pushed)) - @as(i64, @intCast(rg.delivered)));
         rg.cur_low = @min(rg.cur_low, rg.len);
@@ -168,29 +174,56 @@ pub const RefRing = struct {
             rg.n_lows = 0;
             rg.n_pts = 0;
             rg.pending = 0;
-            rg.settle = 0;
-            rg.centered = false;
             return;
         }
         rg.updateDrift();
-        if (!rg.centered) {
-            // a primeira janela com a saída tocando quase sempre pega o meio
-            // da abertura; a segunda (0,5–1 s depois) já mostra o ritmo dos
-            // dois lados. Centra nela, enquanto o filtro ainda não aprendeu nada
-            rg.settle += 1;
-            if (rg.settle < 2) return;
-            rg.centered = true;
-            rg.lows[0] = cur_low;
-            rg.n_lows = 1;
-            rg.pending = @as(isize, @intCast(cur_low)) - ring_target;
-            return;
-        }
+        if (rg.pending != 0) return; // ajuste em andamento: mede depois
         rg.lows[rg.n_lows % windows] = cur_low;
         rg.n_lows += 1;
-        var low: usize = std.math.maxInt(usize);
-        for (rg.lows[0..@min(rg.n_lows, windows)]) |l| low = @min(low, l);
-        // depois, só quando secou ou encheu demais: volta pro alvo de uma vez
-        if (low == 0 or low > ring_high) rg.pending = @as(isize, @intCast(low)) - ring_target;
+        // Secou (o anel começa vazio, então isso acontece logo que a saída
+        // começa a tocar; depois, só se ela parar e voltar): o que estava
+        // guardado se perdeu, então põe de novo a folga mais o atraso extra
+        // (um adiantamento se perde: o detector refaz se precisar). Fora isso
+        // o anel não mexe sozinho: todo ajuste faz o filtro reaprender, e o
+        // nível mínimo engana (com blocos grandes dos dois lados, o vale de
+        // verdade aparece pouco). Quem cuida do alinhamento é o detector.
+        if (cur_low == 0) {
+            if (rg.base < 0) rg.base = 0;
+            rg.pending = -(ring_target + rg.base);
+        }
+    }
+
+    fn restartLows(rg: *RefRing) void {
+        rg.n_lows = 0;
+        rg.cur_low = std.math.maxInt(usize);
+    }
+
+    /// Atrasa (d > 0) ou adianta (d < 0) a referência: o detector de atraso
+    /// achou o eco longe de onde o filtro procura. Adiantar gasta o que o
+    /// anel tem guardado: no máximo até sobrar 1 ms no menor nível recente.
+    /// Devolve quanto mudou de verdade.
+    pub fn shift(rg: *RefRing, d: isize) isize {
+        rg.mutex.lock();
+        defer rg.mutex.unlock();
+        var real = @min(d, max_base - rg.base);
+        if (real < 0) {
+            var low: usize = rg.cur_low;
+            for (rg.lows[0..@min(rg.n_lows, windows)]) |l| low = @min(low, l);
+            var spare: isize = if (low == std.math.maxInt(usize)) 0 else @as(isize, @intCast(low)) - rate / 1000;
+            if (spare < 0) spare = 0;
+            if (real < -spare) real = -spare;
+        }
+        rg.base += real;
+        rg.pending -= real;
+        rg.restartLows();
+        return real;
+    }
+
+    /// Atraso extra posto na referência, em ms.
+    pub fn baseMs(rg: *RefRing) f32 {
+        rg.mutex.lock();
+        defer rg.mutex.unlock();
+        return @as(f32, @floatFromInt(rg.base)) / (rate / 1000);
     }
 
     /// Reta de (produzido - entregue) contra o entregue: a inclinação é a
@@ -248,17 +281,8 @@ pub const RefRing = struct {
         return (rg.step - 1) * 1e6;
     }
 
-    /// O nível mudou por correção nossa: as janelas guardadas mudam junto.
-    fn shiftLows(rg: *RefRing, d: isize) void {
-        for (rg.lows[0..@min(rg.n_lows, windows)]) |*l| {
-            l.* = if (d < 0) l.* -| @as(usize, @intCast(-d)) else l.* + @as(usize, @intCast(d));
-        }
-        if (rg.cur_low != std.math.maxInt(usize)) {
-            rg.cur_low = if (d < 0) rg.cur_low -| @as(usize, @intCast(-d)) else rg.cur_low + @as(usize, @intCast(d));
-        }
-    }
-
-    /// Microfone abrindo: começa do que está tocando agora.
+    /// Microfone abrindo: começa do que está tocando agora. O atraso extra
+    /// fica (é do caminho caixa → microfone, que não mudou).
     pub fn clear(rg: *RefRing) void {
         rg.mutex.lock();
         defer rg.mutex.unlock();
@@ -274,8 +298,6 @@ pub const RefRing = struct {
         rg.step = 1;
         rg.frac = 0;
         rg.win_pushes = 0;
-        rg.settle = 0;
-        rg.centered = false;
     }
 
     fn skip(rg: *RefRing, n: usize) void {
@@ -293,9 +315,117 @@ pub const RefRing = struct {
 /// O que o mixer tocou (audio.zig escreve a cada bloco de saída).
 pub var reference: RefRing = .{};
 
+/// Atraso grosso do eco, pela correlação dos envelopes de energia (1 ms por
+/// ponto) do microfone com a referência. Caixa Bluetooth chega a 150–250 ms,
+/// mais que a cauda do filtro; e mesmo com fio, quanto menos atraso sobrar pro
+/// filtro cobrir, mais rápido ele aprende. Envelope não tem a ambiguidade do
+/// tom da voz (que é periódico), e alguns ms de precisão bastam: o filtro
+/// cobre o resto.
+pub const DelayEstimator = struct {
+    const sub = rate / 1000; // amostras por ponto do envelope (1 ms)
+    const max_lag = 500;
+    const neg = 30; // atrasos negativos medidos (até -30 ms): corr[neg + atraso]
+    const n_lags = max_lag + neg + 1;
+    const hist = max_lag + 1;
+    // históricos dos envelopes, escritos duas vezes (em i e i + hist) pra ler
+    // qualquer trecho sem dar a volta
+    hm: [2 * hist]f32 = @splat(0),
+    hr: [2 * hist]f32 = @splat(0),
+    pos: usize = 0,
+    mean_m: f32 = 0,
+    mean_r: f32 = 0,
+    corr: [n_lags]f32 = @splat(0),
+    e_m: f32 = 0,
+    e_r: f32 = 0,
+    blocks: u32 = 0,
+    active: u32 = 0, // blocos com a caixa tocando, desde a última avaliação
+    candidate: ?i32 = null,
+
+    /// Um bloco de 10 ms; devolve o atraso do eco (ms) quando confirmado em
+    /// duas avaliações seguidas (a cada 0,5 s).
+    pub fn feed(de: *DelayEstimator, mic: *const [frame]f32, ref: *const [frame]f32) ?i32 {
+        var far: f32 = 0;
+        for (0..frame / sub) |k| {
+            var em: f32 = 0;
+            var er: f32 = 0;
+            for (mic[k * sub ..][0..sub], ref[k * sub ..][0..sub]) |a, b| {
+                em += a * a;
+                er += b * b;
+            }
+            far += er;
+            // envelope sem a média lenta (passa-alta ~1,6 Hz): fica a
+            // modulação das sílabas, que é o que identifica o atraso
+            const am = @sqrt(em / sub);
+            const ar = @sqrt(er / sub);
+            de.mean_m += 0.01 * (am - de.mean_m);
+            de.mean_r += 0.01 * (ar - de.mean_r);
+            const xm = am - de.mean_m;
+            const xr = ar - de.mean_r;
+            de.hm[de.pos] = xm;
+            de.hm[de.pos + hist] = xm;
+            de.hr[de.pos] = xr;
+            de.hr[de.pos + hist] = xr;
+            const now = de.pos + hist; // hm[now - l] = l ms atrás
+            // atraso l ≥ 0: microfone agora × referência de l ms atrás
+            for (0..max_lag + 1) |l| de.corr[neg + l] += xm * de.hr[now - l];
+            // atraso negativo (eco antes da referência): microfone de l ms atrás × referência agora
+            for (1..neg + 1) |l| de.corr[neg - l] += de.hm[now - l] * xr;
+            de.e_m += xm * xm;
+            de.e_r += xr * xr;
+            de.pos = (de.pos + 1) % hist;
+        }
+        // memória de ~2 s
+        for (&de.corr) |*v| v.* *= 0.995;
+        de.e_m *= 0.995;
+        de.e_r *= 0.995;
+        if (far > frame * 1e-6) de.active += 1; // caixa tocando (> -60 dBFS)
+        de.blocks += 1;
+        if (de.blocks < 50) return null;
+        const active = de.active;
+        de.blocks = 0;
+        de.active = 0;
+        if (active < 25 or de.e_m <= 0 or de.e_r <= 0) return null; // caixa quieta: nada a medir
+        var best: usize = 0;
+        for (de.corr, 0..) |v, i| if (v > de.corr[best]) {
+            best = i;
+        };
+        const norm = 1 / @sqrt(de.e_m * de.e_r);
+        const rho = de.corr[best] * norm;
+        // pico forte e único: longe dele (±30 ms), nada parecido
+        var other: f32 = 0;
+        for (de.corr, 0..) |v, i| if (i + 30 < best or i > best + 30) {
+            other = @max(other, v);
+        };
+        if (rho < 0.4 or other * norm > 0.8 * rho) {
+            de.candidate = null;
+            return null;
+        }
+        const lag = @as(i32, @intCast(best)) - neg;
+        last_measured = lag;
+        if (de.candidate) |c| if (@abs(c - lag) <= 4) return lag;
+        de.candidate = lag;
+        return null;
+    }
+};
+
+/// Diagnóstico: última medida (confirmada ou não) de qualquer detector.
+pub var last_measured: i32 = std.math.minInt(i32);
+
+/// Onde o eco deve ficar pro filtro (ms depois da referência) quando precisar
+/// mexer: um pouco depois do começo da cauda, com margem se a medida errou.
+const echo_want_ms = 15;
+/// Eco entre esses atrasos: o filtro (cauda de 100 ms) dá conta, deixa como
+/// está. Antes disso ele não consegue (o eco chegaria antes da referência);
+/// depois, o resto do eco (a reverberação) não caberia na cauda.
+const echo_min_ms = 1;
+const echo_max_ms = 40;
+
 pub const Canceller = struct {
     echo: *sp.SpeexEchoState,
     pre: *sp.SpeexPreprocessState,
+    est: DelayEstimator = .{},
+    /// Último atraso do eco medido (ms; diagnóstico, lido por outra thread).
+    last_lag: std.atomic.Value(i32) = .init(std.math.minInt(i32)),
 
     pub fn init() !Canceller {
         const echo = sp.speex_echo_state_init(frame, tail) orelse return error.AecInit;
@@ -341,7 +471,17 @@ pub const Canceller = struct {
     /// Igual, devolvendo também a referência usada.
     pub fn processLiveRef(cn: *Canceller, mic: *const [frame]f32, out: *[frame]f32, ref: *[frame]f32) void {
         reference.pop(ref);
+        if (cn.est.feed(mic, ref)) |lag| cn.realign(lag);
         cn.process(mic, ref, out);
+    }
+
+    /// O eco está `lag` ms depois da referência: se estiver longe de onde o
+    /// filtro procura, muda o atraso da referência e o filtro recomeça.
+    fn realign(cn: *Canceller, lag: i32) void {
+        if (lag >= echo_min_ms and lag <= echo_max_ms) return;
+        const moved = reference.shift(@as(isize, lag - echo_want_ms) * (rate / 1000));
+        cn.est = .{}; // os atrasos medidos eram relativos ao alinhamento antigo
+        if (moved != 0) sp.speex_echo_state_reset(cn.echo);
     }
 };
 

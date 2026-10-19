@@ -92,6 +92,7 @@ pub fn main(init: std.process.Init) !void {
             const now = sent.load(.monotonic);
             const st = mic.echoStats();
             const rs = aec.reference.takeStats();
+            std.debug.print("      atraso do eco medido {d} ms, atraso extra na referência {d:.1} ms, nível médio {d}, mínimo {d}\n", .{ aec.last_measured, aec.reference.baseMs(), if (rs.pops > 0) rs.level_sum / rs.pops else 0, rs.min_level });
             std.debug.print("{d:>3} s: {d:>3} pacotes | microfone {d:>6.1} dBFS, depois do cancelador {d:>6.1}, referência {d:>6.1} | deriva {d:.1} ppm | anel: {d} escritas (máx {d}), {d} leituras, {d} secas, +{d} -{d}, nível máx {d}\n", .{ s + 1, now - last, st[0], st[1], st[2], aec.reference.driftPpm(), rs.pushes, rs.max_push, rs.pops, rs.dry, rs.inserted, rs.dropped, rs.max_level });
             last = now;
         }

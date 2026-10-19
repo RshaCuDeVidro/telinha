@@ -48,6 +48,8 @@ pub const Mic = struct {
     n_out: usize = 0,
     packet: [1500]u8 = undefined,
     hang: u32 = 0,
+    speech_run: u32 = 0, // blocos seguidos com voz
+    far_hold: u32 = 0, // blocos desde que a caixa tocou algo (o eco chega depois e dura a cauda)
     was_open: bool = false,
 
     /// Pra interface: falando agora (portão aberto) e nível do microfone (0..1).
@@ -166,10 +168,15 @@ pub const Mic = struct {
             b_out += b * b;
             b_ref += r * r;
         }
-        // a caixa está tocando e o cancelador tirou quase tudo (> 10 dB): o que
-        // sobrou é resto de eco, não a sua voz. O RNNoise ainda acharia que é
-        // voz (ele não liga pro volume), e o portão abriria no eco.
-        const echo_only = m.echo != null and b_ref > block * 1e-7 and b_out < b_in * 0.1;
+        // a caixa está tocando e o cancelador tirou quase tudo (> 6 dB): o que
+        // sobrou é resto de eco, não a sua voz (falando junto, a sua voz não é
+        // cancelada e a saída fica perto da entrada). O RNNoise ainda acharia
+        // que é voz (ele não liga pro volume), e o portão abriria no eco.
+        // a caixa "está tocando" até 120 ms depois do último som: o eco chega
+        // atrasado e reverbera (é o que a cauda do filtro cobre)
+        if (m.echo != null and b_ref > block * 1e-7) m.far_hold = 12 else m.far_hold -|= 1;
+        const far_active = m.far_hold > 0;
+        const echo_only = far_active and b_out < b_in * 0.25;
         m.e_in += b_in;
         m.e_out += b_out;
         m.e_ref += b_ref;
@@ -206,6 +213,14 @@ pub const Mic = struct {
         m.level_bits.store(@bitCast(@max(peak, old * 0.85)), .monotonic);
 
         if (!echo_only and vad >= @as(f32, @bitCast(m.threshold_bits.load(.monotonic)))) {
+            m.speech_run += 1;
+        } else {
+            m.speech_run = 0;
+        }
+        // com a caixa tocando, um bloco solto em que o cancelador escorregou
+        // não abre o portão (abriria por 250 ms): voz de verdade dura mais
+        // que 30 ms
+        if (m.speech_run >= @as(u32, if (far_active) 3 else 1)) {
             m.hang = hangover_blocks;
         } else if (m.hang > 0) {
             m.hang -= 1;

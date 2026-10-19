@@ -4,10 +4,13 @@
 
 - **Cancelamento de eco** (SpeexDSP) na voz: dá pra falar com caixa de som em
   vez de fone sem a sala se ouvir de volta. A referência é o que o mixer
-  acabou de tocar; a deriva entre os relógios da caixa e do microfone é medida
-  e compensada (reamostragem), o que vale uns 15 dB a mais de eco cancelado
-  quando eles são dispositivos diferentes (ex.: microfone USB + placa onboard).
-  Liga/desliga nas configurações (ligado por padrão).
+  acabou de tocar; um detector de atraso acha onde o eco está (até 500 ms:
+  caixa Bluetooth funciona) e alinha a referência; a deriva entre os relógios
+  da caixa e do microfone é medida e compensada (reamostragem), o que vale uns
+  15 dB a mais quando eles são dispositivos diferentes (ex.: microfone USB +
+  placa onboard); e o resto de eco não abre o portão de voz. Testado de ponta
+  a ponta num PipeWire isolado: o eco para de vazar em ~2 s de fala do outro
+  lado. Liga/desliga nas configurações (ligado por padrão).
 - Tela parada não deixa mais o espectador preso na imagem velha depois de um
   recomeço: o servidor pede o IDR sozinho (antes esperava o próximo quadro do
   transmissor, que com a tela parada não vinha).
