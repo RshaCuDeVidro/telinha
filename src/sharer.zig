@@ -360,6 +360,8 @@ const Pipeline = struct {
         const s = p.s;
         sync.lowerThreadPriority();
         var next_us: u64 = 0;
+        const started_us = sync.nowUs();
+        var got_any = false;
         while (!s.stop_flag.load(.acquire)) {
             // configurações mudaram?
             s.mutex.lock();
@@ -383,7 +385,17 @@ const Pipeline = struct {
             const t_cap = sync.nowUs();
             const r = c.cap_next(p.cap, &f, 50, &p.err, p.err.len);
             if (r < 0) return error.Capture;
-            if (r == 0) continue;
+            if (r == 0) {
+                // o compositor manda o primeiro quadro na hora, mesmo com a tela parada
+                if (!got_any and sync.nowUs() - started_us > 10_000_000) {
+                    const msg = "A imagem da tela não chegou (o compositor aceitou compartilhar, mas não mandou nenhum quadro). Tenta de novo; se continuar, reinicia o xdg-desktop-portal.";
+                    @memcpy(p.err[0..msg.len], msg);
+                    p.err[msg.len] = 0;
+                    return error.Capture;
+                }
+                continue;
+            }
+            got_any = true;
             const ts = s.client.serverNowUs();
             // próximo quadro: no ritmo do fps; se atrasou, não tenta "compensar" em rajada
             next_us = @max(next_us + interval_us, sync.nowUs() + interval_us / 2);

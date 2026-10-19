@@ -6,6 +6,7 @@
 //!   zig build server          só o servidor dedicado (estático, musl)
 //!   zig build bench           benchmark do pipeline de vídeo
 //!   zig build loadtest        teste de carga do servidor
+//!   zig build captest         diagnóstico da captura de tela (Linux)
 //!   -Dserver-only=true        não baixa as dependências do app (Docker)
 //!
 //! Dependências C/C++ (Dear ImGui, cimgui, openh264, GLFW, NASM) vêm do
@@ -90,6 +91,25 @@ pub fn build(b: *std.Build) void {
     const run_load = b.addRunArtifact(b.addExecutable(.{ .name = "loadtest", .root_module = load_mod }));
     if (b.args) |args| run_load.addArgs(args);
     b.step("loadtest", "teste de carga do servidor (espectadores simulados)").dependOn(&run_load.step);
+
+    // diagnóstico da captura (Linux)
+    if (host.result.os.tag == .linux) {
+        const cap_mod = b.createModule(.{
+            .root_source_file = b.path("src/captest.zig"),
+            .target = host,
+            .optimize = .ReleaseSafe,
+            .link_libc = true,
+        });
+        cap_mod.addIncludePath(b.path("src/c"));
+        cap_mod.addCSourceFile(.{ .file = b.path("src/c/capture_linux.c"), .flags = &.{"-O2"} });
+        for ([_][]const u8{ "libportal", "libpipewire-0.3", "x11", "xext", "xfixes" }) |lib|
+            cap_mod.linkSystemLibrary(lib, .{});
+        const cap_exe = b.addExecutable(.{ .name = "captest", .root_module = cap_mod });
+        const run_cap = b.addRunArtifact(cap_exe);
+        if (b.args) |args| run_cap.addArgs(args);
+        b.step("captest", "diagnóstico da captura de tela").dependOn(&run_cap.step);
+        b.getInstallStep().dependOn(&b.addInstallArtifact(cap_exe, .{ .dest_dir = .{ .override = .{ .custom = "tools" } } }).step);
+    }
 
     // benchmark do pipeline de vídeo
     const bench_mod = b.createModule(.{

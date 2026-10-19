@@ -25,7 +25,7 @@
 - **Reconexão automática**: se a internet oscilar ou o servidor reiniciar, o app volta sozinho, retoma a transmissão e volta a assistir quem estava assistindo.
 - **Admin**: quem cria a sala ganha a coroa e pode expulsar gente.
 - **Estatísticas ao vivo**: resolução, fps, banda e **atraso de ponta a ponta medido** (captura no transmissor → tela de quem assiste).
-- **Captura nativa**: PipeWire + xdg-desktop-portal no Wayland (Hyprland, GNOME, KDE, Sway…), X11, e DXGI Desktop Duplication no Windows. No Hyprland o cursor é desenhado pelo telinha, pra o mouse não ficar com lag enquanto você compartilha.
+- **Captura nativa**: PipeWire + xdg-desktop-portal no Wayland (Hyprland, GNOME, KDE, Sway…) com **DMA-BUF** (o compositor copia a tela GPU→GPU, sem travar a própria renderização), X11, e DXGI Desktop Duplication no Windows. O compositor só copia a tela no fps que você escolheu, e no Hyprland o cursor é desenhado pelo telinha — o mouse não fica com lag enquanto você compartilha.
 - **Windows**: um `.exe` só, sem instalar nada.
 
 | | |
@@ -101,7 +101,9 @@ Pra binários que rodam em qualquer CPU x86-64 (como no CI): `zig build -Dcpu=x8
 --fps N --qualidade N --modo tela|jogo --software
 --estatisticas        estatísticas sempre visíveis
 ```
-`TELINHA_DEBUG=1` imprime o tempo de cada etapa do pipeline. `TELINHA_SEM_SHADER=1` força a conversão de cor na CPU; `TELINHA_CURSOR_EMBUTIDO=1` deixa o compositor desenhar o cursor (Hyprland); `TELINHA_SEM_SOM=1` não toca o áudio recebido.
+`TELINHA_DEBUG=1` imprime o tempo de cada etapa do pipeline. `TELINHA_SEM_SHADER=1` força a conversão de cor na CPU; `TELINHA_CURSOR_EMBUTIDO=1` deixa o compositor desenhar o cursor (Hyprland); `TELINHA_SEM_DMABUF=1` captura por memória compartilhada em vez de DMA-BUF; `TELINHA_SEM_SOM=1` não toca o áudio recebido.
+
+Se a captura não funcionar ou estiver lenta, `zig build captest` (ou `zig-out/tools/captest 10 30 quadro.ppm`) mostra o método, o formato, o fps real e salva um quadro.
 </details>
 
 ## Documentação

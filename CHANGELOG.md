@@ -15,6 +15,19 @@
   causa mais recomeço; quadros atrasados são decodificados sem ir pra tela.
 - Linux: `TCP_NOTSENT_LOWAT` em vez de buffer de envio fixo.
 - `zig build loadtest`: teste de carga com link lento, maioria lenta e túnel ruim.
+- Captura no Wayland por **DMA-BUF**: o compositor copia a tela GPU→GPU, sem
+  ler a imagem de volta pra RAM no próprio loop de renderização (era isso que
+  travava o mouse de leve enquanto compartilhava). A leitura acontece na thread
+  do telinha, via EGL carregado em tempo de execução; sem EGL/suporte, volta
+  pra memória compartilhada sozinho.
+- O limite de fps agora vai no `maxFramerate`, que é o que o portal do
+  Hyprland usa: antes ele copiava a tela na taxa do monitor (ex.: 144x/s)
+  mesmo transmitindo a 30 fps.
+- Memória compartilhada em 24 bits e 10 bits por canal (monitor HDR/10 bits)
+  é aceita e convertida; antes a negociação falhava nesses casos.
+- Erro claro se o compositor aceitar compartilhar mas não mandar nenhum quadro.
+- `zig build captest`: diagnóstico da captura (método, formato, fps real,
+  custo por quadro, salva um quadro em PPM).
 
 ## 2.0.0
 

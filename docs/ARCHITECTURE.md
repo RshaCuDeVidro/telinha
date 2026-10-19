@@ -44,6 +44,7 @@
 | `src/tests.zig`, `src/integration_test.zig` | testes |
 | `src/bench.zig` | benchmark do pipeline de vídeo |
 | `src/loadtest.zig` | teste de carga do servidor (espectadores lentos, túnel ruim) |
+| `src/captest.zig` | diagnóstico da captura de tela |
 
 ## Decisões de desempenho
 
@@ -96,6 +97,15 @@ converte em paralelo, como antes.
 **Baseline sempre.** O decoder do openh264 segura um quadro pra reordenação
 em perfis Main/High; com Baseline (o que os dois encoders geram) cada quadro
 sai na mesma chamada — nada de atraso escondido.
+
+**Captura no Wayland por DMA-BUF.** O portal entrega cada quadro num buffer
+da GPU; o telinha importa com EGL (carregado em tempo de execução) e lê na
+própria thread. Com memória compartilhada, quem lê a imagem de volta pra RAM
+é o compositor, dentro do loop de renderização — a cada quadro, o mouse e as
+animações da tela de quem transmite davam uma travadinha. O limite de fps vai
+no `maxFramerate` da negociação (o que o portal do Hyprland usa pra decidir
+quantas vezes copiar a tela). Se a importação falhar, a stream é renegociada
+pra memória compartilhada (32, 24 ou 10 bits por canal, convertidos).
 
 **Cursor no Hyprland.** Pedir o cursor embutido no portal faz o Hyprland
 trocar pro cursor em software durante a captura (o mouse fica preso à
