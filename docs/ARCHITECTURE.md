@@ -180,6 +180,10 @@ microfone antes do RNNoise. O difícil não é o filtro, é alimentar ele direit
 5. O preprocess do SpeexDSP só aplica a supressão do eco residual com o
    "denoise" ligado; fica ligado com 0 dB de supressão de ruído (ruído é com o
    RNNoise).
+6. *Fone de ouvido* (o caso mais comum): sem eco nenhum, o cancelador só
+   atrapalha — comia ~1 dB da sua voz quando os dois falam juntos. Depois de
+   1 min de fala do outro lado sem o detector achar eco, ele sai do caminho;
+   apareceu eco (tirou o fone), volta na hora.
 
 Testes: simulação (blocos de 1024 × 441 amostras, atraso nos callbacks,
 deriva): ~35 dB com o mesmo relógio, ~33 dB com 120 ppm (sem compensar, ~19);

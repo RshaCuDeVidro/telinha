@@ -174,7 +174,8 @@ pub const Mic = struct {
         // que é voz (ele não liga pro volume), e o portão abriria no eco.
         // a caixa "está tocando" até 120 ms depois do último som: o eco chega
         // atrasado e reverbera (é o que a cauda do filtro cobre)
-        if (m.echo != null and b_ref > block * 1e-7) m.far_hold = 12 else m.far_hold -|= 1;
+        const cancelling = if (m.echo) |*e| !e.bypassed() else false;
+        if (cancelling and b_ref > block * 1e-7) m.far_hold = 12 else m.far_hold -|= 1;
         const far_active = m.far_hold > 0;
         const echo_only = far_active and b_out < b_in * 0.25;
         m.e_in += b_in;

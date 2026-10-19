@@ -340,6 +340,9 @@ pub const DelayEstimator = struct {
     blocks: u32 = 0,
     active: u32 = 0, // blocos com a caixa tocando, desde a última avaliação
     candidate: ?i32 = null,
+    // avaliações com a caixa tocando, e a correlação do pico na última delas
+    evals: u32 = 0,
+    last_rho: f32 = 0,
 
     /// Um bloco de 10 ms; devolve o atraso do eco (ms) quando confirmado em
     /// duas avaliações seguidas (a cada 0,5 s).
@@ -391,6 +394,8 @@ pub const DelayEstimator = struct {
         };
         const norm = 1 / @sqrt(de.e_m * de.e_r);
         const rho = de.corr[best] * norm;
+        de.evals += 1;
+        de.last_rho = rho;
         // pico forte e único: longe dele (±30 ms), nada parecido
         var other: f32 = 0;
         for (de.corr, 0..) |v, i| if (i + 30 < best or i > best + 30) {
@@ -411,6 +416,10 @@ pub const DelayEstimator = struct {
 /// Diagnóstico: última medida de atraso do eco (ms, confirmada ou não).
 pub var last_measured: std.atomic.Value(i32) = .init(std.math.minInt(i32));
 
+/// Avaliações do detector (0,5 s cada, só contando as com a caixa tocando)
+/// sem eco nenhum antes do cancelador sair do caminho: 1 min.
+const bypass_evals = 120;
+
 /// Onde o eco deve ficar pro filtro (ms depois da referência) quando precisar
 /// mexer: um pouco depois do começo da cauda, com margem se a medida errou.
 const echo_want_ms = 15;
@@ -424,6 +433,8 @@ pub const Canceller = struct {
     echo: *sp.SpeexEchoState,
     pre: *sp.SpeexPreprocessState,
     est: DelayEstimator = .{},
+    quiet_evals: u32 = 0, // avaliações seguidas, com o outro lado falando, sem eco nenhum
+    bypass: bool = false,
 
     pub fn init() !Canceller {
         const echo = sp.speex_echo_state_init(frame, tail) orelse return error.AecInit;
@@ -469,8 +480,38 @@ pub const Canceller = struct {
     /// Igual, devolvendo também a referência usada.
     pub fn processLiveRef(cn: *Canceller, mic: *const [frame]f32, out: *[frame]f32, ref: *[frame]f32) void {
         reference.pop(ref);
-        if (cn.est.feed(mic, ref)) |lag| cn.realign(lag);
-        cn.process(mic, ref, out);
+        const evals = cn.est.evals;
+        const lag = cn.est.feed(mic, ref);
+        if (cn.est.evals != evals) cn.checkBypass(cn.est.last_rho);
+        if (lag) |l| cn.realign(l);
+        if (cn.bypass) {
+            out.* = mic.*;
+        } else {
+            cn.process(mic, ref, out);
+        }
+    }
+
+    /// Fone de ouvido (o microfone nunca ouve a caixa): depois de 1 min com o
+    /// outro lado falando e nenhum eco achado, o cancelador sai do caminho (ele
+    /// e a supressão do eco residual comiam ~1 dB da sua voz quando os dois
+    /// falam juntos, à toa). O detector continua medindo: apareceu eco (tirou
+    /// o fone), volta na hora, com o filtro do zero.
+    pub fn checkBypass(cn: *Canceller, rho: f32) void {
+        if (rho >= 0.4) {
+            cn.quiet_evals = 0;
+            if (cn.bypass) {
+                cn.bypass = false;
+                sp.speex_echo_state_reset(cn.echo);
+            }
+        } else if (rho < 0.25) {
+            cn.quiet_evals +|= 1;
+            if (cn.quiet_evals >= bypass_evals) cn.bypass = true;
+        }
+    }
+
+    /// Cancelador fora do caminho (nenhum eco por muito tempo)?
+    pub fn bypassed(cn: *const Canceller) bool {
+        return cn.bypass;
     }
 
     /// O eco está `lag` ms depois da referência: se estiver longe de onde o

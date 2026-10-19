@@ -751,3 +751,61 @@ test "eco: deriva entre os relógios medida e compensada" {
     try testing.expect(ppm < -105 and ppm > -135);
     try testing.expect(erle > 25);
 }
+
+test "eco: com fone (sem eco), falar junto com o outro lado não come a sua voz" {
+    // referência tocando (o outro lado falando) e o microfone só com a sua voz:
+    // o cancelador não pode atenuar nada que não seja eco
+    var cn = try aec.Canceller.init();
+    defer cn.deinit();
+    const n_blocks = 500;
+    const far = try std.heap.c_allocator.alloc(f32, n_blocks * 480);
+    defer std.heap.c_allocator.free(far);
+    speechLike(far, 11);
+    var mic: [480]f32 = undefined;
+    var out: [480]f32 = undefined;
+    var e_in: f64 = 0;
+    var e_out: f64 = 0;
+    for (0..n_blocks) |k| {
+        vowel(&mic, k * 480, 190, 0.15);
+        cn.process(&mic, far[k * 480 ..][0..480], &out);
+        if (k >= 200) for (mic, out) |a, b| {
+            e_in += a * a;
+            e_out += b * b;
+        };
+    }
+    const loss = 10 * std.math.log10(e_in / @max(e_out, 1e-12));
+    try testing.expect(loss < 2);
+}
+
+test "eco: com fone, o cancelador sai do caminho; tirou o fone, volta" {
+    // o detector distingue "microfone com a minha voz" de "microfone com eco"
+    const far = try std.heap.c_allocator.alloc(f32, 500 * 480);
+    defer std.heap.c_allocator.free(far);
+    speechLike(far, 3);
+    var near: [480]f32 = undefined;
+    var de: aec.DelayEstimator = .{};
+    for (0..500) |k| {
+        vowel(&near, k * 480, 200, 0.1);
+        _ = de.feed(&near, far[k * 480 ..][0..480]);
+    }
+    try testing.expect(de.evals > 0 and de.last_rho < 0.25);
+    var de2: aec.DelayEstimator = .{};
+    var echo: [480]f32 = undefined;
+    for (0..500) |k| {
+        for (&echo, 0..) |*v, i| v.* = if (k * 480 + i >= 1440) 0.5 * far[k * 480 + i - 1440] else 0;
+        _ = de2.feed(&echo, far[k * 480 ..][0..480]);
+    }
+    try testing.expect(de2.last_rho > 0.4);
+
+    // 1 min sem eco (120 avaliações) → sai do caminho; eco → volta
+    var cn = try aec.Canceller.init();
+    defer cn.deinit();
+    for (0..119) |_| cn.checkBypass(0.1);
+    try testing.expect(!cn.bypassed());
+    cn.checkBypass(0.1);
+    try testing.expect(cn.bypassed());
+    cn.checkBypass(0.3); // dúvida: não muda nada
+    try testing.expect(cn.bypassed());
+    cn.checkBypass(0.6);
+    try testing.expect(!cn.bypassed());
+}
