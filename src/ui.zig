@@ -344,6 +344,8 @@ pub const App = struct {
     saved_win: [4]c_int = .{ 0, 0, 1280, 760 },
 
     chat_input: [1024]u8 = [_]u8{0} ** 1024,
+    chat_sent: [1024]u8 = undefined, // mensagem guardada no Enter (ver chatCallback)
+    chat_sent_len: usize = 0,
     chat_seen: u64 = 0,
     chat_unread: u32 = 0,
     chat_visible: bool = true,
@@ -2133,22 +2135,40 @@ pub const App = struct {
             c.igSetKeyboardFocusHere(0);
             a.focus_chat = false;
         }
-        const enter = c.igInputTextWithHint("##chatin", "Mandar mensagem na sala", &a.chat_input, a.chat_input.len, c.ImGuiInputTextFlags_EnterReturnsTrue, null, null);
+        // a caixa continua ativa depois do Enter (io.ConfigInputTextEnterKeepActive):
+        // sem buraco de foco, nenhuma letra digitada logo depois se perde. O
+        // callback guarda a mensagem e esvazia a caixa no mesmo quadro do Enter.
+        a.chat_sent_len = 0;
+        const enter = c.igInputTextWithHint("##chatin", "Mandar mensagem na sala", &a.chat_input, a.chat_input.len, c.ImGuiInputTextFlags_EnterReturnsTrue | c.ImGuiInputTextFlags_CallbackAlways, chatCallback, a);
         c.igPopStyleVar(1);
         c.igPopStyleColor(3);
         c.igSameLine(0, 0);
         c.igSetCursorScreenPos(v2(bx + bw - S(40), by + S(5)));
         const send_click = iconButton("##send", ic.send, S(34), col.muted, col.hover, "Enviar");
         if (enter or send_click) {
-            const msg = std.mem.trim(u8, std.mem.sliceTo(&a.chat_input, 0), " \t");
+            const raw = if (enter and a.chat_sent_len > 0) a.chat_sent[0..a.chat_sent_len] else std.mem.sliceTo(&a.chat_input, 0);
+            const msg = std.mem.trim(u8, raw, " \t");
             if (msg.len > 0) cl.sendChat(msg);
             @memset(&a.chat_input, 0);
-            a.focus_chat = true;
+            if (send_click) a.focus_chat = true; // o clique no botão tirou o foco
         }
 
         c.igEndChild();
         c.igPopStyleVar(1);
         c.igPopStyleColor(1);
+    }
+
+    /// Na hora do Enter (ainda dentro do InputText): guarda a mensagem e
+    /// esvazia a caixa sem tirar o foco dela.
+    fn chatCallback(data: [*c]c.ImGuiInputTextCallbackData) callconv(.c) c_int {
+        const a: *App = @ptrCast(@alignCast(data.*.UserData));
+        if (c.igIsKeyPressed_Bool(c.ImGuiKey_Enter, false) or c.igIsKeyPressed_Bool(c.ImGuiKey_KeypadEnter, false)) {
+            const n: usize = @intCast(@min(data.*.BufTextLen, a.chat_sent.len));
+            @memcpy(a.chat_sent[0..n], data.*.Buf[0..n]);
+            a.chat_sent_len = n;
+            c.ImGuiInputTextCallbackData_DeleteChars(data, 0, data.*.BufTextLen);
+        }
+        return 0;
     }
 
     /// Conta mensagens não lidas quando o chat está escondido.

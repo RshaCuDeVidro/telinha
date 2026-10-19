@@ -10,6 +10,9 @@
   (opção pra entrar com ele ligado). A voz fura a fila do vídeo.
 - Painel de baixo no estilo do Discord: faixa com "Compartilhar tela" e sair;
   microfone, fone e configurações no painel do usuário.
+- Chat: o que se digitava logo depois do Enter perdia a primeira letra (a
+  caixa perdia o foco e só voltava quadros depois). Agora ela continua ativa
+  e é esvaziada no mesmo quadro do Enter.
 - Atalhos Ctrl+M (microfone) e Ctrl+D (surdo); contorno verde na transmissão
   de quem está falando; sons de aviso sintetizados (entrou/saiu, ao vivo,
   microfone — dá pra desligar); volume da voz de cada pessoa lembrado pelo nome.

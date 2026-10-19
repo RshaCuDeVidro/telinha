@@ -70,6 +70,9 @@ pub fn main(init: std.process.Init) !void {
     const io = c.igGetIO_Nil();
     io.*.IniFilename = null;
     io.*.ConfigFlags |= c.ImGuiConfigFlags_NavEnableKeyboard;
+    // Enter num campo de texto não tira o foco (o chat continua pronto pra
+    // próxima mensagem, sem perder letra digitada logo depois)
+    io.*.ConfigInputTextEnterKeepActive = true;
     const base = 15 * ui.scale;
     ui.font_regular = loadFont(io.*.Fonts, inter_regular, base);
     ui.font_semibold = loadFont(io.*.Fonts, inter_semibold, base);
