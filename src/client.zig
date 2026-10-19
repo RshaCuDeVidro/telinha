@@ -99,6 +99,7 @@ pub const View = struct {
     stat_frames: u32 = 0,
     stat_bytes: u64 = 0,
     stat_since: u64 = 0,
+    last_shown_us: u64 = 0, // último quadro entregue pra tela
 
     // áudio (a thread de rede decodifica, o mixer toca)
     audio_ring: audio.Ring = .{},
@@ -242,7 +243,8 @@ pub const View = struct {
 
     /// `behind`: já tem quadro mais novo esperando — decodifica (precisa pra
     /// referência) mas não gasta tempo entregando uma imagem que vai ser
-    /// substituída em seguida.
+    /// substituída em seguida. Só que um decoder que vive atrás (CPU fraca)
+    /// sempre tem quadro esperando: aí entrega um a cada 50 ms mesmo assim.
     fn decodeFrame(v: *View, dec: *Decoder, frame: []const u8, behind: bool) !void {
         const t0 = sync.nowUs();
         var r: proto.Reader = .{ .data = frame };
@@ -270,7 +272,8 @@ pub const View = struct {
             return;
         };
         v.stat_bytes += frame.len;
-        if (behind) return;
+        if (behind and t0 - v.last_shown_us < 50_000) return;
+        v.last_shown_us = t0;
         v.stat_frames += 1; // fps = quadros que foram pra tela
         const pw: u32 = switch (pic) {
             .i420 => |p| p.w,

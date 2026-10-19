@@ -287,9 +287,18 @@ test "SendQueue: pushUrgent fura a fila" {
     defer q.deinit();
     q.pushOwned(try proto.Msg.alloc(.frame, 10));
     q.pushOwned(try proto.Msg.alloc(.frame, 10));
-    q.pushUrgentOwned(try proto.Msg.alloc(.ack, 4));
+    const a1 = try proto.Msg.alloc(.ack, 4);
+    a1.payload()[0] = 1;
+    q.pushUrgentOwned(a1);
     try testing.expectEqual(proto.Type.ack, q.items.items[q.head].typ);
     try testing.expectEqual(@as(usize, 3 * 5 + 24), q.queuedBytes());
+    // a segunda urgente fura os quadros, mas fica atrás da primeira
+    const a2 = try proto.Msg.alloc(.ack, 4);
+    a2.payload()[0] = 2;
+    q.pushUrgentOwned(a2);
+    try testing.expectEqual(@as(u8, 1), q.items.items[q.head].payload()[0]);
+    try testing.expectEqual(@as(u8, 2), q.items.items[q.head + 1].payload()[0]);
+    try testing.expectEqual(proto.Type.frame, q.items.items[q.head + 2].typ);
 }
 
 test "AckWindow: atraso acumulado e confirmação cumulativa" {

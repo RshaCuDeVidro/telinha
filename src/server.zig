@@ -94,6 +94,7 @@ const Flow = struct {
     trend_at_us: u64 = 0,
     trend_excess_us: u64 = 0,
     late: bool = false, // atrasado e sem escoar na última medida
+    decoder_behind: bool = false, // pediu IDR porque o decoder não deu conta (vale como recomeço pro aviso)
 
     /// Atrasado sem escoar, ou recomeçou há menos de 10 s.
     fn struggling(f: *const Flow, now_ms: u64) bool {
@@ -424,6 +425,7 @@ pub const Server = struct {
                 const now = sync.nowMs();
                 if (now >= f.resync_after_ms) s.requestKey(target, false);
                 _ = f.backoff(now);
+                f.decoder_behind = true;
             },
             .ping => {
                 const t = try r.u64_();
@@ -627,6 +629,11 @@ pub const Server = struct {
         for (s.conns.items) |o| {
             if (o == cn or !contains(&o.watching, cn.id)) continue;
             const f = o.flow(cn.id) orelse continue;
+            if (f.decoder_behind) {
+                // CPU de quem assiste não deu conta: taxa menor também alivia o decoder
+                f.decoder_behind = false;
+                resynced = true;
+            }
             if (contains(&o.waiting_key, cn.id)) {
                 // depois de atrasar, o IDR só sai quando o que já foi enviado
                 // chegar (senão ele fica na fila atrás do atraso)

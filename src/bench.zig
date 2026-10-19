@@ -119,6 +119,7 @@ pub fn main(init: std.process.Init) !void {
     try run("movimento (modo jogo)", w, h, .motion, .motion);
     try runHw("NVENC: texto rolando", w, h, .screen, .text);
     try runHw("NVENC: movimento", w, h, .motion, .motion);
+    try decoderThreads(w, h);
 }
 
 fn runHw(name: []const u8, w: u32, h: u32, mode: codec.Mode, scene: enum { text, motion }) !void {
@@ -178,4 +179,49 @@ fn runHw(name: []const u8, w: u32, h: u32, mode: codec.Mode, scene: enum { text,
         @as(f64, @floatFromInt(t_hwdec)) / n / 1000,
         @as(f64, @floatFromInt(bytes)) / n * 30 / 1024,
     });
+}
+
+/// Decoder em software com 0 e 2 threads: vazão e quantos quadros de atraso.
+/// (Com 3 threads o openh264 2.6 dá segfault; com 2, rende ~1,7x mas a imagem
+/// sai 2 quadros atrasada — por isso o app usa uma thread só.)
+pub fn decoderThreads(w: u32, h: u32) !void {
+    const n = 120;
+    const img = try gpa.alloc(u8, @as(usize, w) * h * 4);
+    defer gpa.free(img);
+    var enc = try codec.Encoder.init(.{ .width = w, .height = h, .fps = 30, .bitrate = 8_000_000, .mode = .motion });
+    defer enc.deinit();
+    var frames: std.ArrayList([]u8) = .empty;
+    defer {
+        for (frames.items) |f| gpa.free(f);
+        frames.deinit(gpa);
+    }
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    for (0..n) |f| {
+        motion(img, w, h, f);
+        out.clearRetainingCapacity();
+        _ = try enc.encode(img.ptr, @as(usize, w) * 4, .bgrx, &out);
+        try frames.append(gpa, try gpa.dupe(u8, out.items));
+    }
+    std.debug.print("\ndecoder openh264 por threads ({d}x{d}, movimento, 8 Mbit/s):\n", .{ w, h });
+    for ([_]c_int{ 0, 2 }) |threads| {
+        var dec = try codec.Decoder.initThreads(threads);
+        defer dec.deinit();
+        var got: usize = 0;
+        var lag_sum: u64 = 0;
+        var lag_max: u64 = 0;
+        const t0 = sync.nowUs();
+        for (frames.items, 0..) |f, i| {
+            if (try dec.decodeTs(f, i + 1)) |p| {
+                got += 1;
+                const lag = (i + 1) - p.ts;
+                lag_sum += lag;
+                lag_max = @max(lag_max, lag);
+            }
+        }
+        const us = sync.nowUs() - t0;
+        std.debug.print("  {d} threads: {d:.1} ms/quadro, {d} de {d} quadros saíram, atraso médio {d:.2} quadros (máx {d})\n", .{
+            threads, @as(f64, @floatFromInt(us)) / n / 1000, got, n, @as(f64, @floatFromInt(lag_sum)) / @as(f64, @floatFromInt(@max(got, 1))), lag_max,
+        });
+    }
 }

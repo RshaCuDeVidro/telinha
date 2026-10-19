@@ -326,22 +326,29 @@ pub const SendQueue = struct {
         q.cond.signal();
     }
 
-    /// Fura a fila (confirmações: não podem esperar atrás de quadros).
+    /// Fura a fila (confirmações: não podem esperar atrás de quadros), mas
+    /// fica depois de outras urgentes que já estavam lá (ordem entre elas).
     pub fn pushUrgent(q: *SendQueue, m: *Msg) void {
         q.mutex.lock();
         defer q.mutex.unlock();
         if (q.closed) return;
-        if (q.head > 0) {
+        var at = q.head;
+        while (at < q.items.items.len and isUrgent(q.items.items[at].typ)) at += 1;
+        if (at == q.head and q.head > 0) {
             q.head -= 1;
             q.items.items[q.head] = m.retain();
         } else {
-            q.items.insert(gpa, 0, m.retain()) catch {
+            q.items.insert(gpa, at, m.retain()) catch {
                 m.release();
                 return;
             };
         }
         q.bytes += m.data.len;
         q.cond.signal();
+    }
+
+    fn isUrgent(t: Type) bool {
+        return t == .ack or t == .viewer_slow;
     }
 
     pub fn pushUrgentOwned(q: *SendQueue, m: *Msg) void {
