@@ -539,3 +539,13 @@ test "voz: sem supressão de ruído, o portão é por volume" {
     }
     try testing.expect(sink.packets > 30);
 }
+
+test "config: volume da voz lembrado pelo nome" {
+    var v: @import("config.zig").VoiceVolumes = .{};
+    v.set("Ana", 150);
+    v.set("Bruno", 100); // padrão: não guarda
+    v.set("Ana", 40);
+    try testing.expectEqual(@as(?u16, 40), v.get("Ana"));
+    try testing.expectEqual(@as(?u16, null), v.get("Bruno"));
+    try testing.expectEqual(@as(usize, 1), v.n);
+}

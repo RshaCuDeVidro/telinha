@@ -375,8 +375,14 @@ pub const App = struct {
     mic_client: ?*Client = null, // quem recebe os pacotes do microfone (com referência)
     mic_wanted: bool = false, // quer o microfone ligado (lembra durante o "surdo")
     deaf: bool = false,
+    echo_hint_shown: bool = false,
     mic_names: [16][128]u8 = undefined, // microfones (tela de configurações)
     n_mic_names: usize = 0,
+    volumes: config.VoiceVolumes = .{}, // volume da voz por nome (lembrado)
+    // membros do último quadro (sons de entrou/saiu/ao vivo, volumes salvos)
+    known: [64]struct { id: u32, streaming: bool } = undefined,
+    n_known: usize = 0,
+    known_ready: bool = false, // a primeira lista depois de conectar não toca som
 
     // opções de linha de comando
     auto_share: bool = false,
@@ -384,7 +390,7 @@ pub const App = struct {
     auto_public: bool = false,
 
     pub fn init(window: *c.GLFWwindow) App {
-        var a: App = .{ .window = window, .cfg = config.load() };
+        var a: App = .{ .window = window, .cfg = config.load(), .volumes = config.VoiceVolumes.load() };
         _ = std.fmt.bufPrintZ(&a.port_buf, "{d}", .{a.cfg.host_port}) catch {};
         return a;
     }
@@ -524,6 +530,46 @@ pub const App = struct {
 
     // ------------------------------------------------------------------ voz
 
+    fn chime(a: *App, kind: audio.Chime) void {
+        if (a.cfg.sounds and !a.deaf) audio.playChime(kind);
+    }
+
+    /// Quem entrou, saiu ou ficou ao vivo desde o último quadro: toca o aviso
+    /// e aplica o volume de voz salvo pra quem chegou.
+    fn watchMembers(a: *App, cl: *Client) void {
+        var cur: [64]Member = undefined;
+        cl.mutex.lock();
+        const n = @min(cl.members.items.len, cur.len);
+        @memcpy(cur[0..n], cl.members.items[0..n]);
+        const me = cl.my_id;
+        cl.mutex.unlock();
+        if (n == 0) return;
+        var joined = false;
+        var left = false;
+        var went_live = false;
+        for (cur[0..n]) |*m| {
+            const old = for (a.known[0..a.n_known]) |k| {
+                if (k.id == m.id) break k;
+            } else null;
+            if (old == null) {
+                if (m.id != me) joined = true;
+                if (a.volumes.get(m.nameSlice())) |pct| cl.setVoiceVolume(m.id, @as(f32, @floatFromInt(pct)) / 100);
+            } else if (!old.?.streaming and m.streaming and m.id != me) went_live = true;
+        }
+        for (a.known[0..a.n_known]) |k| {
+            const still = for (cur[0..n]) |*m| {
+                if (m.id == k.id) break true;
+            } else false;
+            if (!still) left = true;
+        }
+        if (a.known_ready) {
+            if (went_live) a.chime(.live) else if (joined) a.chime(.join) else if (left) a.chime(.leave);
+        }
+        a.known_ready = true;
+        a.n_known = n;
+        for (cur[0..n], 0..) |*m, i| a.known[i] = .{ .id = m.id, .streaming = m.streaming };
+    }
+
     fn onMicPacket(ctx: *anyopaque, packet: []const u8) void {
         const cl: *Client = @ptrCast(@alignCast(ctx));
         cl.sendVoice(cl.voice_seq.fetchAdd(1, .monotonic), packet);
@@ -578,11 +624,21 @@ pub const App = struct {
             a.mic_wanted = true;
         } else a.mic_wanted = !a.mic_wanted;
         a.applyVoice();
-        if (a.mic != null) a.toast("Microfone ligado. Sem fone de ouvido, quem fala pode ouvir eco da sua caixa de som.", .{}, false);
+        a.chime(if (a.mic != null) .mic_on else .mic_off);
+        if (a.mic != null and !a.echo_hint_shown) {
+            a.echo_hint_shown = true;
+            a.toast("Microfone ligado (Ctrl+M liga/desliga). Sem fone de ouvido, quem fala pode ouvir eco da sua caixa de som.", .{}, false);
+        }
     }
 
     fn toggleDeaf(a: *App) void {
-        a.setDeaf(!a.deaf); // surdo também desliga o microfone (mic_wanted fica guardado)
+        if (a.deaf) {
+            a.setDeaf(false);
+            a.chime(.mic_on);
+        } else {
+            a.chime(.mic_off); // antes de ficar surdo, pra ouvir
+            a.setDeaf(true); // surdo também desliga o microfone (mic_wanted fica guardado)
+        }
         a.applyVoice();
     }
 
@@ -650,6 +706,8 @@ pub const App = struct {
         a.stopMic();
         a.mic_wanted = false;
         a.setDeaf(false);
+        a.n_known = 0;
+        a.known_ready = false;
         a.stopSharing();
         for (a.views.items) |v| {
             freeViewGpu(v);
@@ -700,6 +758,8 @@ pub const App = struct {
         a.reconnect.waiting = false;
         // derruba o que sobrou da conexão antiga, mas continua na tela da sala
         a.stopMic(); // volta sozinho em finishReconnect (mic_wanted continua)
+        a.n_known = 0; // ids podem mudar (servidor reiniciou): sem sons de entrou/saiu
+        a.known_ready = false;
         a.stopSharing();
         for (a.views.items) |v| {
             freeViewGpu(v);
@@ -908,7 +968,10 @@ pub const App = struct {
                 a.startSharing();
             }
         }
-        if (st == .connected) a.applyRewatch(cl);
+        if (st == .connected) {
+            a.applyRewatch(cl);
+            a.watchMembers(cl);
+        }
         if (a.auto_watch and st == .connected) {
             var want: [32]u32 = undefined;
             var n_want: usize = 0;
@@ -984,6 +1047,12 @@ pub const App = struct {
         a.uploadTextures();
 
         if (c.igIsKeyPressed_Bool(c.ImGuiKey_F11, false)) a.toggleFullscreen();
+        // atalhos de voz (fora de campo de texto): Ctrl+M microfone, Ctrl+D surdo
+        const io = c.igGetIO_Nil();
+        if (a.screen == .room and io.*.KeyCtrl and !io.*.WantTextInput) {
+            if (c.igIsKeyPressed_Bool(c.ImGuiKey_M, false)) a.toggleMic();
+            if (c.igIsKeyPressed_Bool(c.ImGuiKey_D, false)) a.toggleDeaf();
+        }
         if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and !a.share_modal) {
             if (a.fullscreen) a.toggleFullscreen();
             a.theater = false;
@@ -1444,11 +1513,17 @@ pub const App = struct {
         var pct: i32 = @intFromFloat(@round(cl.voiceVolume(a.menu_target) * 100));
         const before = pct;
         sliderStyled("##vvol", &pct, 0, 200, "%d%%", S(200));
-        if (pct != before) cl.setVoiceVolume(a.menu_target, @as(f32, @floatFromInt(pct)) / 100);
+        var new_pct: ?i32 = if (pct != before) pct else null;
         const muted = pct == 0;
         c.igDummy(v2(0, S(4)));
         if (c.igSelectable_Bool(if (muted) "Voltar a ouvir" else "Silenciar pra mim", false, 0, v2(S(200), 0)))
-            cl.setVoiceVolume(a.menu_target, if (muted) 1.0 else 0.0);
+            new_pct = if (muted) 100 else 0;
+        if (new_pct) |np| {
+            cl.setVoiceVolume(a.menu_target, @as(f32, @floatFromInt(np)) / 100);
+            // lembra pelo nome (vale na próxima sala também)
+            a.volumes.set(name, @intCast(np));
+            a.volumes.save();
+        }
         cl.mutex.lock();
         const i_am_admin = cl.is_admin;
         cl.mutex.unlock();
@@ -1791,11 +1866,17 @@ pub const App = struct {
             c.igDummy(v2(0, 0));
             c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), rgba(0xFFFFFF, 40), round, S(1.5), 0);
         }
-        // contorno verde enquanto a transmissão está tocando som (tipo "falando" do Discord)
-        if (t.ring) |rg| {
-            if (!rg.muted and rg.level > 0.02) c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), rgba(0x23A55A, 200), round, S(2.5), 0);
-            rg.level *= 0.92;
+        // contorno verde: quem transmite está falando (voz), ou a transmissão
+        // está tocando som (mais fraco)
+        const talking = if (t.owner == 0)
+            (if (a.mic) |m| m.speaking.load(.monotonic) else false)
+        else if (a.client) |cl| cl.speaking(t.owner) else false;
+        if (talking) {
+            c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), col.green, round, S(3), 0);
+        } else if (t.ring) |rg| {
+            if (!rg.muted and rg.level > 0.02) c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), rgba(0x23A55A, 160), round, S(2), 0);
         }
+        if (t.ring) |rg| rg.level *= 0.92;
     }
 
     fn drawEmpty(a: *App, cl: *Client, o: c.ImVec2_c, size: c.ImVec2_c) void {
@@ -2303,6 +2384,7 @@ pub const App = struct {
         const ns_before = a.cfg.noise_suppression;
         _ = c.igCheckbox("Supressão de ruído (tira ventilador, teclado, chiado)", &a.cfg.noise_suppression);
         _ = c.igCheckbox("Entrar na sala com o microfone ligado", &a.cfg.mic_on_join);
+        _ = c.igCheckbox("Sons de aviso (alguém entrou/saiu, ao vivo, microfone)", &a.cfg.sounds);
         c.igPopStyleColor(1);
         // sensibilidade/supressão novas: reabre o microfone (ao soltar o slider)
         if (a.mic != null and (ns_before != a.cfg.noise_suppression or (sens_before != a.cfg.voice_sensitivity and !c.igIsMouseDown_Nil(0)))) {
@@ -2314,7 +2396,7 @@ pub const App = struct {
         c.igPushTextWrapPos(c.igGetCursorPosX() + w);
         pushFont(font_regular, 12.5);
         textColored(col.faint, fmtZ("telinha {s} · protocolo v{d} · vídeo H.264 (NVENC/NVDEC ou openh264) · voz Opus + RNNoise · criptografia X25519 + ChaCha20-Poly1305", .{ version_string, proto.version }));
-        textColored(col.faint, "Atalhos: F11 tela cheia · duplo clique = modo cinema · Esc sai");
+        textColored(col.faint, "Atalhos: Ctrl+M microfone · Ctrl+D surdo · F11 tela cheia · duplo clique = modo cinema · Esc sai");
         popFont();
         c.igPopTextWrapPos();
         c.igDummy(v2(0, S(14)));

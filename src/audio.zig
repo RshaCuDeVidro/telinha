@@ -138,6 +138,42 @@ pub const Mixer = struct {
 
 pub var mixer: Mixer = .{};
 
+/// Sons de aviso (alguém entrou/saiu, ao vivo, microfone): sintetizados na
+/// hora, baixinhos, pelo mesmo mixer (respeitam o "surdo").
+pub const Chime = enum { join, leave, live, mic_on, mic_off };
+
+var chime_ring: Ring = .{};
+var chime_registered = false;
+
+pub fn playChime(kind: Chime) void {
+    const notes: []const f32 = switch (kind) {
+        .join => &.{ 659.3, 987.8 }, // mi → si (subindo)
+        .leave => &.{ 987.8, 587.3 }, // si → ré (descendo)
+        .live => &.{ 523.3, 659.3, 784.0 }, // dó-mi-sol
+        .mic_on => &.{880.0},
+        .mic_off => &.{440.0},
+    };
+    const note_len = rate * 55 / 1000;
+    var buf: [note_len * 3 * channels]f32 = undefined;
+    var n: usize = 0;
+    for (notes) |f| {
+        for (0..note_len) |i| {
+            const t: f32 = @as(f32, @floatFromInt(i)) / rate;
+            // ataque de 4 ms e decaimento suave: sem estalo
+            const env = @min(1.0, t / 0.004) * @exp(-t * 28);
+            const v = 0.14 * env * (@sin(2 * std.math.pi * f * t) + 0.25 * @sin(4 * std.math.pi * f * t));
+            buf[n] = v;
+            buf[n + 1] = v;
+            n += 2;
+        }
+    }
+    chime_ring.write(buf[0..n]);
+    if (!chime_registered) {
+        chime_registered = true;
+        mixer.add(&chime_ring);
+    }
+}
+
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 
 /// Decodifica os pacotes de uma transmissão.

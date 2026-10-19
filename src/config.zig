@@ -38,6 +38,7 @@ pub const Config = struct {
     noise_suppression: bool = true,
     voice_sensitivity: i32 = 50, // 0..100: quanto maior, mais fácil o microfone abrir
     mic_on_join: bool = false, // entrar na sala com o microfone ligado
+    sounds: bool = true, // sons de aviso (entrou/saiu, ao vivo, microfone)
 };
 
 fn zstr(comptime s: []const u8, comptime n: usize) [n]u8 {
@@ -57,6 +58,11 @@ pub fn getStr(buf: []const u8) []const u8 {
 }
 
 fn openFile(write: bool) ?*c.FILE {
+    return openNamed("config.ini", write);
+}
+
+/// Arquivo na pasta de configuração do telinha (criada se faltar).
+fn openNamed(comptime name: []const u8, write: bool) ?*c.FILE {
     if (is_windows) {
         var dir: [600]u16 = undefined;
         const n = c.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("APPDATA"), &dir, 500);
@@ -65,7 +71,7 @@ fn openFile(write: bool) ?*c.FILE {
         @memcpy(dir[n..][0..sub.len], sub);
         dir[n + sub.len] = 0;
         _ = c.CreateDirectoryW(&dir, null);
-        const file = std.unicode.utf8ToUtf16LeStringLiteral("\\config.ini");
+        const file = std.unicode.utf8ToUtf16LeStringLiteral("\\" ++ name);
         @memcpy(dir[n + sub.len ..][0..file.len], file);
         dir[n + sub.len + file.len] = 0;
         const mode = if (write) std.unicode.utf8ToUtf16LeStringLiteral("wb") else std.unicode.utf8ToUtf16LeStringLiteral("rb");
@@ -79,7 +85,7 @@ fn openFile(write: bool) ?*c.FILE {
             std.fmt.bufPrintZ(&path, "{s}/.config/telinha", .{std.mem.span(c.getenv("HOME") orelse return null)}) catch return null;
         _ = c.mkdir(base.ptr, 0o700);
         var full: [600]u8 = undefined;
-        const p = std.fmt.bufPrintZ(&full, "{s}/config.ini", .{base}) catch return null;
+        const p = std.fmt.bufPrintZ(&full, "{s}/" ++ name, .{base}) catch return null;
         return c.fopen(p.ptr, if (write) "wb" else "rb");
     }
 }
@@ -95,7 +101,7 @@ pub fn load() Config {
         const k = l[0..eq];
         const v = l[eq + 1 ..];
         const int = std.fmt.parseInt(i32, v, 10) catch 0;
-        if (std.mem.eql(u8, k, "name")) setStr(&cfg.name, v) else if (std.mem.eql(u8, k, "join_addr")) setStr(&cfg.join_addr, v) else if (std.mem.eql(u8, k, "join_pass")) setStr(&cfg.join_pass, v) else if (std.mem.eql(u8, k, "room_name")) setStr(&cfg.room_name, v) else if (std.mem.eql(u8, k, "host_pass")) setStr(&cfg.host_pass, v) else if (std.mem.eql(u8, k, "host_port")) cfg.host_port = std.math.clamp(int, 1, 65535) else if (std.mem.eql(u8, k, "fps")) cfg.fps = std.math.clamp(int, 1, 60) else if (std.mem.eql(u8, k, "quality")) cfg.quality = std.math.clamp(int, 20, 100) else if (std.mem.eql(u8, k, "mode")) cfg.mode = std.math.clamp(int, 0, 1) else if (std.mem.eql(u8, k, "stats_always")) cfg.stats_always = int != 0 else if (std.mem.eql(u8, k, "hardware")) cfg.hardware = int != 0 else if (std.mem.eql(u8, k, "admin_token")) setStr(&cfg.admin_token, v) else if (std.mem.eql(u8, k, "public_addr")) setStr(&cfg.public_addr, v) else if (std.mem.eql(u8, k, "resolution")) cfg.resolution = std.math.clamp(int, 0, 3) else if (std.mem.eql(u8, k, "cursor")) cfg.cursor = int != 0 else if (std.mem.eql(u8, k, "show_chat")) cfg.show_chat = int != 0 else if (std.mem.eql(u8, k, "audio")) cfg.audio = int != 0 else if (std.mem.eql(u8, k, "tunnel_host")) setStr(&cfg.tunnel_host, v) else if (std.mem.eql(u8, k, "mic_device")) setStr(&cfg.mic_device, v) else if (std.mem.eql(u8, k, "noise_suppression")) cfg.noise_suppression = int != 0 else if (std.mem.eql(u8, k, "voice_sensitivity")) cfg.voice_sensitivity = std.math.clamp(int, 0, 100) else if (std.mem.eql(u8, k, "mic_on_join")) cfg.mic_on_join = int != 0;
+        if (std.mem.eql(u8, k, "name")) setStr(&cfg.name, v) else if (std.mem.eql(u8, k, "join_addr")) setStr(&cfg.join_addr, v) else if (std.mem.eql(u8, k, "join_pass")) setStr(&cfg.join_pass, v) else if (std.mem.eql(u8, k, "room_name")) setStr(&cfg.room_name, v) else if (std.mem.eql(u8, k, "host_pass")) setStr(&cfg.host_pass, v) else if (std.mem.eql(u8, k, "host_port")) cfg.host_port = std.math.clamp(int, 1, 65535) else if (std.mem.eql(u8, k, "fps")) cfg.fps = std.math.clamp(int, 1, 60) else if (std.mem.eql(u8, k, "quality")) cfg.quality = std.math.clamp(int, 20, 100) else if (std.mem.eql(u8, k, "mode")) cfg.mode = std.math.clamp(int, 0, 1) else if (std.mem.eql(u8, k, "stats_always")) cfg.stats_always = int != 0 else if (std.mem.eql(u8, k, "hardware")) cfg.hardware = int != 0 else if (std.mem.eql(u8, k, "admin_token")) setStr(&cfg.admin_token, v) else if (std.mem.eql(u8, k, "public_addr")) setStr(&cfg.public_addr, v) else if (std.mem.eql(u8, k, "resolution")) cfg.resolution = std.math.clamp(int, 0, 3) else if (std.mem.eql(u8, k, "cursor")) cfg.cursor = int != 0 else if (std.mem.eql(u8, k, "show_chat")) cfg.show_chat = int != 0 else if (std.mem.eql(u8, k, "audio")) cfg.audio = int != 0 else if (std.mem.eql(u8, k, "tunnel_host")) setStr(&cfg.tunnel_host, v) else if (std.mem.eql(u8, k, "mic_device")) setStr(&cfg.mic_device, v) else if (std.mem.eql(u8, k, "noise_suppression")) cfg.noise_suppression = int != 0 else if (std.mem.eql(u8, k, "voice_sensitivity")) cfg.voice_sensitivity = std.math.clamp(int, 0, 100) else if (std.mem.eql(u8, k, "mic_on_join")) cfg.mic_on_join = int != 0 else if (std.mem.eql(u8, k, "sounds")) cfg.sounds = int != 0;
     }
     return cfg;
 }
@@ -127,6 +133,7 @@ pub fn save(cfg: *const Config) void {
         \\noise_suppression={d}
         \\voice_sensitivity={d}
         \\mic_on_join={d}
+        \\sounds={d}
         \\
     , .{
         getStr(&cfg.name),              getStr(&cfg.join_addr),     getStr(&cfg.join_pass),      getStr(&cfg.room_name),
@@ -136,6 +143,61 @@ pub fn save(cfg: *const Config) void {
         getStr(&cfg.public_addr),       getStr(&cfg.tunnel_host),
         getStr(&cfg.mic_device),        @intFromBool(cfg.noise_suppression),
         cfg.voice_sensitivity,          @intFromBool(cfg.mic_on_join),
+        @intFromBool(cfg.sounds),
     }) catch return;
     _ = c.fwrite(s.ptr, 1, s.len, f);
 }
+
+/// Volume da voz de cada pessoa, lembrado pelo nome entre uma sala e outra
+/// (volumes.ini: "nome<TAB>porcentagem" por linha).
+pub const VoiceVolumes = struct {
+    const max = 64;
+    names: [max][48]u8 = undefined,
+    lens: [max]usize = undefined,
+    pcts: [max]u16 = undefined,
+    n: usize = 0,
+
+    pub fn get(v: *const VoiceVolumes, name: []const u8) ?u16 {
+        for (0..v.n) |i| if (std.mem.eql(u8, v.names[i][0..v.lens[i]], name)) return v.pcts[i];
+        return null;
+    }
+
+    pub fn set(v: *VoiceVolumes, name: []const u8, pct: u16) void {
+        if (name.len == 0 or name.len > 48) return;
+        for (0..v.n) |i| if (std.mem.eql(u8, v.names[i][0..v.lens[i]], name)) {
+            v.pcts[i] = pct;
+            return;
+        };
+        if (pct == 100) return; // padrão: nem guarda
+        const i = if (v.n < max) v.n else max - 1; // cheio: troca o último
+        if (v.n < max) v.n += 1;
+        @memcpy(v.names[i][0..name.len], name);
+        v.lens[i] = name.len;
+        v.pcts[i] = pct;
+    }
+
+    pub fn load() VoiceVolumes {
+        var v: VoiceVolumes = .{};
+        const f = openNamed("volumes.ini", false) orelse return v;
+        defer _ = c.fclose(f);
+        var line: [128]u8 = undefined;
+        while (c.fgets(&line, line.len, f) != null) {
+            const l = std.mem.trimEnd(u8, std.mem.sliceTo(&line, 0), "\r\n");
+            const tab = std.mem.findScalarLast(u8, l, '\t') orelse continue;
+            const pct = std.fmt.parseInt(u16, l[tab + 1 ..], 10) catch continue;
+            v.set(l[0..tab], @min(pct, 200));
+        }
+        return v;
+    }
+
+    pub fn save(v: *const VoiceVolumes) void {
+        const f = openNamed("volumes.ini", true) orelse return;
+        defer _ = c.fclose(f);
+        for (0..v.n) |i| {
+            if (v.pcts[i] == 100) continue;
+            var buf: [80]u8 = undefined;
+            const l = std.fmt.bufPrint(&buf, "{s}\t{d}\n", .{ v.names[i][0..v.lens[i]], v.pcts[i] }) catch continue;
+            _ = c.fwrite(l.ptr, 1, l.len, f);
+        }
+    }
+};

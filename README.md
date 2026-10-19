@@ -41,6 +41,7 @@
 3. **Entrar**: *Entrar numa sala* → cola o convite (ou endereço + senha).
 4. **Transmitir**: botão de tela no canto de baixo da barra lateral → escolhe resolução, fps, qualidade e tipo de conteúdo → *Ao vivo*. Dá pra mudar tudo com a transmissão rolando.
 5. **Assistir**: clica em quem está ao vivo. **F11** tela cheia · **duplo clique** modo cinema · **Esc** sai.
+6. **Falar**: botão de microfone no painel de baixo (ou **Ctrl+M**; **Ctrl+D** pra ficar surdo). Clique direito em alguém pra mudar o volume da voz dessa pessoa. Use fone de ouvido: ainda não tem cancelamento de eco.
 
 No Wayland o sistema pergunta qual tela/janela compartilhar na primeira vez e depois lembra.
 No Windows, como o `.exe` não é assinado, o SmartScreen avisa: *Mais informações → Executar assim mesmo*.
