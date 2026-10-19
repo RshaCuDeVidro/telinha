@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.1.0
+
+- Controle de atraso de ponta a ponta (protocolo v5): confirmação de cada frame
+  nos dois trechos (transmissor → servidor → espectador). O atraso fica
+  limitado mesmo atrás de túneis com buffer enorme (ngrok, bore…).
+- Controle de taxa novo (`ratectl.zig`): desce de leve quando o atraso começa a
+  crescer, pula quadro quando atrasa de verdade, sobe rápido até perto do teto
+  e depois só sonda. IDR grande não derruba a qualidade.
+- Espectador que não dá conta: recomeça de um IDR com espera crescente (a sala
+  não enche de IDR) e pede taxa menor ao transmissor — até a metade se for só
+  ele, o quanto precisar se for a maioria (ex.: upload de quem hospeda a sala).
+- Fila do decoder por tempo (150 ms) em vez de 3 quadros: um IDR grande não
+  causa mais recomeço; quadros atrasados são decodificados sem ir pra tela.
+- Linux: `TCP_NOTSENT_LOWAT` em vez de buffer de envio fixo.
+- `zig build loadtest`: teste de carga com link lento, maioria lenta e túnel ruim.
+
 ## 2.0.0
 
 Reescrita completa.

@@ -4,17 +4,19 @@
  transmissor                              servidor da sala                     espectadores
  ───────────                              ────────────────                     ────────────
  thread de captura                        por conexão:                         por transmissão assistida:
-   captura (PipeWire/X11/DXGI/GDI)          thread leitora ──┐                   thread leitora (rede)
+   captura (PipeWire/X11/DXGI/GDI)          thread leitora ──┐                   thread leitora (rede, confirma)
      │ acorda quando a tela muda            thread escritora ◄┤ fila própria       │
-   escala (pool, por faixas)                                 │ (descarta se     fila (máx. 3)
-     │                                    frame recebido ────┘   lento)            │
+   escala (pool, por faixas)                                 │ (descarta se     fila (máx. 150 ms)
+     │                                    frame recebido ────┘   atrasou)          │
    NVENC: entrega o BGRX (troca ponteiro)   1 alocação, N referências            thread de decode
    software: BGRX → I420 (SIMD, pool)       só pra quem assiste                    │ H.264 → I420 (openh264)
      │  ─ 3 slots: o encoder pega sempre o quadro mais novo ─                      │ I420 → RGBA (SIMD, pool)
  thread de encode                                                                  ▼
    H.264: NVENC (GPU) ou openh264 (CPU, fatias em threads)                      UI: sobe pra GPU, desenha
      │
-   fila de envio ── controle de banda ─► TCP + ChaCha20-Poly1305 ─────────────►
+   fila de envio ── controle de taxa ──► TCP + ChaCha20-Poly1305 ─────────────►
+        ▲                                     │                                    │
+        └──── ack de cada frame ──────────────┘ ◄──── ack de cada frame ───────────┘
 ```
 
 ## Módulos
@@ -24,7 +26,8 @@
 | `src/main.zig` | janela (GLFW), OpenGL, fontes, loop principal que dorme quando nada acontece |
 | `src/ui.zig` | toda a interface (Dear ImGui via cimgui) |
 | `src/client.zig` | conexão com a sala, estado (membros, chat, relógio), `View` = transmissão assistida |
-| `src/sharer.zig` | thread de transmissão: captura → escala → encode → envio, controle de banda |
+| `src/sharer.zig` | thread de transmissão: captura → escala → encode → envio |
+| `src/ratectl.zig` | controle de taxa de bits pelo atraso de ponta a ponta |
 | `src/server.zig` | servidor da sala (embutido no app ou no `telinha-server`) |
 | `src/server_main.zig` | executável do servidor dedicado |
 | `src/codec.zig` | wrapper do openh264 e do NVENC + conversões de cor vetorizadas |
@@ -34,12 +37,13 @@
 | `src/audio.zig` | áudio: Opus de quem transmite, anel anti-oscilação e mixer de quem assiste |
 | `src/c/audio.c` | captura do som do computador e saída (miniaudio) |
 | `src/crypto.zig` | handshake X25519 e canal ChaCha20-Poly1305 |
-| `src/proto.zig` | mensagens, filas de envio, framing |
+| `src/proto.zig` | mensagens, filas de envio, framing, janela de confirmações (`AckWindow`) |
 | `src/net.zig` | sockets (POSIX/Winsock) |
 | `src/sync.zig` | mutex/condvar nativos, relógio, pool de threads |
 | `src/c/capture_*.c` | captura de tela por plataforma |
 | `src/tests.zig`, `src/integration_test.zig` | testes |
 | `src/bench.zig` | benchmark do pipeline de vídeo |
+| `src/loadtest.zig` | teste de carga do servidor (espectadores lentos, túnel ruim) |
 
 ## Decisões de desempenho
 
@@ -67,14 +71,22 @@ próprias threads do openh264 (uma fatia por núcleo).
 enfileira o mesmo buffer (com contagem de referências) pra todo mundo que
 assiste; cada escritora cifra com a chave da sua conexão na hora de enviar.
 
-**O atraso nunca acumula.** Três camadas:
-1. *Transmissor:* se a própria fila de envio passa de ~250 ms de vídeo, a taxa
-   de bits cai 25% e quadros são pulados (não enfileirados). Sem
-   congestionamento por 2 s, a taxa sobe 12% por segundo até o alvo.
-2. *Servidor:* espectador com mais de 3 MiB pendentes perde o atraso e
-   recomeça de um IDR.
-3. *Espectador:* se o decode não dá conta (mais de 3 quadros na fila), joga
-   fora e pede IDR.
+**O atraso nunca acumula — nem dentro de um túnel.** Cada frame é confirmado
+(servidor → transmissor, espectador → servidor), então os dois lados sabem
+quanto atraso está acumulado no caminho inteiro, inclusive em buffers que o
+TCP não enxerga (ngrok, bore…). Detalhes e números no
+[PROTOCOL.md](PROTOCOL.md#4-controle-de-atraso-de-ponta-a-ponta).
+1. *Transmissor:* atraso começando a crescer → taxa cai um pouco; atrasado de
+   verdade → pula quadro e a taxa cai 25%; folgou → sobe rápido até perto de
+   onde deu problema e depois só sonda devagar. IDR grande não conta.
+2. *Servidor:* espectador que acumula mais de 500 ms perde os frames
+   pendentes, espera o que já saiu chegar e recomeça de um IDR; atrasando sem
+   escoar, o servidor já pede taxa menor pro transmissor (até metade, se é só
+   um espectador entre vários; o quanto precisar, se é a maioria).
+3. *Espectador:* se o decode fica 150 ms atrás, joga fora e pede IDR.
+
+`zig build loadtest` testa isso com espectadores em link lento, maioria lenta
+e o transmissor atrás de um túnel com buffer sem limite.
 
 **Quem assiste quase não usa CPU.** Com NVIDIA, o NVDEC decodifica; em
 qualquer caso a thread de decode entrega os planos YUV (1,5 byte/pixel) e um

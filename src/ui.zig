@@ -12,7 +12,7 @@ const Server = @import("server.zig").Server;
 const sharer_mod = @import("sharer.zig");
 const proto = @import("proto.zig");
 const audio = @import("audio.zig");
-pub const version_string = "2.0.0";
+pub const version_string = "2.1.0";
 const Sharer = sharer_mod.Sharer;
 
 // ---------------------------------------------------------------------------

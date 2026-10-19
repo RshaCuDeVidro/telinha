@@ -20,7 +20,7 @@
 - **Áudio do computador junto** (vídeo, jogo, música), em Opus com pouca latência, com volume e mudo por transmissão. No Windows o som que o próprio telinha toca não entra na captura, então não tem eco.
 - **Chat**, lista de membros, quem está ao vivo, quem está assistindo quem, ping.
 - **H.264 com pouca latência**: encode e decode na **placa de vídeo (NVIDIA NVENC/NVDEC)** quando tem, senão **openh264** com SIMD em várias threads. Só manda quadro quando a tela muda; a conversão de cor de quem assiste roda num shader na GPU.
-- **Banda adaptativa**: se a internet de alguém não aguenta, a taxa cai e quadros são pulados em vez de acumular atraso; quando melhora, volta a subir.
+- **Atraso controlado de ponta a ponta, até atrás de túnel**: cada quadro é confirmado, então o telinha mede o atraso real do caminho inteiro — inclusive dentro de ngrok/bore, que escondem o congestionamento. Se o upload não aguenta, a taxa cai e quadros são pulados em vez de acumular atraso; se um espectador não aguenta, ele recomeça de um quadro completo sem travar os outros, e a qualidade só cai pra todo mundo se a maioria estiver sofrendo.
 - **Criptografia de ponta a ponta** entre cada pessoa e a sala (X25519 + ChaCha20-Poly1305); a senha da sala entra na derivação das chaves.
 - **Reconexão automática**: se a internet oscilar ou o servidor reiniciar, o app volta sozinho, retoma a transmissão e volta a assistir quem estava assistindo.
 - **Admin**: quem cria a sala ganha a coroa e pode expulsar gente.
@@ -79,6 +79,8 @@ zig build                       # app Linux + app Windows (.exe) + servidor dedi
 zig build run                   # roda o app
 zig build test                  # testes (unidade + integração do servidor + codec)
 zig build bench                 # benchmark do pipeline de vídeo
+zig build loadtest -- 8 40 1    # carga: 8 espectadores + 1 em link de 2 Mbit/s, 40 s
+zig build loadtest -- 4 40 0 2000  # transmissor atrás de um túnel ruim de 2 Mbit/s
 zig build server -Dserver-only  # só o servidor (não baixa as dependências do app)
 ```
 
