@@ -342,3 +342,101 @@ pub fn classify(peer: []const u8, local: []const u8) Route {
     if (peer[0] & 0xFE == 0xfc) return .lan; // fc00::/7 (ULA, Tailscale)
     return .internet6;
 }
+
+// ------------------------------------------------------------ endereços desta máquina
+
+extern fn local_ip6(out: [*][16]u8, max: c_int) c_int;
+const cio = @cImport(@cInclude("stdio.h"));
+
+/// IPv6 globais desta máquina (2000::/3, sem temporário quando tem estável):
+/// quem também tem IPv6 consegue entrar direto, sem túnel e sem CGNAT no meio.
+pub fn globalIp6(out: [][16]u8) usize {
+    if (is_windows) return @intCast(local_ip6(out.ptr, @intCast(out.len)));
+    // /proc/net/if_inet6: endereço, índice, prefixo, escopo, flags, interface
+    const f = cio.fopen("/proc/net/if_inet6", "r") orelse return 0;
+    defer _ = cio.fclose(f);
+    var n: usize = 0;
+    var temps: [4][16]u8 = undefined;
+    var n_temp: usize = 0;
+    var line: [200]u8 = undefined;
+    while (cio.fgets(&line, line.len, f) != null) {
+        var it = std.mem.tokenizeAny(u8, std.mem.sliceTo(&line, 0), " \t\n");
+        const hex = it.next() orelse continue;
+        _ = it.next(); // índice
+        _ = it.next(); // prefixo
+        const scope = it.next() orelse continue;
+        const flags_s = it.next() orelse continue;
+        if (hex.len != 32 or !std.mem.eql(u8, scope, "00")) continue;
+        var a: [16]u8 = undefined;
+        _ = std.fmt.hexToBytes(&a, hex) catch continue;
+        if (a[0] & 0xE0 != 0x20) continue; // só 2000::/3 (fora ULA, documentação etc.)
+        const flags = std.fmt.parseInt(u32, flags_s, 16) catch continue;
+        if (flags & (0x20 | 0x40 | 0x08) != 0) continue; // descartado, tentativo, duplicado
+        if (flags & 0x01 != 0) { // temporário (privacidade): só se não tiver estável
+            if (n_temp < temps.len) {
+                temps[n_temp] = a;
+                n_temp += 1;
+            }
+            continue;
+        }
+        if (n < out.len) {
+            out[n] = a;
+            n += 1;
+        }
+    }
+    if (n == 0) for (temps[0..n_temp]) |a| {
+        if (n == out.len) break;
+        out[n] = a;
+        n += 1;
+    };
+    return n;
+}
+
+/// IPv4 desta máquina na rede local (o da rota padrão). Não manda pacote:
+/// "conectar" UDP só escolhe a rota.
+pub fn primaryIp4() ?[4]u8 {
+    const s = c.socket(c.AF_INET, c.SOCK_DGRAM, c.IPPROTO_UDP);
+    if (s == invalid) return null;
+    defer close(s);
+    const a = sockaddr4(.{ 192, 0, 2, 1 }, 9); // TEST-NET-1: nunca recebe nada
+    if (c.connect(s, @ptrCast(&a), @sizeOf(c.struct_sockaddr_in)) != 0) return null;
+    const ip = localIp4(s) orelse return null;
+    if (ip[0] == 0 or ip[0] == 127) return null;
+    return ip;
+}
+
+/// "[2804:14c::1]" (forma curta do IPv6, com colchetes pra pôr a porta depois).
+pub fn fmtIp6(a: [16]u8, buf: []u8) []const u8 {
+    // maior sequência de zeros vira "::"
+    var best_start: usize = 8;
+    var best_len: usize = 0;
+    var i: usize = 0;
+    while (i < 8) {
+        if (std.mem.readInt(u16, a[i * 2 ..][0..2], .big) != 0) {
+            i += 1;
+            continue;
+        }
+        var j = i;
+        while (j < 8 and std.mem.readInt(u16, a[j * 2 ..][0..2], .big) == 0) j += 1;
+        if (j - i > best_len and j - i >= 2) {
+            best_start = i;
+            best_len = j - i;
+        }
+        i = j;
+    }
+    var w: std.Io.Writer = .fixed(buf);
+    w.writeByte('[') catch return buf[0..0];
+    i = 0;
+    while (i < 8) {
+        if (i == best_start) {
+            w.writeAll("::") catch return buf[0..0];
+            i += best_len;
+            continue;
+        }
+        if (i > 0 and i != best_start + best_len) w.writeByte(':') catch return buf[0..0];
+        w.print("{x}", .{std.mem.readInt(u16, a[i * 2 ..][0..2], .big)}) catch return buf[0..0];
+        i += 1;
+    }
+    w.writeByte(']') catch return buf[0..0];
+    return w.buffered();
+}

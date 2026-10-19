@@ -63,11 +63,9 @@ pub fn main(init: std.process.Init) !void {
     const addr = pos[0];
     const name: []const u8 = if (n_pos > 1) pos[1] else "robô";
     const seconds: u32 = if (n_pos > 2) try std.fmt.parseInt(u32, pos[2], 10) else 20;
-    const colon = std.mem.findScalarLast(u8, addr, ':') orelse return error.Address;
-    const port = try std.fmt.parseInt(u16, addr[colon + 1 ..], 10);
     net.init();
 
-    const cl = try Client.create(.{ .host = addr[0..colon], .port = port, .name = name, .password = "", .wake = noWake });
+    const cl = try Client.create(.{ .addrs = addr, .name = name, .password = "", .wake = noWake });
     defer cl.close();
     for (0..100) |_| {
         cl.mutex.lock();

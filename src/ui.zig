@@ -20,6 +20,8 @@ const qa = @import("qa.zig");
 const clip = @import("clip.zig");
 const mp4 = @import("mp4.zig");
 const pip = @import("pip.zig");
+const connect_mod = @import("connect.zig");
+const net = @import("net.zig");
 pub const version_string = "2.1.0";
 const Sharer = sharer_mod.Sharer;
 
@@ -552,30 +554,19 @@ pub const App = struct {
     }
 
     fn joinRoom(a: *App) void {
-        var addr: []const u8 = std.mem.trim(u8, config.getStr(&a.cfg.join_addr), " \t");
-        // convite: telinha://host:porta#senha
-        if (std.mem.startsWith(u8, addr, "telinha://")) {
-            addr = addr["telinha://".len..];
-            if (std.mem.findScalar(u8, addr, '#')) |h| {
-                var pw_buf: [129]u8 = undefined;
-                config.setStr(&pw_buf, addr[h + 1 ..]);
-                a.cfg.join_pass = pw_buf;
-                addr = addr[0..h];
-                // deixa o campo só com o endereço
-                var tmp: [256]u8 = undefined;
-                config.setStr(&tmp, addr);
-                a.cfg.join_addr = tmp;
-                addr = config.getStr(&a.cfg.join_addr);
-            }
-        }
-        if (std.mem.find(u8, addr, "://")) |i| addr = addr[i + 3 ..];
-        addr = std.mem.trimEnd(u8, addr, "/");
-        const colon = std.mem.findScalarLast(u8, addr, ':') orelse return a.setHomeError("Põe o endereço com a porta. Ex.: 0.tcp.sa.ngrok.io:12345");
-        var host = addr[0..colon];
-        if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']') host = host[1 .. host.len - 1];
-        const port = std.fmt.parseInt(u16, addr[colon + 1 ..], 10) catch 0;
-        if (host.len == 0 or port == 0) return a.setHomeError("Endereço inválido. Ex.: 0.tcp.sa.ngrok.io:12345");
-        a.connect(host, port, config.getStr(&a.cfg.join_pass), config.getStr(&a.cfg.admin_token));
+        // convite: telinha://endereço[,endereço...]#senha (ou só o endereço)
+        const raw = std.mem.trim(u8, config.getStr(&a.cfg.join_addr), " \t");
+        const inv = connect_mod.splitInvite(raw);
+        if (inv.password) |pw| config.setStr(&a.cfg.join_pass, pw);
+        // deixa o campo só com os endereços
+        var tmp: [256]u8 = undefined;
+        config.setStr(&tmp, inv.addrs);
+        a.cfg.join_addr = tmp;
+        const addrs = config.getStr(&a.cfg.join_addr);
+        var targets: [connect_mod.max_targets]connect_mod.Target = undefined;
+        if (addrs.len == 0 or std.mem.findScalar(u8, addrs, ':') == null) return a.setHomeError("Põe o endereço com a porta. Ex.: 0.tcp.sa.ngrok.io:12345 (ou cola o convite).");
+        if (connect_mod.parseList(addrs, &targets) == 0) return a.setHomeError("Endereço inválido. Ex.: 0.tcp.sa.ngrok.io:12345 (IPv6 entre colchetes: [2804::1]:7777)");
+        a.connect(addrs, config.getStr(&a.cfg.join_pass), config.getStr(&a.cfg.admin_token));
     }
 
     fn createRoom(a: *App) void {
@@ -593,7 +584,8 @@ pub const App = struct {
             a.setHomeError("Não consegui abrir essa porta. Já tem outra coisa usando? Tenta outra.");
             return;
         };
-        a.connect("127.0.0.1", port, pass, token);
+        var self_addr: [32]u8 = undefined;
+        a.connect(std.fmt.bufPrint(&self_addr, "127.0.0.1:{d}", .{port}) catch "127.0.0.1:7777", pass, token);
     }
 
     // ------------------------------------------------------------------ voz
@@ -878,14 +870,19 @@ pub const App = struct {
         a.tunnel = null;
     }
 
-    fn connect(a: *App, host: []const u8, port: u16, pass: []const u8, admin_token: []const u8) void {
+    fn connect(a: *App, addrs: []const u8, pass: []const u8, admin_token: []const u8) void {
         a.home_error_len = 0;
         config.save(&a.cfg);
-        a.client = Client.create(.{ .host = host, .port = port, .name = a.myName(), .password = pass, .admin_token = admin_token, .client_key = a.cfg.client_key, .hw_decode = a.cfg.hardware, .wake = wakeUi }) catch {
-            a.setHomeError("Falha ao iniciar a conexão.");
+        a.client = Client.create(.{ .addrs = addrs, .name = a.myName(), .password = pass, .admin_token = admin_token, .client_key = a.cfg.client_key, .hw_decode = a.cfg.hardware, .wake = wakeUi }) catch {
+            a.setHomeError("Endereço inválido.");
             return;
         };
-        const s = std.fmt.bufPrint(&a.connect_label, "{s}:{d}", .{ host, port }) catch "";
+        // até conectar mostra a lista (ou "N caminhos"); depois, o que ganhou
+        const n_paths = std.mem.count(u8, addrs, ",") + 1;
+        const s = (if (n_paths > 1)
+            std.fmt.bufPrint(&a.connect_label, "{d} caminhos", .{n_paths})
+        else
+            std.fmt.bufPrint(&a.connect_label, "{s}", .{addrs})) catch "";
         a.connect_label_len = s.len;
         a.was_connected = false;
         a.n_auto_watched = 0; // ids da conexão nova
@@ -1239,6 +1236,13 @@ pub const App = struct {
         cl.mutex.unlock();
         if (st == .connected and !a.was_connected) {
             a.was_connected = true;
+            if (cl.viaTarget()) |t| {
+                const lbl = std.fmt.bufPrint(&a.connect_label, "{s}{s}{s}:{d}", .{
+                    if (std.mem.findScalar(u8, t.hostSlice(), ':') != null) "[" else "", t.hostSlice(),
+                    if (std.mem.findScalar(u8, t.hostSlice(), ':') != null) "]" else "", t.port,
+                }) catch "";
+                a.connect_label_len = lbl.len;
+            }
             if (a.reconnect.attempt == 0) {
                 a.mic_wanted = a.cfg.mic_on_join;
                 a.applyVoice();
@@ -2095,32 +2099,94 @@ pub const App = struct {
         }
     }
 
+    /// Todos os caminhos pra essa sala, em ordem de preferência (cada pessoa
+    /// entra pelo mais rápido que funcionar pra ela, ver connect.zig).
+    fn inviteAddrs(a: *App, buf: []u8) []const u8 {
+        var w: std.Io.Writer = .fixed(buf);
+        var n: usize = 0;
+        const sep = struct {
+            fn put(wr: *std.Io.Writer, count: *usize) void {
+                if (count.* > 0) wr.writeByte(',') catch {};
+                count.* += 1;
+            }
+        }.put;
+        const srv = a.server orelse {
+            // quem entrou: passa adiante os caminhos que usou
+            w.writeAll(config.getStr(&a.cfg.join_addr)) catch {};
+            return w.buffered();
+        };
+        const port = srv.port;
+        // 1. rede local (mesmo Wi-Fi: o mais rápido; de fora, falha rápido)
+        if (net.primaryIp4()) |ip| {
+            sep(&w, &n);
+            w.print("{d}.{d}.{d}.{d}:{d}", .{ ip[0], ip[1], ip[2], ip[3], port }) catch {};
+        }
+        // 2. porta aberta no roteador
+        if (a.upnp) |m| {
+            var ub: [64]u8 = undefined;
+            const ua = m.address(&ub);
+            if (ua.len > 0) {
+                sep(&w, &n);
+                w.writeAll(ua) catch {};
+            }
+        }
+        // 3. IPv6 direto (sem CGNAT; o roteador pode bloquear, aí esse falha e os outros seguem)
+        var v6: [2][16]u8 = undefined;
+        const n6 = net.globalIp6(&v6);
+        for (v6[0..n6]) |ip| {
+            var fb: [48]u8 = undefined;
+            sep(&w, &n);
+            w.print("{s}:{d}", .{ net.fmtIp6(ip, &fb), port }) catch {};
+        }
+        // 4. túnel digitado (ngrok etc.)
+        const typed = std.mem.trim(u8, config.getStr(&a.cfg.public_addr), " ");
+        if (typed.len > 0 and a.tunnel == null) {
+            sep(&w, &n);
+            w.writeAll(typed) catch {};
+        }
+        // 5. link público (funciona em qualquer rede: fica por último)
+        if (a.tunnel) |t| {
+            var tb: [300]u8 = undefined;
+            const ta = t.address(&tb);
+            if (ta.len > 0) {
+                sep(&w, &n);
+                w.writeAll(ta) catch {};
+            }
+        }
+        return w.buffered();
+    }
+
+    /// O convite tem algum caminho que funciona de fora (não só rede local)?
+    fn inviteReachesOutside(a: *App) bool {
+        if (a.server == null) return true;
+        if (a.tunnel) |t| if (t.status().state == .ready) return true;
+        if (a.upnp) |m| if (m.status().state == .ready) return true;
+        if (std.mem.trim(u8, config.getStr(&a.cfg.public_addr), " ").len > 0) return true;
+        var v6: [1][16]u8 = undefined;
+        return net.globalIp6(&v6) > 0;
+    }
+
     fn copyInvite(a: *App) void {
-        var buf: [512]u8 = undefined;
-        var tun_buf: [300]u8 = undefined;
-        var up_buf: [64]u8 = undefined;
-        const pass = if (a.server != null) config.getStr(&a.cfg.host_pass) else config.getStr(&a.cfg.join_pass);
-        // porta aberta no roteador (direto, menos atraso) > túnel > endereço digitado
-        const up_addr: []const u8 = if (a.upnp) |m| m.address(&up_buf) else "";
-        const tun_addr: []const u8 = if (a.tunnel) |t| t.address(&tun_buf) else "";
-        const addr: []const u8 = if (up_addr.len > 0)
-            up_addr
-        else if (tun_addr.len > 0)
-            tun_addr
-        else if (a.server != null)
-            std.mem.trim(u8, config.getStr(&a.cfg.public_addr), " ")
-        else
-            a.connect_label[0..a.connect_label_len];
-        if (addr.len == 0) {
-            a.toast("Primeiro cria o link público (ou põe o endereço do seu túnel) no card \"Chamando a galera de fora\".", .{}, true);
+        var addr_buf: [600]u8 = undefined;
+        const addrs = a.inviteAddrs(&addr_buf);
+        if (addrs.len == 0) {
+            a.toast("Não achei nenhum endereço dessa sala. Cria o link público no card \"Chamando a galera de fora\".", .{}, true);
             return;
         }
+        const pass = if (a.server != null) config.getStr(&a.cfg.host_pass) else config.getStr(&a.cfg.join_pass);
+        var buf: [800]u8 = undefined;
         const inv = (if (pass.len > 0)
-            std.fmt.bufPrintZ(&buf, "telinha://{s}#{s}", .{ addr, pass })
+            std.fmt.bufPrintZ(&buf, "telinha://{s}#{s}", .{ addrs, pass })
         else
-            std.fmt.bufPrintZ(&buf, "telinha://{s}", .{addr})) catch return;
+            std.fmt.bufPrintZ(&buf, "telinha://{s}", .{addrs})) catch return;
         c.igSetClipboardText(inv.ptr);
-        a.toast("Convite copiado! Quem receber cola no campo de endereço.", .{}, false);
+        const n_paths = std.mem.count(u8, addrs, ",") + 1;
+        if (!a.inviteReachesOutside())
+            a.toast("Convite copiado, mas só funciona na mesma rede. Pra galera de fora: link público ou porta no roteador.", .{}, true)
+        else if (n_paths > 1)
+            a.toast("Convite copiado ({d} caminhos: cada um entra pelo mais rápido que funcionar).", .{n_paths}, false)
+        else
+            a.toast("Convite copiado! Quem receber cola no campo de endereço.", .{}, false);
     }
 
     fn drawUserPanel(a: *App, cl: *Client, size: c.ImVec2_c) void {

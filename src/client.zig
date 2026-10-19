@@ -10,6 +10,7 @@ const gl = @import("gl.zig");
 const audio = @import("audio.zig");
 const voice = @import("voice.zig");
 const clip = @import("clip.zig");
+const connect_mod = @import("connect.zig");
 const gpa = proto.gpa;
 
 /// A UI liga isso quando o shader de YUV→RGB compilou: aí a thread de decode
@@ -417,9 +418,11 @@ pub const View = struct {
 
 pub const Client = struct {
     refs: std.atomic.Value(u32) = .init(1),
-    host: [256]u8 = undefined,
-    host_len: usize = 0,
-    port: u16 = 0,
+    /// Caminhos pra sala, em ordem de preferência (ver connect.zig).
+    targets: [connect_mod.max_targets]connect_mod.Target = undefined,
+    n_targets: usize = 0,
+    /// Qual caminho ganhou a corrida (vale depois de conectar).
+    via: std.atomic.Value(u32) = .init(std.math.maxInt(u32)),
     name: [48]u8 = undefined,
     name_len: usize = 0,
     pass: [128]u8 = undefined,
@@ -484,8 +487,8 @@ pub const Client = struct {
     voice_seq: std.atomic.Value(u32) = .init(0),
 
     pub const Options = struct {
-        host: []const u8,
-        port: u16,
+        /// "host:porta" ou vários separados por vírgula (convite com vários caminhos).
+        addrs: []const u8,
         name: []const u8,
         password: []const u8,
         admin_token: []const u8 = "",
@@ -497,8 +500,12 @@ pub const Client = struct {
 
     pub fn create(o: Options) !*Client {
         const cl = try gpa.create(Client);
-        cl.* = .{ .wake_fn = o.wake, .port = o.port, .hw_decode = o.hw_decode, .client_key = o.client_key };
-        copyInto(&cl.host, &cl.host_len, o.host);
+        cl.* = .{ .wake_fn = o.wake, .hw_decode = o.hw_decode, .client_key = o.client_key };
+        cl.n_targets = connect_mod.parseList(o.addrs, &cl.targets);
+        if (cl.n_targets == 0) {
+            gpa.destroy(cl);
+            return error.BadAddress;
+        }
         copyInto(cl.name[0..32], &cl.name_len, o.name);
         copyInto(&cl.pass, &cl.pass_len, o.password);
         copyInto(&cl.admin_token, &cl.admin_token_len, o.admin_token);
@@ -575,44 +582,45 @@ pub const Client = struct {
         return cl.err[0..cl.err_len];
     }
 
-    fn handshake(cl: *Client) !void {
-        net.setRecvTimeout(cl.sock, 10_000);
-        const hs = try crypto.Handshake.init();
-        try net.sendAll(cl.sock, &hs.helloBytes(proto.version));
-        var hb: [crypto.hello_len]u8 = undefined;
-        try net.recvAll(cl.sock, &hb);
-        const peer = try crypto.parseHello(&hb);
-        if (peer.version != proto.version) {
-            cl.setFinal();
-            cl.setError("A sala usa outra versão do telinha (protocolo {d}, o seu é {d}). Atualizem pra mesma versão.", .{ peer.version, proto.version });
-            return error.VersionMismatch;
-        }
-        cl.channel = try crypto.Channel.derive(&hs, peer, true, cl.pass[0..cl.pass_len]);
-        net.setRecvTimeout(cl.sock, 0);
+    /// O caminho que ganhou (pra mostrar onde conectou).
+    pub fn viaTarget(cl: *const Client) ?*const connect_mod.Target {
+        const i = cl.via.load(.acquire);
+        return if (i < cl.n_targets) &cl.targets[i] else null;
     }
 
     fn connectLoop(cl: *Client) void {
         defer cl.release();
         defer cl.wake();
-        cl.sock = net.connect(cl.host[0..cl.host_len], cl.port) catch |e| {
-            cl.setError("{s}", .{switch (e) {
-                error.UnknownHost => "Não achei esse endereço.",
-                error.ConnectionRefused => "Conexão recusada. A sala está aberta? O túnel está ligado?",
-                else => "Não consegui conectar.",
-            }});
+        // todos os caminhos do convite ao mesmo tempo (os primeiros com vantagem)
+        var fail: connect_mod.Failure = .{ .err = error.ConnectFailed };
+        const won = connect_mod.race(cl.targets[0..cl.n_targets], proto.version, 20_000, &cl.closing, &fail) catch |e| {
+            switch (e) {
+                error.Cancelled => {},
+                error.VersionMismatch => {
+                    cl.setFinal();
+                    cl.setError("A sala usa outra versão do telinha (protocolo {d}, o seu é {d}). Atualizem pra mesma versão.", .{ fail.server_version, proto.version });
+                },
+                error.NotTelinha => {
+                    cl.setFinal();
+                    cl.setError("Isso não é uma sala do telinha.", .{});
+                },
+                else => cl.setError("{s}", .{switch (e) {
+                    error.UnknownHost => "Não achei esse endereço.",
+                    error.ConnectionRefused => "Conexão recusada. A sala está aberta? O túnel está ligado?",
+                    else => "Não consegui conectar (a sala não respondeu por nenhum caminho).",
+                }}),
+            }
             return;
         };
+        cl.sock = won.sock;
+        cl.via.store(@intCast(won.index), .release);
         if (cl.closing.load(.acquire)) {
             net.close(cl.sock);
             return;
         }
         cl.sock_ok.store(true, .release);
-        cl.handshake() catch |e| {
-            if (e == error.NotTelinha) cl.setFinal();
-            if (e != error.VersionMismatch) cl.setError("{s}", .{switch (e) {
-                error.NotTelinha => "Isso não é uma sala do telinha.",
-                else => "A sala não respondeu direito (o endereço está certo?).",
-            }});
+        cl.channel = crypto.Channel.derive(&won.hs, won.peer, true, cl.pass[0..cl.pass_len]) catch {
+            cl.setError("Falha no handshake.", .{});
             net.close(cl.sock);
             return;
         };

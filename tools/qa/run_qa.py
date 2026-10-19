@@ -622,6 +622,34 @@ def janela_flutuante():
         b.wait(lambda st: not st["pips"], 10, "fechar sozinha quando a transmissão acaba")
 
 
+@test
+def convite_varios_caminhos():
+    """Convite com vários caminhos (rede local, porta no roteador, IPv6, link público): quem entra conecta pelo que responder."""
+    with Session("caminhos") as s:
+        udp, http, ctl = port(), port(), port()
+        s.spawn("igd", [sys.executable, os.path.join(os.path.dirname(__file__), "mockigd.py"), str(udp), str(http), os.path.join(s.base, "igd.log")], dict(os.environ))
+        s.spawn("mockbore", [sys.executable, os.path.join(os.path.dirname(__file__), "mockbore.py"), str(ctl)], dict(os.environ))
+        time.sleep(0.5)
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--senha", "cam1"], extra_env={"TELINHA_UPNP_SSDP": f"127.0.0.1:{udp}"},
+                  config={"tunnel_host": f"127.0.0.1:{ctl}"})
+        a.wait(lambda st: st["status"] == "connected", 10, "entrar")
+        a.click(contains="Abrir porta no roteador")
+        a.wait(lambda st: st["upnp"] and st["upnp"]["state"] == "ready", 10, "a porta abrir")
+        a.click(contains="Copiar convite##upnp")
+        st = a.wait(lambda st: st["clipboard"].startswith("telinha://"), 3, "copiar o convite")
+        inv = st["clipboard"]
+        log(f"convite: {inv}")
+        paths = inv[len("telinha://"):].split("#")[0].split(",")
+        expect(f"203.0.113.7:{p}" in paths, "o convite não tem a porta do roteador")
+        expect(inv.endswith("#cam1"), "o convite não tem a senha")
+        expect(len(paths) >= 2, "o convite devia ter mais de um caminho (rede local + roteador)")
+        a.toasted("caminhos")
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", inv])
+        st = b.wait(lambda st: st["status"] == "connected", 15, "o Bruno entrar pelo convite")
+        log(f"Bruno entrou pela rota {st['route']}")
+
+
 # ---------------------------------------------------------------------------
 
 

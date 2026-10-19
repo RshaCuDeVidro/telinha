@@ -1183,3 +1183,106 @@ test "UPnP: em segundo plano (como a interface usa) e sem roteador" {
     }
     try testing.expectEqual(upnp.Mapper.State.failed, none.status().state);
 }
+
+// ------------------------------------------------------- vários caminhos
+
+const connect_mod = @import("connect.zig");
+
+test "convite: vários caminhos, IPv6 entre colchetes, senha" {
+    const inv = connect_mod.splitInvite("telinha://192.168.0.5:7777,[2804:14c:1::1]:7777,bore.pub:41234#abc#d");
+    try testing.expectEqualStrings("abc#d", inv.password.?);
+    var t: [connect_mod.max_targets]connect_mod.Target = undefined;
+    const n = connect_mod.parseList(inv.addrs, &t);
+    try testing.expectEqual(@as(usize, 3), n);
+    try testing.expectEqualStrings("192.168.0.5", t[0].hostSlice());
+    try testing.expectEqualStrings("2804:14c:1::1", t[1].hostSlice());
+    try testing.expectEqual(@as(u16, 7777), t[1].port);
+    try testing.expectEqualStrings("bore.pub", t[2].hostSlice());
+    try testing.expectEqual(@as(u16, 41234), t[2].port);
+    // sem colchete o IPv6 é ambíguo; lixo e porta zero ficam de fora
+    try testing.expect(connect_mod.parseOne("2804::1:7777") == null);
+    try testing.expect(connect_mod.parseOne("host:0") == null);
+    try testing.expectEqual(@as(usize, 1), connect_mod.parseList(" , nada, tcp://a.b:5/ ", &t));
+    try testing.expectEqualStrings("a.b", t[0].hostSlice());
+    // endereço só, sem convite
+    try testing.expect(connect_mod.splitInvite("x:1").password == null);
+    // forma curta do IPv6
+    var buf: [48]u8 = undefined;
+    try testing.expectEqualStrings("[2804:14c::1]", net.fmtIp6(.{ 0x28, 0x04, 0x01, 0x4c, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 }, &buf));
+    try testing.expectEqualStrings("[::1]", net.fmtIp6(.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 }, &buf));
+    try testing.expectEqualStrings("[2001:db8:0:1::1]", net.fmtIp6(.{ 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1 }, &buf));
+}
+
+/// Escuta e aceita, mas nunca responde (caminho que "não chega": firewall que
+/// deixa o SYN passar mas nada mais, túnel travado).
+fn silentListener(ls: net.Socket) void {
+    var held: [8]net.Socket = undefined;
+    var n: usize = 0;
+    while (n < held.len) {
+        held[n] = net.accept(ls) catch return;
+        n += 1;
+    }
+}
+
+/// Responde lixo (outro serviço na mesma porta, numa rede que não é a da sala).
+fn garbageListener(ls: net.Socket) void {
+    while (true) {
+        const s = net.accept(ls) catch return;
+        net.sendAll(s, "HTTP/1.1 400 Bad Request\r\n\r\n" ++ "x" ** 64) catch {};
+        sync.sleepMs(200);
+        net.close(s);
+    }
+}
+
+test "vários caminhos: entra pelo que responde (fechado, mudo e lixo ficam pra trás), inclusive IPv6" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port, .password = "pw" });
+    defer srv.stop();
+    const mute_port = freshPort();
+    const mute = try net.listen(mute_port);
+    defer net.close(mute);
+    try sync.spawn(silentListener, .{mute});
+    const junk_port = freshPort();
+    const junk = try net.listen(junk_port);
+    defer net.close(junk);
+    try sync.spawn(garbageListener, .{junk});
+    const closed_port = freshPort(); // ninguém escuta
+
+    var list_buf: [200]u8 = undefined;
+    const list = try std.fmt.bufPrint(&list_buf, "127.0.0.1:{d},127.0.0.1:{d},127.0.0.1:{d},[::1]:{d}", .{ mute_port, closed_port, junk_port, port });
+    var targets: [connect_mod.max_targets]connect_mod.Target = undefined;
+    const n = connect_mod.parseList(list, &targets);
+    try testing.expectEqual(@as(usize, 4), n);
+    var cancel = std.atomic.Value(bool).init(false);
+    var fail: connect_mod.Failure = .{ .err = error.ConnectFailed };
+    const t0 = sync.nowMs();
+    const w = try connect_mod.race(targets[0..n], proto.version, 10_000, &cancel, &fail);
+    defer net.close(w.sock);
+    // o caminho bom é o último da lista: sai 750 ms depois do primeiro e ganha
+    try testing.expectEqual(@as(usize, 3), w.index);
+    try testing.expect(sync.nowMs() - t0 < 2500);
+    // e a conexão funciona: dá pra entrar na sala por ela
+    var ch = try crypto.Channel.derive(&w.hs, w.peer, true, "pw");
+    var b: proto.Builder = .{};
+    defer b.deinit();
+    try b.begin(.hello);
+    try b.str("Corredor");
+    try b.str("");
+    try b.u64_(0);
+    const m = try b.finish();
+    defer m.release();
+    const plain = m.data[4..];
+    var out: [256]u8 = undefined;
+    std.mem.writeInt(u32, out[0..4], @intCast(plain.len + crypto.tag_len), .little);
+    ch.seal(plain, out[4..][0 .. plain.len + crypto.tag_len]);
+    try net.sendAll(w.sock, out[0 .. 4 + plain.len + crypto.tag_len]);
+    var rb: proto.RecvBuf = .{};
+    defer rb.deinit();
+    try testing.expectEqual(proto.Type.welcome, try proto.recvMsg(w.sock, &ch, &rb));
+
+    // só caminhos ruins: falha com o motivo certo, sem travar
+    const only_bad = try std.fmt.bufPrint(&list_buf, "127.0.0.1:{d},127.0.0.1:{d}", .{ closed_port, junk_port });
+    const nb = connect_mod.parseList(only_bad, &targets);
+    try testing.expectError(error.NotTelinha, connect_mod.race(targets[0..nb], proto.version, 5_000, &cancel, &fail));
+}
