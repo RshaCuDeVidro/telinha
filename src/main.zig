@@ -6,6 +6,7 @@ const net = @import("net.zig");
 const ui = @import("ui.zig");
 const gl = @import("gl.zig");
 const client_mod = @import("client.zig");
+const qa = @import("qa.zig");
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 /// TELINHA_SEM_SHADER=1 força a conversão de cor na CPU (diagnóstico).
@@ -73,6 +74,7 @@ pub fn main(init: std.process.Init) !void {
     // Enter num campo de texto não tira o foco (o chat continua pronto pra
     // próxima mensagem, sem perder letra digitada logo depois)
     io.*.ConfigInputTextEnterKeepActive = true;
+    qa.init(); // TELINHA_QA: modo de testes (posição dos botões + estado em arquivos)
     const base = 15 * ui.scale;
     ui.font_regular = loadFont(io.*.Fonts, inter_regular, base);
     ui.font_semibold = loadFont(io.*.Fonts, inter_semibold, base);
@@ -104,13 +106,14 @@ pub fn main(init: std.process.Init) !void {
     var idle_frames: u32 = 0;
     while (c.glfwWindowShouldClose(win) == 0) {
         // dorme quando nada está acontecendo; rede e captura acordam o loop
-        if (idle_frames > 3) c.glfwWaitEventsTimeout(if (io.*.WantTextInput) 0.25 else 0.5) else c.glfwPollEvents();
+        if (idle_frames > 3) c.glfwWaitEventsTimeout(if (qa.enabled()) 0.05 else if (io.*.WantTextInput) 0.25 else 0.5) else c.glfwPollEvents();
 
         c.ImGui_ImplOpenGL3_NewFrame();
         c.ImGui_ImplGlfw_NewFrame();
         c.igNewFrame();
         app.updateUnread();
         app.frame();
+        qa.endFrame(&app, win);
         c.igRender();
 
         var fw: c_int = 0;

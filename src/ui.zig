@@ -16,6 +16,7 @@ const sharer_mod = @import("sharer.zig");
 const proto = @import("proto.zig");
 const audio = @import("audio.zig");
 const voice = @import("voice.zig");
+const qa = @import("qa.zig");
 pub const version_string = "2.1.0";
 const Sharer = sharer_mod.Sharer;
 
@@ -378,6 +379,12 @@ pub const App = struct {
     open_member_menu: bool = false,
 
     audio_err_shown: bool = false,
+    /// Volume de uma transmissão sendo arrastado (os controles dela continuam
+    /// na tela mesmo com o mouse fora do quadro).
+    tile_controls: ?u32 = null,
+    /// Onde cada transmissão foi desenhada nesse quadro (modo de testes).
+    tile_rects: [40]struct { owner: u32, x0: f32, y0: f32, x1: f32, y1: f32 } = undefined,
+    n_tile_rects: usize = 0,
 
     // voz
     mic: ?*voice.Mic = null,
@@ -1086,6 +1093,7 @@ pub const App = struct {
     }
 
     pub fn frame(a: *App) void {
+        a.n_tile_rects = 0;
         a.checkState();
         a.uploadTextures();
 
@@ -1890,11 +1898,26 @@ pub const App = struct {
         const round = if (a.theater and big) 0 else S(8);
         c.igPushID_Int(@intCast(t.owner));
         defer c.igPopID();
+        if (a.n_tile_rects < a.tile_rects.len) {
+            a.tile_rects[a.n_tile_rects] = .{ .owner = t.owner, .x0 = x, .y0 = y, .x1 = x + w, .y1 = y + h };
+            a.n_tile_rects += 1;
+        }
         c.igSetCursorScreenPos(v2(x, y));
+        // os botões por cima (fechar, destacar, volume) ganham o mouse do quadro
+        c.igSetNextItemAllowOverlap();
         _ = c.igInvisibleButton("tile", v2(w, h), 0);
-        const hovered = c.igIsItemHovered(0);
+        // Mouse em cima do quadro, inclusive sobre um botão dele ou arrastando o
+        // volume. Com o hover simples, o clique num botão por cima "tirava" o
+        // mouse do quadro: os botões sumiam no meio do clique e nada funcionava.
+        const over = c.igIsItemHovered(c.ImGuiHoveredFlags_AllowWhenOverlappedByItem | c.ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+        const on_tile = c.igIsItemHovered(0); // no quadro em si, não num botão dele
         const clicked = c.igIsItemClicked(0);
-        const dbl = hovered and c.igIsMouseDoubleClicked_Nil(0);
+        const dbl = on_tile and c.igIsMouseDoubleClicked_Nil(0);
+        // arrastando o volume pra fora do quadro: os controles continuam
+        if (a.tile_controls) |o| {
+            if (o == t.owner and !c.igIsMouseDown_Nil(0)) a.tile_controls = null;
+        }
+        const hovered = over or (a.tile_controls != null and a.tile_controls.? == t.owner);
 
         c.ImDrawList_PushClipRect(d, v2(x, y), v2(x + w, y + h), true);
         defer c.ImDrawList_PopClipRect(d);
@@ -1976,6 +1999,7 @@ pub const App = struct {
                 c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(4), S(2)));
                 var vol_pct: f32 = rg.getVolume() * 100;
                 if (c.igSliderFloat("##vol", &vol_pct, 0, 200, "%.0f%%", c.ImGuiSliderFlags_AlwaysClamp)) rg.setVolume(vol_pct / 100);
+                if (c.igIsItemActive()) a.tile_controls = t.owner;
                 c.igPopStyleVar(1);
                 c.igPopStyleColor(3);
             }
@@ -2558,6 +2582,89 @@ pub const App = struct {
         _ = c.igSliderInt(id.ptr, v, min, max, f.ptr, c.ImGuiSliderFlags_AlwaysClamp);
         c.igPopStyleVar(1);
         c.igPopStyleColor(5);
+    }
+
+    // ------------------------------------------------------- modo de testes
+
+    /// Estado pro modo de testes (TELINHA_QA, ver qa.zig): o que um teste
+    /// precisa conferir depois de clicar num botão.
+    pub fn qaState(a: *App, w: *std.Io.Writer) !void {
+        const s = qa.str;
+        try w.print("{{\"screen\":{f},\"home_error\":{f}", .{ s(@tagName(a.screen)), s(a.home_error[0..a.home_error_len]) });
+        try w.print(",\"mic\":{},\"deaf\":{},\"share_modal\":{},\"settings_modal\":{},\"theater\":{},\"fullscreen\":{}", .{ a.mic != null, a.deaf, a.share_modal, a.settings_modal, a.theater, a.fullscreen });
+        if (a.focused) |f| try w.print(",\"focused\":{d}", .{f}) else try w.writeAll(",\"focused\":null");
+        try w.print(",\"reconnect\":{{\"attempt\":{d},\"waiting\":{}}}", .{ a.reconnect.attempt, a.reconnect.waiting });
+        try w.print(",\"hosting\":{}", .{a.server != null});
+        if (a.server) |srv| try w.print(",\"server_members\":{d}", .{srv.memberCount()});
+        // link público e porta no roteador
+        if (a.tunnel) |t| {
+            var buf: [300]u8 = undefined;
+            const st = t.status();
+            try w.print(",\"tunnel\":{{\"state\":{f},\"addr\":{f},\"err\":{f}}}", .{ s(@tagName(st.state)), s(t.address(&buf)), s(st.err) });
+        } else try w.writeAll(",\"tunnel\":null");
+        if (a.upnp) |m| {
+            var buf: [64]u8 = undefined;
+            const st = m.status();
+            try w.print(",\"upnp\":{{\"state\":{f},\"addr\":{f},\"err\":{f}}}", .{ s(@tagName(st.state)), s(m.address(&buf)), s(st.err) });
+        } else try w.writeAll(",\"upnp\":null");
+        // transmissão própria
+        if (a.sharer) |sh| {
+            sh.mutex.lock();
+            defer sh.mutex.unlock();
+            try w.print(",\"sharer\":{{\"state\":{f},\"w\":{d},\"h\":{d},\"fps\":{d:.1}}}", .{ s(@tagName(sh.state)), sh.w, sh.h, sh.fps });
+        } else try w.writeAll(",\"sharer\":null");
+        // avisos na tela
+        try w.writeAll(",\"toasts\":[");
+        for (a.toasts[0..a.n_toasts], 0..) |*t, i| {
+            if (i > 0) try w.writeByte(',');
+            try w.print("{f}", .{s(t.text[0..t.len])});
+        }
+        try w.writeAll("]");
+        // onde estão os quadros das transmissões
+        try w.writeAll(",\"tiles\":[");
+        for (a.tile_rects[0..a.n_tile_rects], 0..) |r, i| {
+            if (i > 0) try w.writeByte(',');
+            try w.print("{{\"owner\":{d},\"x0\":{d:.0},\"y0\":{d:.0},\"x1\":{d:.0},\"y1\":{d:.0}}}", .{ r.owner, r.x0, r.y0, r.x1, r.y1 });
+        }
+        try w.writeAll("]");
+        // transmissões assistidas
+        try w.writeAll(",\"views\":[");
+        for (a.views.items, 0..) |v, i| {
+            if (i > 0) try w.writeByte(',');
+            const has_audio = v.audio_registered;
+            try w.print("{{\"owner\":{d},\"fps\":{d:.1},\"w\":{d},\"h\":{d},\"shown\":{},\"audio\":{},\"volume\":{d:.2},\"muted\":{}}}", .{
+                v.owner, v.fps, v.tex_w, v.tex_h, v.tex != 0, has_audio, v.audio_ring.getVolume(), v.audio_ring.isMuted(),
+            });
+        }
+        try w.writeAll("]");
+        // conexão com a sala
+        if (a.client) |cl| {
+            cl.mutex.lock();
+            defer cl.mutex.unlock();
+            try w.print(",\"status\":{f},\"error\":{f},\"final\":{},\"my_id\":{d},\"admin\":{},\"room\":{f},\"ping\":{d}", .{
+                s(@tagName(cl.status)), s(cl.err[0..cl.err_len]), cl.final, cl.my_id, cl.is_admin, s(cl.room_name[0..cl.room_name_len]), cl.ping_ms,
+            });
+            try w.writeAll(",\"members\":[");
+            for (cl.members.items, 0..) |*m, i| {
+                if (i > 0) try w.writeByte(',');
+                try w.print("{{\"id\":{d},\"name\":{f},\"flags\":{d},\"streaming\":{},\"admin\":{},\"audio\":{},\"w\":{d},\"h\":{d},\"watching\":[", .{
+                    m.id, s(m.nameSlice()), m.flags, m.streaming, m.admin, m.audio, m.w, m.h,
+                });
+                for (m.watching[0..m.n_watching], 0..) |id, k| {
+                    if (k > 0) try w.writeByte(',');
+                    try w.print("{d}", .{id});
+                }
+                try w.writeAll("]}");
+            }
+            try w.writeAll("],\"chat\":[");
+            const first = cl.chat.items.len -| 30;
+            for (cl.chat.items[first..], 0..) |*l, i| {
+                if (i > 0) try w.writeByte(',');
+                try w.print("{{\"from\":{d},\"name\":{f},\"text\":{f}}}", .{ l.from, s(l.nameSlice()), s(l.text) });
+            }
+            try w.writeAll("]");
+        } else try w.writeAll(",\"status\":null");
+        try w.writeAll("}\n");
     }
 
     // ---------------------------------------------------------------- toasts

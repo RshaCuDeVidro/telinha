@@ -346,6 +346,8 @@ fn addImgui(b: *std.Build, deps: Deps, mod: *std.Build.Module) void {
         "-DIMGUI_IMPL_API=extern \"C\"",
         "-DCIMGUI_USE_GLFW",
         "-DCIMGUI_USE_OPENGL3",
+        // ganchos de teste: só trabalham com TELINHA_QA (ver src/c/qa_hooks.cpp)
+        "-DIMGUI_ENABLE_TEST_ENGINE",
     };
     // o cimgui inclui "./imgui/imgui.h": montamos um diretório com essa cara
     // (todos os includes apontam pra essa cópia, senão o mesmo header entra
@@ -362,6 +364,7 @@ fn addImgui(b: *std.Build, deps: Deps, mod: *std.Build.Module) void {
         .flags = flags,
     });
     mod.addCSourceFiles(.{ .root = deps.cimgui.path("."), .files = &.{ "cimgui.cpp", "cimgui_impl.cpp" }, .flags = flags });
+    mod.addCSourceFile(.{ .file = b.path("src/c/qa_hooks.cpp"), .flags = flags });
 
     // cimgui.h que o translate-c do Zig aceita (ver tools/patch_cimgui.zig)
     const tool = b.addExecutable(.{
