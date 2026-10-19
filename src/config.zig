@@ -32,6 +32,7 @@ pub const Config = struct {
     audio: bool = true, // compartilhar o som do computador junto
     admin_token: [65]u8 = zstr("", 65), // pra entrar como admin num servidor dedicado
     public_addr: [256]u8 = zstr("", 256), // endereço do túnel (pra montar o convite)
+    tunnel_host: [128]u8 = zstr("bore.pub", 128), // servidor do link público (protocolo do bore)
 };
 
 fn zstr(comptime s: []const u8, comptime n: usize) [n]u8 {
@@ -89,7 +90,7 @@ pub fn load() Config {
         const k = l[0..eq];
         const v = l[eq + 1 ..];
         const int = std.fmt.parseInt(i32, v, 10) catch 0;
-        if (std.mem.eql(u8, k, "name")) setStr(&cfg.name, v) else if (std.mem.eql(u8, k, "join_addr")) setStr(&cfg.join_addr, v) else if (std.mem.eql(u8, k, "join_pass")) setStr(&cfg.join_pass, v) else if (std.mem.eql(u8, k, "room_name")) setStr(&cfg.room_name, v) else if (std.mem.eql(u8, k, "host_pass")) setStr(&cfg.host_pass, v) else if (std.mem.eql(u8, k, "host_port")) cfg.host_port = std.math.clamp(int, 1, 65535) else if (std.mem.eql(u8, k, "fps")) cfg.fps = std.math.clamp(int, 1, 60) else if (std.mem.eql(u8, k, "quality")) cfg.quality = std.math.clamp(int, 20, 100) else if (std.mem.eql(u8, k, "mode")) cfg.mode = std.math.clamp(int, 0, 1) else if (std.mem.eql(u8, k, "stats_always")) cfg.stats_always = int != 0 else if (std.mem.eql(u8, k, "hardware")) cfg.hardware = int != 0 else if (std.mem.eql(u8, k, "admin_token")) setStr(&cfg.admin_token, v) else if (std.mem.eql(u8, k, "public_addr")) setStr(&cfg.public_addr, v) else if (std.mem.eql(u8, k, "resolution")) cfg.resolution = std.math.clamp(int, 0, 3) else if (std.mem.eql(u8, k, "cursor")) cfg.cursor = int != 0 else if (std.mem.eql(u8, k, "show_chat")) cfg.show_chat = int != 0;
+        if (std.mem.eql(u8, k, "name")) setStr(&cfg.name, v) else if (std.mem.eql(u8, k, "join_addr")) setStr(&cfg.join_addr, v) else if (std.mem.eql(u8, k, "join_pass")) setStr(&cfg.join_pass, v) else if (std.mem.eql(u8, k, "room_name")) setStr(&cfg.room_name, v) else if (std.mem.eql(u8, k, "host_pass")) setStr(&cfg.host_pass, v) else if (std.mem.eql(u8, k, "host_port")) cfg.host_port = std.math.clamp(int, 1, 65535) else if (std.mem.eql(u8, k, "fps")) cfg.fps = std.math.clamp(int, 1, 60) else if (std.mem.eql(u8, k, "quality")) cfg.quality = std.math.clamp(int, 20, 100) else if (std.mem.eql(u8, k, "mode")) cfg.mode = std.math.clamp(int, 0, 1) else if (std.mem.eql(u8, k, "stats_always")) cfg.stats_always = int != 0 else if (std.mem.eql(u8, k, "hardware")) cfg.hardware = int != 0 else if (std.mem.eql(u8, k, "admin_token")) setStr(&cfg.admin_token, v) else if (std.mem.eql(u8, k, "public_addr")) setStr(&cfg.public_addr, v) else if (std.mem.eql(u8, k, "resolution")) cfg.resolution = std.math.clamp(int, 0, 3) else if (std.mem.eql(u8, k, "cursor")) cfg.cursor = int != 0 else if (std.mem.eql(u8, k, "show_chat")) cfg.show_chat = int != 0 else if (std.mem.eql(u8, k, "audio")) cfg.audio = int != 0 else if (std.mem.eql(u8, k, "tunnel_host")) setStr(&cfg.tunnel_host, v);
     }
     return cfg;
 }
@@ -116,13 +117,14 @@ pub fn save(cfg: *const Config) void {
         \\audio={d}
         \\admin_token={s}
         \\public_addr={s}
+        \\tunnel_host={s}
         \\
     , .{
         getStr(&cfg.name),              getStr(&cfg.join_addr),     getStr(&cfg.join_pass),      getStr(&cfg.room_name),
         getStr(&cfg.host_pass),         cfg.host_port,              cfg.fps,                     cfg.quality,
         cfg.resolution,                 @intFromBool(cfg.cursor),   @intFromBool(cfg.show_chat), cfg.mode,
         @intFromBool(cfg.stats_always), @intFromBool(cfg.hardware), @intFromBool(cfg.audio),     getStr(&cfg.admin_token),
-        getStr(&cfg.public_addr),
+        getStr(&cfg.public_addr),       getStr(&cfg.tunnel_host),
     }) catch return;
     _ = c.fwrite(s.ptr, 1, s.len, f);
 }

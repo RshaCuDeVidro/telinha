@@ -28,6 +28,11 @@
 - Erro claro se o compositor aceitar compartilhar mas não mandar nenhum quadro.
 - `zig build captest`: diagnóstico da captura (método, formato, fps real,
   custo por quadro, salva um quadro em PPM).
+- **Link público embutido**: *Criar link público* abre um túnel pelo protocolo
+  do bore (bore.pub), sem instalar nada; o convite já sai com o endereço.
+  Sala pública sempre tem senha (criada se faltar). Reconecta pedindo a mesma
+  porta. Também no servidor dedicado: `telinha-server --publico`.
+- A opção de áudio agora é lembrada entre execuções (era salva mas não lida).
 
 ## 2.0.0
 

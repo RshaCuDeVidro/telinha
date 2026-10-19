@@ -572,7 +572,7 @@ static void on_process(void *data) {
             clock_gettime(CLOCK_MONOTONIC, &t0);
             int fmt = c->staging ? egl_read(c->egl, buf, drm_format_of(c->info.format), c->info.modifier, w, hgt, c->staging) : -1;
             clock_gettime(CLOCK_MONOTONIC, &t1);
-            c->read_us += (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000 + (uint64_t)(t1.tv_nsec - t0.tv_nsec) / 1000;
+            c->read_us += (uint64_t)((int64_t)(t1.tv_sec - t0.tv_sec) * 1000000 + ((int64_t)t1.tv_nsec - (int64_t)t0.tv_nsec) / 1000);
             if (++c->read_n == 60) {
                 if (getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] leitura do DMA-BUF: %.2f ms por quadro\n", c->read_us / 60 / 1000.0);
                 c->read_us = c->read_n = 0;

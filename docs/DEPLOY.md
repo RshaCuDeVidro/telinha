@@ -68,9 +68,23 @@ journalctl -u telinha -f
   (soma das transmissões) × (espectadores de cada uma). Uma transmissão 1080p
   "equilibrada" gira em 0,3–6 Mbit/s dependendo do que está na tela.
 
-## Sem VPS: túneis
+## Sem VPS: link público
 
-Se quem cria a sala está atrás de NAT/CGNAT, um túnel TCP resolve:
+Se quem cria a sala está atrás de NAT/CGNAT, o próprio telinha abre um túnel
+(protocolo do [bore](https://github.com/ekzhang/bore), servidor bore.pub):
+no app, *Criar link público*; no servidor dedicado, `--publico`:
+
+```sh
+./telinha-server --publico
+# [21:03] link público: bore.pub:41234  —  convite: telinha://bore.pub:41234#k3m9qx2a
+```
+
+Sem `--senha`, uma senha aleatória é criada (o endereço é público). Se o túnel
+cair, ele reconecta pedindo a mesma porta, então o convite continua valendo.
+Outro servidor bore (o seu, por exemplo): `--publico meu.servidor.com` (ou
+`tunnel_host=` no `config.ini` do app).
+
+Ou um túnel externo:
 
 | túnel | comando | observação |
 |---|---|---|

@@ -383,3 +383,100 @@ test "sala: áudio chega em quem assiste, com o remetente certo" {
     try testing.expectEqual(@as(u64, 123), try r.u64_());
     try testing.expectEqualSlices(u8, &opus_fake, r.rest());
 }
+
+// ------------------------------------------------------------- link público
+
+const tunnel = @import("tunnel.zig");
+
+/// Servidor de túnel de mentira, falando o protocolo do bore.
+const MockBore = struct {
+    control: net.Socket,
+    public_port: u16,
+    visitor: ?net.Socket = null,
+
+    fn frame(s: net.Socket, json: []const u8) !void {
+        try net.sendAll(s, json);
+        try net.sendAll(s, &[_]u8{0});
+    }
+    fn readFrame(s: net.Socket, buf: []u8) ![]const u8 {
+        var n: usize = 0;
+        while (true) {
+            var b: [1]u8 = undefined;
+            try net.recvAll(s, &b);
+            if (b[0] == 0) return buf[0..n];
+            buf[n] = b[0];
+            n += 1;
+        }
+    }
+
+    /// Conexão de controle: Hello → porta pública; visitante → Connection.
+    fn run(m: *MockBore) void {
+        const ctl = net.accept(m.control) catch return;
+        var buf: [256]u8 = undefined;
+        const hello = readFrame(ctl, &buf) catch return;
+        if (tunnel.field(hello, "Hello") == null) return;
+        const pub_ls = net.listen(m.public_port) catch return;
+        var out: [64]u8 = undefined;
+        frame(ctl, std.fmt.bufPrint(&out, "{{\"Hello\":{d}}}", .{m.public_port}) catch return) catch return;
+        frame(ctl, "\"Heartbeat\"") catch return;
+        m.visitor = net.accept(pub_ls) catch return;
+        frame(ctl, "{\"Connection\":\"0b6c1c5e-1111-4222-8333-944455556666\"}") catch return;
+        // a conexão de dados chega na porta de controle com o Accept
+        const data = net.accept(m.control) catch return;
+        const acc = readFrame(data, &buf) catch return;
+        const id = tunnel.field(acc, "Accept") orelse return;
+        if (!std.mem.eql(u8, id, "0b6c1c5e-1111-4222-8333-944455556666")) return;
+        sync.spawn(pipe, .{ m.visitor.?, data }) catch return;
+        pipe(data, m.visitor.?);
+    }
+
+    fn pipe(from: net.Socket, to: net.Socket) void {
+        var b: [16384]u8 = undefined;
+        while (true) {
+            const n = net.recvSome(from, &b) catch break;
+            net.sendAll(to, b[0..n]) catch break;
+        }
+        net.shutdown(to);
+    }
+};
+
+test "link público: visitante entra na sala pelo túnel (protocolo do bore)" {
+    net.init();
+    const room_port = freshPort();
+    const srv = try Server.start(.{ .port = room_port, .password = "segredo" });
+    defer srv.stop();
+
+    const ctl_port = freshPort();
+    var mock: MockBore = .{ .control = try net.listen(ctl_port), .public_port = freshPort() };
+    defer net.close(mock.control);
+    try sync.spawn(MockBore.run, .{&mock});
+
+    var spec_buf: [32]u8 = undefined;
+    const t = try tunnel.Tunnel.start(try std.fmt.bufPrint(&spec_buf, "127.0.0.1:{d}", .{ctl_port}), srv, Server.adoptCallback);
+    defer t.stop();
+    var st = t.status();
+    for (0..100) |_| {
+        st = t.status();
+        if (st.state != .connecting) break;
+        sync.sleepMs(20);
+    }
+    try testing.expectEqual(tunnel.State.ready, st.state);
+    try testing.expectEqual(mock.public_port, st.public_port);
+    var addr_buf: [64]u8 = undefined;
+    const addr = t.address(&addr_buf);
+    try testing.expect(std.mem.endsWith(u8, addr, try std.fmt.bufPrint(&spec_buf, ":{d}", .{mock.public_port})));
+
+    // o visitante conecta na porta pública e entra na sala, com a senha
+    var v = try TestClient.connect(mock.public_port, "Visitante", "segredo", "");
+    defer v.close();
+    try v.welcome();
+    try testing.expect(v.id != 0);
+}
+
+test "link público: mensagens do protocolo do bore" {
+    try testing.expectEqualStrings("41234", tunnel.field("{\"Hello\":41234}", "Hello").?);
+    try testing.expectEqualStrings("abc-1", tunnel.field("{\"Connection\":\"abc-1\"}", "Connection").?);
+    try testing.expectEqualStrings("port already in use", tunnel.field("{\"Error\":\"port already in use\"}", "Error").?);
+    try testing.expect(tunnel.field("\"Heartbeat\"", "Connection") == null);
+    try testing.expect(tunnel.field("{\"Hello\":1}", "Error") == null);
+}

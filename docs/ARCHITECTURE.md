@@ -30,6 +30,7 @@
 | `src/ratectl.zig` | controle de taxa de bits pelo atraso de ponta a ponta |
 | `src/server.zig` | servidor da sala (embutido no app ou no `telinha-server`) |
 | `src/server_main.zig` | executável do servidor dedicado |
+| `src/tunnel.zig` | link público: cliente do protocolo do bore; cada visitante vira uma conexão da sala |
 | `src/codec.zig` | wrapper do openh264 e do NVENC + conversões de cor vetorizadas |
 | `src/c/hwenc_nvenc.c` | encoder em hardware NVIDIA (API NVENC 11.1, carregada em runtime) |
 | `src/c/hwdec_nvdec.c` | decoder em hardware NVIDIA (NVDEC/nvcuvid, carregado em runtime) |

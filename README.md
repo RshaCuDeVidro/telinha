@@ -35,12 +35,8 @@
 ## Como usar
 
 1. **Criar sala**: abre o telinha → *Criar sala* (porta padrão 7777, senha opcional).
-2. **Galera de fora**: abre um túnel TCP pra porta e cola o endereço no card *Chamando a galera de fora* → *Copiar convite*.
-   ```sh
-   bore local 7777 --to bore.pub    # grátis, sem conta
-   ngrok tcp 7777                   # precisa de conta verificada
-   ```
-   Na mesma rede (ou Tailscale/ZeroTier/Radmin) é só usar o IP. Tem VPS? Use o [servidor dedicado](docs/DEPLOY.md) e ninguém precisa de túnel.
+2. **Galera de fora**: no card *Chamando a galera de fora*, clica em **Criar link público** → *Copiar convite* e manda pra galera. Não precisa instalar nada: o telinha abre um túnel pelo protocolo do [bore](https://github.com/ekzhang/bore) (bore.pub). O conteúdo continua cifrado de ponta a ponta — o túnel só vê bytes embaralhados — e sala pública sempre tem senha (se você não pôs, o telinha cria uma e já coloca no convite).
+   Prefere outro túnel (ngrok, serveo, playit…)? Abre *Prefere seu próprio túnel?* no mesmo card. Na mesma rede (ou Tailscale/ZeroTier/Radmin) é só usar o IP. Tem VPS? Use o [servidor dedicado](docs/DEPLOY.md).
 3. **Entrar**: *Entrar numa sala* → cola o convite (ou endereço + senha).
 4. **Transmitir**: botão de tela no canto de baixo da barra lateral → escolhe resolução, fps, qualidade e tipo de conteúdo → *Ao vivo*. Dá pra mudar tudo com a transmissão rolando.
 5. **Assistir**: clica em quem está ao vivo. **F11** tela cheia · **duplo clique** modo cinema · **Esc** sai.
@@ -96,6 +92,7 @@ Pra binários que rodam em qualquer CPU x86-64 (como no CI): `zig build -Dcpu=x8
 --entrar host:porta   entra numa sala (aceita convite telinha://…)
 --senha X             senha da sala
 --admin TOKEN         entra como admin num servidor dedicado
+--publico             com --criar: já abre o link público
 --transmitir          começa a transmitir assim que conectar
 --assistir            assiste todo mundo que estiver ao vivo
 --fps N --qualidade N --modo tela|jogo --software

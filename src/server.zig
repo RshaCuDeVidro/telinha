@@ -231,16 +231,44 @@ pub const Server = struct {
                 sync.sleepMs(20);
                 continue;
             };
-            const cn = gpa.create(Conn) catch {
-                net.close(sock);
-                continue;
-            };
-            cn.* = .{ .server = s, .sock = sock };
-            sync.spawn(readerLoop, .{cn}) catch {
-                net.close(sock);
-                gpa.destroy(cn);
-            };
+            s.adopt(sock);
         }
+    }
+
+    /// Recebe uma conexão já aberta (ex.: um visitante vindo do túnel público).
+    pub fn adopt(s: *Server, sock: net.Socket) void {
+        if (s.stopped.load(.acquire)) {
+            net.close(sock);
+            return;
+        }
+        const cn = gpa.create(Conn) catch {
+            net.close(sock);
+            return;
+        };
+        cn.* = .{ .server = s, .sock = sock };
+        sync.spawn(readerLoop, .{cn}) catch {
+            net.close(sock);
+            gpa.destroy(cn);
+        };
+    }
+
+    /// Pro túnel: `ctx` é o *Server.
+    pub fn adoptCallback(ctx: *anyopaque, sock: net.Socket) void {
+        const s: *Server = @ptrCast(@alignCast(ctx));
+        s.adopt(sock);
+    }
+
+    /// Troca a senha (vale pra quem conectar daqui pra frente).
+    pub fn setPassword(s: *Server, password: []const u8) void {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        copyInto(&s.password, &s.password_len, password);
+    }
+
+    pub fn hasPassword(s: *Server) bool {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        return s.password_len > 0;
     }
 
     fn writerLoop(cn: *Conn) void {
@@ -256,7 +284,12 @@ pub const Server = struct {
         const hs = try crypto.Handshake.init();
         try net.sendAll(cn.sock, &hs.helloBytes(proto.version));
         if (peer.version != proto.version) return error.VersionMismatch; // o cliente vê nossa versão e avisa
-        cn.channel = try crypto.Channel.derive(&hs, peer, false, s.password[0..s.password_len]);
+        var pw: [128]u8 = undefined;
+        s.mutex.lock();
+        const pw_len = s.password_len;
+        @memcpy(pw[0..pw_len], s.password[0..pw_len]);
+        s.mutex.unlock();
+        cn.channel = try crypto.Channel.derive(&hs, peer, false, pw[0..pw_len]);
 
         const typ = proto.recvMsg(cn.sock, &cn.channel, rb) catch |e| {
             if (e == error.AuthFailed) {

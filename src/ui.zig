@@ -9,6 +9,8 @@ const Client = client_mod.Client;
 const View = client_mod.View;
 const Member = client_mod.Member;
 const Server = @import("server.zig").Server;
+const tunnel_mod = @import("tunnel.zig");
+const Tunnel = tunnel_mod.Tunnel;
 const sharer_mod = @import("sharer.zig");
 const proto = @import("proto.zig");
 const audio = @import("audio.zig");
@@ -102,6 +104,9 @@ const ic = struct {
     const volume = &iconArr(0xF028);
     const volume_off = &iconArr(0xF6A9);
     const warn = &iconArr(0xF071);
+    const globe = &iconArr(0xF0AC);
+    const power = &iconArr(0xF011);
+    const rotate = &iconArr(0xF2F9);
 };
 
 fn S(x: f32) f32 {
@@ -307,6 +312,8 @@ pub const App = struct {
 
     client: ?*Client = null,
     server: ?*Server = null,
+    tunnel: ?*Tunnel = null, // link público da sala que eu hospedo
+    own_tunnel_open: bool = false, // card: "prefere seu próprio túnel?" aberto
     sharer: ?*Sharer = null,
     connect_label: [300]u8 = undefined,
     connect_label_len: usize = 0,
@@ -348,6 +355,7 @@ pub const App = struct {
     // opções de linha de comando
     auto_share: bool = false,
     auto_watch: bool = false,
+    auto_public: bool = false,
 
     pub fn init(window: *c.GLFWwindow) App {
         var a: App = .{ .window = window, .cfg = config.load() };
@@ -393,6 +401,8 @@ pub const App = struct {
                 i += 1;
             } else if (std.mem.eql(u8, arg, "--transmitir")) {
                 a.auto_share = true;
+            } else if (std.mem.eql(u8, arg, "--publico")) {
+                a.auto_public = true;
             } else if (std.mem.eql(u8, arg, "--assistir")) {
                 a.auto_watch = true;
             } else if (std.mem.eql(u8, arg, "--software")) {
@@ -402,7 +412,11 @@ pub const App = struct {
             }
         }
         switch (action) {
-            .create => a.createRoom(),
+            .create => {
+                if (a.auto_public) _ = a.ensureRoomPassword();
+                a.createRoom();
+                if (a.auto_public) a.startTunnel();
+            },
             .join => a.joinRoom(),
             .none => {},
         }
@@ -482,6 +496,50 @@ pub const App = struct {
         a.connect("127.0.0.1", port, pass, token);
     }
 
+    /// Sala sem senha ganha uma (link público: qualquer um que achasse a
+    /// porta entraria). Retorna true se criou.
+    fn ensureRoomPassword(a: *App) bool {
+        if (config.getStr(&a.cfg.host_pass).len > 0) return false;
+        const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
+        var rnd: [8]u8 = undefined;
+        sync.osRandom(&rnd);
+        var pw: [8]u8 = undefined;
+        for (&pw, rnd) |*ch, r| ch.* = alphabet[r % alphabet.len];
+        config.setStr(&a.cfg.host_pass, &pw);
+        config.save(&a.cfg);
+        a.toast("Link público precisa de senha: a sala ganhou a senha {s} (já vai no convite).", .{pw}, false);
+        return true;
+    }
+
+    /// Liga o link público (túnel pelo protocolo do bore).
+    fn startTunnel(a: *App) void {
+        const s = a.server orelse return;
+        if (a.tunnel != null) return;
+        if (!s.hasPassword()) {
+            // a senha nova só vale pra quem conectar depois: a gente mesmo
+            // precisa já estar dentro, senão nosso próprio handshake falha
+            const connected = if (a.client) |cl| blk: {
+                cl.mutex.lock();
+                defer cl.mutex.unlock();
+                break :blk cl.status == .connected;
+            } else false;
+            if (!connected) {
+                a.toast("Espera entrar na sala pra criar o link público.", .{}, true);
+                return;
+            }
+            if (a.ensureRoomPassword()) s.setPassword(config.getStr(&a.cfg.host_pass));
+        }
+        a.tunnel = Tunnel.start(config.getStr(&a.cfg.tunnel_host), s, Server.adoptCallback) catch {
+            a.toast("Não consegui abrir o link público.", .{}, true);
+            return;
+        };
+    }
+
+    fn stopTunnel(a: *App) void {
+        if (a.tunnel) |t| t.stop();
+        a.tunnel = null;
+    }
+
     fn connect(a: *App, host: []const u8, port: u16, pass: []const u8, admin_token: []const u8) void {
         a.home_error_len = 0;
         config.save(&a.cfg);
@@ -507,6 +565,7 @@ pub const App = struct {
         a.views.clearRetainingCapacity();
         if (a.client) |cl| cl.close();
         a.client = null;
+        a.stopTunnel();
         if (a.server) |s| s.stop();
         a.server = null;
         a.screen = .home;
@@ -1244,10 +1303,17 @@ pub const App = struct {
 
     fn copyInvite(a: *App) void {
         var buf: [512]u8 = undefined;
+        var tun_buf: [300]u8 = undefined;
         const pass = if (a.server != null) config.getStr(&a.cfg.host_pass) else config.getStr(&a.cfg.join_pass);
-        const addr: []const u8 = if (a.server != null) std.mem.trim(u8, config.getStr(&a.cfg.public_addr), " ") else a.connect_label[0..a.connect_label_len];
+        const tun_addr: []const u8 = if (a.tunnel) |t| t.address(&tun_buf) else "";
+        const addr: []const u8 = if (tun_addr.len > 0)
+            tun_addr
+        else if (a.server != null)
+            std.mem.trim(u8, config.getStr(&a.cfg.public_addr), " ")
+        else
+            a.connect_label[0..a.connect_label_len];
         if (addr.len == 0) {
-            a.toast("Primeiro põe o endereço do túnel no card \"Chamando a galera de fora\".", .{}, true);
+            a.toast("Primeiro cria o link público (ou põe o endereço do seu túnel) no card \"Chamando a galera de fora\".", .{}, true);
             return;
         }
         const inv = (if (pass.len > 0)
@@ -1638,33 +1704,87 @@ pub const App = struct {
     fn drawHostTips(a: *App, s: *Server, top: c.ImVec2_c) void {
         const d = drawList();
         const w = S(500);
-        const h = S(262);
         const x = top.x - w / 2;
         const y = top.y;
+        const pad = S(18);
+        const own_h: f32 = if (a.own_tunnel_open) S(196) else 0;
+        const h = S(178) + own_h;
         rectFill(d, x, y, x + w, y + h, col.bg_side, S(10));
-        drawTextF(d, font_bold, 14, v2(x + S(18), y + S(16)), col.header, fmtZ("{s}  Chamando a galera de fora", .{ic.link}));
-        drawTextF(d, font_regular, 13, v2(x + S(18), y + S(42)), col.muted, "1. Abre um túnel TCP em outro terminal:");
+        drawTextF(d, font_bold, 14, v2(x + pad, y + S(16)), col.header, fmtZ("{s}  Chamando a galera de fora", .{ic.link}));
+
+        // link público embutido
+        var yy = y + S(44);
+        const st: ?tunnel_mod.Status = if (a.tunnel) |t| t.status() else null;
+        if (st == null) {
+            drawTextF(d, font_regular, 13, v2(x + pad, yy), col.muted, "Um endereço público pra essa sala, sem instalar nada.");
+            drawTextF(d, font_regular, 13, v2(x + pad, yy + S(18)), col.muted, fmtZ("Passa pelo {s}; tudo continua cifrado de ponta a ponta.", .{config.getStr(&a.cfg.tunnel_host)}));
+            c.igSetCursorScreenPos(v2(x + pad, yy + S(48)));
+            if (primaryButton(fmtZ("{s}  Criar link público", .{ic.globe}), v2(S(200), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.startTunnel();
+        } else switch (st.?.state) {
+            .connecting => {
+                drawTextF(d, font_semibold, 14, v2(x + pad, yy + S(4)), col.text, fmtZ("Abrindo o link público no {s}…", .{a.tunnel.?.hostSlice()}));
+                drawTextF(d, font_regular, 13, v2(x + pad, yy + S(26)), col.muted, "Leva só alguns segundos.");
+                c.igSetCursorScreenPos(v2(x + pad, yy + S(48)));
+                if (secondaryButton("Cancelar##tunel", v2(S(110), S(38)))) a.stopTunnel();
+            },
+            .ready => {
+                var abuf: [300]u8 = undefined;
+                const addr = a.tunnel.?.address(&abuf);
+                drawTextF(d, font_regular, 13, v2(x + pad, yy), col.muted, "Link público no ar. Manda o convite pra galera:");
+                rectFill(d, x + pad, yy + S(22), x + w - pad, yy + S(52), col.input, S(5));
+                drawTextF(d, font_regular, 13, v2(x + pad + S(10), yy + S(29)), col.green, ic.circle);
+                drawTextF(d, font_semibold, 14, v2(x + pad + S(30), yy + S(28)), col.header, fmtZ("{s}", .{addr}));
+                c.igSetCursorScreenPos(v2(x + pad, yy + S(62)));
+                if (primaryButton(fmtZ("{s}  Copiar convite##tunel", .{ic.user_plus}), v2(S(170), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.copyInvite();
+                c.igSameLine(0, S(10));
+                if (secondaryButton(fmtZ("{s}  Desligar", .{ic.power}), v2(S(120), S(38)))) a.stopTunnel();
+            },
+            .failed => {
+                drawTextF(d, font_semibold, 14, v2(x + pad, yy + S(4)), col.red, fmtZ("{s}  Não deu pra abrir o link público", .{ic.warn}));
+                drawTextF(d, font_regular, 13, v2(x + pad, yy + S(26)), col.muted, fmtZ("{s}", .{st.?.err}));
+                c.igSetCursorScreenPos(v2(x + pad, yy + S(48)));
+                if (primaryButton(fmtZ("{s}  Tentar de novo", .{ic.rotate}), v2(S(170), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) {
+                    a.stopTunnel();
+                    a.startTunnel();
+                }
+                c.igSameLine(0, S(10));
+                if (secondaryButton("Fechar##tunel", v2(S(100), S(38)))) a.stopTunnel();
+            },
+        }
+
+        // alternativa: túnel próprio (ngrok, bore, ssh)
+        yy = y + S(150);
+        c.igSetCursorScreenPos(v2(x + pad, yy - S(4)));
+        const toggle = fmtZ("{s}  Prefere seu próprio túnel? (ngrok, bore, ssh)", .{if (a.own_tunnel_open) ic.chev_up else ic.chev_down});
+        const ts = textSizeF(font_regular, 13, toggle);
+        if (c.igInvisibleButton("##own", v2(ts.x, ts.y + S(8)), 0)) a.own_tunnel_open = !a.own_tunnel_open;
+        drawTextF(d, font_regular, 13, v2(x + pad, yy), if (c.igIsItemHovered(0)) col.text else col.muted, toggle);
+        if (!a.own_tunnel_open) return;
+
+        yy += S(28);
         const cmds = [_][:0]const u8{
             fmtCmd(0, "ngrok tcp {d}", s.port),
             fmtCmd(1, "bore local {d} --to bore.pub", s.port),
             fmtCmd(2, "ssh -R 0:localhost:{d} serveo.net", s.port),
         };
         for (cmds, 0..) |cmd, i| {
-            const yy = y + S(66) + @as(f32, @floatFromInt(i)) * S(32);
-            rectFill(d, x + S(18), yy, x + w - S(18), yy + S(27), col.input, S(5));
-            drawTextF(d, font_regular, 13, v2(x + S(28), yy + S(5)), col.text, cmd);
-            c.igSetCursorScreenPos(v2(x + w - S(50), yy - S(1)));
+            const cy = yy + @as(f32, @floatFromInt(i)) * S(32);
+            rectFill(d, x + pad, cy, x + w - pad, cy + S(27), col.input, S(5));
+            drawTextF(d, font_regular, 13, v2(x + S(28), cy + S(5)), col.text, cmd);
+            c.igSetCursorScreenPos(v2(x + w - S(50), cy - S(1)));
             c.igPushID_Int(@intCast(i));
             if (iconButton("##cp", ic.copy, S(29), col.muted, col.hover, "Copiar")) c.igSetClipboardText(cmd.ptr);
             c.igPopID();
         }
-        drawTextF(d, font_regular, 13, v2(x + S(18), y + S(170)), col.muted, "2. Cola aqui o endereço que o túnel mostrou e copia o convite:");
-        c.igSetCursorScreenPos(v2(x + S(18), y + S(194)));
+        yy += S(100);
+        drawTextF(d, font_regular, 13, v2(x + pad, yy), col.muted, "Cola aqui o endereço que o túnel mostrou e copia o convite:");
+        c.igSetCursorScreenPos(v2(x + pad, yy + S(22)));
         const fw = w - S(36) - S(150);
         _ = textField("##pub", "ex.: 0.tcp.sa.ngrok.io:12345", &a.cfg.public_addr, fw, false);
         c.igSameLine(0, S(10));
-        if (primaryButton(fmtZ("{s}  Copiar convite", .{ic.user_plus}), v2(S(140), S(37)), col.blurple, col.blurple_hover, col.blurple_active)) {
+        if (primaryButton(fmtZ("{s}  Copiar convite##proprio", .{ic.user_plus}), v2(S(140), S(37)), col.blurple, col.blurple_hover, col.blurple_active)) {
             config.save(&a.cfg);
+            a.stopTunnel(); // vale o endereço digitado
             a.copyInvite();
         }
     }
