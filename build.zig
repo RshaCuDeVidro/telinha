@@ -42,6 +42,7 @@ pub fn build(b: *std.Build) void {
     const oh264 = b.lazyDependency("openh264", .{});
     const glfw = b.lazyDependency("glfw", .{});
     const nvh = b.lazyDependency("nv_codec_headers", .{});
+    const libva = b.lazyDependency("libva", .{});
     const opus = b.lazyDependency("opus", .{});
     const miniaudio = b.lazyDependency("miniaudio", .{});
     const rnnoise = b.lazyDependency("rnnoise", .{});
@@ -53,6 +54,7 @@ pub fn build(b: *std.Build) void {
         .openh264 = oh264 orelse return,
         .glfw = glfw orelse return,
         .nv_headers = nvh orelse return,
+        .libva = libva orelse return,
         .opus = opus orelse return,
         .miniaudio = miniaudio orelse return,
         .rnnoise = rnnoise orelse return,
@@ -169,6 +171,7 @@ const Deps = struct {
     openh264: *std.Build.Dependency,
     glfw: *std.Build.Dependency,
     nv_headers: *std.Build.Dependency,
+    libva: *std.Build.Dependency,
     opus: *std.Build.Dependency,
     miniaudio: *std.Build.Dependency,
     rnnoise: *std.Build.Dependency,
@@ -258,7 +261,10 @@ const rnnoise_src = [_][]const u8{
     "parse_lpcnet_weights.c", "rnnoise_data.c", "rnnoise_tables.c",
 };
 
-/// Encoder/decoder em hardware (NVENC/NVDEC). As libs do driver são carregadas em runtime.
+/// Encoder/decoder em hardware (NVENC/NVDEC; VA-API no Linux, Media
+/// Foundation no Windows). As libs do driver são carregadas em runtime: dos
+/// projetos só vêm os headers. O hwva.c usa o decoder do openh264 no
+/// autoteste, então quem chama addHwenc já tem que ter chamado linkOpenh264.
 fn addHwenc(b: *std.Build, deps: Deps, mod: *std.Build.Module) void {
     mod.addIncludePath(deps.nv_headers.path("include"));
     mod.addIncludePath(b.path("src/c"));
@@ -270,8 +276,24 @@ fn addHwenc(b: *std.Build, deps: Deps, mod: *std.Build.Module) void {
     mod.addCSourceFile(.{ .file = b.path("src/c/hwdec.c"), .flags = &.{ "-O2", "-Wno-everything" } });
     if (mod.resolved_target.?.result.os.tag == .windows)
         mod.addCSourceFile(.{ .file = b.path("src/c/hwdec_mf.c"), .flags = &.{ "-O2", "-Wno-everything" } })
-    else
+    else {
+        // va_version.h é gerado pelo build do libva; aqui basta a versão da API dos headers (2.22.0 = VA-API 1.22)
+        const wf = b.addWriteFiles();
+        _ = wf.add("va/va_version.h",
+            \\#pragma once
+            \\#define VA_MAJOR_VERSION 1
+            \\#define VA_MINOR_VERSION 22
+            \\#define VA_MICRO_VERSION 0
+            \\#define VA_VERSION 1.22.0
+            \\#define VA_VERSION_S "1.22.0"
+            \\#define VA_VERSION_HEX ((VA_MAJOR_VERSION << 24) | (VA_MINOR_VERSION << 16) | (VA_MICRO_VERSION << 8))
+            \\#define VA_CHECK_VERSION(major, minor, micro) (VA_MAJOR_VERSION > (major) || (VA_MAJOR_VERSION == (major) && VA_MINOR_VERSION > (minor)) || (VA_MAJOR_VERSION == (major) && VA_MINOR_VERSION == (minor) && VA_MICRO_VERSION >= (micro)))
+            \\
+        );
+        mod.addIncludePath(wf.getDirectory());
+        mod.addIncludePath(deps.libva.path("."));
         mod.addCSourceFile(.{ .file = b.path("src/c/hwva.c"), .flags = &.{ "-O2", "-Wno-everything" } });
+    }
 }
 
 const NasmProgram = union(enum) {

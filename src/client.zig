@@ -272,7 +272,7 @@ pub const View = struct {
         }
     }
 
-    /// Decoder em uso: NVDEC (placa NVIDIA) ou openh264.
+    /// Decoder em uso: em hardware (NVDEC, VA-API, Media Foundation) ou openh264.
     const Decoder = union(enum) {
         hw: codec.HwDecoder,
         sw: codec.Decoder,
@@ -294,7 +294,10 @@ pub const View = struct {
             break :blk .{ .sw = codec.Decoder.init() catch return };
         };
         defer dec.deinit();
-        v.decoder_name = if (dec == .hw) "NVDEC" else "openh264";
+        v.decoder_name = switch (dec) {
+            .hw => |*h| h.name(),
+            .sw => "openh264",
+        };
         v.stat_since = sync.nowMs();
         while (v.pop()) |item| {
             const frame, const behind = item;
@@ -302,7 +305,7 @@ pub const View = struct {
             v.decodeFrame(&dec, frame, behind) catch {
                 // perdeu referência ou veio lixo: recomeça do próximo IDR
                 if (dec == .hw) {
-                    // erro no NVDEC: segue com o openh264 daqui pra frente
+                    // erro no decoder em hardware: segue com o openh264 daqui pra frente
                     if (codec.Decoder.init()) |sw| {
                         dec.deinit();
                         dec = .{ .sw = sw };

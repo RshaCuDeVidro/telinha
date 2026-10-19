@@ -13,6 +13,7 @@ O telinha é MIT (ver [LICENSE](LICENSE)). Ele usa estes projetos:
 | [RNNoise](https://gitlab.xiph.org/xiph/rnnoise) 0.2 | supressão de ruído e detecção de voz do microfone | BSD 3-Clause | baixado pelo `build.zig.zon` |
 | [SpeexDSP](https://gitlab.xiph.org/xiph/speexdsp) 1.2.1 | cancelamento de eco do microfone | BSD 3-Clause | baixado pelo `build.zig.zon` |
 | [nv-codec-headers](https://github.com/FFmpeg/nv-codec-headers) 11.1 | headers do NVENC/NVDEC (as libs vêm do driver) | MIT | baixado pelo `build.zig.zon` |
+| [libva](https://github.com/intel/libva) 2.22 | headers do VA-API (a libva e o driver vêm do sistema, carregados em runtime) | MIT | baixado pelo `build.zig.zon` |
 | [NASM](https://www.nasm.us) 2.16.03 | só no build: monta o assembly SIMD do openh264 | BSD 2-Clause | baixado pelo `build.zig.zon` |
 | [Inter](https://rsms.me/inter/) | fonte da interface | SIL Open Font License 1.1 | `src/assets/Inter-*.ttf` |
 | [Font Awesome Free](https://fontawesome.com) 6.7 | ícones | fonte: SIL OFL 1.1; ícones: CC BY 4.0 | `src/assets/fa-solid-900.ttf` |
