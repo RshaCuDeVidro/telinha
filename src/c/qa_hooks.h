@@ -20,6 +20,8 @@ void qa_enable(int on);
 void qa_end_frame(void);
 int qa_count(void);
 const qa_item* qa_items(void);
+/* Dá rótulo a um item que o ImGui não rotula (o combo não chama ItemInfo). */
+void qa_label(unsigned id, const char* label);
 
 #ifdef __cplusplus
 }

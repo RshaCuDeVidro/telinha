@@ -50,6 +50,14 @@ void ImGuiTestEngineHook_ItemInfo(ImGuiContext* ctx, ImGuiID id, const char* lab
     }
 }
 
+void qa_label(unsigned id, const char* label) {
+    for (int i = g_items.Size - 1; i >= 0 && i >= g_items.Size - 16; i--) {
+        if (g_items[i].id != id) continue;
+        if (g_items[i].label[0] == 0) copy_str(g_items[i].label, sizeof g_items[i].label, label);
+        return;
+    }
+}
+
 void ImGuiTestEngineHook_Log(ImGuiContext* ctx, const char* fmt, ...) {
     (void)ctx;
     (void)fmt;

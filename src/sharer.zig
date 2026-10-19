@@ -365,9 +365,7 @@ const Pipeline = struct {
         p.applySettings();
         const fps: c_int = @intCast(std.math.clamp(p.settings.fps, 1, 60));
         if (s.kind == proto.kind_camera) {
-            const want_h: c_int = if (p.settings.max_height > 0) @intCast(p.settings.max_height) else 720;
-            const cam = c.cam_open(@ptrCast(&p.settings.camera_id), @divTrunc(want_h * 16, 9), want_h, fps, &p.err, p.err.len) orelse return error.Capture;
-            p.cap = .{ .camera = cam };
+            try p.openCamera();
         } else {
             const cap = c.cap_open(p.settings.source, @intFromBool(p.settings.cursor), fps, &p.err, p.err.len) orelse return error.Capture;
             p.cap = .{ .screen = cap };
@@ -405,6 +403,13 @@ const Pipeline = struct {
         s.mutex.unlock();
     }
 
+    fn openCamera(p: *Pipeline) !void {
+        const fps: c_int = @intCast(std.math.clamp(p.settings.fps, 1, 60));
+        const want_h: c_int = if (p.settings.max_height > 0) @intCast(p.settings.max_height) else 720;
+        const cam = c.cam_open(@ptrCast(&p.settings.camera_id), @divTrunc(want_h * 16, 9), want_h, fps, &p.err, p.err.len) orelse return error.Capture;
+        p.cap = .{ .camera = cam };
+    }
+
     fn applySettings(p: *Pipeline) void {
         p.mutex.lock();
         defer p.mutex.unlock();
@@ -426,11 +431,20 @@ const Pipeline = struct {
             // configurações mudaram?
             s.mutex.lock();
             const gen = s.settings_gen;
+            const old_h = p.settings.max_height;
+            const old_cam = p.settings.camera_id;
             if (gen != p.gen) p.settings = s.settings;
             s.mutex.unlock();
             if (gen != p.gen) {
                 p.gen = gen;
                 p.applySettings();
+                // outra câmera ou outra resolução: reabre sem derrubar a
+                // transmissão (quem assiste continua assistindo)
+                if (s.kind == proto.kind_camera and (old_h != p.settings.max_height or !std.mem.eql(u8, &old_cam, &p.settings.camera_id))) {
+                    if (p.cap) |src| src.close();
+                    p.cap = null;
+                    try p.openCamera();
+                }
             }
 
             // respeita o fps configurado

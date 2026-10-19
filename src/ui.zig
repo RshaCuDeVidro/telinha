@@ -446,6 +446,8 @@ pub const App = struct {
     echo_hint_shown: bool = false,
     mic_names: [16][128]u8 = undefined, // microfones (tela de configurações)
     n_mic_names: usize = 0,
+    cams: [8]c.cam_device = undefined, // câmeras (tela de configurações)
+    n_cams: usize = 0,
     volumes: config.VoiceVolumes = .{}, // volume da voz por nome (lembrado)
     // membros do último quadro (sons de entrou/saiu/ao vivo, volumes salvos)
     known: [64]struct { id: u32, streaming: bool } = undefined,
@@ -1083,11 +1085,22 @@ pub const App = struct {
             return;
         }
         const cl = a.client orelse return;
+        a.camera = Sharer.start(cl, a.cameraSettings()) catch {
+            a.toast("Não consegui ligar a câmera.", .{}, true);
+            return;
+        };
+    }
+
+    fn cameraSettings(a: *App) sharer_mod.Settings {
         var st: sharer_mod.Settings = .{
             .kind = proto.kind_camera,
             .fps = 30,
             .quality = 55,
-            .max_height = if (a.cfg.camera_res == 0) 480 else 720,
+            .max_height = switch (a.cfg.camera_res) {
+                0 => 480,
+                1 => 720,
+                else => 1080,
+            },
             .cursor = false,
             .mode = .motion,
             .hardware = a.cfg.hardware,
@@ -1095,10 +1108,7 @@ pub const App = struct {
             .clips = a.cfg.clips,
         };
         config.setStr(&st.camera_id, config.getStr(&a.cfg.camera_device));
-        a.camera = Sharer.start(cl, st) catch {
-            a.toast("Não consegui ligar a câmera.", .{}, true);
-            return;
-        };
+        return st;
     }
 
     fn stopCamera(a: *App) void {
@@ -2249,6 +2259,7 @@ pub const App = struct {
 
     fn openSettings(a: *App) void {
         a.n_mic_names = @intCast(audio.c.audio_list_mics(&a.mic_names, a.mic_names.len));
+        a.n_cams = @intCast(@max(0, c.cam_list(&a.cams, a.cams.len)));
         a.settings_modal = true;
     }
 
@@ -3375,7 +3386,7 @@ pub const App = struct {
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(10), S(9)));
         const preview: [*:0]const u8 = if (a.n_sources > 0) @ptrCast(&a.sources[@intCast(a.source_idx)].name) else "Tela";
-        if (c.igBeginCombo("##src", preview, 0)) {
+        if (beginCombo("##src", preview, 0)) {
             for (a.sources[0..a.n_sources], 0..) |*s, i| {
                 if (c.igSelectable_Bool(@ptrCast(&s.name), a.source_idx == @as(i32, @intCast(i)), 0, v2(0, 0))) a.source_idx = @intCast(i);
             }
@@ -3482,6 +3493,8 @@ pub const App = struct {
         const vp = c.igGetMainViewport();
         c.igSetNextWindowPos(v2(vp.*.Pos.x + vp.*.Size.x / 2, vp.*.Pos.y + vp.*.Size.y / 2), c.ImGuiCond_Always, v2(0.5, 0.5));
         c.igSetNextWindowSize(v2(S(460), 0), c.ImGuiCond_Always);
+        // janela baixa: rola em vez de cortar o fim
+        c.igSetNextWindowSizeConstraints(v2(S(460), 0), v2(S(460), @max(S(200), vp.*.Size.y - S(24))), null, null);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(24), S(22)));
         c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, S(10));
         c.igPushStyleColor_U32(c.ImGuiCol_PopupBg, col.bg_main);
@@ -3523,7 +3536,7 @@ pub const App = struct {
             c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
             c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(10), S(8)));
             var changed = false;
-            if (c.igBeginCombo("##mic", fmtZ("{s}", .{preview}).ptr, 0)) {
+            if (beginCombo("##mic", fmtZ("{s}", .{preview}).ptr, 0)) {
                 if (c.igSelectable_Bool("Padrão do sistema", cur.len == 0, 0, v2(0, 0))) {
                     config.setStr(&a.cfg.mic_device, "");
                     changed = true;
@@ -3576,6 +3589,56 @@ pub const App = struct {
         }
         c.igDummy(v2(0, S(16)));
 
+        // ---- câmera
+        pushFont(font_bold, 15);
+        textColored(col.header, fmtZ("{s}  Câmera", .{ic.video}));
+        popFont();
+        c.igDummy(v2(0, S(6)));
+        {
+            var changed = false;
+            const cur = config.getStr(&a.cfg.camera_device);
+            var preview: []const u8 = if (a.n_cams == 0) "Nenhuma câmera encontrada" else "A primeira que achar";
+            for (a.cams[0..a.n_cams]) |*cd| {
+                if (cur.len > 0 and std.mem.eql(u8, std.mem.sliceTo(&cd.id, 0), cur)) preview = std.mem.sliceTo(&cd.name, 0);
+            }
+            c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
+            c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(10), S(8)));
+            c.igSetNextItemWidth(w * 0.68);
+            if (beginCombo("##camdev", fmtZ("{s}", .{preview}).ptr, 0)) {
+                if (c.igSelectable_Bool("A primeira que achar", cur.len == 0, 0, v2(0, 0))) {
+                    config.setStr(&a.cfg.camera_device, "");
+                    changed = true;
+                }
+                for (a.cams[0..a.n_cams], 0..) |*cd, i| {
+                    const id = std.mem.sliceTo(&cd.id, 0);
+                    c.igPushID_Int(@intCast(i));
+                    if (c.igSelectable_Bool(fmtZ("{s}", .{std.mem.sliceTo(&cd.name, 0)}).ptr, std.mem.eql(u8, id, cur), 0, v2(0, 0))) {
+                        config.setStr(&a.cfg.camera_device, id);
+                        changed = true;
+                    }
+                    c.igPopID();
+                }
+                c.igEndCombo();
+            }
+            c.igSameLine(0, S(8));
+            const res_names = [_][:0]const u8{ "480p", "720p", "1080p" };
+            c.igSetNextItemWidth(w * 0.32 - S(8));
+            if (beginCombo("##camres", res_names[@intCast(std.math.clamp(a.cfg.camera_res, 0, 2))].ptr, 0)) {
+                for (res_names, 0..) |rn, i| {
+                    if (c.igSelectable_Bool(rn.ptr, a.cfg.camera_res == i, 0, v2(0, 0))) {
+                        a.cfg.camera_res = @intCast(i);
+                        changed = true;
+                    }
+                }
+                c.igEndCombo();
+            }
+            c.igPopStyleVar(1);
+            c.igPopStyleColor(1);
+            // câmera ligada: troca na hora, sem derrubar quem assiste
+            if (changed) if (a.camera) |cam| cam.update(a.cameraSettings());
+        }
+        c.igDummy(v2(0, S(16)));
+
         c.igPushTextWrapPos(c.igGetCursorPosX() + w);
         pushFont(font_regular, 12.5);
         textColored(col.faint, fmtZ("telinha {s} · protocolo v{d} · vídeo H.264 (NVENC/NVDEC ou openh264) · voz Opus + RNNoise + SpeexDSP · criptografia X25519 + ChaCha20-Poly1305", .{ version_string, proto.version }));
@@ -3588,6 +3651,14 @@ pub const App = struct {
             a.settings_modal = false;
             c.igCloseCurrentPopup();
         }
+    }
+
+    /// igBeginCombo com rótulo pro modo de testes (o ImGui não registra o do combo).
+    fn beginCombo(id: [:0]const u8, preview: [*c]const u8, flags: c_int) bool {
+        const iid = c.igGetID_Str(id.ptr);
+        const open = c.igBeginCombo(id.ptr, preview, flags);
+        if (qa.enabled()) c.qa_label(iid, id.ptr);
+        return open;
     }
 
     fn sliderStyled(id: [:0]const u8, v: *i32, min: i32, max: i32, f: [:0]const u8, w: f32) void {
@@ -3625,8 +3696,8 @@ pub const App = struct {
         try w.print(",\"fps\":{d},\"quality\":{d},\"mode\":{d},\"resolution\":{d},\"cursor\":{},\"audio\":{},\"hardware\":{},\"stats_always\":{},\"show_chat\":{}", .{
             cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.stats_always, cf.show_chat,
         });
-        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d}}}", .{
-            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res,
+        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d}}}", .{
+            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams,
         });
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);
         try w.print(",\"clipboard\":{f},\"chat_input\":{f}", .{ s(if (cb_text != null) std.mem.span(cb_text) else ""), s(std.mem.sliceTo(&a.chat_input, 0)) });

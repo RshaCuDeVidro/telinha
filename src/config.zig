@@ -46,7 +46,7 @@ pub const Config = struct {
     notifications: bool = true, // notificação do sistema com o telinha em segundo plano
     clips: bool = true, // guardar os últimos 30 s do que assiste (pra clipe)
     camera_device: [160]u8 = zstr("", 160), // vazio = a primeira câmera
-    camera_res: i32 = 1, // 0 = 480p, 1 = 720p
+    camera_res: i32 = 1, // 0 = 480p, 1 = 720p, 2 = 1080p
 };
 
 fn zstr(comptime s: []const u8, comptime n: usize) [n]u8 {
@@ -143,7 +143,7 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
     } else if (std.mem.eql(u8, k, "camera_device")) {
         setStr(&cfg.camera_device, v);
     } else if (std.mem.eql(u8, k, "camera_res")) {
-        cfg.camera_res = std.math.clamp(int, 0, 1);
+        cfg.camera_res = std.math.clamp(int, 0, 2);
     }
 }
 
