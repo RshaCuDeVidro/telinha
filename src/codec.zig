@@ -442,7 +442,7 @@ pub const HwEncoder = struct {
     /// Falha (com o motivo em `err`) se não houver GPU/driver compatível.
     pub fn init(opts: EncoderOptions, err: []u8) !HwEncoder {
         @memset(err, 0);
-        const h = hw.hwenc_open(@intCast(opts.width), @intCast(opts.height), @intCast(@max(1, opts.fps)), @intCast(opts.bitrate), @intFromBool(opts.mode == .screen), opts.temporal_layers, err.ptr, @intCast(err.len)) orelse return error.HwUnavailable;
+        const h = hw.hwenc_open(hw.HW_CODEC_H264, @intCast(opts.width), @intCast(opts.height), @intCast(@max(1, opts.fps)), @intCast(opts.bitrate), @intFromBool(opts.mode == .screen), opts.temporal_layers, err.ptr, @intCast(err.len)) orelse return error.HwUnavailable;
         return .{ .h = h, .opts = opts };
     }
 
@@ -511,7 +511,7 @@ pub const HwDecoder = struct {
 
     pub fn init(err: []u8) !HwDecoder {
         @memset(err, 0);
-        const h = hw.hwdec_open(err.ptr, @intCast(err.len)) orelse return error.HwUnavailable;
+        const h = hw.hwdec_open(hw.HW_CODEC_H264, err.ptr, @intCast(err.len)) orelse return error.HwUnavailable;
         return .{ .h = h };
     }
 

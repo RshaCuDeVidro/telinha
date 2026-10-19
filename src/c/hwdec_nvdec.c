@@ -11,7 +11,9 @@
 #define FFNV_DEBUG_LOG_FUNC(logctx, msg, ...) ((void)0)
 #include <ffnvcodec/dynlink_loader.h>
 
-struct hwdec {
+typedef struct nvdec nvdec;
+
+struct nvdec {
     CudaFunctions *cu;
     CuvidFunctions *cv;
     CUcontext ctx;
@@ -29,7 +31,7 @@ static void set_err(char *err, int errlen, const char *msg, int code) {
 }
 
 static int CUDAAPI on_sequence(void *ud, CUVIDEOFORMAT *f) {
-    struct hwdec *d = ud;
+    struct nvdec *d = ud;
     int w = f->display_area.right - f->display_area.left;
     int h = f->display_area.bottom - f->display_area.top;
     int surfaces = f->min_num_decode_surfaces > 0 ? f->min_num_decode_surfaces + 2 : 8;
@@ -82,13 +84,13 @@ static int CUDAAPI on_sequence(void *ud, CUVIDEOFORMAT *f) {
 }
 
 static int CUDAAPI on_decode(void *ud, CUVIDPICPARAMS *pp) {
-    struct hwdec *d = ud;
+    struct nvdec *d = ud;
     if (!d->dec || d->cv->cuvidDecodePicture(d->dec, pp) != CUDA_SUCCESS) d->err = 1;
     return 1;
 }
 
 static int CUDAAPI on_display(void *ud, CUVIDPARSERDISPINFO *di) {
-    struct hwdec *d = ud;
+    struct nvdec *d = ud;
     if (!d->dec || !d->host) return 1;
     CUVIDPROCPARAMS vp;
     memset(&vp, 0, sizeof vp);
@@ -126,7 +128,7 @@ static int CUDAAPI on_display(void *ud, CUVIDPARSERDISPINFO *di) {
     return 1;
 }
 
-void hwdec_close(hwdec *d) {
+void nvdec_close(nvdec *d) {
     if (!d) return;
     if (d->ctx) d->cu->cuCtxPushCurrent(d->ctx);
     if (d->parser) d->cv->cuvidDestroyVideoParser(d->parser);
@@ -142,12 +144,16 @@ void hwdec_close(hwdec *d) {
     free(d);
 }
 
-hwdec *hwdec_open(char *err, int errlen) {
-    struct hwdec *d = calloc(1, sizeof *d);
+nvdec *nvdec_open(int codec, char *err, int errlen) {
+    if (codec != HW_CODEC_H264) {
+        set_err(err, errlen, "NVDEC: codec ainda não suportado", codec);
+        return NULL;
+    }
+    struct nvdec *d = calloc(1, sizeof *d);
     if (!d) return NULL;
     if (cuda_load_functions(&d->cu, NULL) < 0 || cuvid_load_functions(&d->cv, NULL) < 0) {
         set_err(err, errlen, "driver NVIDIA (CUDA/NVDEC) não encontrado", 0);
-        hwdec_close(d);
+        nvdec_close(d);
         return NULL;
     }
     CUdevice dev;
@@ -157,7 +163,7 @@ hwdec *hwdec_open(char *err, int errlen) {
     if (r != CUDA_SUCCESS) {
         d->ctx = NULL;
         set_err(err, errlen, "não consegui iniciar o CUDA", (int)r);
-        hwdec_close(d);
+        nvdec_close(d);
         return NULL;
     }
     // a placa decodifica H.264 nesse tamanho?
@@ -171,7 +177,7 @@ hwdec *hwdec_open(char *err, int errlen) {
             CUcontext dummy;
             d->cu->cuCtxPopCurrent(&dummy);
             set_err(err, errlen, "a placa não decodifica H.264", 0);
-            hwdec_close(d);
+            nvdec_close(d);
             return NULL;
         }
     }
@@ -190,13 +196,13 @@ hwdec *hwdec_open(char *err, int errlen) {
     if (r != CUDA_SUCCESS) {
         d->parser = NULL;
         set_err(err, errlen, "não consegui criar o parser NVDEC", (int)r);
-        hwdec_close(d);
+        nvdec_close(d);
         return NULL;
     }
     return d;
 }
 
-int hwdec_decode(hwdec *d, const uint8_t *data, int len, hwdec_frame *out) {
+int nvdec_decode(nvdec *d, const uint8_t *data, int len, hwdec_frame *out) {
     d->have = 0;
     d->err = 0;
     d->cu->cuCtxPushCurrent(d->ctx);

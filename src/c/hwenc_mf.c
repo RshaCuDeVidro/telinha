@@ -196,7 +196,11 @@ static HRESULT configure(struct mfenc *e, int bitrate, int screen_mode) {
     return S_OK;
 }
 
-struct mfenc *mfenc_open(int width, int height, int fps, int bitrate, int screen_mode, char *err, int errlen) {
+struct mfenc *mfenc_open(int codec, int width, int height, int fps, int bitrate, int screen_mode, char *err, int errlen) {
+    if (codec != HW_CODEC_H264) {
+        set_err(err, errlen, "codec ainda não suportado no Media Foundation", 0);
+        return NULL;
+    }
     if (!mf_load()) {
         set_err(err, errlen, "sem Media Foundation", 0);
         return NULL;

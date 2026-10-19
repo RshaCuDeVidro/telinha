@@ -86,7 +86,11 @@ void nvenc_close(nvenc *e) {
     free(e);
 }
 
-nvenc *nvenc_open(int width, int height, int fps, int bitrate, int screen_mode, int temporal_layers, char *err, int errlen) {
+nvenc *nvenc_open(int codec, int width, int height, int fps, int bitrate, int screen_mode, int temporal_layers, char *err, int errlen) {
+    if (codec != HW_CODEC_H264) {
+        set_err(err, errlen, "NVENC: codec ainda não suportado", codec);
+        return NULL;
+    }
     nvenc *e = calloc(1, sizeof *e);
     if (!e) return NULL;
     e->width = width;

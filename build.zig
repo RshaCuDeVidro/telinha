@@ -267,6 +267,11 @@ fn addHwenc(b: *std.Build, deps: Deps, mod: *std.Build.Module) void {
     if (mod.resolved_target.?.result.os.tag == .windows)
         mod.addCSourceFile(.{ .file = b.path("src/c/hwenc_mf.c"), .flags = &.{ "-O2", "-Wno-everything" } });
     mod.addCSourceFile(.{ .file = b.path("src/c/hwdec_nvdec.c"), .flags = &.{ "-O2", "-Wno-everything" } });
+    mod.addCSourceFile(.{ .file = b.path("src/c/hwdec.c"), .flags = &.{ "-O2", "-Wno-everything" } });
+    if (mod.resolved_target.?.result.os.tag == .windows)
+        mod.addCSourceFile(.{ .file = b.path("src/c/hwdec_mf.c"), .flags = &.{ "-O2", "-Wno-everything" } })
+    else
+        mod.addCSourceFile(.{ .file = b.path("src/c/hwva.c"), .flags = &.{ "-O2", "-Wno-everything" } });
 }
 
 const NasmProgram = union(enum) {
