@@ -47,15 +47,17 @@ const Timing = struct {
     skipped: std.atomic.Value(u32) = .init(0),
     enc_dropped: std.atomic.Value(u32) = .init(0), // o encoder não gerou nada (controle de taxa do openh264)
 
-    fn report(t: *Timing, bps: u32, queued: usize) void {
+    /// `secs`: tempo desde o último relatório (com a tela parada, o encode
+    /// quase não roda e o relatório sai com vários segundos de intervalo).
+    fn report(t: *Timing, bps: u32, queued: usize, secs: f32) void {
         const nc = @max(1, t.captured.swap(0, .monotonic));
         const ne = @max(1, t.encoded.load(.monotonic));
-        std.debug.print("[telinha] captura {d} q/s: espera {d:.1} ms, cópia/escala {d:.1} ms, I420 {d:.1} ms | encode {d} q/s: {d:.1} ms | pulados {d} (+{d} pelo encoder) | {d} kbit/s | fila {d} KB\n", .{
-            nc,
+        std.debug.print("[telinha] captura {d:.0} q/s: espera {d:.1} ms, cópia/escala {d:.1} ms, I420 {d:.1} ms | encode {d:.0} q/s: {d:.1} ms | pulados {d} (+{d} pelo encoder) | {d} kbit/s | fila {d} KB\n", .{
+            @as(f32, @floatFromInt(nc)) / secs,
             @as(f64, @floatFromInt(t.capture.swap(0, .monotonic))) / @as(f64, @floatFromInt(nc)) / 1000,
             @as(f64, @floatFromInt(t.ingest.swap(0, .monotonic))) / @as(f64, @floatFromInt(nc)) / 1000,
             @as(f64, @floatFromInt(t.convert.swap(0, .monotonic))) / @as(f64, @floatFromInt(nc)) / 1000,
-            t.encoded.swap(0, .monotonic),
+            @as(f32, @floatFromInt(t.encoded.swap(0, .monotonic))) / secs,
             @as(f64, @floatFromInt(t.encode.swap(0, .monotonic))) / @as(f64, @floatFromInt(ne)) / 1000,
             t.skipped.swap(0, .monotonic),
             t.enc_dropped.swap(0, .monotonic),
@@ -768,7 +770,7 @@ const Pipeline = struct {
                 s.kbps = @as(f32, @floatFromInt(stat_bytes)) / 1024.0 / secs;
                 s.congested = tnow - bw.last_congestion_us < 2_000_000;
                 s.slow_viewer = bw.last_slow_us != 0 and tnow - bw.last_slow_us < 10_000_000;
-                if (debugEnabled()) p.timing.report(bw.bps, s.client.queue.queuedBytes());
+                if (debugEnabled()) p.timing.report(bw.bps, s.client.queue.queuedBytes(), secs);
                 stat_frames = 0;
                 stat_bytes = 0;
                 stat_since = tnow;
