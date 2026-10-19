@@ -845,11 +845,12 @@ pub const App = struct {
         if (a.sharer) |s| {
             s.mutex.lock();
             const sst = s.state;
-            const audio_on = s.audio_on;
+            const hears_self = s.audio_on and s.audio_hears_self;
             var audio_err: [160]u8 = s.audio_err;
             s.mutex.unlock();
-            // no Linux a captura escuta o próprio app: silencia o que você assiste (sem eco)
-            audio.mixer.self_mute.store(audio_on and audio.captureHearsSelf(), .monotonic);
+            // captura que escuta o próprio app (Linux sem PipeWire, Windows antigo):
+            // silencia o que você assiste, senão quem assiste ouviria eco
+            audio.mixer.self_mute.store(hears_self, .monotonic);
             if (!a.audio_err_shown and audio_err[0] != 0) {
                 a.audio_err_shown = true;
                 a.toast("Transmitindo sem áudio: {s}", .{std.mem.sliceTo(&audio_err, 0)}, true);
@@ -2007,13 +2008,7 @@ pub const App = struct {
         _ = c.igCheckbox("Mostrar o cursor do mouse", &a.cfg.cursor);
         _ = c.igCheckbox("Compartilhar o áudio do computador", &a.cfg.audio);
         _ = c.igCheckbox("Usar a placa de vídeo (NVIDIA NVENC/NVDEC), se tiver", &a.cfg.hardware);
-        if (a.cfg.audio and audio.captureHearsSelf()) {
-            c.igPushTextWrapPos(c.igGetCursorPosX() + w);
-            pushFont(font_regular, 12);
-            textColored(col.faint, "Enquanto você compartilha o áudio, o som das transmissões que você assiste fica mudo (no Linux ele voltaria em eco).");
-            popFont();
-            c.igPopTextWrapPos();
-        }
+
         c.igPopStyleColor(2);
 
         if (!sync.is_windows and a.n_sources > 0 and std.mem.startsWith(u8, std.mem.sliceTo(&a.sources[0].name, 0), "Escolher")) {

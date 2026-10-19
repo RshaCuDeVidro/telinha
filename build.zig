@@ -7,6 +7,7 @@
 //!   zig build bench           benchmark do pipeline de vídeo
 //!   zig build loadtest        teste de carga do servidor
 //!   zig build captest         diagnóstico da captura de tela (Linux)
+//!   zig build audiotest       diagnóstico da captura do som (Linux)
 //!   -Dserver-only=true        não baixa as dependências do app (Docker)
 //!
 //! Dependências C/C++ (Dear ImGui, cimgui, openh264, GLFW, NASM) vêm do
@@ -109,6 +110,20 @@ pub fn build(b: *std.Build) void {
         if (b.args) |args| run_cap.addArgs(args);
         b.step("captest", "diagnóstico da captura de tela").dependOn(&run_cap.step);
         b.getInstallStep().dependOn(&b.addInstallArtifact(cap_exe, .{ .dest_dir = .{ .override = .{ .custom = "tools" } } }).step);
+
+        // diagnóstico da captura do som (o próprio app não pode aparecer nela)
+        const aud_mod = b.createModule(.{
+            .root_source_file = b.path("src/audiotest.zig"),
+            .target = host,
+            .optimize = .ReleaseSafe,
+            .link_libc = true,
+        });
+        addAudio(b, deps, aud_mod, host, .ReleaseFast);
+        const aud_exe = b.addExecutable(.{ .name = "audiotest", .root_module = aud_mod });
+        const run_aud = b.addRunArtifact(aud_exe);
+        if (b.args) |args| run_aud.addArgs(args);
+        b.step("audiotest", "diagnóstico da captura do som do computador").dependOn(&run_aud.step);
+        b.getInstallStep().dependOn(&b.addInstallArtifact(aud_exe, .{ .dest_dir = .{ .override = .{ .custom = "tools" } } }).step);
     }
 
     // benchmark do pipeline de vídeo
@@ -152,6 +167,11 @@ fn addAudio(b: *std.Build, deps: Deps, mod: *std.Build.Module, target: std.Build
     mod.addIncludePath(deps.miniaudio.path("."));
     mod.addIncludePath(b.path("src/c"));
     mod.addCSourceFile(.{ .file = b.path("src/c/audio.c"), .flags = &.{ "-O2", "-Wno-everything" } });
+    // Linux: som dos aplicativos pelo grafo do PipeWire (sem o próprio telinha)
+    if (target.result.os.tag == .linux) {
+        mod.addCSourceFile(.{ .file = b.path("src/c/audio_pw.c"), .flags = &.{ "-O2", "-Wno-everything" } });
+        mod.linkSystemLibrary("libpipewire-0.3", .{});
+    }
 }
 
 /// Encoder/decoder em hardware (NVENC/NVDEC). As libs do driver são carregadas em runtime.

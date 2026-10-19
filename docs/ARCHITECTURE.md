@@ -127,13 +127,16 @@ dispara tentativas automáticas com espera crescente; ao voltar, a transmissão
 recomeça e quem você assistia volta pra tela (procurado pelo nome, já que os
 ids mudam se o servidor reiniciou).
 
-**Áudio.** Quem transmite captura o som do computador (WASAPI loopback
-excluindo o próprio processo no Windows; monitor da saída padrão no Linux) e
-manda pacotes Opus de 10 ms com DTX (silêncio quase não gasta banda). Quem
-assiste guarda 50 ms por transmissão antes de tocar, pula pra frente se o
-atraso passar de 200 ms e soma tudo numa saída só. No Linux, enquanto você
-transmite áudio, o que você assiste fica mudo (a captura escutaria o próprio
-app e viraria eco).
+**Áudio.** Quem transmite captura o som do computador **sem o que o próprio
+telinha toca**: no Windows, loopback do WASAPI excluindo o processo; no Linux,
+o telinha cria uma entrada no PipeWire que o gerenciador de sessão não liga em
+nada e liga nela a saída de cada aplicativo que toca som, menos as do próprio
+processo (o mesmo truque do venmic/Vesktop; o PID vem das propriedades
+completas do nó). Sem PipeWire, cai pro monitor da saída padrão e aí o que
+você assiste fica mudo enquanto você transmite áudio. Pacotes Opus de 10 ms com
+DTX (silêncio quase não gasta banda). Quem assiste guarda 50 ms por transmissão
+antes de tocar, pula pra frente se o atraso passar de 200 ms e soma tudo numa
+saída só. `zig build audiotest` confere que o próprio som não entra na captura.
 
 **UI que dorme.** O loop usa `glfwWaitEventsTimeout`; threads de rede e decode
 acordam a UI com `glfwPostEmptyEvent` quando há quadro novo. Sem transmissão,

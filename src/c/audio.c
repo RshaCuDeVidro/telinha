@@ -10,6 +10,9 @@
 #include "miniaudio.h"
 
 #include "audio.h"
+#ifndef _WIN32
+#include "audio_pw.h"
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +25,10 @@ struct audio_dev {
     ma_context ctx;
     ma_device dev;
     int ctx_ok, dev_ok;
+    int hears_self; // a captura pega também o que o próprio app toca
+#ifndef _WIN32
+    pwcap *pw; // captura dos aplicativos pelo grafo do PipeWire (sem o telinha)
+#endif
     audio_capture_fn capture;
     audio_play_fn play;
     void *user;
@@ -39,6 +46,9 @@ static void on_data(ma_device *dev, void *out, const void *in, ma_uint32 frames)
 
 void audio_close(audio_dev *d) {
     if (!d) return;
+#ifndef _WIN32
+    if (d->pw) pwcap_close(d->pw);
+#endif
     if (d->dev_ok) ma_device_uninit(&d->dev);
     if (d->ctx_ok) ma_context_uninit(&d->ctx);
     free(d);
@@ -98,6 +108,7 @@ audio_dev *audio_capture_open(audio_capture_fn fn, void *user, char *err, int er
         d->dev_ok = 0;
         cfg.wasapi.loopbackProcessID = 0;
         cfg.wasapi.loopbackProcessExclude = MA_FALSE;
+        d->hears_self = 1;
         if (start(d, &cfg, err, errlen) < 0) {
             audio_close(d);
             return NULL;
@@ -105,6 +116,15 @@ audio_dev *audio_capture_open(audio_capture_fn fn, void *user, char *err, int er
     }
     return d;
 #else
+    // PipeWire: os aplicativos ligados direto na nossa entrada, menos o telinha
+    {
+        audio_dev *d = calloc(1, sizeof *d);
+        if (!d) return NULL;
+        d->pw = pwcap_open(fn, user, NULL, 0);
+        if (d->pw) return d;
+        free(d);
+    }
+    // sem PipeWire: monitor da saída padrão (pega também o que o telinha toca)
     const ma_backend backends[] = {ma_backend_pulseaudio};
     audio_dev *d = open_dev(ma_device_type_capture, backends, 1, err, errlen);
     if (!d) {
@@ -113,6 +133,7 @@ audio_dev *audio_capture_open(audio_capture_fn fn, void *user, char *err, int er
     }
     d->capture = fn;
     d->user = user;
+    d->hears_self = 1;
     // nome especial do PulseAudio/PipeWire: monitor da saída padrão
     ma_device_id id;
     memset(&id, 0, sizeof id);
@@ -144,10 +165,6 @@ audio_dev *audio_output_open(audio_play_fn fn, void *user, char *err, int errlen
     return d;
 }
 
-int audio_capture_hears_self(void) {
-#ifdef _WIN32
-    return 0;
-#else
-    return 1;
-#endif
+int audio_capture_hears_self(audio_dev *d) {
+    return d ? d->hears_self : 0;
 }

@@ -184,6 +184,12 @@ pub const Sender = struct {
         return s;
     }
 
+    /// A captura também pega o que o próprio app toca (jeito antigo, sem
+    /// PipeWire/Windows antigo): quem transmite precisa silenciar o que ouve.
+    pub fn hearsSelf(s: *const Sender) bool {
+        return c.audio_capture_hears_self(s.dev) != 0;
+    }
+
     pub fn destroy(s: *Sender) void {
         if (s.dev) |d| c.audio_close(d); // para o callback antes de liberar
         c.opus_encoder_destroy(s.enc);
@@ -208,6 +214,4 @@ pub const Sender = struct {
     }
 };
 
-pub fn captureHearsSelf() bool {
-    return c.audio_capture_hears_self() != 0;
-}
+

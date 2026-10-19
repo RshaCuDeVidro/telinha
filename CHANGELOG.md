@@ -41,6 +41,10 @@
   hora também em perfil High (FlushFrame).
 - `zig build bench` mede qualidade (PSNR) x tempo por encoder/preset,
   inclusive com uma captura de tela de verdade.
+- **Linux: áudio sem eco e sem silenciar o que você assiste.** A captura liga
+  cada aplicativo direto numa entrada do telinha no grafo do PipeWire, menos o
+  próprio telinha (antes: monitor da saída, que pegava tudo, e o app silenciava
+  o que você assistia enquanto compartilhava áudio). `zig build audiotest`.
 
 ## 2.0.0
 

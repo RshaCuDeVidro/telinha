@@ -162,6 +162,7 @@ pub const Sharer = struct {
     slow_viewer: bool = false, // algum espectador pediu menos nos últimos segundos
     encoder_name: []const u8 = "",
     audio_on: bool = false, // capturando o som do computador
+    audio_hears_self: bool = false, // a captura pega também o que o telinha toca (jeito antigo)
     audio_err: [160]u8 = [_]u8{0} ** 160, // por que o áudio não deu (vazio = deu certo ou não pediu)
     w: u32 = 0,
     h: u32 = 0,
@@ -337,6 +338,7 @@ const Pipeline = struct {
             }
             s.mutex.lock();
             s.audio_on = p.audio_sender != null;
+            s.audio_hears_self = if (p.audio_sender) |a| a.hearsSelf() else false;
             s.mutex.unlock();
         }
         s.mutex.lock();

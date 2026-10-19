@@ -17,7 +17,7 @@
 
 - **Salas** — alguém cria (ou sobe um [servidor dedicado](docs/DEPLOY.md)), a galera entra com endereço + senha ou com um **convite** `telinha://…`.
 - **Várias transmissões ao mesmo tempo**, em grade que se ajusta pra deixar os vídeos o maior possível; destaque, tela cheia e modo cinema.
-- **Áudio do computador junto** (vídeo, jogo, música), em Opus com pouca latência, com volume e mudo por transmissão. No Windows o som que o próprio telinha toca não entra na captura, então não tem eco.
+- **Áudio do computador junto** (vídeo, jogo, música), em Opus com pouca latência, com volume e mudo por transmissão. O som que o próprio telinha toca nunca entra na captura (Windows: loopback excluindo o processo; Linux: cada aplicativo ligado direto na captura pelo grafo do PipeWire, menos o telinha) — sem eco, e você continua ouvindo o que assiste enquanto compartilha.
 - **Chat**, lista de membros, quem está ao vivo, quem está assistindo quem, ping.
 - **H.264 com pouca latência**: encode e decode na **placa de vídeo (NVIDIA NVENC/NVDEC)** quando tem, senão **openh264** com SIMD em várias threads. Só manda quadro quando a tela muda; a conversão de cor de quem assiste roda num shader na GPU.
 - **Atraso controlado de ponta a ponta, até atrás de túnel**: cada quadro é confirmado, então o telinha mede o atraso real do caminho inteiro — inclusive dentro de ngrok/bore, que escondem o congestionamento. Se o upload não aguenta, a taxa cai e quadros são pulados em vez de acumular atraso; se um espectador não aguenta, ele recomeça de um quadro completo sem travar os outros, e a qualidade só cai pra todo mundo se a maioria estiver sofrendo.
