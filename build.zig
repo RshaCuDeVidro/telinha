@@ -20,6 +20,8 @@ pub fn build(b: *std.Build) void {
     const optimize = b.option(std.builtin.OptimizeMode, "optimize", "modo de otimização (padrão ReleaseFast)") orelse .ReleaseFast;
     const native_only = b.option(bool, "native-only", "compila só o app pra máquina atual") orelse false;
     const server_only = b.option(bool, "server-only", "compila só o servidor dedicado (não baixa as dependências do app)") orelse false;
+    // dono/repositório no GitHub (o CI passa): o app avisa quando sai versão nova
+    const repo = b.option([]const u8, "repo", "repositório no GitHub (dono/nome) pra checar versão nova") orelse "";
     // alvo do app nativo: a máquina atual por padrão; releases usam -Dcpu=x86_64_v2
     const host = b.standardTargetOptions(.{});
     const windows_cpu: std.Target.Query.CpuModel = if (host.query.cpu_model == .explicit) host.query.cpu_model else .baseline;
@@ -58,7 +60,9 @@ pub fn build(b: *std.Build) void {
         .rnnoise = rnnoise orelse return,
         .speexdsp = speexdsp orelse return,
         .nasm = nasm,
+        .options = b.addOptions(),
     };
+    deps.options.addOption([]const u8, "repo", repo);
 
     // app
     const native_app = app(b, deps, host, optimize);
@@ -174,6 +178,7 @@ const Deps = struct {
     rnnoise: *std.Build.Dependency,
     speexdsp: *std.Build.Dependency,
     nasm: NasmProgram,
+    options: *std.Build.Step.Options, // build_options do app (repo)
 };
 
 /// Opus (áudio) em ponto flutuante + o shim de áudio com miniaudio.
@@ -423,6 +428,7 @@ fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: st
         .strip = optimize != .Debug,
     });
     mod.addIncludePath(b.path("src/c"));
+    mod.addOptions("build_options", deps.options);
     addImgui(b, deps, mod);
     linkOpenh264(b, deps, mod, target, optimize);
     addHwenc(b, deps, mod);
@@ -435,8 +441,9 @@ fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: st
         mod.addCSourceFile(.{ .file = b.path("src/c/camera_win.c"), .flags = &.{"-O2"} });
         mod.addCSourceFile(.{ .file = b.path("src/c/notify_win.c"), .flags = &.{"-O2"} });
         mod.addCSourceFile(.{ .file = b.path("src/c/netaddr_win.c"), .flags = &.{"-O2"} });
+        mod.addCSourceFile(.{ .file = b.path("src/c/httpget_win.c"), .flags = &.{"-O2"} });
         mod.addWin32ResourceFile(.{ .file = b.path("assets/telinha.rc") });
-        for ([_][]const u8{ "opengl32", "gdi32", "user32", "shell32", "ws2_32", "d3d11", "dxgi", "ole32", "dwmapi", "winmm", "advapi32", "iphlpapi" }) |lib|
+        for ([_][]const u8{ "opengl32", "gdi32", "user32", "shell32", "ws2_32", "d3d11", "dxgi", "ole32", "dwmapi", "winmm", "advapi32", "iphlpapi", "winhttp" }) |lib|
             mod.linkSystemLibrary(lib, .{});
     } else {
         mod.addCSourceFile(.{ .file = b.path("src/c/capture_linux.c"), .flags = &.{"-O2"} });

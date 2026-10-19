@@ -71,6 +71,7 @@ const Conn = struct {
     admin: bool = false,
     owner: bool = false, // entrou com o token de admin (quem criou a sala)
     client_key: u64 = 0, // aleatória, do app de quem conectou (banimento)
+    app_version: [16]u8 = [_]u8{0} ** 16, // "3.0.0" (vazio = app que não conta)
     route: u8 = proto.route_unknown,
     via_tunnel: bool = false,
     ip: [16]u8 = undefined,
@@ -562,6 +563,10 @@ pub const Server = struct {
         const name = try r.str();
         const token = try r.str();
         cn.client_key = r.u64_() catch 0;
+        if (r.str()) |v| {
+            const n = @min(v.len, cn.app_version.len - 1);
+            @memcpy(cn.app_version[0..n], v[0..n]);
+        } else |_| {}
         try s.join(cn, name, token);
     }
 
@@ -933,6 +938,7 @@ pub const Server = struct {
         try b.u64_(s.nowUs());
         try b.u64_(s.instance);
         try b.u8_(cn.route);
+        try b.str(proto.app_version);
         cn.queue.pushOwned(try b.finish());
 
         // o que já foi dito na sala
@@ -1047,6 +1053,8 @@ pub const Server = struct {
             try b.u16_(k);
             for (o.watching.items[0..k]) |id| try b.u32_(id);
         }
+        // versão do app de cada um, na mesma ordem (no fim: quem não lê ignora)
+        for (s.conns.items) |o| try b.str(std.mem.sliceTo(&o.app_version, 0));
         const m = try b.finish();
         defer m.release();
         for (s.conns.items) |o| o.queue.push(m);

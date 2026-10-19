@@ -22,7 +22,9 @@ const mp4 = @import("mp4.zig");
 const pip = @import("pip.zig");
 const connect_mod = @import("connect.zig");
 const net = @import("net.zig");
-pub const version_string = "3.0.0";
+const update = @import("update.zig");
+const build_options = @import("build_options");
+pub const version_string = proto.app_version;
 const Sharer = sharer_mod.Sharer;
 
 // ---------------------------------------------------------------------------
@@ -447,6 +449,8 @@ pub const App = struct {
     mic_names: [16][128]u8 = undefined, // microfones (tela de configurações)
     n_mic_names: usize = 0,
     cams: [8]c.cam_device = undefined, // câmeras (tela de configurações)
+    newer_seen: [16]u8 = undefined, // versão mais nova vista na sala (já avisada)
+    newer_seen_len: usize = 0,
     n_cams: usize = 0,
     volumes: config.VoiceVolumes = .{}, // volume da voz por nome (lembrado)
     // membros do último quadro (sons de entrou/saiu/ao vivo, volumes salvos)
@@ -465,6 +469,7 @@ pub const App = struct {
     pub fn init(window: *c.GLFWwindow) App {
         var a: App = .{ .window = window, .cfg = config.load(), .volumes = config.VoiceVolumes.load() };
         _ = std.fmt.bufPrintZ(&a.port_buf, "{d}", .{a.cfg.host_port}) catch {};
+        if (a.cfg.check_updates) update.checkAsync(build_options.repo, version_string);
         return a;
     }
 
@@ -639,6 +644,20 @@ pub const App = struct {
                 var b: [96]u8 = undefined;
                 a.notifyAway("telinha", std.fmt.bufPrint(&b, "{s} {s}", .{ m.nameSlice(), if (went_live) "começou a transmitir" else "entrou na sala" }) catch "");
             }
+        }
+        // alguém na sala com o telinha mais novo: avisa uma vez por versão
+        var newest: []const u8 = "";
+        var newest_who: []const u8 = "";
+        for (cur[0..n]) |*m| {
+            if (m.id != me and update.isNewer(m.versionSlice(), if (newest.len > 0) newest else version_string)) {
+                newest = m.versionSlice();
+                newest_who = m.nameSlice();
+            }
+        }
+        if (newest.len > 0 and !std.mem.eql(u8, newest, a.newer_seen[0..a.newer_seen_len])) {
+            a.newer_seen_len = @min(newest.len, a.newer_seen.len);
+            @memcpy(a.newer_seen[0..a.newer_seen_len], newest[0..a.newer_seen_len]);
+            a.toast("{s} está no telinha {s} e você no {s}: tem versão nova.{s}", .{ newest_who, newest, version_string, if (build_options.repo.len > 0) " Baixe em Configurações." else "" }, false);
         }
         a.known_ready = true;
         a.n_known = n;
@@ -1455,6 +1474,7 @@ pub const App = struct {
             drawTextF(d, font_regular, 14, v2(p.x + isz + S(15), p.y + S(28)), col.muted, "compartilha a tela com a galera");
             c.igDummy(v2(inner, isz + S(26)));
         }
+        a.drawUpdateBanner(inner);
 
         _ = segmented("tabs", &.{ "Entrar numa sala", "Criar sala" }, &a.home_tab, inner);
         c.igDummy(v2(0, S(14)));
@@ -3014,6 +3034,24 @@ pub const App = struct {
     }
 
     /// Abre a pasta dos clipes no gerenciador de arquivos.
+    /// "Versão nova disponível" (checagem no GitHub), com o botão de baixar.
+    fn drawUpdateBanner(a: *App, w: f32) void {
+        _ = a;
+        if (update.getState() != .newer) return;
+        var vb: [32]u8 = undefined;
+        const v = update.latest(&vb);
+        const d = drawList();
+        const p = c.igGetCursorScreenPos();
+        const h = S(40);
+        rectFill(d, p.x, p.y, p.x + w, p.y + h, rgba(0x23A55A, 40), S(8));
+        drawTextF(d, font_semibold, 14, v2(p.x + S(12), p.y + S(11)), col.header, fmtZ("{s}  telinha {s} saiu (você tem o {s})", .{ ic.arrow_right, v, version_string }));
+        const bw = S(78);
+        c.igSetCursorScreenPos(v2(p.x + w - bw - S(6), p.y + S(6)));
+        if (primaryButton("Baixar##update", v2(bw, h - S(12)), col.green, rgb(0x1F8B4C), rgb(0x1A7340))) openReleases();
+        c.igSetCursorScreenPos(v2(p.x, p.y + h));
+        c.igDummy(v2(w, S(12)));
+    }
+
     fn openClipsFolder(a: *App) void {
         var buf: [512]u8 = undefined;
         const dir = clip.folder(&buf);
@@ -3517,6 +3555,14 @@ pub const App = struct {
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         _ = c.igCheckbox("Mostrar estatísticas sempre (não só com o mouse em cima)", &a.cfg.stats_always);
         _ = c.igCheckbox("Notificações com o telinha em segundo plano (chat, ao vivo, quem entrou)", &a.cfg.notifications);
+        if (build_options.repo.len > 0 or update.getState() != .idle) {
+            if (c.igCheckbox("Avisar quando sair versão nova (pergunta ao GitHub ao abrir)", &a.cfg.check_updates) and a.cfg.check_updates)
+                update.checkAsync(build_options.repo, version_string);
+            if (update.getState() == .newer) {
+                c.igSameLine(0, S(8));
+                if (c.igSmallButton("Baixar a nova##upd")) openReleases();
+            }
+        }
         if (c.igCheckbox("Clipes: guardar os últimos 30 s do que você assiste", &a.cfg.clips)) a.applyClips();
         c.igSameLine(0, S(8));
         if (c.igSmallButton("Abrir a pasta")) a.openClipsFolder();
@@ -3722,6 +3768,8 @@ pub const App = struct {
             try w.print("{{\"stream\":{d},\"x\":{d},\"y\":{d},\"w\":{d},\"h\":{d}}}", .{ pp.stream, px, py, pw, ph });
         };
         try w.writeAll("]");
+        var ub: [32]u8 = undefined;
+        try w.print(",\"opened\":{f},\"update\":{f},\"update_latest\":{f}", .{ s(qa_opened[0..qa_opened_len]), s(@tagName(update.getState())), s(update.latest(&ub)) });
         try w.print(",\"last_saved\":{f},\"clip_jobs\":{d}", .{ s(a.last_saved[0..a.last_saved_len]), blk: {
             var n: usize = 0;
             for (a.clip_jobs) |j| n += @intFromBool(j != null);
@@ -3867,7 +3915,27 @@ extern "c" fn posix_spawnp(pid: *c_int, file: [*:0]const u8, fa: ?*const anyopaq
 extern "c" var environ: [*:null]const ?[*:0]const u8;
 
 /// Abre uma pasta/arquivo no programa padrão (xdg-open / Explorer).
+/// Página da release nova (a que veio do GitHub; senão a última do repositório).
+fn openReleases() void {
+    var b: [256]u8 = undefined;
+    const page = update.page(&b);
+    const url = if (page.len > 0) page else if (build_options.repo.len > 0)
+        std.fmt.bufPrint(&b, "https://github.com/{s}/releases/latest", .{build_options.repo}) catch return
+    else
+        return;
+    _ = openPath(url);
+}
+
+/// O que o modo de testes "abriu" (nada é aberto de verdade nos testes).
+var qa_opened: [256]u8 = undefined;
+var qa_opened_len: usize = 0;
+
 fn openPath(path: []const u8) bool {
+    if (qa.enabled()) {
+        qa_opened_len = @min(path.len, qa_opened.len);
+        @memcpy(qa_opened[0..qa_opened_len], path[0..qa_opened_len]);
+        return true;
+    }
     if (sync.is_windows) {
         var w: [1024:0]u16 = undefined;
         const n = std.unicode.utf8ToUtf16Le(&w, path) catch return false;

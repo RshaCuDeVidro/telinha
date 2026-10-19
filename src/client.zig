@@ -33,6 +33,10 @@ fn debugEnabled() bool {
 }
 
 pub const Member = struct {
+    pub fn versionSlice(m: *const Member) []const u8 {
+        return m.version[0..m.version_len];
+    }
+
     id: u32,
     name: [48]u8,
     name_len: usize,
@@ -42,6 +46,8 @@ pub const Member = struct {
     audio: bool,
     flags: u8,
     route: u8, // por onde chegou (proto.route_*)
+    version: [16]u8 = undefined, // versão do app dela ("" = não contou)
+    version_len: u8 = 0,
     w: u16,
     h: u16,
     fps: u8,
@@ -471,6 +477,8 @@ pub const Client = struct {
     /// Último id de mensagem visto (o histórico que chega depois não repete).
     chat_last_id: u32 = 0,
     instance: u64 = 0,
+    server_version: [16]u8 = undefined, // versão do app/servidor que hospeda
+    server_version_len: usize = 0,
     notices: std.ArrayList(Notice) = .empty,
     pointers: std.ArrayList(Pointer) = .empty,
     views: std.ArrayList(*View) = .empty,
@@ -588,6 +596,15 @@ pub const Client = struct {
         return if (i < cl.n_targets) &cl.targets[i] else null;
     }
 
+    /// Versão do app que fala cada protocolo antigo (pra mensagem de erro).
+    fn protoAppName(v: u16) []const u8 {
+        return switch (v) {
+            0...4 => "1.x",
+            5 => "2.x",
+            else => "anterior",
+        };
+    }
+
     fn connectLoop(cl: *Client) void {
         defer cl.release();
         defer cl.wake();
@@ -598,7 +615,10 @@ pub const Client = struct {
                 error.Cancelled => {},
                 error.VersionMismatch => {
                     cl.setFinal();
-                    cl.setError("A sala usa outra versão do telinha (protocolo {d}, o seu é {d}). Atualizem pra mesma versão.", .{ fail.server_version, proto.version });
+                    if (fail.server_version > proto.version)
+                        cl.setError("A sala está numa versão mais nova do telinha (protocolo {d}; o seu {s} usa o {d}). Atualize o seu telinha.", .{ fail.server_version, proto.app_version, proto.version })
+                    else
+                        cl.setError("A sala está numa versão mais velha do telinha ({s}). Quem criou a sala precisa atualizar pro {s} ou mais novo.", .{ protoAppName(fail.server_version), proto.app_version });
                 },
                 error.NotTelinha => {
                     cl.setFinal();
@@ -640,6 +660,8 @@ pub const Client = struct {
         b.str(cl.name[0..cl.name_len]) catch return;
         b.str(cl.admin_token[0..cl.admin_token_len]) catch return;
         b.u64_(cl.client_key) catch return;
+        // TELINHA_VERSAO_TESTE: finge outra versão (testes do aviso de versão nova)
+        b.str(if (getenv("TELINHA_VERSAO_TESTE")) |v| std.mem.span(v) else proto.app_version) catch return;
         cl.queue.pushOwned(b.finish() catch return);
 
         var rb: proto.RecvBuf = .{};
@@ -715,6 +737,9 @@ pub const Client = struct {
                 const server_us = try r.u64_();
                 cl.instance = try r.u64_();
                 cl.route = try r.u8_();
+                const sv = r.str() catch "";
+                cl.server_version_len = @min(sv.len, cl.server_version.len);
+                @memcpy(cl.server_version[0..cl.server_version_len], sv[0..cl.server_version_len]);
                 cl.clock_offset.store(@as(i64, @intCast(server_us)) - @as(i64, @intCast(sync.nowUs())), .monotonic);
                 cl.status = .connected;
                 cl.welcomed.store(true, .release);
@@ -768,7 +793,13 @@ pub const Client = struct {
                             m.n_watching += 1;
                         }
                     }
+                    m.version_len = 0;
                     try list.append(gpa, m);
+                }
+                for (list.items) |*m| {
+                    const v = r.str() catch break;
+                    m.version_len = @intCast(@min(v.len, m.version.len));
+                    @memcpy(m.version[0..m.version_len], v[0..m.version_len]);
                 }
                 cl.mutex.lock();
                 defer cl.mutex.unlock();

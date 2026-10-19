@@ -44,6 +44,7 @@ pub const Config = struct {
     /// que o banimento usa pra reconhecer quem volta.
     client_key: u64 = 0,
     notifications: bool = true, // notificação do sistema com o telinha em segundo plano
+    check_updates: bool = true, // pergunta ao GitHub se tem versão nova (só com -Drepo)
     clips: bool = true, // guardar os últimos 30 s do que assiste (pra clipe)
     camera_device: [160]u8 = zstr("", 160), // vazio = a primeira câmera
     camera_res: i32 = 1, // 0 = 480p, 1 = 720p, 2 = 1080p
@@ -138,6 +139,8 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         cfg.client_key = std.fmt.parseInt(u64, v, 16) catch 0;
     } else if (std.mem.eql(u8, k, "notifications")) {
         cfg.notifications = int != 0;
+    } else if (std.mem.eql(u8, k, "check_updates")) {
+        cfg.check_updates = int != 0;
     } else if (std.mem.eql(u8, k, "clips")) {
         cfg.clips = int != 0;
     } else if (std.mem.eql(u8, k, "camera_device")) {
@@ -187,8 +190,8 @@ pub fn save(cfg: *const Config) void {
     }) catch return;
     _ = c.fwrite(s.ptr, 1, s.len, f);
     var more: [512]u8 = undefined;
-    const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\n", .{
-        cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res,
+    const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\ncheck_updates={d}\n", .{
+        cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res, @intFromBool(cfg.check_updates),
     }) catch return;
     _ = c.fwrite(m.ptr, 1, m.len, f);
 }

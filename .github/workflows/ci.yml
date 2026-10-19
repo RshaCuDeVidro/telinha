@@ -31,7 +31,7 @@ jobs:
 
       - name: Build (Linux, Windows, servidor)
         # x86_64_v2 = qualquer CPU x86-64 de ~2009 pra cá (o openh264 detecta AVX2 em tempo de execução)
-        run: zig build -Dcpu=x86_64_v2 --summary all
+        run: zig build -Dcpu=x86_64_v2 -Drepo=${{ github.repository }} --summary all
 
       - name: Benchmark
         run: zig build bench -Dcpu=x86_64_v2

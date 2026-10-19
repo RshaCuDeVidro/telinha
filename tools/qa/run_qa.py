@@ -669,6 +669,34 @@ def convite_varios_caminhos():
 
 
 @test
+def versao_nova():
+    """Aviso de versão nova: pelo GitHub (de mentira, local) na tela inicial, e por alguém da sala que está numa versão mais nova."""
+    with Session("versao") as s:
+        gh = port()
+        s.spawn("github", [sys.executable, os.path.join(os.path.dirname(__file__), "mockgithub.py"), str(gh), "v9.1.0"], dict(os.environ))
+        time.sleep(0.5)
+        a = s.app("a", 91, ["--nome", "Ana"], extra_env={"TELINHA_ATUALIZACAO_URL": f"http://127.0.0.1:{gh}/repos/teste/telinha/releases/latest"})
+        st = a.wait(lambda st: st["update"] in ("newer", "current", "failed"), 10, "a checagem de versão")
+        expect(st["update"] == "newer" and st["update_latest"] == "v9.1.0", f"checagem: {st['update']} {st['update_latest']}")
+        a.click("Baixar##update")
+        a.wait(lambda st: st["opened"] == "https://github.com/teste/telinha/releases/tag/v9.1.0", 3, "abrir a página da release")
+        expect("telinha" in open(os.path.join(s.base, "github.log")).read(), "o app não se identificou (user-agent)")
+        # na sala: alguém com o telinha mais novo
+        p = port()
+        a.click("Criar sala")
+        a.wait(lambda st: st["home_tab"] == 1, 3, "a aba criar sala")
+        a.fill("##port", str(p))
+        a.click("Criar sala##go")
+        a.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}"], extra_env={"TELINHA_VERSAO_TESTE": "9.2.0"})
+        b.wait(lambda st: st["status"] == "connected", 10, "a Bia entrar")
+        a.toasted("telinha 9.2.0")
+        # quem está na versão mais nova não é avisado de nada
+        time.sleep(1)
+        expect(not any("versão nova" in t for t in b.state()["toasts"]), f"aviso errado pra quem está na nova: {b.state()['toasts']}")
+
+
+@test
 def windows_exe():
     """O telinha.exe (wine isolado): entra, assiste, lista janelas, compartilha só uma janela e a câmera avisa que não tem."""
     import subprocess

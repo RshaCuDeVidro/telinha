@@ -80,10 +80,10 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 
 | tipo | nome | direção | payload |
 |---|---|---|---|
-| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente` |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota` |
+| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app` |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (servidor fecha em seguida) |
-| 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo) |
+| 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo), n × `str versão_do_app` (mesma ordem) |
 | 5 | chat | C→S | `str texto` |
 | 5 | chat | S→C | `u32 id`, `u32 de` (0 = sistema), `str nome`, `str texto`, `u64 hora` (relógio da sala, µs), `u8 flags` (1 = histórico) |
 | 6 | stream_start | C→S | `u8 tipo`, `u16 w`, `u16 h`, `u8 fps`, `u8 flags` (1 = com áudio; só vale pra tela) |
@@ -108,6 +108,10 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 20 | notice | S→C | `u8 tipo`, `str texto`, `u8 extra`: algo que um admin fez com você |
 | 21 | pointer | C→S | `u32 stream`, `u16 x`, `u16 y`, `u8 flags` |
 | 21 | pointer | S→C | `u32 de`, `u32 stream`, `u16 x`, `u16 y`, `u8 flags` |
+
+`versão_do_app` ("3.0.0") serve só pra avisar quem está desatualizado (a
+interface mostra "fulano está no telinha X: tem versão nova"); vazia = não
+informou. Também é campo do fim, lido com padrão vazio.
 
 Alguns campos do fim são lidos com valor padrão (0, ou "tela") se faltarem:
 `chave_do_cliente`, `flags` do stream_start, `tipo` do stream_stop, `opções`
