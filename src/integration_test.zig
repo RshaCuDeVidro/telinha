@@ -327,6 +327,76 @@ test "sala: espectador pede IDR (keyreq) quando perde a referência" {
     try testing.expectEqual(@as(u32, 2), try r.u32_());
 }
 
+test "sala: tela parada não deixa o espectador preso esperando IDR" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+
+    var streamer = try TestClient.connect(port, "T", "", "");
+    defer streamer.close();
+    try streamer.welcome();
+    var viewer = try TestClient.connect(port, "E", "", "");
+    defer viewer.close();
+    try viewer.welcome();
+
+    var b: proto.Builder = .{};
+    defer b.deinit();
+    try b.begin(.stream_start);
+    try b.u16_(64);
+    try b.u16_(64);
+    try b.u8_(30);
+    try streamer.send(try b.finish());
+    try b.begin(.watch);
+    try b.u32_(streamer.id);
+    try b.u8_(1);
+    try viewer.send(try b.finish());
+    _ = try streamer.expect(.keyreq);
+    try streamer.send(try frameSeq(true, 100, 0));
+    try viewer.ackFrame(try viewer.expect(.frame));
+
+    // o decoder do espectador perde a referência logo depois do primeiro IDR:
+    // o pedido cai no limite de 1 a cada 500 ms, e a tela do transmissor está
+    // parada (nenhum quadro novo pra disparar o pedido em forwardFrame)
+    try b.begin(.keyreq);
+    try b.u32_(streamer.id);
+    try viewer.send(try b.finish());
+    const t0 = sync.nowMs();
+    _ = try streamer.expect(.keyreq);
+    try testing.expect(sync.nowMs() - t0 < 4000);
+    try streamer.send(try frameSeq(true, 100, 1));
+    var r: proto.Reader = .{ .data = try viewer.expect(.frame) };
+    _ = try r.u32_();
+    try testing.expectEqual(@as(u32, 1), try r.u32_());
+}
+
+test "sala: watch só aceita quem existe" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+
+    var viewer = try TestClient.connect(port, "E", "", "");
+    defer viewer.close();
+    try viewer.welcome();
+    var b: proto.Builder = .{};
+    defer b.deinit();
+    // ids que não existem (e o próprio): ignorados, nada de lista crescendo
+    for ([_]u32{ 999, 12345, viewer.id }) |id| {
+        try b.begin(.watch);
+        try b.u32_(id);
+        try b.u8_(1);
+        try viewer.send(try b.finish());
+    }
+    // o servidor continua respondendo normalmente
+    try b.begin(.ping);
+    try b.u64_(77);
+    try viewer.send(try b.finish());
+    var r: proto.Reader = .{ .data = try viewer.expect(.pong) };
+    try testing.expectEqual(@as(u64, 77), try r.u64_());
+    try testing.expectEqual(@as(usize, 0), srv.watchingCount(viewer.id));
+}
+
 test "sala: áudio chega em quem assiste, com o remetente certo" {
     net.init();
     const port = freshPort();

@@ -18,8 +18,10 @@
 #include <string.h>
 #include <unistd.h>
 
-#define MAX_PORTS 256
-#define MAX_LINKS 256
+// portas de todo o grafo (dispositivos com muitos canais somam rápido)
+#define MAX_PORTS 4096
+#define MAX_LINKS 1024
+#define MAX_PENDING 256
 
 enum { CH_NONE = 0, CH_LEFT = 1, CH_RIGHT = 2, CH_BOTH = 3 };
 
@@ -50,7 +52,7 @@ struct pwcap {
         uint32_t id;
         struct pw_proxy *proxy;
         struct spa_hook listener;
-    } pending[64];
+    } pending[MAX_PENDING];
     int n_pending;
     struct port ports[MAX_PORTS];
     int n_ports;
@@ -159,7 +161,7 @@ static void on_global(void *data, uint32_t id, uint32_t permissions, const char 
     if (!props) return;
     if (!strcmp(type, PW_TYPE_INTERFACE_Node)) {
         const char *cls = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
-        if (!cls || strcmp(cls, "Stream/Output/Audio") != 0 || c->n_pending == 64) return;
+        if (!cls || strcmp(cls, "Stream/Output/Audio") != 0 || c->n_pending == MAX_PENDING) return;
         // ainda não dá pra saber se é nosso: pede as propriedades completas
         struct pending_node *pn = &c->pending[c->n_pending];
         pn->proxy = pw_registry_bind(c->registry, id, PW_TYPE_INTERFACE_Node, PW_VERSION_NODE, 0);

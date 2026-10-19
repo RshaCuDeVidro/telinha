@@ -14,7 +14,24 @@ zig build test --summary all
 zig build -Dcpu=x86_64_v2      # garante que Linux, Windows e servidor compilam
 ```
 
-Mexeu no pipeline de vídeo? Rode `zig build bench` antes e depois e coloque os números no PR.
+Mexeu no pipeline de vídeo? Rode `zig build bench` antes e depois e coloque os números no PR
+(`TELINHA_BENCH_QUALIDADE=1` mede também a qualidade, em PSNR).
+
+## Ferramentas de teste
+
+| comando | o que testa |
+|---|---|
+| `zig build loadtest -- 8 40 1` | servidor sob carga: espectadores normais + lentos, atraso e IDRs |
+| `zig build loadtest -- 4 40 0 2000` | transmissor atrás de um túnel ruim (buffer sem limite, 2 Mbit/s) |
+| `zig build captest -- 10 30 quadro.ppm` | captura de tela (método, formato, fps real, salva um quadro) |
+| `zig build audiotest` | captura do som do computador (o som do próprio app não pode entrar) |
+| `zig build voicebot -- host:porta nome` | um robô entra na sala e "fala" sílabas sintéticas (voz sem microfone) |
+
+A captura no Wayland (portal + PipeWire) dá pra testar inteira sem mexer na sua
+sessão: um sway headless (`WLR_BACKENDS=headless`) + `xdg-desktop-portal-hyprland`
+com `custom_picker_binary` que imprime `[SELECTION]r/screen:HEADLESS-1`, e D-Bus,
+PipeWire e WirePlumber próprios (com os monitores de áudio/bluetooth/câmera
+desligados) num `XDG_RUNTIME_DIR` separado.
 
 ## Testando na mão sem bagunçar sua tela
 

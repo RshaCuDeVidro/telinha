@@ -45,6 +45,7 @@ pub fn build(b: *std.Build) void {
     const opus = b.lazyDependency("opus", .{});
     const miniaudio = b.lazyDependency("miniaudio", .{});
     const rnnoise = b.lazyDependency("rnnoise", .{});
+    const speexdsp = b.lazyDependency("speexdsp", .{});
     const nasm = nasmProgram(b) orelse return;
     const deps: Deps = .{
         .imgui = imgui orelse return,
@@ -55,6 +56,7 @@ pub fn build(b: *std.Build) void {
         .opus = opus orelse return,
         .miniaudio = miniaudio orelse return,
         .rnnoise = rnnoise orelse return,
+        .speexdsp = speexdsp orelse return,
         .nasm = nasm,
     };
 
@@ -170,6 +172,7 @@ const Deps = struct {
     opus: *std.Build.Dependency,
     miniaudio: *std.Build.Dependency,
     rnnoise: *std.Build.Dependency,
+    speexdsp: *std.Build.Dependency,
     nasm: NasmProgram,
 };
 
@@ -189,11 +192,30 @@ fn addAudio(b: *std.Build, deps: Deps, mod: *std.Build.Module, target: std.Build
     mod.addIncludePath(b.path("src/c"));
     mod.addCSourceFile(.{ .file = b.path("src/c/audio.c"), .flags = &.{ "-O2", "-Wno-everything" } });
     addRnnoise(b, deps, mod, target, optimize);
+    addSpeexdsp(b, deps, mod, target, optimize);
     // Linux: som dos aplicativos pelo grafo do PipeWire (sem o próprio telinha)
     if (target.result.os.tag == .linux) {
         mod.addCSourceFile(.{ .file = b.path("src/c/audio_pw.c"), .flags = &.{ "-O2", "-Wno-everything" } });
         mod.linkSystemLibrary("libpipewire-0.3", .{});
     }
+}
+
+/// SpeexDSP: só o cancelamento de eco (MDF) e a supressão do eco que sobra.
+fn addSpeexdsp(b: *std.Build, deps: Deps, mod: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const om = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    const lib = b.addLibrary(.{ .name = "speexdsp", .root_module = om, .linkage = .static });
+    om.addIncludePath(b.path("src/c/speexdsp")); // config.h e speexdsp_config_types.h
+    om.addIncludePath(deps.speexdsp.path("include"));
+    om.addIncludePath(deps.speexdsp.path("libspeexdsp"));
+    om.addCSourceFiles(.{
+        .root = deps.speexdsp.path("libspeexdsp"),
+        .files = &.{ "mdf.c", "preprocess.c", "filterbank.c", "fftwrap.c", "smallft.c" },
+        .flags = &.{ "-O2", "-Wno-everything", "-DHAVE_CONFIG_H" },
+    });
+    om.linkSystemLibrary("m", .{});
+    mod.linkLibrary(lib);
+    mod.addIncludePath(b.path("src/c/speexdsp"));
+    mod.addIncludePath(deps.speexdsp.path("include"));
 }
 
 /// RNNoise (supressão de ruído da voz). No x86_64 escolhe SSE4.1/AVX2 em runtime.
@@ -232,8 +254,8 @@ fn addRnnoise(b: *std.Build, deps: Deps, mod: *std.Build.Module, target: std.Bui
 }
 
 const rnnoise_src = [_][]const u8{
-    "denoise.c",                "rnn.c",          "pitch.c",        "kiss_fft.c", "celt_lpc.c", "nnet.c", "nnet_default.c",
-    "parse_lpcnet_weights.c",   "rnnoise_data.c", "rnnoise_tables.c",
+    "denoise.c",              "rnn.c",          "pitch.c",          "kiss_fft.c", "celt_lpc.c", "nnet.c", "nnet_default.c",
+    "parse_lpcnet_weights.c", "rnnoise_data.c", "rnnoise_tables.c",
 };
 
 /// Encoder/decoder em hardware (NVENC/NVDEC). As libs do driver são carregadas em runtime.

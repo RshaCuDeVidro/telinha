@@ -4,6 +4,11 @@
     .fingerprint = 0x1246c121a5fafab1,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
+        .speexdsp = .{
+            .url = "https://downloads.xiph.org/releases/speex/speexdsp-1.2.1.tar.gz",
+            .hash = "N-V-__8AAHW1KgB6D5q0ylm0w2Km3yrg34T18aTpXaGg_AgG",
+            .lazy = true,
+        },
         .rnnoise = .{
             .url = "https://github.com/xiph/rnnoise/releases/download/v0.2/rnnoise-0.2.tar.gz",
             .hash = "N-V-__8AAMFfZAATG9G8nOb883tDK8l93pIoHWYAnpCtDGt9",

@@ -187,7 +187,6 @@ fn runHw(name: []const u8, w: u32, h: u32, mode: codec.Mode, scene: enum { text,
     });
 }
 
-
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 /// PSNR do brilho (Y) entre a imagem original e a decodificada, em dB.
@@ -283,8 +282,9 @@ pub fn quality(w: u32, h: u32, bitrate: u32) !void {
             }
             const cnt: f64 = frames - 10;
             std.debug.print("  {s:<6} {s:<10} encode {d:>5.1} ms | PSNR {d:>5.2} dB (pior {d:.2}, vs anterior {d:.2}) | {d:>5.0} kbit/s\n", .{
-                if (scene == .text) "texto" else "jogo", name,
-                @as(f64, @floatFromInt(t_enc)) / cnt / 1000, psnr_sum / cnt, psnr_min, psnr_prev / cnt,
+                if (scene == .text) "texto" else "jogo",              name,
+                @as(f64, @floatFromInt(t_enc)) / cnt / 1000,          psnr_sum / cnt,
+                psnr_min,                                             psnr_prev / cnt,
                 @as(f64, @floatFromInt(bytes)) * 8 / cnt * 30 / 1000,
             });
         }

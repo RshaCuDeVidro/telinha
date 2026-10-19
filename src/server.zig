@@ -52,6 +52,7 @@ const Conn = struct {
     flows: std.ArrayList(Flow) = .empty, // frames a caminho, por transmissor assistido
     last_keyreq_ms: u64 = 0,
     last_slow_ms: u64 = 0,
+    last_frame_ms: u64 = 0, // último quadro que essa pessoa transmitiu
     refs: std.atomic.Value(u32) = .init(1), // leitora (+ escritora quando existir)
 
     fn nameSlice(self: *const Conn) []const u8 {
@@ -187,7 +188,37 @@ pub const Server = struct {
         copyInto(&s.room_name, &s.room_name_len, opts.room_name);
         copyInto(&s.admin_token, &s.admin_token_len, opts.admin_token);
         try sync.spawn(acceptLoop, .{s});
+        try sync.spawn(tickLoop, .{s});
         return s;
+    }
+
+    /// A cada 250 ms: espectador esperando IDR de alguém com a tela parada.
+    /// Normalmente quem pede o IDR é `forwardFrame`, quando chega o próximo
+    /// quadro; mas com a tela parada (PipeWire/DXGI só mandam quando muda)
+    /// ele não vem, e o espectador ficaria preso na imagem velha.
+    fn tickLoop(s: *Server) void {
+        while (!s.stopped.load(.acquire)) {
+            sync.sleepMs(250);
+            s.mutex.lock();
+            defer s.mutex.unlock();
+            const now_ms = sync.nowMs();
+            const now_us = sync.nowUs();
+            for (s.conns.items) |o| {
+                for (o.flows.items) |*f| {
+                    if (!contains(&o.waiting_key, f.from)) continue;
+                    const sh = s.findConn(f.from) orelse continue;
+                    if (!sh.streaming) continue;
+                    // quadros chegando: forwardFrame cuida. IDR pedido há
+                    // pouco: pode estar subindo ainda (upload lento), não pede outro
+                    if (now_ms -| sh.last_frame_ms < 1000 or now_ms -| sh.last_keyreq_ms < 2000) continue;
+                    if (f.draining) {
+                        if (!f.drained(now_us)) continue;
+                        f.draining = false;
+                    }
+                    if (now_ms >= f.resync_after_ms) s.requestKey(f.from, false);
+                }
+            }
+        }
     }
 
     fn copyInto(dst: []u8, len: *usize, src: []const u8) void {
@@ -199,6 +230,14 @@ pub const Server = struct {
     /// com ele pra medir a latência de ponta a ponta.
     pub fn nowUs(s: *const Server) u64 {
         return sync.nowUs() - s.start_us;
+    }
+
+    /// Quantas pessoas `id` está assistindo (testes).
+    pub fn watchingCount(s: *Server, id: u32) usize {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        const cn = s.findConn(id) orelse return 0;
+        return cn.watching.items.len;
     }
 
     pub fn memberCount(s: *Server) usize {
@@ -404,6 +443,10 @@ pub const Server = struct {
                 s.mutex.lock();
                 defer s.mutex.unlock();
                 if (on) {
+                    // só quem existe (e não a si mesmo), e com limite: senão
+                    // um cliente mal-intencionado enche a memória do servidor
+                    if (target == cn.id or s.findConn(target) == null) return;
+                    if (!contains(&cn.watching, target) and cn.watching.items.len >= s.max_members) return;
                     const changed = !contains(&cn.watching, target);
                     addUnique(&cn.watching, target);
                     addUnique(&cn.waiting_key, target);
@@ -487,6 +530,8 @@ pub const Server = struct {
     fn join(s: *Server, cn: *Conn, raw_name: []const u8, token: []const u8) !void {
         s.mutex.lock();
         defer s.mutex.unlock();
+        // a sala fechou enquanto essa conexão fazia o handshake
+        if (s.stopped.load(.acquire)) return error.Stopped;
         if (s.conns.items.len >= s.max_members) {
             s.mutex.unlock();
             defer s.mutex.lock();
@@ -587,6 +632,12 @@ pub const Server = struct {
         for (s.conns.items) |o| o.queue.push(m);
     }
 
+    /// Chamado com o mutex travado.
+    fn findConn(s: *Server, id: u32) ?*Conn {
+        for (s.conns.items) |o| if (o.id == id) return o;
+        return null;
+    }
+
     /// Pede um IDR pro transmissor. Chamado com o mutex travado.
     fn requestKey(s: *Server, target: u32, force: bool) void {
         for (s.conns.items) |o| {
@@ -621,7 +672,8 @@ pub const Server = struct {
     /// Voz vai pra todo mundo da sala (menos quem fala e quem está surdo),
     /// furando a fila: conversa não pode esperar atrás de quadros de vídeo.
     fn forwardVoice(s: *Server, cn: *Conn, payload: []const u8) !void {
-        if (payload.len < 4) return error.BadMessage;
+        // seq + pelo menos 1 byte de Opus (pacote vazio = 120 ms de "remendo" do lado de lá)
+        if (payload.len <= 4) return error.BadMessage;
         const m = try proto.Msg.alloc(.voice, 4 + payload.len);
         defer m.release();
         m.from = cn.id;
@@ -658,6 +710,7 @@ pub const Server = struct {
         defer s.mutex.unlock();
         const now_ms = sync.nowMs();
         const now_us = sync.nowUs();
+        cn.last_frame_ms = now_ms;
         var need_key = false;
         var resynced = false; // algum espectador recomeçou agora
         var late = false; // algum espectador acumulando atraso há mais de 1 s

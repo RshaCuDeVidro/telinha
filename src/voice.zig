@@ -1,12 +1,13 @@
-//! Voz da sala (tipo Discord): microfone → supressão de ruído (RNNoise) →
-//! portão de voz → Opus → sala. Quem recebe guarda um anel por pessoa no
-//! mixer de audio.zig (o mesmo das transmissões).
+//! Voz da sala (tipo Discord): microfone → cancelamento de eco (SpeexDSP) →
+//! supressão de ruído (RNNoise) → portão de voz → Opus → sala. Quem recebe
+//! guarda um anel por pessoa no mixer de audio.zig (o mesmo das transmissões).
 //!
 //! O portão usa a probabilidade de voz do próprio RNNoise: abre quando ela
 //! passa da sensibilidade e fica aberto 250 ms depois da última sílaba. Com ele
 //! fechado não sai pacote nenhum (zero banda).
 const std = @import("std");
 const audio = @import("audio.zig");
+const aec = @import("aec.zig");
 const c = audio.c;
 const rn = @cImport(@cInclude("rnnoise.h"));
 const gpa = std.heap.c_allocator;
@@ -23,6 +24,8 @@ pub const Options = struct {
     /// Nome do microfone (vazio = padrão do sistema).
     device: []const u8 = "",
     noise_suppression: bool = true,
+    /// Tira do microfone o que saiu da caixa de som (pra quem não usa fone).
+    echo_cancellation: bool = true,
     /// 0..1: quanto menor, mais fácil o portão abrir.
     sensitivity: f32 = 0.5,
 };
@@ -34,7 +37,8 @@ pub const Mic = struct {
     dev: ?*c.audio_dev = null,
     enc: *c.OpusEncoder,
     rnn: ?*rn.DenoiseState,
-    threshold: f32,
+    echo: ?aec.Canceller = null,
+    threshold_bits: std.atomic.Value(u32), // f32: a interface muda com o microfone aberto
     on_packet: PacketFn,
     ctx: *anyopaque,
 
@@ -74,16 +78,22 @@ pub const Mic = struct {
         m.* = .{
             .enc = enc,
             .rnn = if (opts.noise_suppression) rn.rnnoise_create(null) else null,
-            .threshold = std.math.clamp(opts.sensitivity, 0.05, 0.95),
+            .threshold_bits = .init(@bitCast(clampSensitivity(opts.sensitivity))),
             .on_packet = on_packet,
             .ctx = ctx,
         };
         if (!with_device) return m;
+        // o cancelador usa a referência do mixer, que só existe com dispositivo de verdade
+        if (opts.echo_cancellation) {
+            m.echo = aec.Canceller.init() catch null;
+            aec.reference.clear();
+        }
         var name: [128]u8 = undefined;
         const n = @min(opts.device.len, name.len - 1);
         @memcpy(name[0..n], opts.device[0..n]);
         name[n] = 0;
         m.dev = c.audio_mic_open(onCapture, m, &name, err.ptr, @intCast(err.len)) orelse {
+            if (m.echo) |*ec| ec.deinit();
             if (m.rnn) |r| rn.rnnoise_destroy(r);
             return error.MicOpen;
         };
@@ -92,9 +102,19 @@ pub const Mic = struct {
 
     pub fn close(m: *Mic) void {
         if (m.dev) |d| c.audio_close(d); // para o callback antes de liberar
+        if (m.echo) |*e| e.deinit();
         if (m.rnn) |r| rn.rnnoise_destroy(r);
         c.opus_encoder_destroy(m.enc);
         gpa.destroy(m);
+    }
+
+    /// Sensibilidade nova na hora (o medidor da configuração mostra o efeito).
+    pub fn setSensitivity(m: *Mic, sensitivity: f32) void {
+        m.threshold_bits.store(@bitCast(clampSensitivity(sensitivity)), .monotonic);
+    }
+
+    fn clampSensitivity(v: f32) f32 {
+        return std.math.clamp(v, 0.05, 0.95);
     }
 
     pub fn level(m: *const Mic) f32 {
@@ -122,17 +142,19 @@ pub const Mic = struct {
     }
 
     fn processBlock(m: *Mic) void {
+        var in = m.in_buf;
+        if (m.echo) |*e| e.processLive(&m.in_buf, &in);
         var out: [block]f32 = undefined;
         var peak: f32 = 0;
         var vad: f32 = 0;
         if (m.rnn) |r| {
             // o RNNoise trabalha na escala de 16 bits
             var scaled: [block]f32 = undefined;
-            for (&scaled, m.in_buf) |*d, v| d.* = v * 32768;
+            for (&scaled, in) |*d, v| d.* = v * 32768;
             vad = rn.rnnoise_process_frame(r, &out, &scaled);
             for (&out) |*v| v.* /= 32768;
         } else {
-            out = m.in_buf;
+            out = in;
             var sum: f32 = 0;
             for (out) |v| sum += v * v;
             // sem RNNoise: portão por volume (RMS acima de ~-40 dBFS)
@@ -142,7 +164,7 @@ pub const Mic = struct {
         const old: f32 = @bitCast(m.level_bits.load(.monotonic));
         m.level_bits.store(@bitCast(@max(peak, old * 0.85)), .monotonic);
 
-        if (vad >= m.threshold) {
+        if (vad >= @as(f32, @bitCast(m.threshold_bits.load(.monotonic)))) {
             m.hang = hangover_blocks;
         } else if (m.hang > 0) {
             m.hang -= 1;

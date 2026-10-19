@@ -53,8 +53,8 @@ pub fn main(init: std.process.Init) !void {
         const now = nowUs();
         if (r == 1) {
             if (!seen_first) std.debug.print("primeiro quadro em {d} ms: {d}x{d}, stride {d}, {s}{s}\n", .{
-                (now - t0) / 1000,                                     f.width,
-                f.height,                                              f.stride,
+                (now - t0) / 1000,                              f.width,
+                f.height,                                       f.stride,
                 if (f.format == c.CAP_RGBX) "RGBX" else "BGRX", if (f.cursor_draw != 0) ", cursor desenhado pelo telinha" else "",
             });
             seen_first = true;

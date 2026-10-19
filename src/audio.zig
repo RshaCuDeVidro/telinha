@@ -2,6 +2,7 @@
 //! assiste (uma saída só, somando todas as transmissões assistidas).
 const std = @import("std");
 const sync = @import("sync.zig");
+const aec = @import("aec.zig");
 pub const c = @cImport({
     @cInclude("audio.h");
     @cInclude("opus.h");
@@ -94,6 +95,7 @@ pub const Mixer = struct {
     rings: std.ArrayList(*Ring) = .empty,
     dev: ?*c.audio_dev = null,
     failed: bool = false,
+    opening: bool = false, // alguém está abrindo o dispositivo (fora do lock)
     /// Quem transmite áudio no Linux escuta a si mesmo na captura: silencia a saída (sem eco).
     self_mute: std.atomic.Value(bool) = .init(false),
     /// "Surdo" (como no Discord): não toca nada da sala, nem voz nem transmissão.
@@ -103,7 +105,8 @@ pub const Mixer = struct {
         m.mutex.lock();
         // TELINHA_SEM_SOM=1: recebe e decodifica, mas não toca (testes)
         if (m.dev == null and getenv("TELINHA_SEM_SOM") != null) m.failed = true;
-        const need_open = m.dev == null and !m.failed;
+        const need_open = m.dev == null and !m.failed and !m.opening;
+        if (need_open) m.opening = true;
         if (std.mem.findScalar(*Ring, m.rings.items, rg) == null) m.rings.append(gpa, rg) catch {};
         m.mutex.unlock();
         if (need_open) {
@@ -111,6 +114,7 @@ pub const Mixer = struct {
             const d = c.audio_output_open(onPlay, m, &err, err.len);
             m.mutex.lock();
             if (d) |dev| m.dev = dev else m.failed = true;
+            m.opening = false;
             m.mutex.unlock();
         }
     }
@@ -127,19 +131,23 @@ pub const Mixer = struct {
         @memset(out, 0);
         m.mutex.lock();
         defer m.mutex.unlock();
-        const silent = m.self_mute.load(.monotonic) or m.deaf.load(.monotonic);
+        const self_mute = m.self_mute.load(.monotonic);
+        const deaf = m.deaf.load(.monotonic);
         for (m.rings.items) |rg| {
-            const gain: f32 = if (rg.muted or silent) 0 else rg.volume;
+            // os avisos tocam mesmo surdo (é assim que se ouve o "surdo ligado")
+            const gain: f32 = if (rg.muted or self_mute or (deaf and rg != &chime_ring)) 0 else rg.volume;
             rg.mixInto(out, gain);
         }
         for (out) |*v| v.* = std.math.clamp(v.*, -1.0, 1.0);
+        // o que vai sair na caixa de som: referência pro cancelamento de eco
+        aec.reference.pushStereo(out);
     }
 };
 
 pub var mixer: Mixer = .{};
 
 /// Sons de aviso (alguém entrou/saiu, ao vivo, microfone): sintetizados na
-/// hora, baixinhos, pelo mesmo mixer (respeitam o "surdo").
+/// hora, baixinhos, pelo mesmo mixer.
 pub const Chime = enum { join, leave, live, mic_on, mic_off };
 
 var chime_ring: Ring = .{};
@@ -253,5 +261,3 @@ pub const Sender = struct {
         }
     }
 };
-
-

@@ -2,6 +2,22 @@
 
 ## 2.1.0
 
+- **Cancelamento de eco** (SpeexDSP) na voz: dá pra falar com caixa de som em
+  vez de fone sem a sala se ouvir de volta. A referência é o que o mixer
+  acabou de tocar; a deriva entre os relógios da caixa e do microfone é medida
+  e compensada (reamostragem), o que vale uns 15 dB a mais de eco cancelado
+  quando eles são dispositivos diferentes (ex.: microfone USB + placa onboard).
+  Liga/desliga nas configurações (ligado por padrão).
+- Tela parada não deixa mais o espectador preso na imagem velha depois de um
+  recomeço: o servidor pede o IDR sozinho (antes esperava o próximo quadro do
+  transmissor, que com a tela parada não vinha).
+- Sensibilidade do microfone muda na hora (antes só reabria o microfone em
+  alguns casos e a mudança podia se perder); sons de aviso tocam mesmo com
+  "surdo" ligado (dá pra ouvir o surdo ligando).
+- Robustez: o servidor ignora `watch` de quem não existe (a lista não cresce
+  sem limite), recusa entrada no meio do fechamento da sala, e descarta voz
+  vazia; o mixer não abre a saída de som duas vezes quando duas transmissões
+  chegam juntas; a captura do PipeWire aguenta grafos grandes (4096 portas).
 - **Voz na sala, tipo Discord**: microfone com supressão de ruído (RNNoise) e
   ativação por voz, Opus 40 kbit/s. Anel verde em quem fala, ícones de
   microfone desligado e "surdo" na lista, botões de microfone/surdo no painel,

@@ -682,6 +682,7 @@ pub const Client = struct {
                 const from = try r.u32_();
                 _ = try r.u32_(); // seq
                 const packet = r.rest();
+                if (packet.len == 0) return; // pro Opus, vazio = "perdi um pacote"
                 cl.mutex.lock();
                 var peer: ?*voice.Peer = null;
                 for (cl.voice_peers.items) |p| if (p.id == from) {
@@ -689,7 +690,10 @@ pub const Client = struct {
                     break;
                 };
                 if (peer == null) {
-                    const p = try gpa.create(voice.Peer);
+                    const p = gpa.create(voice.Peer) catch {
+                        cl.mutex.unlock();
+                        return;
+                    };
                     p.* = .{ .id = from };
                     if (cl.voice_volumes.get(from)) |vol| p.ring.volume = vol;
                     cl.voice_peers.append(gpa, p) catch {

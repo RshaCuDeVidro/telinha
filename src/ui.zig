@@ -584,8 +584,8 @@ pub const App = struct {
         const opts: voice.Options = .{
             .device = config.getStr(&a.cfg.mic_device),
             .noise_suppression = a.cfg.noise_suppression,
-            // sensibilidade 0..100 → probabilidade de voz mínima 0,9..0,1
-            .sensitivity = 0.9 - @as(f32, @floatFromInt(a.cfg.voice_sensitivity)) / 100 * 0.8,
+            .echo_cancellation = a.cfg.echo_cancellation,
+            .sensitivity = micSensitivity(&a.cfg),
         };
         a.mic = voice.Mic.open(opts, cl.retain(), onMicPacket, &err) catch {
             cl.release();
@@ -594,6 +594,11 @@ pub const App = struct {
             return;
         };
         a.mic_client = cl;
+    }
+
+    /// Sensibilidade 0..100 da configuração → probabilidade de voz mínima 0,9..0,1.
+    fn micSensitivity(cfg: *const config.Config) f32 {
+        return 0.9 - @as(f32, @floatFromInt(cfg.voice_sensitivity)) / 100 * 0.8;
     }
 
     fn stopMic(a: *App) void {
@@ -629,7 +634,10 @@ pub const App = struct {
         a.chime(if (a.mic != null) .mic_on else .mic_off);
         if (a.mic != null and !a.echo_hint_shown) {
             a.echo_hint_shown = true;
-            a.toast("Microfone ligado (Ctrl+M liga/desliga). Sem fone de ouvido, quem fala pode ouvir eco da sua caixa de som.", .{}, false);
+            if (a.cfg.echo_cancellation)
+                a.toast("Microfone ligado (Ctrl+M liga/desliga, Ctrl+D fica surdo).", .{}, false)
+            else
+                a.toast("Microfone ligado (Ctrl+M liga/desliga). Cancelamento de eco desligado: sem fone de ouvido, a sala pode ouvir eco da sua caixa de som.", .{}, false);
         }
     }
 
@@ -638,7 +646,7 @@ pub const App = struct {
             a.setDeaf(false);
             a.chime(.mic_on);
         } else {
-            a.chime(.mic_off); // antes de ficar surdo, pra ouvir
+            a.chime(.mic_off); // os avisos tocam mesmo surdo
             a.setDeaf(true); // surdo também desliga o microfone (mic_wanted fica guardado)
         }
         a.applyVoice();
@@ -2387,6 +2395,7 @@ pub const App = struct {
         fieldLabel("SENSIBILIDADE (quanto maior, mais fácil o microfone abrir)");
         const sens_before = a.cfg.voice_sensitivity;
         sliderStyled("##sens", &a.cfg.voice_sensitivity, 0, 100, "%d", w);
+        if (sens_before != a.cfg.voice_sensitivity) if (a.mic) |m| m.setSensitivity(micSensitivity(&a.cfg));
         if (a.mic) |m| {
             // medidor: a barra fica verde quando o portão abre (sua voz está indo)
             const d = c.igGetWindowDrawList();
@@ -2401,13 +2410,12 @@ pub const App = struct {
             popFont();
         }
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
-        const ns_before = a.cfg.noise_suppression;
-        _ = c.igCheckbox("Supressão de ruído (tira ventilador, teclado, chiado)", &a.cfg.noise_suppression);
+        var reopen = c.igCheckbox("Supressão de ruído (tira ventilador, teclado, chiado)", &a.cfg.noise_suppression);
+        reopen = c.igCheckbox("Cancelamento de eco (pra quem usa caixa de som em vez de fone)", &a.cfg.echo_cancellation) or reopen;
         _ = c.igCheckbox("Entrar na sala com o microfone ligado", &a.cfg.mic_on_join);
         _ = c.igCheckbox("Sons de aviso (alguém entrou/saiu, ao vivo, microfone)", &a.cfg.sounds);
         c.igPopStyleColor(1);
-        // sensibilidade/supressão novas: reabre o microfone (ao soltar o slider)
-        if (a.mic != null and (ns_before != a.cfg.noise_suppression or (sens_before != a.cfg.voice_sensitivity and !c.igIsMouseDown_Nil(0)))) {
+        if (reopen and a.mic != null) {
             a.stopMic();
             a.applyVoice();
         }
@@ -2415,7 +2423,7 @@ pub const App = struct {
 
         c.igPushTextWrapPos(c.igGetCursorPosX() + w);
         pushFont(font_regular, 12.5);
-        textColored(col.faint, fmtZ("telinha {s} · protocolo v{d} · vídeo H.264 (NVENC/NVDEC ou openh264) · voz Opus + RNNoise · criptografia X25519 + ChaCha20-Poly1305", .{ version_string, proto.version }));
+        textColored(col.faint, fmtZ("telinha {s} · protocolo v{d} · vídeo H.264 (NVENC/NVDEC ou openh264) · voz Opus + RNNoise + SpeexDSP · criptografia X25519 + ChaCha20-Poly1305", .{ version_string, proto.version }));
         textColored(col.faint, "Atalhos: Ctrl+M microfone · Ctrl+D surdo · F11 tela cheia · duplo clique = modo cinema · Esc sai");
         popFont();
         c.igPopTextWrapPos();

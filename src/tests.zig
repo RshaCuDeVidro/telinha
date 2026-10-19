@@ -549,3 +549,159 @@ test "config: volume da voz lembrado pelo nome" {
     try testing.expectEqual(@as(?u16, null), v.get("Bruno"));
     try testing.expectEqual(@as(usize, 1), v.n);
 }
+
+const aec = @import("aec.zig");
+
+test "eco: o cancelador tira a voz que voltou da caixa e deixa a sua passar" {
+    var cn = try aec.Canceller.init();
+    defer cn.deinit();
+    const n_blocks = 400; // 4 s
+    const delay = 1920; // eco chega 40 ms depois
+    var far = try std.heap.c_allocator.alloc(f32, n_blocks * 480 + delay);
+    defer std.heap.c_allocator.free(far);
+    @memset(far[0..delay], 0);
+    vowel(far[delay..], 0, 140, 0.25); // quem está do outro lado fala o tempo todo
+    var mic: [480]f32 = undefined;
+    var ref: [480]f32 = undefined;
+    var out: [480]f32 = undefined;
+    var e_in: f64 = 0;
+    var e_out: f64 = 0;
+    var prev: f32 = 0;
+    for (0..n_blocks) |k| {
+        // referência = o que a caixa tocou agora; microfone = isso 40 ms depois, mais baixo e abafado
+        @memcpy(&ref, far[delay + k * 480 ..][0..480]);
+        for (&mic, 0..) |*v, i| {
+            const x = far[k * 480 + i];
+            v.* = 0.5 * (0.6 * x + 0.4 * prev);
+            prev = x;
+        }
+        cn.process(&mic, &ref, &out);
+        if (k >= n_blocks - 100) {
+            for (mic, out) |a, b| {
+                e_in += a * a;
+                e_out += b * b;
+            }
+        }
+    }
+    const erle = 10 * std.math.log10(e_in / @max(e_out, 1e-12));
+    try testing.expect(erle > 15); // medido: ~30 dB
+
+    // agora o outro lado fica quieto e você fala: sua voz tem que passar
+    @memset(&ref, 0);
+    var near_in: f64 = 0;
+    var near_out: f64 = 0;
+    for (0..100) |k| {
+        vowel(&mic, k * 480, 210, 0.2);
+        cn.process(&mic, &ref, &out);
+        if (k >= 50) {
+            for (mic, out) |a, b| {
+                near_in += a * a;
+                near_out += b * b;
+            }
+        }
+    }
+    const loss = 10 * std.math.log10(near_in / @max(near_out, 1e-12));
+    try testing.expect(loss < 3); // medido: ~0 dB
+}
+
+/// Caminho de verdade do eco: o mixer entrega blocos de 1024 quadros (estéreo)
+/// pro anel de referência, a caixa toca 26 ms depois, o microfone entrega
+/// blocos de 441 e anda `drift_ppm` mais rápido que a saída; os callbacks dos
+/// dois lados atrasam até `jitter` amostras. Devolve o ERLE (dB) do último
+/// 1,5 s.
+fn liveEchoErle(drift_ppm: f64, jitter: u32) !f64 {
+    return liveEcho(drift_ppm, jitter, 8, false);
+}
+
+fn liveEcho(drift_ppm: f64, jitter: u32, seconds: usize, per_second: bool) !f64 {
+    aec.reference.clear();
+    var cn = try aec.Canceller.init();
+    defer cn.deinit();
+    const total = 48000 * seconds;
+    const far = try std.heap.c_allocator.alloc(f32, total);
+    defer std.heap.c_allocator.free(far);
+    vowel(far, 0, 140, 0.25);
+    const ratio = 1.0 / (1.0 + drift_ppm * 1e-6); // tempo da saída por amostra do microfone
+    const l_out: f64 = 1024 + 240;
+    var stereo: [2048]f32 = undefined;
+    var block: [480]f32 = undefined;
+    var out: [480]f32 = undefined;
+    var nb: usize = 0;
+    var blocks: usize = 0;
+    var e_in: f64 = 0;
+    var e_out: f64 = 0;
+    var k: usize = 0;
+    var m: usize = 0;
+    var prng = std.Random.DefaultPrng.init(42);
+    const rnd = prng.random();
+    var jit_out: f64 = 0;
+    var jit_mic: f64 = 0;
+    while (true) {
+        const t_out = @as(f64, @floatFromInt(k * 1024)) + jit_out;
+        const t_mic = @as(f64, @floatFromInt((m + 1) * 441)) * ratio + 120 + jit_mic;
+        if (t_out <= t_mic) {
+            if ((k + 1) * 1024 > total) break;
+            for (0..1024) |i| {
+                stereo[2 * i] = far[k * 1024 + i];
+                stereo[2 * i + 1] = far[k * 1024 + i];
+            }
+            aec.reference.pushStereo(&stereo);
+            k += 1;
+            if (jitter > 0) jit_out = @floatFromInt(rnd.uintLessThan(u32, jitter));
+            continue;
+        }
+        for (0..441) |i| {
+            const t = @as(f64, @floatFromInt(m * 441 + i)) * ratio - l_out;
+            block[nb] = if (t < 1) 0 else 0.5 * (0.6 * lerp(far, t) + 0.4 * lerp(far, t - 1));
+            nb += 1;
+            if (nb < 480) continue;
+            nb = 0;
+            cn.processLive(&block, &out);
+            blocks += 1;
+            if (per_second) {
+                for (block, out) |a, b| {
+                    e_in += a * a;
+                    e_out += b * b;
+                }
+                if (blocks % 100 == 0) {
+                    std.debug.print("{d:.0} ", .{10 * std.math.log10(e_in / @max(e_out, 1e-12))});
+                    e_in = 0;
+                    e_out = 0;
+                }
+            } else if (blocks > total / 480 - 150) for (block, out) |a, b| {
+                e_in += a * a;
+                e_out += b * b;
+            };
+        }
+        m += 1;
+        if (jitter > 0) jit_mic = @floatFromInt(rnd.uintLessThan(u32, jitter));
+    }
+    return 10 * std.math.log10(e_in / @max(e_out, 1e-12));
+}
+
+fn lerp(x: []const f32, t: f64) f32 {
+    const i: usize = @intFromFloat(t);
+    if (i + 1 >= x.len) return 0;
+    const f: f32 = @floatCast(t - @floor(t));
+    return x[i] * (1 - f) + x[i + 1] * f;
+}
+
+test "eco: referência alinhada com blocos diferentes e relógios desencontrados" {
+    // medido: ~35 dB com o mesmo relógio (com ou sem atraso nos callbacks)
+    try testing.expect(try liveEchoErle(0, 0) > 30);
+    try testing.expect(try liveEchoErle(0, 192) > 30);
+    // relógios diferentes, antes da deriva ser medida: o filtro corre atrás (~20 dB)
+    try testing.expect(try liveEchoErle(50, 96) > 15);
+    try testing.expect(try liveEchoErle(-50, 96) > 15);
+    // e o anel não guarda atraso à toa
+    try testing.expect(aec.reference.level() < 48000 * 30 / 1000);
+}
+
+test "eco: deriva entre os relógios medida e compensada" {
+    // microfone 120 ppm mais rápido: depois de ~25 s a deriva é medida e a
+    // referência reamostrada (medido: ~32 dB; sem compensar, ~14 dB)
+    const erle = try liveEcho(120, 96, 40, false);
+    const ppm = aec.reference.driftPpm();
+    try testing.expect(ppm < -105 and ppm > -135);
+    try testing.expect(erle > 25);
+}

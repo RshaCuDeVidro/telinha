@@ -380,9 +380,9 @@ pub fn main(init: std.process.Init) !void {
         end_lat = @max(end_lat, s.end_lat_sum_us.load(.monotonic) / @max(1, s.end_frames.load(.monotonic)));
         total_bytes += s.bytes.load(.monotonic);
         if (i < 3) std.debug.print("  espectador {d}: {d} quadros ({d:.1}%), {d} IDR, atraso médio {d:.1} ms (máx {d:.1})\n", .{
-            i,                                                   fr,
+            i,                                                                 fr,
             @as(f64, @floatFromInt(fr)) * 100 / @as(f64, @floatFromInt(sent)), s.keys.load(.monotonic),
-            ms(s.lat_sum_us.load(.monotonic) / @max(1, fr)),     ms(s.lat_max_us.load(.monotonic)),
+            ms(s.lat_sum_us.load(.monotonic) / @max(1, fr)),                   ms(s.lat_max_us.load(.monotonic)),
         });
     }
     if (n_viewers > 0) std.debug.print("  ...\n  pior espectador normal: {d:.1}% dos quadros, até {d} IDR, atraso máx {d:.1} ms, no último quarto {d:.1} ms\n", .{ @as(f64, @floatFromInt(min_frames)) * 100 / @as(f64, @floatFromInt(sent)), max_keys, ms(max_lat), ms(end_lat) });
@@ -400,8 +400,8 @@ pub fn main(init: std.process.Init) !void {
         slow_end_frames = @min(slow_end_frames, end_fr);
         total_bytes += slow.bytes.load(.monotonic);
         std.debug.print("  espectador lento: {d} quadros, recomeçou de um IDR {d}x, atraso médio {d:.0} ms (máx {d:.0}); no último quarto: {d:.0} q/s, atraso médio {d:.0} ms\n", .{
-            fr,                                                   slow.keys.load(.monotonic),
-            ms(slow.lat_sum_us.load(.monotonic) / @max(1, fr)),   ms(slow.lat_max_us.load(.monotonic)),
+            fr,                                                                       slow.keys.load(.monotonic),
+            ms(slow.lat_sum_us.load(.monotonic) / @max(1, fr)),                       ms(slow.lat_max_us.load(.monotonic)),
             @as(f64, @floatFromInt(end_fr)) / (@as(f64, @floatFromInt(seconds)) / 4), ms(slow_lat),
         });
     }
