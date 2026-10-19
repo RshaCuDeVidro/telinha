@@ -249,7 +249,8 @@ class App:
     def __init__(self, session, name, display, args, size, extra_env, audio):
         self.s = session
         self.name = name
-        self.num = display
+        # QA_TELAS=N soma N aos números das telas (duas baterias rodando juntas)
+        self.num = display + int(os.environ.get("QA_TELAS", "0"))
         self.args = args
         self.size = size
         self.extra_env = extra_env
