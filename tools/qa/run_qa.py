@@ -895,6 +895,69 @@ def versao_nova():
 
 
 @test
+def idioma_ingles():
+    """Interface em inglês (TELINHA_IDIOMA=en): tela inicial, recusa do servidor traduzida, sala, compartilhar, configurações; trocar o idioma nas configurações muda na hora."""
+    with Session("idioma") as s:
+        p = port()
+        dono = s.app("dono", 91, ["--nome", "Dono", "--criar", str(p)])
+        dono.wait(lambda st: st["status"] == "connected", 10, "o dono entrar")
+        a = s.app("a", 92, [], extra_env={"TELINHA_IDIOMA": "en"})
+        st = a.wait(lambda st: st["screen"] == "home", 10, "a tela inicial")
+        expect(st["lang"] == "en", f"idioma errado: {st['lang']}")
+        for label in ["Join a room", "Create room", "Join##go"]:
+            a.find(label)
+        expect(a.find("Entrar numa sala", timeout=0.5, need=False) is None, "texto em português na tela inicial em inglês")
+        a.fill("##name", "Ana")
+        # aba criar: erro em inglês
+        a.click("Create room")
+        a.wait(lambda st: st["home_tab"] == 1, 3, "a aba criar sala")
+        a.fill("##port", "abc")
+        a.click("Create room##go")
+        a.wait(lambda st: st["home_error"] == "Invalid port.", 3, "o erro de porta em inglês")
+        # sala trancada: o motivo vem do servidor em português e aparece em inglês
+        dono.click("##lockroom")
+        dono.wait(lambda st: st["locked"], 5, "a sala trancar")
+        a.click("Join a room")
+        a.fill("##addr", f"127.0.0.1:{p}")
+        a.click("Join##go")
+        a.wait(lambda st: st["screen"] == "home" and st["home_error"] == "The room is locked: no one new can join right now.", 10, "a recusa em inglês")
+        dono.click("##lockroom")
+        dono.wait(lambda st: not st["locked"], 5, "a sala destrancar")
+        a.click("Join##go")
+        a.wait(lambda st: st["screen"] == "room" and st["status"] == "connected", 10, "entrar na sala")
+        # sala e compartilhar tela
+        a.find(contains="Share screen##share")
+        a.click(contains="Share screen##share")
+        a.wait(lambda st: st["share_modal"], 3, "abrir o compartilhar tela")
+        for label in ["Game and video", "Original"]:
+            a.find(label, window="Share screen")
+        a.find(contains="Show the mouse cursor", window="Share screen")
+        a.click("Cancel", window="Share screen")
+        a.wait(lambda st: not st["share_modal"], 3, "fechar o compartilhar tela")
+        # configurações em inglês; trocar pra português muda tudo na hora (e fica salvo)
+        a.click("##gear")
+        a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        a.find("Close", window="Settings")
+        a.find(contains="Notification sounds", window="Settings")
+        a.click("##lang")
+        a.click("Português", window="##Combo")
+        a.wait(lambda st: st["lang"] == "pt" and st["cfg"]["language"] == "pt", 3, "trocar pra português")
+        # (o nome guardado da janela aberta não muda; o ID "###configuracoes" é o mesmo)
+        a.find("Fechar", window="###configuracoes")
+        a.find(contains="Sons de aviso", window="###configuracoes")
+        expect(a.find(contains="Notification sounds", timeout=0.5, need=False) is None, "ficou texto em inglês depois de trocar")
+        ini = open(os.path.join(a.cfg, "telinha", "config.ini")).read()
+        expect("language=pt" in ini, "o idioma não foi salvo no arquivo")
+        # e de volta pro inglês
+        a.click("##lang")
+        a.click("English", window="##Combo")
+        a.wait(lambda st: st["lang"] == "en" and st["cfg"]["language"] == "en", 3, "voltar pro inglês")
+        a.click("Close", window="###configuracoes")
+        a.wait(lambda st: not st["settings_modal"], 3, "fechar as configurações")
+        a.find(contains="Share screen##share")
+
+
+@test
 def windows_exe():
     """O telinha.exe (wine isolado): entra, assiste, lista janelas, compartilha só uma janela e a câmera avisa que não tem."""
     import subprocess

@@ -15,6 +15,7 @@
 //!   nós → servidor (conexão nova): {"Accept":"uuid"} e a partir daí os bytes
 //!   são os do visitante.
 const std = @import("std");
+const tr = @import("i18n.zig").tr;
 const sync = @import("sync.zig");
 const net = @import("net.zig");
 const gpa = std.heap.c_allocator;
@@ -115,11 +116,11 @@ pub const Tunnel = struct {
         while (!t.stopping.load(.acquire)) {
             const was_ready = t.runControl(&want_port) catch |e| blk: {
                 const msg: []const u8 = switch (e) {
-                    error.UnknownHost => "não achei o servidor do túnel (sem internet?)",
-                    error.ConnectionRefused, error.ConnectFailed => "o servidor do túnel não respondeu",
-                    error.AuthRequired => "esse servidor de túnel exige senha",
+                    error.UnknownHost => tr("não achei o servidor do túnel (sem internet?)"),
+                    error.ConnectionRefused, error.ConnectFailed => tr("o servidor do túnel não respondeu"),
+                    error.AuthRequired => tr("esse servidor de túnel exige senha"),
                     error.Refused => "", // mensagem do servidor já foi guardada
-                    else => "a conexão com o servidor do túnel caiu",
+                    else => tr("a conexão com o servidor do túnel caiu"),
                 };
                 if (msg.len > 0) t.setState(.failed, 0, msg);
                 break :blk false;

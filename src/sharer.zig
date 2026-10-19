@@ -12,6 +12,7 @@
 //! Controle de banda: ratectl.zig (pelo atraso de ponta a ponta medido com as
 //! confirmações do servidor, e pelos avisos de espectador lento).
 const std = @import("std");
+const tr = @import("i18n.zig").tr;
 const sync = @import("sync.zig");
 const proto = @import("proto.zig");
 const codec = @import("codec.zig");
@@ -245,9 +246,9 @@ pub const Sharer = struct {
 
     fn errorText(e: anyerror) []const u8 {
         return switch (e) {
-            error.OutOfMemory => "Sem memória.",
-            error.EncoderCreate, error.EncoderInit => "Não consegui iniciar o codificador de vídeo.",
-            error.Encode => "Falha ao codificar o vídeo.",
+            error.OutOfMemory => tr("Sem memória."),
+            error.EncoderCreate, error.EncoderInit => tr("Não consegui iniciar o codificador de vídeo."),
+            error.Encode => tr("Falha ao codificar o vídeo."),
             else => @errorName(e),
         };
     }
@@ -262,7 +263,7 @@ pub const Sharer = struct {
             return;
         };
         const enc_thread = std.Thread.spawn(.{}, Pipeline.encodeLoop, .{&p}) catch {
-            s.fail("Falha ao criar thread.");
+            s.fail(tr("Falha ao criar thread."));
             return;
         };
         p.captureLoop() catch |e| s.fail(if (e == error.Capture) p.errSlice() else errorText(e));
@@ -497,9 +498,9 @@ const Pipeline = struct {
                 // o compositor manda o primeiro quadro na hora, mesmo com a tela parada
                 if (!got_any and sync.nowUs() - started_us > 10_000_000) {
                     const msg = if (s.kind == proto.kind_camera)
-                        "A câmera não mandou nenhuma imagem (outro programa está usando ela?)."
+                        tr("A câmera não mandou nenhuma imagem (outro programa está usando ela?).")
                     else
-                        "A imagem da tela não chegou (o compositor aceitou compartilhar, mas não mandou nenhum quadro). Tenta de novo; se continuar, reinicia o xdg-desktop-portal.";
+                        tr("A imagem da tela não chegou (o compositor aceitou compartilhar, mas não mandou nenhum quadro). Tenta de novo; se continuar, reinicia o xdg-desktop-portal.");
                     @memcpy(p.err[0..msg.len], msg);
                     p.err[msg.len] = 0;
                     return error.Capture;

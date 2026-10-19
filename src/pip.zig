@@ -6,6 +6,7 @@
 //! textura do vídeo, sem copiar nada) e um contexto próprio do ImGui (o backend
 //! do GLFW manda os eventos de cada janela pro contexto dela).
 const std = @import("std");
+const i18n = @import("i18n.zig");
 const c = @import("c.zig").c;
 const fonts = @import("fonts.zig");
 const audio = @import("audio.zig");
@@ -105,7 +106,7 @@ pub const Pip = struct {
             const iy = (size.y - ih) / 2;
             c.ImDrawList_AddImage(d, .{ ._TexData = null, ._TexID = tex }, .{ .x = ix, .y = iy }, .{ .x = ix + iw, .y = iy + ih }, .{ .x = 0, .y = 0 }, .{ .x = 1, .y = 1 }, 0xFFFFFFFF);
         } else {
-            const t: []const u8 = "Carregando...";
+            const t: []const u8 = i18n.tr("Carregando...");
             c.ImDrawList_AddText_Vec2(d, .{ .x = p.S(12), .y = p.S(12) }, 0xFFA49B94, t.ptr, t.ptr + t.len);
         }
         // controles com o mouse em cima
@@ -117,9 +118,9 @@ pub const Pip = struct {
         if (over) {
             const bs = p.S(28);
             c.igSetCursorScreenPos(.{ .x = size.x - bs - p.S(6), .y = p.S(6) });
-            if (p.button("##pipclose", "\u{F00D}", bs, "Fechar a janela flutuante")) action = .close;
+            if (p.button("##pipclose", "\u{F00D}", bs, i18n.tr("Fechar a janela flutuante"))) action = .close;
             c.igSetCursorScreenPos(.{ .x = size.x - 2 * bs - p.S(10), .y = p.S(6) });
-            if (p.button("##pipback", "\u{F066}", bs, "Voltar pra janela do telinha (duplo clique também)")) action = .back;
+            if (p.button("##pipback", "\u{F066}", bs, i18n.tr("Voltar pra janela do telinha (duplo clique também)"))) action = .back;
             // nome
             const ts = c.igCalcTextSize(name.ptr, name.ptr + name.len, false, -1);
             c.ImDrawList_AddRectFilled(d, .{ .x = p.S(6), .y = size.y - ts.y - p.S(16) }, .{ .x = p.S(18) + ts.x, .y = size.y - p.S(6) }, 0xAA000000, p.S(5), 0);

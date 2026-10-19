@@ -11,6 +11,7 @@
 //! DeletePortMapping. O mapeamento vale 1 h e é renovado enquanto a sala está
 //! aberta: se o app fechar sem conseguir apagar, ele some sozinho.
 const std = @import("std");
+const tr = @import("i18n.zig").tr;
 const net = @import("net.zig");
 const sync = @import("sync.zig");
 const gpa = std.heap.c_allocator;
@@ -423,16 +424,16 @@ pub const Mapper = struct {
         defer m.release();
         const router = discover(m.to, m.to_port, 3000) catch |e| {
             m.fail(switch (e) {
-                error.NoRouter => "Nenhum roteador respondeu ao UPnP (ele pode estar desligado nas configurações do roteador).",
-                else => "O roteador respondeu, mas não deixa abrir portas por UPnP.",
+                error.NoRouter => tr("Nenhum roteador respondeu ao UPnP (ele pode estar desligado nas configurações do roteador)."),
+                else => tr("O roteador respondeu, mas não deixa abrir portas por UPnP."),
             });
             return;
         };
         var mp = open(router, m.port) catch |e| {
             m.fail(switch (e) {
-                error.Cgnat => "Sua operadora usa CGNAT (o roteador não tem IP próprio na internet): porta aberta lá não chega aqui. Use o link público.",
-                error.Refused => "O roteador recusou abrir a porta.",
-                else => "O roteador não respondeu direito.",
+                error.Cgnat => tr("Sua operadora usa CGNAT (o roteador não tem IP próprio na internet): porta aberta lá não chega aqui. Use o link público."),
+                error.Refused => tr("O roteador recusou abrir a porta."),
+                else => tr("O roteador não respondeu direito."),
             });
             return;
         };
