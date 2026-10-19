@@ -515,20 +515,16 @@ pub const HwDecoder = struct {
 pub const Decoder = struct {
     dec: [*c]oh.ISVCDecoder,
 
+    /// Uma thread só, de propósito: o modo com threads do openh264 2.6
+    /// (DECODER_OPTION_NUM_OF_THREADS) rende ~1,7x com 2 threads, mas a imagem
+    /// sai 2 quadros atrasada e ele dá segfault ao destruir o decoder com
+    /// quadros em andamento (com 3 threads, já no decode). Medido no bench.
     pub fn init() !Decoder {
-        return initThreads(0);
-    }
-
-    /// `threads` > 1: decodifica quadros em paralelo (mais vazão, mas a
-    /// imagem sai até threads-1 quadros depois). 0 = uma thread, sem atraso.
-    pub fn initThreads(threads: c_int) !Decoder {
         var dec: [*c]oh.ISVCDecoder = null;
         if (oh.WelsCreateDecoder(&dec) != 0 or dec == null) return error.DecoderCreate;
         errdefer oh.WelsDestroyDecoder(dec);
         var trace: c_int = oh.WELS_LOG_QUIET;
         _ = dec.*.*.SetOption.?(dec, oh.DECODER_OPTION_TRACE_LEVEL, &trace);
-        var nthreads: c_int = threads;
-        if (threads > 0) _ = dec.*.*.SetOption.?(dec, oh.DECODER_OPTION_NUM_OF_THREADS, &nthreads);
         var p = std.mem.zeroes(oh.SDecodingParam);
         p.sVideoProperty.eVideoBsType = oh.VIDEO_BITSTREAM_AVC;
         p.eEcActiveIdc = oh.ERROR_CON_DISABLE; // sem "remendo": se perder referência, pedimos um IDR
@@ -542,19 +538,12 @@ pub const Decoder = struct {
         oh.WelsDestroyDecoder(d.dec);
     }
 
-    pub const Picture = struct { y: [*]const u8, u: [*]const u8, v: [*]const u8, ys: usize, uvs: usize, w: u32, h: u32, ts: u64 = 0 };
+    pub const Picture = struct { y: [*]const u8, u: [*]const u8, v: [*]const u8, ys: usize, uvs: usize, w: u32, h: u32 };
 
     /// Decodifica um frame. Retorna a imagem (válida até a próxima chamada) ou null.
     pub fn decode(d: *Decoder, data: []const u8) !?Picture {
-        return d.decodeTs(data, 0);
-    }
-
-    /// Como `decode`, marcando o quadro com `ts`: a imagem devolvida traz o
-    /// `ts` do quadro dela (com threads, pode ser um quadro anterior).
-    pub fn decodeTs(d: *Decoder, data: []const u8, ts: u64) !?Picture {
         var planes: [3][*c]u8 = .{ null, null, null };
         var info = std.mem.zeroes(oh.SBufferInfo);
-        info.uiInBsTimeStamp = ts;
         const st = d.dec.*.*.DecodeFrameNoDelay.?(d.dec, data.ptr, @intCast(data.len), &planes, &info);
         if (st != oh.dsErrorFree) return error.Decode;
         if (info.iBufferStatus != 1 or planes[0] == null) return null;
@@ -567,7 +556,6 @@ pub const Decoder = struct {
             .uvs = @intCast(sb.iStride[1]),
             .w = @intCast(sb.iWidth),
             .h = @intCast(sb.iHeight),
-            .ts = info.uiOutYuvTimeStamp,
         };
     }
 };
