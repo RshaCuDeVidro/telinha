@@ -546,6 +546,10 @@ pub const Decoder = struct {
         var info = std.mem.zeroes(oh.SBufferInfo);
         const st = d.dec.*.*.DecodeFrameNoDelay.?(d.dec, data.ptr, @intCast(data.len), &planes, &info);
         if (st != oh.dsErrorFree) return error.Decode;
+        // perfis Main/High: o openh264 segura a imagem esperando reordenação
+        // (B-frames), mesmo sem nenhum B-frame no fluxo. Como nunca usamos
+        // B-frames, a imagem já pode sair: pede pra soltar.
+        if (info.iBufferStatus != 1) _ = d.dec.*.*.FlushFrame.?(d.dec, &planes, &info);
         if (info.iBufferStatus != 1 or planes[0] == null) return null;
         const sb = info.UsrData.sSystemBuffer;
         return .{

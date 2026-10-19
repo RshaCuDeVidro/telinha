@@ -3,7 +3,7 @@
 // pelo loader do nv-codec-headers, então nada disso é dependência de build.
 //
 // Entrada em BGRX/RGBX direto (o NVENC converte a cor na GPU), modo síncrono,
-// preset P1 + tuning de latência ultra baixa, sem B-frames, GOP infinito (IDR
+// preset P4 + tuning de latência ultra baixa, sem B-frames, GOP infinito (IDR
 // só quando pedirem) e VBV de um quadro.
 #include "hwenc.h"
 
@@ -30,21 +30,39 @@ struct hwenc {
     uint8_t *bits;
     size_t bits_cap;
     uint64_t frame;
+    int bitrate;
 };
 
 static void set_err(char *err, int errlen, const char *msg, int code) {
     if (err && errlen > 0) snprintf(err, errlen, "%s (%d)", msg, code);
 }
 
+/// VBV do IDR, em quadros: com o VBV normal (1 quadro) o IDR sai quase no QP
+/// máximo e a tela fica borrada por um tempo depois de cada IDR (alguém entrou
+/// na sala, um espectador recomeçou...). Com folga ele sai nítido: numa tela
+/// de código em 1080p, 34 dB → 45 dB no IDR, ~60 KB a mais (zig build bench).
+#define IDR_VBV_FRAMES 10
+
 static void configure_rc(hwenc *e, int bitrate) {
+    e->bitrate = bitrate;
     NV_ENC_RC_PARAMS *rc = &e->cfg.rcParams;
     // VBR com teto: tela calma gasta pouco, movimento usa até o limite
     rc->rateControlMode = NV_ENC_PARAMS_RC_VBR;
-    rc->averageBitRate = (uint32_t)(bitrate / 4 * 3);
+    rc->averageBitRate = (uint32_t)bitrate;
     rc->maxBitRate = (uint32_t)bitrate;
     // VBV de ~1 quadro: cada quadro sai sem esperar os próximos (latência mínima)
     rc->vbvBufferSize = (uint32_t)(bitrate / (e->fps > 0 ? e->fps : 30));
     rc->vbvInitialDelay = rc->vbvBufferSize;
+}
+
+static void reconfigure(hwenc *e) {
+    NV_ENC_RECONFIGURE_PARAMS rp = {0};
+    rp.version = NV_ENC_RECONFIGURE_PARAMS_VER;
+    rp.reInitEncodeParams = e->init;
+    rp.reInitEncodeParams.encodeConfig = &e->cfg;
+    rp.resetEncoder = 0;
+    rp.forceIDR = 0;
+    e->api.nvEncReconfigureEncoder(e->enc, &rp);
 }
 
 void hwenc_close(hwenc *e) {
@@ -113,7 +131,14 @@ hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, 
         return NULL;
     }
 
-    const GUID preset = NV_ENC_PRESET_P1_GUID;
+    // P4 dá ~1 dB a mais que o P1 em texto pelo mesmo tempo até 1080p60 (a
+    // placa sobra); acima disso, P2. TELINHA_NVENC_PRESET=1..7 força um.
+    static const GUID presets[7] = {NV_ENC_PRESET_P1_GUID, NV_ENC_PRESET_P2_GUID, NV_ENC_PRESET_P3_GUID, NV_ENC_PRESET_P4_GUID,
+                                    NV_ENC_PRESET_P5_GUID, NV_ENC_PRESET_P6_GUID, NV_ENC_PRESET_P7_GUID};
+    int pidx = (int64_t)width * height * (fps > 0 ? fps : 30) <= 1920LL * 1080 * 60 ? 4 : 2;
+    const char *penv = getenv("TELINHA_NVENC_PRESET");
+    if (penv && *penv >= '1' && *penv <= '7') pidx = *penv - '0';
+    const GUID preset = presets[pidx - 1];
     NV_ENC_PRESET_CONFIG pc = {0};
     pc.version = NV_ENC_PRESET_CONFIG_VER;
     pc.presetCfg.version = NV_ENC_CONFIG_VER;
@@ -125,9 +150,11 @@ hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, 
     }
     e->cfg = pc.presetCfg;
     e->cfg.version = NV_ENC_CONFIG_VER;
-    // Baseline: o decoder (openh264) entrega cada quadro na hora. Em Main/High
-    // ele segura um quadro pra reordenação = latência extra (e tela parada não aparece).
-    e->cfg.profileGUID = NV_ENC_H264_PROFILE_BASELINE_GUID;
+    // High + CABAC + transformada 8x8: texto bem mais nítido pela mesma taxa
+    // (+3,8 dB com 17% menos bits no bench). Sem B-frames; o decoder do
+    // openh264 segura um quadro em perfis Main/High achando que pode haver
+    // reordenação, e o codec.zig pede pra ele soltar na hora (FlushFrame).
+    e->cfg.profileGUID = NV_ENC_H264_PROFILE_HIGH_GUID;
     e->cfg.gopLength = NVENC_INFINITE_GOPLENGTH;
     e->cfg.frameIntervalP = 1; // sem B-frames
     configure_rc(e, bitrate);
@@ -142,8 +169,10 @@ hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, 
     h->repeatSPSPPS = 1; // todo IDR leva SPS/PPS (quem entra depois consegue decodificar)
     h->outputAUD = 0;
     h->chromaFormatIDC = 1;
-    h->entropyCodingMode = NV_ENC_H264_ENTROPY_CODING_MODE_CAVLC;
-    h->adaptiveTransformMode = NV_ENC_H264_ADAPTIVE_TRANSFORM_DISABLE;
+    // CABAC: ~20% menos bits que CAVLC pela mesma qualidade; custa ~50% a mais
+    // pra decodificar em software (openh264), o NVDEC nem sente
+    h->entropyCodingMode = NV_ENC_H264_ENTROPY_CODING_MODE_CABAC;
+    h->adaptiveTransformMode = NV_ENC_H264_ADAPTIVE_TRANSFORM_ENABLE;
 
     NV_ENC_INITIALIZE_PARAMS *ip = &e->init;
     memset(ip, 0, sizeof *ip);
@@ -223,7 +252,19 @@ int hwenc_encode(hwenc *e, const uint8_t *pixels, int stride, int format, int fo
     pp.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
     pp.inputTimeStamp = e->frame++;
     if (force_idr) pp.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
+    // IDR com folga no VBV (ver IDR_VBV_FRAMES); depois volta ao normal
+    const int boost = force_idr || e->frame == 1;
+    if (boost) {
+        NV_ENC_RC_PARAMS *rc = &e->cfg.rcParams;
+        rc->vbvBufferSize = (uint32_t)((int64_t)e->bitrate * IDR_VBV_FRAMES / (e->fps > 0 ? e->fps : 30));
+        rc->vbvInitialDelay = rc->vbvBufferSize;
+        reconfigure(e);
+    }
     st = e->api.nvEncEncodePicture(e->enc, &pp);
+    if (boost) {
+        configure_rc(e, e->bitrate);
+        reconfigure(e);
+    }
     if (st != NV_ENC_SUCCESS) return (int)st;
 
     NV_ENC_LOCK_BITSTREAM lb = {0};
@@ -248,13 +289,7 @@ int hwenc_encode(hwenc *e, const uint8_t *pixels, int stride, int format, int fo
 
 void hwenc_set_bitrate(hwenc *e, int bitrate) {
     configure_rc(e, bitrate);
-    NV_ENC_RECONFIGURE_PARAMS rp = {0};
-    rp.version = NV_ENC_RECONFIGURE_PARAMS_VER;
-    rp.reInitEncodeParams = e->init;
-    rp.reInitEncodeParams.encodeConfig = &e->cfg;
-    rp.resetEncoder = 0;
-    rp.forceIDR = 0;
-    e->api.nvEncReconfigureEncoder(e->enc, &rp);
+    reconfigure(e);
 }
 
 const char *hwenc_name(hwenc *e) {

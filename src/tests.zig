@@ -423,3 +423,39 @@ test "RateControl: aviso de espectador lento respeita o piso" {
     rc.rampUp(t, 0);
     try testing.expectEqual(@as(u32, 2_000_000), rc.bps);
 }
+
+test "NVENC: a conversão RGB→YUV dele bate com a nossa (BT.601, faixa limitada)" {
+    var err: [256]u8 = undefined;
+    const w = 64;
+    const h = 64;
+    var enc = codec.HwEncoder.init(.{ .width = w, .height = h, .fps = 30, .bitrate = 2_000_000 }, &err) catch return error.SkipZigTest;
+    defer enc.deinit();
+    var dec = try codec.Decoder.init();
+    defer dec.deinit();
+    var img: [w * h * 4]u8 = undefined;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(std.heap.c_allocator);
+    var y_ref: [w * h]u8 = undefined;
+    var u_ref: [w * h / 4]u8 = undefined;
+    var v_ref: [w * h / 4]u8 = undefined;
+    // vermelho, verde, azul, cinza médio (BGRX)
+    const cores = [_][3]u8{ .{ 0, 0, 255 }, .{ 0, 255, 0 }, .{ 255, 0, 0 }, .{ 128, 128, 128 } };
+    for (cores) |cor| {
+        for (0..w * h) |i| {
+            img[i * 4] = cor[0];
+            img[i * 4 + 1] = cor[1];
+            img[i * 4 + 2] = cor[2];
+            img[i * 4 + 3] = 255;
+        }
+        codec.toI420(&img, w * 4, w, h, .bgrx, &y_ref, &u_ref, &v_ref);
+        out.clearRetainingCapacity();
+        _ = try enc.encode(&img, w * 4, .bgrx, true, &out);
+        const p = (try dec.decode(out.items)).?;
+        const c = 32 * p.ys + 32;
+        const cu = 16 * p.uvs + 16;
+        // quem assiste converte de volta com BT.601 (shader/CPU): as cores têm que bater
+        try testing.expect(@abs(@as(i32, y_ref[32 * w + 32]) - p.y[c]) <= 2);
+        try testing.expect(@abs(@as(i32, u_ref[16 * 32 + 16]) - p.u[cu]) <= 2);
+        try testing.expect(@abs(@as(i32, v_ref[16 * 32 + 16]) - p.v[cu]) <= 2);
+    }
+}

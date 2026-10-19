@@ -52,10 +52,12 @@ Medido num **Intel i5-2400S (2011, 4 núcleos)** com GTX 1050 Ti, 1080p, via `zi
 |---|---|---|---|---|
 | texto rolando — openh264 | 3,7 ms | 23 ms | 4 ms | ~200 KB/s |
 | movimento — openh264 | 3,9 ms | 13 ms | 13 ms | ~730 KB/s (no teto de 6 Mbit/s) |
-| texto rolando — **NVENC + NVDEC** | — (na GPU) | **7 ms** | **6 ms** | ~460 KB/s |
-| movimento — **NVENC + NVDEC** | — (na GPU) | **8 ms** | **6 ms** | ~530 KB/s |
+| texto rolando — **NVENC + NVDEC** | — (na GPU) | **7,5 ms** | **6 ms** | ~500 KB/s |
+| movimento — **NVENC + NVDEC** | — (na GPU) | **8 ms** | **6 ms** | ~630 KB/s |
 
-Ponta a ponta, numa sala local com conteúdo pesado (tela inteira mudando a cada quadro): **30–50 fps em 1080p com 53–64 ms de atraso** usando NVENC/NVDEC. Em CPU moderna o openh264 sozinho já faz 1080p60.
+Qualidade numa tela de código de verdade em 1080p (`TELINHA_BENCH_QUALIDADE=1 zig build bench`, PSNR do brilho): NVENC **57 dB com 0,36 Mbit/s**, inclusive no quadro completo (IDR) que sai quando alguém entra na sala; openh264 58 dB com 0,44 Mbit/s.
+
+Ponta a ponta, numa sala local com conteúdo pesado (tela inteira mudando a cada quadro): **30–50 fps em 1080p com 31–64 ms de atraso** usando NVENC/NVDEC. Em CPU moderna o openh264 sozinho já faz 1080p60.
 
 ## Compilar
 

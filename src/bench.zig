@@ -1,6 +1,12 @@
 //! Benchmark do pipeline de vídeo: `zig build bench [-- largura altura]`.
 //! Mede conversão de cor, encode e decode H.264 com conteúdo parecido com
 //! tela real (texto rolando) e com movimento (tudo mudando).
+//!
+//! Qualidade (PSNR) x tempo por encoder/preset: TELINHA_BENCH_QUALIDADE=1.
+//! Opções: TELINHA_BENCH_IMAGEM=tela.bgra (uma captura de verdade, w*h*4),
+//! TELINHA_BENCH_CURVA=1 (qualidade quadro a quadro depois de cada IDR),
+//! TELINHA_BENCH_PRESET=N (só o preset N do NVENC; 0 = openh264),
+//! TELINHA_BENCH_SO_NVENC=1.
 const std = @import("std");
 const sync = @import("sync.zig");
 const codec = @import("codec.zig");
@@ -119,6 +125,7 @@ pub fn main(init: std.process.Init) !void {
     try run("movimento (modo jogo)", w, h, .motion, .motion);
     try runHw("NVENC: texto rolando", w, h, .screen, .text);
     try runHw("NVENC: movimento", w, h, .motion, .motion);
+    if (std.c.getenv("TELINHA_BENCH_QUALIDADE") != null) try quality(w, h, 6_000_000);
 }
 
 fn runHw(name: []const u8, w: u32, h: u32, mode: codec.Mode, scene: enum { text, motion }) !void {
@@ -180,3 +187,106 @@ fn runHw(name: []const u8, w: u32, h: u32, mode: codec.Mode, scene: enum { text,
     });
 }
 
+
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+
+/// PSNR do brilho (Y) entre a imagem original e a decodificada, em dB.
+fn psnrY(src_y: []const u8, p: codec.Decoder.Picture, w: u32, h: u32) f64 {
+    var sse: u64 = 0;
+    for (0..h) |y| {
+        const a = src_y[y * w ..][0..w];
+        const b = p.y[y * p.ys ..][0..w];
+        for (a, b) |x, z| {
+            const d: i32 = @as(i32, x) - @as(i32, z);
+            sse += @intCast(d * d);
+        }
+    }
+    const mse = @as(f64, @floatFromInt(sse)) / @as(f64, @floatFromInt(@as(u64, w) * h));
+    if (mse == 0) return 99;
+    return 10 * std.math.log10(255.0 * 255.0 / mse);
+}
+
+/// Qualidade x tempo de cada preset do NVENC (e do openh264), mesma taxa de bits.
+pub fn quality(w: u32, h: u32, bitrate: u32) !void {
+    const img = try gpa.alloc(u8, @as(usize, w) * h * 4);
+    defer gpa.free(img);
+    const n = @as(usize, w) * h;
+    const sy = try gpa.alloc(u8, n);
+    defer gpa.free(sy);
+    const su = try gpa.alloc(u8, n / 4);
+    defer gpa.free(su);
+    const sv = try gpa.alloc(u8, n / 4);
+    defer gpa.free(sv);
+    const prev_y = try gpa.alloc(u8, n); // Y do quadro anterior (pra detectar atraso de 1 quadro)
+    defer gpa.free(prev_y);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    std.debug.print("\nqualidade x tempo ({d}x{d}, {d} kbit/s, 30 fps): PSNR do brilho, maior = melhor\n", .{ w, h, bitrate / 1000 });
+    for ([_]enum { text, motion }{ .text, .motion }) |scene| {
+        for ([_]u8{ 0, 1, 2, 3, 4, 5, 7 }) |preset| {
+            if (std.c.getenv("TELINHA_BENCH_SO_NVENC") != null and preset == 0) continue;
+            if (std.c.getenv("TELINHA_BENCH_PRESET")) |only| if (preset != only[0] - '0') continue;
+            var err: [256]u8 = undefined;
+            const opts: codec.EncoderOptions = .{ .width = w, .height = h, .fps = 30, .bitrate = bitrate, .mode = if (scene == .text) .screen else .motion };
+            var name_buf: [32]u8 = undefined;
+            const name = if (preset == 0) "openh264" else std.fmt.bufPrint(&name_buf, "NVENC P{d}", .{preset}) catch "";
+            if (preset > 0) {
+                var pb: [2:0]u8 = .{ '0' + preset, 0 };
+                _ = setenv("TELINHA_NVENC_PRESET", &pb, 1);
+            }
+            var sw: ?codec.Encoder = if (preset == 0) try codec.Encoder.init(opts) else null;
+            defer if (sw) |*e| e.deinit();
+            var hwe: ?codec.HwEncoder = if (preset > 0) (codec.HwEncoder.init(opts, &err) catch {
+                std.debug.print("  {s}: indisponível\n", .{name});
+                return;
+            }) else null;
+            defer if (hwe) |*e| e.deinit();
+            var dec = try codec.Decoder.init();
+            defer dec.deinit();
+            fillText(img, w, h, 1);
+            // TELINHA_BENCH_IMAGEM=arquivo.bgra (w*h*4): uma tela de verdade no lugar do texto sintético
+            if (std.c.getenv("TELINHA_BENCH_IMAGEM")) |path| if (scene == .text) {
+                if (std.c.fopen(path, "rb")) |fh| {
+                    _ = std.c.fread(img.ptr, 1, img.len, fh);
+                    _ = std.c.fclose(fh);
+                }
+            };
+            const frames = 90;
+            var t_enc: u64 = 0;
+            var bytes: u64 = 0;
+            var psnr_sum: f64 = 0;
+            var psnr_min: f64 = 99;
+            var psnr_prev: f64 = 0;
+            for (0..frames) |f| {
+                if (scene == .text) scroll(img, w, h) else motion(img, w, h, f);
+                out.clearRetainingCapacity();
+                const a = sync.nowUs();
+                if (sw) |*e| {
+                    _ = try e.encode(img.ptr, @as(usize, w) * 4, .bgrx, &out);
+                } else {
+                    // IDR no meio (alguém entrou na sala) no quadro 40
+                    _ = try hwe.?.encode(img.ptr, @as(usize, w) * 4, .bgrx, f == 0 or (std.c.getenv("TELINHA_BENCH_CURVA") != null and f == 40), &out);
+                }
+                const b = sync.nowUs();
+                const pic = (try dec.decode(out.items)) orelse continue;
+                @memcpy(prev_y, sy);
+                codec.toI420(img.ptr, @as(usize, w) * 4, w, h, .bgrx, sy, su, sv);
+                if (std.c.getenv("TELINHA_BENCH_CURVA") != null and scene == .text and (f < 24 or (f >= 38 and f < 52)))
+                    std.debug.print("    quadro {d:>2}: {d:.1} dB, {d} KB\n", .{ f, psnrY(sy, pic, w, h), out.items.len / 1024 });
+                if (f < 10) continue; // deixa o controle de taxa assentar
+                const ps = psnrY(sy, pic, w, h);
+                psnr_prev += psnrY(prev_y, pic, w, h);
+                psnr_sum += ps;
+                psnr_min = @min(psnr_min, ps);
+                t_enc += b - a;
+                bytes += out.items.len;
+            }
+            const cnt: f64 = frames - 10;
+            std.debug.print("  {s:<6} {s:<10} encode {d:>5.1} ms | PSNR {d:>5.2} dB (pior {d:.2}, vs anterior {d:.2}) | {d:>5.0} kbit/s\n", .{
+                if (scene == .text) "texto" else "jogo", name,
+                @as(f64, @floatFromInt(t_enc)) / cnt / 1000, psnr_sum / cnt, psnr_min, psnr_prev / cnt,
+                @as(f64, @floatFromInt(bytes)) * 8 / cnt * 30 / 1000,
+            });
+        }
+    }
+}

@@ -95,9 +95,18 @@ qualquer caso a thread de decode entrega os planos YUV (1,5 byte/pixel) e um
 shader converte a cor direto na GPU. Sem shader (OpenGL antigo), a CPU
 converte em paralelo, como antes.
 
-**Baseline sempre.** O decoder do openh264 segura um quadro pra reordenação
-em perfis Main/High; com Baseline (o que os dois encoders geram) cada quadro
-sai na mesma chamada — nada de atraso escondido.
+**Nada de atraso escondido no decoder.** O decoder do openh264 segura um
+quadro em perfis Main/High achando que pode haver B-frames; como nunca há, o
+`codec.zig` pede pra ele soltar na hora (`FlushFrame`). Assim o NVENC usa
+High + CABAC + transformada 8x8 (texto bem mais nítido pela mesma taxa) e o
+openh264 continua em Baseline; os dois saem na mesma chamada.
+
+**IDR nítido.** O VBV de 1 quadro (latência mínima) fazia o NVENC mandar o
+quadro completo — que sai quando alguém entra na sala — quase no QP máximo, e
+a tela ficava borrada até os quadros seguintes refinarem. No IDR o VBV cresce
+pra 10 quadros e volta ao normal em seguida: numa tela de código em 1080p o
+IDR passa de 34 dB pra 45 dB, com ~60 KB a mais. O controle de atraso trata
+IDR grande como esperado, sem baixar a qualidade.
 
 **Captura no Wayland por DMA-BUF.** O portal entrega cada quadro num buffer
 da GPU; o telinha importa com EGL (carregado em tempo de execução) e lê na

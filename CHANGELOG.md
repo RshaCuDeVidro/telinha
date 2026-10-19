@@ -33,6 +33,14 @@
   Sala pública sempre tem senha (criada se faltar). Reconecta pedindo a mesma
   porta. Também no servidor dedicado: `telinha-server --publico`.
 - A opção de áudio agora é lembrada entre execuções (era salva mas não lida).
+- **NVENC com bem mais qualidade** (medida com PSNR no `zig build bench`):
+  perfil High + CABAC + transformada 8x8, preset P4 (até 1080p60), taxa média
+  = alvo (era 75%) e IDR com folga no VBV. Numa tela de código em 1080p: de
+  ~37 para 57 dB, e o quadro completo que sai quando alguém entra na sala deixou
+  de ficar borrado (34 → 45 dB). O decoder do openh264 agora solta a imagem na
+  hora também em perfil High (FlushFrame).
+- `zig build bench` mede qualidade (PSNR) x tempo por encoder/preset,
+  inclusive com uma captura de tela de verdade.
 
 ## 2.0.0
 
