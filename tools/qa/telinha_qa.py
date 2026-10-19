@@ -498,6 +498,12 @@ class App:
             time.sleep(0.03)
         time.sleep(0.1)
 
+    def unfocus(self):
+        """Tira o foco do teclado da janela (como se a pessoa fosse pra outro app)."""
+        self.d.set_input_focus(self.d.screen().root, X.RevertToPointerRoot, X.CurrentTime)
+        self.d.sync()
+        time.sleep(0.2)
+
     def fill(self, label, text):
         """Clica num campo de texto, apaga o que tinha e digita."""
         self.click(label)

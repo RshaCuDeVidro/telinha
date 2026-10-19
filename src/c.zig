@@ -9,4 +9,5 @@ pub const c = @cImport({
     @cInclude("capture.h");
     @cInclude("camera.h");
     @cInclude("qa_hooks.h");
+    @cInclude("notify.h");
 });

@@ -430,6 +430,105 @@ def microfone():
         a.wait(lambda st: not st["deaf"] and st["mic"], 3, "ligar o microfone tira o surdo")
 
 
+@test
+def convite_colado():
+    """Convite copiado (em outro app) já aparece preenchido em 'Entrar numa sala' ao abrir o telinha."""
+    with Session("colar") as s:
+        p = port()
+        srv = s.app("srv", 91, ["--nome", "Dono", "--criar", str(p), "--senha", "abc123"])
+        srv.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
+        a = s.app("a", 92, ["--nome", "Ana", "--entrar", f"127.0.0.1:{p}", "--senha", "abc123"])
+        a.wait(lambda st: st["status"] == "connected", 10, "a Ana entrar")
+        a.click("##invite")
+        a.wait(lambda st: st["clipboard"] == f"telinha://127.0.0.1:{p}#abc123", 3, "o convite copiado")
+        # outro telinha abre na mesma tela (mesma área de transferência)
+        b = s.app("b", 92, [])
+        b.wait(lambda st: st["cfg"]["join_addr"] == f"127.0.0.1:{p}" and st["cfg"]["join_pass"] == "abc123", 5, "o convite aparecer preenchido")
+
+
+@test
+def zoom_e_ponteiro():
+    """Zoom na transmissão (rodinha, seguir o cursor, voltar) e ponteiro 'olha aqui' chegando em quem transmite."""
+    with Session("zoom") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"])
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        aid = b.member_id("Ana")
+        bid = b.state()["my_id"]
+        b.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 15, "ver a tela da Ana")
+        tile = b.tile(aid)
+        win = b.items()[0]
+        cx, cy = win[0] + (tile[0] + tile[2]) / 2, win[1] + (tile[1] + tile[3]) / 2
+        b.scroll(cx, cy, 3)
+        st = b.wait(lambda st: next(t for t in st["tiles"] if t["stream"] == aid)["zoom"] > 1.8, 3, "aproximar com a rodinha")
+        b.click("##follow", within=tile, hover_first=(cx - win[0], cy - win[1]))
+        b.wait(lambda st: next(t for t in st["tiles"] if t["stream"] == aid)["follow"], 3, "seguir o cursor")
+        b.click("##zoomreset", within=tile, hover_first=(cx - win[0], cy - win[1]))
+        b.wait(lambda st: next(t for t in st["tiles"] if t["stream"] == aid)["zoom"] == 1, 3, "voltar sem zoom")
+        # ponteiro: liga, aponta num canto e clica
+        b.click("##pointer", within=tile, hover_first=(cx - win[0], cy - win[1]))
+        b.wait(lambda st: st["pointer_tile"] == aid, 3, "ligar o ponteiro")
+        px, py = win[0] + tile[0] + (tile[2] - tile[0]) * 0.25, win[1] + tile[1] + (tile[3] - tile[1]) * 0.75
+        b.move(px, py)
+        b.move(px + 3, py + 2)
+        b.click_at(px + 3, py + 2)
+        st = a.wait(lambda st: any(q["from"] == bid and q["stream"] == aid and q["flags"] & 1 and q["ping"] for q in st["pointers"]), 5, "a Ana ver o ponteiro e o clique do Bruno")
+        q = next(q for q in st["pointers"] if q["from"] == bid)
+        expect(abs(q["x"] / 65534 - 0.25) < 0.08 and abs(q["y"] / 65534 - 0.75) < 0.08, f"ponteiro no lugar errado: {q}")
+        # clicar apontando não destaca o quadro
+        expect(b.state()["focused"] is None, "o clique do ponteiro destacou o quadro")
+        b.click("##pointer", within=tile, hover_first=(cx - win[0], cy - win[1]))
+        b.wait(lambda st: st["pointer_tile"] == -1, 3, "desligar o ponteiro")
+        a.wait(lambda st: all(not (q["from"] == bid and q["flags"] & 1) for q in st["pointers"]), 5, "o ponteiro sumir pra Ana")
+
+
+@test
+def notificacoes():
+    """Notificação do sistema (D-Bus privado) com o telinha em segundo plano: chat, ao vivo; desligável."""
+    with Session("notif", audio=True) as s:
+        mon_log = os.path.join(s.base, "dbus.log")
+        s.spawn("dbusmon", ["dbus-monitor", "--address", f"unix:path={s.runtime}/bus", "interface='org.freedesktop.Notifications'"], s.audio_env({}))
+        time.sleep(0.5)
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)])
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}"])
+        b.wait(lambda st: st["status"] == "connected", 10, "o Bruno entrar")
+        expect(not b.state()["away"], "a janela começa em foco")
+        # com foco: mensagem não notifica
+        a.click("##chatin")
+        a.type("com foco\n")
+        b.wait(lambda st: any(c["text"] == "com foco" for c in st["chat"]), 5, "a mensagem chegar")
+        time.sleep(0.4)
+        expect(b.state()["notifications_sent"] == 0, "notificou com a janela em foco")
+        b.unfocus()
+        b.wait(lambda st: st["away"], 3, "o Bruno ir pra outra janela")
+        time.sleep(2.1)
+        a.click("##chatin")
+        a.type("oi bruno\n")
+        b.wait(lambda st: st["notifications_sent"] >= 1, 5, "notificar a mensagem")
+        time.sleep(0.5)
+        logtxt = open(os.path.join(s.base, "dbusmon.log"), errors="replace").read()
+        expect('member=Notify' in logtxt and "oi bruno" in logtxt and "Ana" in logtxt, "a notificação não passou no D-Bus:\n" + logtxt[-800:])
+        # Ana começa a transmitir: notifica
+        n0 = b.state()["notifications_sent"]
+        time.sleep(2.1)
+        a.click(contains="Compartilhar tela##share")
+        a.click(contains="Ao vivo", window="Compartilhar")
+        b.wait(lambda st: st["notifications_sent"] > n0, 10, "notificar o ao vivo")
+        # desligada nas configurações: nada
+        b.click("##gear")
+        b.click(contains="Notificações com o telinha")
+        b.wait(lambda st: not st["cfg"]["notifications"], 3, "desligar as notificações")
+        b.click("Fechar", window="Configura")
+        n1 = b.state()["notifications_sent"]
+        time.sleep(2.1)
+        a.click("##chatin")
+        a.type("ninguem avisa\n")
+        b.wait(lambda st: any(c["text"] == "ninguem avisa" for c in st["chat"]), 5, "a mensagem chegar")
+        time.sleep(0.5)
+        expect(b.state()["notifications_sent"] == n1, "notificou com as notificações desligadas")
+
+
 # ---------------------------------------------------------------------------
 
 

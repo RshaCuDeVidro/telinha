@@ -351,6 +351,12 @@ pub const App = struct {
     home_error_len: usize = 0,
     port_buf: [8]u8 = undefined,
     home_card_h: f32 = 460,
+    // convite colado sozinho (área de transferência)
+    pasted: [512]u8 = undefined,
+    pasted_len: usize = 0,
+    paste_hint_until: f64 = 0,
+    was_focused: bool = false,
+    home_seen: bool = false, // já olhou a área de transferência ao abrir a tela inicial
 
     client: ?*Client = null,
     server: ?*Server = null,
@@ -399,9 +405,21 @@ pub const App = struct {
     open_member_menu: bool = false,
 
     audio_err_shown: bool = false,
+    // notificações do sistema
+    notified_at: f64 = -100,
+    notif_chat_seen: u64 = 0,
+    notif_chat_ready: bool = false,
+    notifications_sent: u32 = 0,
     /// Volume de uma transmissão sendo arrastado (os controles dela continuam
     /// na tela mesmo com o mouse fora do quadro).
     tile_controls: ?u32 = null,
+    zooms: [24]Zoom = [_]Zoom{.{}} ** 24,
+    /// Transmissão com o ponteiro "olha aqui" ligado (o mouse vira o ponteiro).
+    pointer_tile: ?u32 = null,
+    pointer_sent_us: u64 = 0,
+    pointer_shown: bool = false, // mandamos um ponteiro visível (precisa esconder ao sair)
+    pointer_stream_sent: u32 = 0,
+    my_ping_us: u64 = 0,
     /// Onde cada transmissão foi desenhada nesse quadro (modo de testes).
     tile_rects: [40]struct { stream: u32, x0: f32, y0: f32, x1: f32, y1: f32 } = undefined,
     n_tile_rects: usize = 0,
@@ -589,14 +607,21 @@ pub const App = struct {
         var joined = false;
         var left = false;
         var went_live = false;
+        var who: ?*const Member = null; // quem entrou / ficou ao vivo (notificação)
         for (cur[0..n]) |*m| {
             const old = for (a.known[0..a.n_known]) |k| {
                 if (k.id == m.id) break k;
             } else null;
             if (old == null) {
-                if (m.id != me) joined = true;
+                if (m.id != me) {
+                    joined = true;
+                    if (who == null) who = m;
+                }
                 if (a.volumes.get(m.nameSlice())) |pct| cl.setVoiceVolume(m.id, @as(f32, @floatFromInt(pct)) / 100);
-            } else if (!old.?.streaming and m.streaming and m.id != me) went_live = true;
+            } else if (!old.?.streaming and m.streaming and m.id != me) {
+                went_live = true;
+                who = m;
+            }
         }
         for (a.known[0..a.n_known]) |k| {
             const still = for (cur[0..n]) |*m| {
@@ -606,10 +631,87 @@ pub const App = struct {
         }
         if (a.known_ready) {
             if (went_live) a.chime(.live) else if (joined) a.chime(.join) else if (left) a.chime(.leave);
+            if (who) |m| {
+                var b: [96]u8 = undefined;
+                a.notifyAway("telinha", std.fmt.bufPrint(&b, "{s} {s}", .{ m.nameSlice(), if (went_live) "começou a transmitir" else "entrou na sala" }) catch "");
+            }
         }
         a.known_ready = true;
         a.n_known = n;
         for (cur[0..n], 0..) |*m, i| a.known[i] = .{ .id = m.id, .streaming = m.streaming };
+    }
+
+    /// O telinha está em segundo plano (outra janela em foco ou minimizado)?
+    fn away(a: *App) bool {
+        return c.glfwGetWindowAttrib(a.window, c.GLFW_FOCUSED) == 0 or c.glfwGetWindowAttrib(a.window, c.GLFW_ICONIFIED) != 0;
+    }
+
+    /// Notificação do sistema, só com o telinha em segundo plano (no máximo
+    /// uma a cada 2 s; o que chegar no meio vira "N mensagens novas").
+    fn notifyAway(a: *App, title: []const u8, body: []const u8) void {
+        if (!a.cfg.notifications or !a.away()) return;
+        const now = c.igGetTime();
+        if (now - a.notified_at < 2.0) return;
+        a.notified_at = now;
+        var t: [96]u8 = undefined;
+        var bd: [300]u8 = undefined;
+        const tz = std.fmt.bufPrintZ(&t, "{s}", .{title[0..@min(title.len, 90)]}) catch return;
+        const bz = std.fmt.bufPrintZ(&bd, "{s}", .{body[0..@min(body.len, 290)]}) catch return;
+        a.notifications_sent += 1;
+        c.notify_send(tz.ptr, bz.ptr, nativeWindow(a.window));
+    }
+
+    /// Mensagens novas de chat (de outras pessoas, não o histórico) enquanto fora.
+    fn notifyChat(a: *App, cl: *Client) void {
+        cl.mutex.lock();
+        const count = cl.chat_new;
+        var name: [48]u8 = undefined;
+        var name_len: usize = 0;
+        var text: [256]u8 = undefined;
+        var text_len: usize = 0;
+        var fresh: u64 = 0;
+        if (count > a.notif_chat_seen) {
+            // as novas estão no fim da lista
+            var i = cl.chat.items.len;
+            var left = count - a.notif_chat_seen;
+            while (i > 0 and left > 0) {
+                i -= 1;
+                const l = &cl.chat.items[i];
+                if (l.history) continue;
+                left -= 1;
+                if (l.from == 0 or l.from == cl.my_id) continue;
+                fresh += 1;
+                if (name_len == 0) {
+                    name_len = @min(l.name_len, name.len);
+                    @memcpy(name[0..name_len], l.name[0..name_len]);
+                    text_len = @min(l.text.len, text.len);
+                    @memcpy(text[0..text_len], l.text[0..text_len]);
+                }
+            }
+        }
+        cl.mutex.unlock();
+        // primeira vez nessa sala: o que já tinha não conta
+        if (a.notif_chat_seen == 0 and !a.notif_chat_ready) {
+            a.notif_chat_ready = true;
+            a.notif_chat_seen = count;
+            return;
+        }
+        if (fresh == 0) {
+            a.notif_chat_seen = count;
+            return;
+        }
+        if (!a.cfg.notifications or !a.away()) {
+            a.notif_chat_seen = count;
+            return;
+        }
+        if (c.igGetTime() - a.notified_at < 2.0) return; // espera: junta as próximas
+        a.notif_chat_seen = count;
+        if (fresh == 1) {
+            a.notifyAway(name[0..name_len], text[0..text_len]);
+        } else {
+            var b: [64]u8 = undefined;
+            a.notifyAway("telinha", std.fmt.bufPrint(&b, "{d} mensagens novas no chat", .{fresh}) catch "");
+        }
     }
 
     fn onMicPacket(ctx: *anyopaque, packet: []const u8) void {
@@ -779,6 +881,8 @@ pub const App = struct {
         a.connect_label_len = s.len;
         a.was_connected = false;
         a.n_auto_watched = 0; // ids da conexão nova
+        a.notif_chat_seen = 0;
+        a.notif_chat_ready = false;
         a.screen = .room;
         a.chat_seen = 0;
         a.chat_unread = 0;
@@ -811,6 +915,7 @@ pub const App = struct {
         a.stopUpnp();
         a.server = null;
         a.screen = .home;
+        a.home_seen = false;
         a.theater = false;
         a.focused = null;
         a.reconnect = .{};
@@ -1136,6 +1241,7 @@ pub const App = struct {
         if (st == .connected) {
             a.applyRewatch(cl);
             a.watchMembers(cl);
+            a.notifyChat(cl);
         }
         if (a.auto_watch and st == .connected) {
             var want: [32]u32 = undefined;
@@ -1265,7 +1371,33 @@ pub const App = struct {
 
     // ------------------------------------------------------------------ home
 
+    /// Tem um convite telinha:// copiado? Preenche "Entrar numa sala" sozinho
+    /// (sem entrar: a pessoa confere e clica). Olha ao abrir a tela inicial e
+    /// quando a janela volta a ficar em foco (copiou o convite em outro app).
+    fn pasteInvite(a: *App) void {
+        const focused = c.glfwGetWindowAttrib(a.window, c.GLFW_FOCUSED) != 0;
+        const gained = focused and !a.was_focused;
+        a.was_focused = focused;
+        if (a.home_seen and !gained) return;
+        a.home_seen = true;
+        const raw: [*c]const u8 = c.glfwGetClipboardString(a.window);
+        if (raw == null) return;
+        const txt = std.mem.trim(u8, std.mem.span(raw), " \t\r\n");
+        if (!std.mem.startsWith(u8, txt, "telinha://") or txt.len > a.pasted.len) return;
+        if (std.mem.eql(u8, txt, a.pasted[0..a.pasted_len])) return; // esse já foi colado
+        @memcpy(a.pasted[0..txt.len], txt);
+        a.pasted_len = txt.len;
+        const body = txt["telinha://".len..];
+        const h = std.mem.findScalar(u8, body, '#');
+        config.setStr(&a.cfg.join_addr, if (h) |i| body[0..i] else body);
+        config.setStr(&a.cfg.join_pass, if (h) |i| body[i + 1 ..] else "");
+        a.home_tab = 0;
+        a.home_error_len = 0;
+        a.paste_hint_until = c.igGetTime() + 8;
+    }
+
     fn drawHome(a: *App, size: c.ImVec2_c) void {
+        a.pasteInvite();
         const d = drawList();
         // fundo com um brilho sutil
         c.ImDrawList_AddRectFilledMultiColor(d, v2(0, 0), size, rgb(0x1E1F22), rgb(0x232436), rgb(0x1E1F22), rgb(0x1A1B1E));
@@ -1304,7 +1436,12 @@ pub const App = struct {
         var go = false;
         if (a.home_tab == 0) {
             fieldLabel("ENDEREÇO DA SALA");
-            if (textField("##addr", "ex.: 0.tcp.sa.ngrok.io:12345", &a.cfg.join_addr, inner, false)) go = true;
+            if (textField("##addr", "ex.: 0.tcp.sa.ngrok.io:12345 ou o convite telinha://...", &a.cfg.join_addr, inner, false)) go = true;
+            if (c.igGetTime() < a.paste_hint_until) {
+                pushFont(font_regular, 12.5);
+                textColored(col.green, "Convite colado da área de transferência. É só clicar em Entrar.");
+                popFont();
+            }
             c.igDummy(v2(0, S(8)));
             fieldLabel("SENHA");
             if (textField("##pass", "senha da sala", &a.cfg.join_pass, inner, true)) go = true;
@@ -2034,7 +2171,41 @@ pub const App = struct {
         stats: [:0]const u8,
         loading: bool,
         ring: ?*audio.Ring = null, // áudio dessa transmissão (null = sem áudio / minha prévia)
+        view: ?*View = null, // null = minha prévia
+        /// Stream de verdade (o ponteiro "olha aqui" vai com ele; nas minhas
+        /// prévias é o meu id + tipo).
+        ptr_stream: u32 = 0,
+        cur_x: u16 = proto.coord_none, // ponta do cursor de quem transmite
+        cur_y: u16 = proto.coord_none,
     };
+
+    /// Zoom de uma transmissão (rodinha aproxima, arrastar move).
+    const Zoom = struct {
+        stream: u32 = 0,
+        used: bool = false,
+        z: f32 = 1, // 1 = inteira, até 8x
+        cx: f32 = 0.5, // centro da vista, em coordenadas da imagem (0..1)
+        cy: f32 = 0.5,
+        follow: bool = false, // segue o cursor de quem transmite
+
+        fn clamp(zm: *Zoom) void {
+            zm.z = std.math.clamp(zm.z, 1, 8);
+            const half = 0.5 / zm.z;
+            zm.cx = std.math.clamp(zm.cx, half, 1 - half);
+            zm.cy = std.math.clamp(zm.cy, half, 1 - half);
+        }
+    };
+
+    fn zoomFor(a: *App, stream: u32) *Zoom {
+        for (&a.zooms) |*zm| if (zm.used and zm.stream == stream) return zm;
+        // vaga: uma sem uso, ou uma que está sem zoom
+        for (&a.zooms) |*zm| if (!zm.used or (zm.z <= 1.001 and !zm.follow)) {
+            zm.* = .{ .stream = stream, .used = true };
+            return zm;
+        };
+        a.zooms[0] = .{ .stream = stream, .used = true };
+        return &a.zooms[0];
+    }
 
     fn drawMain(a: *App, cl: *Client, size: c.ImVec2_c) void {
         c.igPushStyleColor_U32(c.ImGuiCol_ChildBg, if (a.theater) col.black else col.bg_main);
@@ -2058,28 +2229,39 @@ pub const App = struct {
             // cópia: a thread de rede troca a lista de membros a qualquer hora
             const name = for (cl.members.items) |*m| {
                 if (m.id == v.member()) {
-                    const nm = m.nameSlice();
-                    const k = @min(nm.len, name_bufs[n].len);
-                    @memcpy(name_bufs[n][0..k], nm[0..k]);
-                    break name_bufs[n][0..k];
+                    break std.fmt.bufPrint(&name_bufs[n], "{s}{s}", .{ m.nameSlice()[0..@min(m.name_len, 32)], if (v.kind() == proto.kind_camera) " (câmera)" else "" }) catch "?";
                 }
             } else "?";
             const st = std.fmt.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d:.0} KB/s · {s}", .{ v.tex_w, v.tex_h, v.fps, v.kbps, latencyText(&lat_bufs[n], v) }) catch "";
-            tiles[n] = .{ .stream = v.stream, .tex = v.tex, .tw = v.tex_w, .th = v.tex_h, .name = name, .stats = st, .loading = v.tex == 0, .ring = if (v.audio_registered) &v.audio_ring else null };
+            tiles[n] = .{
+                .stream = v.stream,
+                .tex = v.tex,
+                .tw = v.tex_w,
+                .th = v.tex_h,
+                .name = name,
+                .stats = st,
+                .loading = v.tex == 0,
+                .ring = if (v.audio_registered) &v.audio_ring else null,
+                .view = v,
+                .ptr_stream = v.stream,
+                .cur_x = v.cursor_x.load(.monotonic),
+                .cur_y = v.cursor_y.load(.monotonic),
+            };
             n += 1;
         }
+        const my_id = cl.my_id;
         cl.mutex.unlock();
         if (a.sharer) |s| {
             s.mutex.lock();
             const st = std.fmt.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d} kbit/s{s} · {s} {d:.1} ms · {s}", .{ s.w, s.h, s.fps, s.bitrate_kbps, if (s.congested) " (rede lenta)" else if (s.slow_viewer) " (espectador lento)" else "", s.encoder_name, s.encode_ms, s.backendSlice() }) catch "";
-            tiles[n] = .{ .stream = proto.streamId(0, proto.kind_screen), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = "Você", .stats = st, .loading = s.preview_tex == 0 };
+            tiles[n] = .{ .stream = proto.streamId(0, proto.kind_screen), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = "Você", .stats = st, .loading = s.preview_tex == 0, .ptr_stream = proto.streamId(my_id, proto.kind_screen) };
             s.mutex.unlock();
             n += 1;
         }
         if (a.camera) |s| {
             s.mutex.lock();
             const st = std.fmt.bufPrintZ(&stat_bufs[n], "câmera · {d}x{d} · {d:.0} fps · {d} kbit/s · {s} · {s}", .{ s.w, s.h, s.fps, s.bitrate_kbps, s.encoder_name, s.backendSlice() }) catch "";
-            tiles[n] = .{ .stream = proto.streamId(0, proto.kind_camera), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = "Você (câmera)", .stats = st, .loading = s.preview_tex == 0 };
+            tiles[n] = .{ .stream = proto.streamId(0, proto.kind_camera), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = "Você (câmera)", .stats = st, .loading = s.preview_tex == 0, .ptr_stream = proto.streamId(my_id, proto.kind_camera) };
             s.mutex.unlock();
             n += 1;
         }
@@ -2190,6 +2372,7 @@ pub const App = struct {
 
     fn drawTile(a: *App, t: *const Tile, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f32, big: bool) void {
         const d = drawList();
+        const io = c.igGetIO_Nil();
         // o quadro tem o formato do vídeo (sem faixas pretas dentro da célula)
         const ar: f32 = if (t.tw > 0 and t.th > 0) @as(f32, @floatFromInt(t.tw)) / @as(f32, @floatFromInt(t.th)) else 16.0 / 9.0;
         var w = cell_w;
@@ -2207,9 +2390,10 @@ pub const App = struct {
             a.n_tile_rects += 1;
         }
         c.igSetCursorScreenPos(v2(x, y));
-        // os botões por cima (fechar, destacar, volume) ganham o mouse do quadro
+        // os botões por cima (fechar, destacar, volume...) ganham o mouse do quadro
         c.igSetNextItemAllowOverlap();
         _ = c.igInvisibleButton("tile", v2(w, h), 0);
+        const tile_active = c.igIsItemActive(); // apertou no quadro (arrastar = mover o zoom)
         // Mouse em cima do quadro, inclusive sobre um botão dele ou arrastando o
         // volume. Com o hover simples, o clique num botão por cima "tirava" o
         // mouse do quadro: os botões sumiam no meio do clique e nada funcionava.
@@ -2226,21 +2410,79 @@ pub const App = struct {
         c.ImDrawList_PushClipRect(d, v2(x, y), v2(x + w, y + h), true);
         defer c.ImDrawList_PopClipRect(d);
         rectFill(d, x, y, x + w, y + h, col.black, round);
-        if (t.tex != 0 and t.tw > 0 and t.th > 0) {
-            var iw = w;
-            var ih = w / ar;
-            if (ih > h) {
-                ih = h;
-                iw = h * ar;
+
+        // imagem (com zoom)
+        var iw = w;
+        var ih = w / ar;
+        if (ih > h) {
+            ih = h;
+            iw = h * ar;
+        }
+        const ix = x + (w - iw) / 2;
+        const iy = y + (h - ih) / 2;
+        const zm = a.zoomFor(t.stream);
+        if (zm.follow and zm.z > 1.001 and t.cur_x != proto.coord_none) {
+            // segue a ponta do cursor de quem transmite, suave
+            const tx = @as(f32, @floatFromInt(t.cur_x)) / 65534.0;
+            const ty = @as(f32, @floatFromInt(t.cur_y)) / 65534.0;
+            const dx = tx - zm.cx;
+            const dy = ty - zm.cy;
+            const half_now = 0.5 / zm.z;
+            // só anda quando o cursor sai do miolo da vista (não fica balançando)
+            if (@abs(dx) > half_now * 0.35 or @abs(dy) > half_now * 0.35) {
+                zm.cx += dx * 0.18;
+                zm.cy += dy * 0.18;
+                wakeUi();
             }
-            const ix = x + (w - iw) / 2;
-            const iy = y + (h - ih) / 2;
-            c.ImDrawList_AddImageRounded(d, texRef(t.tex), v2(ix, iy), v2(ix + iw, iy + ih), v2(0, 0), v2(1, 1), col.white, round, 0);
+        }
+        const mouse = io.*.MousePos;
+        const in_img = mouse.x >= ix and mouse.x < ix + iw and mouse.y >= iy and mouse.y < iy + ih;
+        // rodinha: aproxima no ponto do mouse (o ponto embaixo dele fica parado)
+        if (over and in_img and io.*.MouseWheel != 0 and t.tex != 0) {
+            const half0 = 0.5 / zm.z;
+            const mu = (mouse.x - ix) / iw;
+            const mv = (mouse.y - iy) / ih;
+            const u = zm.cx - half0 + mu * 2 * half0;
+            const vv = zm.cy - half0 + mv * 2 * half0;
+            zm.z = std.math.clamp(zm.z * std.math.pow(f32, 1.25, io.*.MouseWheel), 1, 8);
+            const half1 = 0.5 / zm.z;
+            zm.cx = u - (mu - 0.5) * 2 * half1;
+            zm.cy = vv - (mv - 0.5) * 2 * half1;
+            if (zm.z <= 1.001) zm.follow = false;
+        }
+        // arrastar com zoom: move a imagem (e para de seguir o cursor)
+        if (tile_active and zm.z > 1.001 and c.igIsMouseDragging(0, -1)) {
+            const half0 = 0.5 / zm.z;
+            zm.cx -= io.*.MouseDelta.x / iw * 2 * half0;
+            zm.cy -= io.*.MouseDelta.y / ih * 2 * half0;
+            zm.follow = false;
+        }
+        zm.clamp();
+        const half = 0.5 / zm.z;
+        const uv0 = v2(zm.cx - half, zm.cy - half);
+        const uv1 = v2(zm.cx + half, zm.cy + half);
+        if (t.tex != 0 and t.tw > 0 and t.th > 0) {
+            c.ImDrawList_AddImageRounded(d, texRef(t.tex), v2(ix, iy), v2(ix + iw, iy + ih), uv0, uv1, col.white, round, 0);
         } else {
             const msg = "Carregando...";
             const ts = textSizeF(font_semibold, 14, msg);
             drawTextF(d, font_semibold, 14, v2(x + (w - ts.x) / 2, y + (h - ts.y) / 2), col.muted, msg);
         }
+        if (zm.z > 1.001) {
+            // minimapa: onde a vista está na imagem inteira
+            const mw = S(72);
+            const mh = mw / ar;
+            const mx0 = x + S(10);
+            const my0 = y + h - mh - S(46);
+            rectFill(d, mx0, my0, mx0 + mw, my0 + mh, rgba(0x000000, 150), S(3));
+            c.ImDrawList_AddRect(d, v2(mx0 + uv0.x * mw, my0 + uv0.y * mh), v2(mx0 + uv1.x * mw, my0 + uv1.y * mh), col.white, 0, S(1.5), 0);
+        }
+
+        // ponteiros "olha aqui" de quem está assistindo junto
+        a.drawPointers(t, ix, iy, iw, ih, uv0, uv1);
+        // o meu, quando o modo ponteiro está ligado nesse quadro
+        const pointing = a.pointer_tile != null and a.pointer_tile.? == t.stream;
+        if (pointing) a.updatePointer(t, over and in_img and on_tile, ix, iy, iw, ih, uv0, uv1, mouse);
 
         // etiqueta com o nome
         const small = h < S(160);
@@ -2251,6 +2493,10 @@ pub const App = struct {
         rectFill(d, lx, ly, lx + ns.x + S(70), ly + ns.y + S(8), col.overlay, S(6));
         const bw = liveBadge(d, v2(lx + S(6), ly + S(4) + (ns.y - S(14)) / 2));
         drawTextF(d, font_semibold, name_size, v2(lx + S(12) + bw, ly + S(4)), col.white, t.name);
+        if (zm.z > 1.001) {
+            const zt = fmtZ("{d:.1}x", .{zm.z});
+            drawTextF(d, font_semibold, 12, v2(lx + ns.x + S(78), ly + S(5)), col.white, zt);
+        }
 
         if ((hovered or a.cfg.stats_always) and !small) {
             const ss = textSizeF(font_regular, 12, t.stats);
@@ -2258,7 +2504,7 @@ pub const App = struct {
             drawTextF(d, font_regular, 12, v2(x + S(16), y + S(13)), col.text, t.stats);
         }
         if (hovered) {
-            // botões no canto
+            // botões no canto (da direita pra esquerda)
             const bs = S(32);
             var bx = x + w - bs - S(8);
             const by = y + S(8);
@@ -2277,12 +2523,45 @@ pub const App = struct {
             const focused = a.focused != null and a.focused.? == t.stream;
             if (iconButton("##focus", if (focused) ic.compress else ic.expand, bs, col.white, rgba(0x5865F2, 200), if (focused) "Voltar pra grade" else "Destacar (duplo clique: tela cheia)")) {
                 a.focused = if (focused) null else t.stream;
-            } else if (dbl) {
+            } else if (dbl and !pointing) {
                 a.focused = t.stream;
                 a.theater = !a.theater;
                 if (a.theater != a.fullscreen) a.toggleFullscreen();
-            } else if (clicked and !big) {
+            } else if (clicked and !big and !pointing) {
+                // (com o ponteiro ligado, o clique é o "olha aqui", não destacar)
                 a.focused = t.stream;
+            }
+            bx -= bs + S(6);
+            if (!small) {
+                // ponteiro "olha aqui"
+                c.igSetCursorScreenPos(v2(bx, by));
+                rectFill(d, bx, by, bx + bs, by + bs, if (pointing) col.blurple else col.overlay, S(6));
+                if (iconButton("##pointer", ic.hand_pointer, bs, col.white, rgba(0x5865F2, 200), if (pointing) "Desligar o ponteiro" else "Ponteiro: quem assiste vê onde você aponta (clique chama atenção)")) {
+                    if (pointing) a.stopPointer() else {
+                        a.stopPointer();
+                        a.pointer_tile = t.stream;
+                    }
+                }
+                bx -= bs + S(6);
+                // zoom: seguir o cursor de quem transmite / voltar pro tamanho normal
+                if (t.view != null) {
+                    c.igSetCursorScreenPos(v2(bx, by));
+                    rectFill(d, bx, by, bx + bs, by + bs, if (zm.follow) col.blurple else col.overlay, S(6));
+                    const can_follow = t.cur_x != proto.coord_none;
+                    if (iconButton("##follow", ic.crosshairs, bs, if (can_follow) col.white else col.faint, rgba(0x5865F2, 200), if (zm.follow) "Parar de seguir o cursor" else if (can_follow) "Zoom seguindo o cursor de quem transmite (rodinha: aproximar)" else "Seguir o cursor (quem transmite está sem cursor)")) {
+                        zm.follow = !zm.follow and can_follow;
+                        if (zm.follow and zm.z < 2) zm.z = 2;
+                    }
+                    bx -= bs + S(6);
+                }
+                if (zm.z > 1.001) {
+                    c.igSetCursorScreenPos(v2(bx, by));
+                    rectFill(d, bx, by, bx + bs, by + bs, col.overlay, S(6));
+                    if (iconButton("##zoomreset", ic.compress, bs, col.white, rgba(0x5865F2, 200), "Voltar pro tamanho normal (sem zoom)")) {
+                        zm.* = .{ .stream = t.stream, .used = true };
+                    }
+                    bx -= bs + S(6);
+                }
             }
             // volume dessa transmissão (canto de baixo)
             if (t.ring) |rg| {
@@ -2322,6 +2601,107 @@ pub const App = struct {
         } else if (t.ring) |rg| {
             if (!rg.isMuted() and ring_level > 0.02) c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), rgba(0x23A55A, 160), round, S(2), 0);
         }
+        if (pointing) c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), col.blurple, round, S(2), 0);
+    }
+
+    /// Ponto da imagem inteira (0..65534) → tela, considerando o zoom. null = fora da vista.
+    fn mapPoint(px: u16, py: u16, ix: f32, iy: f32, iw: f32, ih: f32, uv0: c.ImVec2_c, uv1: c.ImVec2_c) ?c.ImVec2_c {
+        const u = @as(f32, @floatFromInt(px)) / 65534.0;
+        const vv = @as(f32, @floatFromInt(py)) / 65534.0;
+        if (u < uv0.x or u > uv1.x or vv < uv0.y or vv > uv1.y) return null;
+        return v2(ix + (u - uv0.x) / (uv1.x - uv0.x) * iw, iy + (vv - uv0.y) / (uv1.y - uv0.y) * ih);
+    }
+
+    /// Seta com o nome de quem aponta (cor do avatar dela).
+    fn drawPointerAt(d: *c.ImDrawList, p: c.ImVec2_c, color: u32, name: []const u8, ping_age_s: f32) void {
+        if (ping_age_s >= 0 and ping_age_s < 0.9) {
+            // clique: anel que cresce e some
+            const k = ping_age_s / 0.9;
+            c.ImDrawList_AddCircle(d, p, S(8) + S(34) * k, (color & 0x00FFFFFF) | (@as(u32, @intFromFloat((1 - k) * 230)) << 24), 0, S(3), 0);
+            wakeUi();
+        }
+        const tip = p;
+        const pts = [_]c.ImVec2_c{ tip, v2(tip.x + S(4), tip.y + S(17)), v2(tip.x + S(8.5), tip.y + S(11.5)), v2(tip.x + S(15), tip.y + S(11)) };
+        // seta côncava: dois triângulos
+        c.ImDrawList_AddTriangleFilled(d, pts[0], pts[1], pts[2], color);
+        c.ImDrawList_AddTriangleFilled(d, pts[0], pts[2], pts[3], color);
+        c.ImDrawList_AddPolyline(d, &pts, pts.len, col.white, S(1.5), c.ImDrawFlags_Closed);
+        const ts = textSizeF(font_semibold, 12, name);
+        const lx = tip.x + S(14);
+        const ly = tip.y + S(16);
+        rectFill(d, lx, ly, lx + ts.x + S(12), ly + ts.y + S(6), color, S(5));
+        drawTextF(d, font_semibold, 12, v2(lx + S(6), ly + S(3)), col.white, name);
+    }
+
+    fn drawPointers(a: *App, t: *const Tile, ix: f32, iy: f32, iw: f32, ih: f32, uv0: c.ImVec2_c, uv1: c.ImVec2_c) void {
+        const cl = a.client orelse return;
+        const now = sync.nowUs();
+        var buf: [16]client_mod.Pointer = undefined;
+        var names: [16][32]u8 = undefined;
+        var name_lens: [16]usize = undefined;
+        var n: usize = 0;
+        cl.mutex.lock();
+        for (cl.pointers.items) |p| {
+            if (p.stream != t.ptr_stream or n == buf.len) continue;
+            if (p.flags & proto.pointer_visible == 0 or now - p.at_us > 4_000_000) continue;
+            buf[n] = p;
+            name_lens[n] = 0;
+            for (cl.members.items) |*m| if (m.id == p.from) {
+                name_lens[n] = @min(m.name_len, 32);
+                @memcpy(names[n][0..name_lens[n]], m.name[0..name_lens[n]]);
+            };
+            n += 1;
+        }
+        cl.mutex.unlock();
+        const d = drawList();
+        for (buf[0..n], 0..) |p, i| {
+            const at = mapPoint(p.x, p.y, ix, iy, iw, ih, uv0, uv1) orelse continue;
+            const ping_age: f32 = if (p.ping_us != 0) @as(f32, @floatFromInt(now - p.ping_us)) / 1e6 else -1;
+            drawPointerAt(d, at, avatarColor(p.from), names[i][0..name_lens[i]], ping_age);
+        }
+        if (n > 0) wakeUi(); // some sozinho depois de parado
+    }
+
+    /// Modo ponteiro ligado nesse quadro: manda a posição do mouse (até ~30x/s) e
+    /// o clique; mostra o próprio ponteiro na hora (o servidor não devolve).
+    fn updatePointer(a: *App, t: *const Tile, inside: bool, ix: f32, iy: f32, iw: f32, ih: f32, uv0: c.ImVec2_c, uv1: c.ImVec2_c, mouse: c.ImVec2_c) void {
+        const cl = a.client orelse return;
+        const now = sync.nowUs();
+        if (!inside) {
+            if (a.pointer_shown) {
+                cl.sendPointer(t.ptr_stream, proto.coord_none, proto.coord_none, 0);
+                a.pointer_shown = false;
+            }
+            return;
+        }
+        const u = uv0.x + (mouse.x - ix) / iw * (uv1.x - uv0.x);
+        const vv = uv0.y + (mouse.y - iy) / ih * (uv1.y - uv0.y);
+        const px: u16 = @intFromFloat(std.math.clamp(u, 0, 1) * 65534);
+        const py: u16 = @intFromFloat(std.math.clamp(vv, 0, 1) * 65534);
+        const ping = c.igIsMouseClicked_Bool(0, false);
+        const io = c.igGetIO_Nil();
+        const moved = io.*.MouseDelta.x != 0 or io.*.MouseDelta.y != 0;
+        if (ping or (moved and now - a.pointer_sent_us > 33_000) or now - a.pointer_sent_us > 1_000_000) {
+            cl.sendPointer(t.ptr_stream, px, py, proto.pointer_visible | @as(u8, if (ping) proto.pointer_ping else 0));
+            a.pointer_sent_us = now;
+            a.pointer_stream_sent = t.ptr_stream;
+            a.pointer_shown = true;
+            if (ping) a.my_ping_us = now;
+        }
+        c.igSetMouseCursor(c.ImGuiMouseCursor_None);
+        const ping_age: f32 = if (a.my_ping_us != 0) @as(f32, @floatFromInt(now - a.my_ping_us)) / 1e6 else -1;
+        drawPointerAt(drawList(), mouse, col.blurple, "você", ping_age);
+    }
+
+    fn stopPointer(a: *App) void {
+        if (a.pointer_tile) |_| {
+            if (a.pointer_shown) if (a.client) |cl| {
+                // esconde nos dois tipos de stream possíveis desse quadro: manda pro último usado
+                cl.sendPointer(a.pointer_stream_sent, proto.coord_none, proto.coord_none, 0);
+            };
+        }
+        a.pointer_tile = null;
+        a.pointer_shown = false;
     }
 
     fn drawEmpty(a: *App, cl: *Client, o: c.ImVec2_c, size: c.ImVec2_c) void {
@@ -2519,8 +2899,23 @@ pub const App = struct {
         cl.mutex.lock();
         const count = cl.chat_count;
         var last_from: u32 = 0xffffffff;
+        var in_history = false;
         for (cl.chat.items) |*line| {
             const text = line.text;
+            // o histórico (de antes da gente entrar) fica separado do que é novo
+            if (line.history and !in_history) {
+                in_history = true;
+                c.igDummy(v2(0, S(6)));
+                pushFont(font_semibold, 11.5);
+                textColored(col.faint, "MENSAGENS DE ANTES DE VOCÊ ENTRAR");
+                popFont();
+            } else if (!line.history and in_history) {
+                in_history = false;
+                c.igDummy(v2(0, S(8)));
+                const sp = c.igGetCursorScreenPos();
+                c.ImDrawList_AddLine(drawList(), v2(sp.x, sp.y), v2(sp.x + size.x - S(28), sp.y), rgba(0xFFFFFF, 30), S(1), 0);
+                last_from = 0xffffffff;
+            }
             if (line.from == 0) {
                 c.igDummy(v2(0, S(6)));
                 const p = c.igGetCursorScreenPos();
@@ -2791,6 +3186,7 @@ pub const App = struct {
         c.igDummy(v2(0, S(10)));
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         _ = c.igCheckbox("Mostrar estatísticas sempre (não só com o mouse em cima)", &a.cfg.stats_always);
+        _ = c.igCheckbox("Notificações com o telinha em segundo plano (chat, ao vivo, quem entrou)", &a.cfg.notifications);
         c.igPopStyleColor(1);
         c.igDummy(v2(0, S(16)));
 
@@ -2914,7 +3310,8 @@ pub const App = struct {
         });
         const clip: [*c]const u8 = c.glfwGetClipboardString(a.window);
         try w.print(",\"clipboard\":{f},\"chat_input\":{f}", .{ s(if (clip != null) std.mem.span(clip) else ""), s(std.mem.sliceTo(&a.chat_input, 0)) });
-        try w.print(",\"hosting\":{},\"leave_confirm\":{},\"admin_muted\":{}", .{ a.server != null, a.leave_confirm, a.admin_muted });
+        try w.print(",\"notifications_sent\":{d},\"away\":{}", .{ a.notifications_sent, a.away() });
+        try w.print(",\"hosting\":{},\"leave_confirm\":{},\"admin_muted\":{},\"pointer_tile\":{d}", .{ a.server != null, a.leave_confirm, a.admin_muted, if (a.pointer_tile) |pt| @as(i64, pt) else -1 });
         if (a.camera) |cam| {
             cam.mutex.lock();
             defer cam.mutex.unlock();
@@ -2949,7 +3346,8 @@ pub const App = struct {
         try w.writeAll(",\"tiles\":[");
         for (a.tile_rects[0..a.n_tile_rects], 0..) |r, i| {
             if (i > 0) try w.writeByte(',');
-            try w.print("{{\"stream\":{d},\"x0\":{d:.0},\"y0\":{d:.0},\"x1\":{d:.0},\"y1\":{d:.0}}}", .{ r.stream, r.x0, r.y0, r.x1, r.y1 });
+            const zm = a.zoomFor(r.stream);
+            try w.print("{{\"stream\":{d},\"x0\":{d:.0},\"y0\":{d:.0},\"x1\":{d:.0},\"y1\":{d:.0},\"zoom\":{d:.2},\"follow\":{}}}", .{ r.stream, r.x0, r.y0, r.x1, r.y1, zm.z, zm.follow });
         }
         try w.writeAll("]");
         try w.writeAll(",\"member_rows\":[");
@@ -2987,6 +3385,11 @@ pub const App = struct {
                     try w.print("{d}", .{id});
                 }
                 try w.writeAll("]}");
+            }
+            try w.writeAll("],\"pointers\":[");
+            for (cl.pointers.items, 0..) |pt, i| {
+                if (i > 0) try w.writeByte(',');
+                try w.print("{{\"from\":{d},\"stream\":{d},\"x\":{d},\"y\":{d},\"flags\":{d},\"ping\":{}}}", .{ pt.from, pt.stream, pt.x, pt.y, pt.flags, pt.ping_us != 0 });
             }
             try w.writeAll("],\"chat\":[");
             const first = cl.chat.items.len -| 30;
@@ -3034,6 +3437,13 @@ pub const App = struct {
 };
 
 // ---------------------------------------------------------------------------
+
+extern fn glfwGetWin32Window(window: *c.GLFWwindow) ?*anyopaque;
+
+/// HWND da janela no Windows (pra piscar na barra de tarefas); null no Linux.
+fn nativeWindow(w: *c.GLFWwindow) ?*anyopaque {
+    return if (sync.is_windows) glfwGetWin32Window(w) else null;
+}
 
 /// Acorda o loop principal (chamado de qualquer thread).
 pub fn wakeUi() void {
