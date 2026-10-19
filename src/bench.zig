@@ -137,7 +137,7 @@ fn runHw(name: []const u8, w: u32, h: u32, mode: codec.Mode, scene: enum { text,
     defer enc.deinit();
     var dec = try codec.Decoder.init();
     defer dec.deinit();
-    var hwd: ?codec.HwDecoder = codec.HwDecoder.init(&err) catch null;
+    var hwd: ?codec.HwDecoder = codec.HwDecoder.init(.h264, &err) catch null;
     defer if (hwd) |*d| d.deinit();
     const img = try gpa.alloc(u8, @as(usize, w) * h * 4);
     defer gpa.free(img);

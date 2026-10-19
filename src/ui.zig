@@ -2638,7 +2638,7 @@ pub const App = struct {
 
     fn latencyText(buf: *[48]u8, v: *const View) []const u8 {
         if (v.fps < 0.5) return "tela parada";
-        return std.fmt.bufPrint(buf, "atraso {d:.0} ms · {s} {d:.1} ms", .{ v.latency_ms, v.decoder_name, v.decode_ms }) catch "";
+        return std.fmt.bufPrint(buf, "atraso {d:.0} ms · {s} ({s}) {d:.1} ms", .{ v.latency_ms, v.codec.name(), v.decoder_name, v.decode_ms }) catch "";
     }
 
     fn drawTile(a: *App, t: *const Tile, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f32, big: bool) void {
@@ -4255,8 +4255,8 @@ pub const App = struct {
             if (i > 0) try w.writeByte(',');
             const has_audio = v.audio_registered;
             const rs: clip.Buffer.RecState = if (v.clip) |cb| cb.recState() else .{ .active = false, .waiting = false, .ms = 0, .failed = false };
-            try w.print("{{\"stream\":{d},\"fps\":{d:.1},\"w\":{d},\"h\":{d},\"shown\":{},\"audio\":{},\"volume\":{d:.2},\"muted\":{},\"clip_secs\":{d:.1},\"recording\":{},\"rec_ms\":{d},\"decoder\":{f}}}", .{
-                v.stream, v.fps, v.tex_w, v.tex_h, v.tex != 0, has_audio, v.audio_ring.getVolume(), v.audio_ring.isMuted(), if (v.clip) |cb| cb.seconds() else -1, rs.active, rs.ms, s(v.decoder_name),
+            try w.print("{{\"stream\":{d},\"fps\":{d:.1},\"w\":{d},\"h\":{d},\"shown\":{},\"audio\":{},\"volume\":{d:.2},\"muted\":{},\"clip_secs\":{d:.1},\"recording\":{},\"rec_ms\":{d},\"decoder\":{f},\"codec\":{f}}}", .{
+                v.stream, v.fps, v.tex_w, v.tex_h, v.tex != 0, has_audio, v.audio_ring.getVolume(), v.audio_ring.isMuted(), if (v.clip) |cb| cb.seconds() else -1, rs.active, rs.ms, s(v.decoder_name), s(v.codec.name()),
             });
         }
         try w.writeAll("]");

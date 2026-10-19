@@ -305,7 +305,36 @@ pub fn toRgba(y: [*]const u8, u: [*]const u8, v: [*]const u8, ys: usize, uvs: us
 // ---------------------------------------------------------------------------
 // Encoder
 
+/// Codecs de vídeo (mesmos números do protocolo e do hwenc.h/hwdec.h).
+/// H.264 sempre funciona (openh264); HEVC e AV1 só na placa de vídeo.
+pub const Codec = enum(u8) {
+    h264 = 0,
+    hevc = 1,
+    av1 = 2,
+
+    pub fn bit(cd: Codec) u8 {
+        return @as(u8, 1) << @as(u3, @intCast(@intFromEnum(cd)));
+    }
+    /// Bits 2–3 das flags do quadro (valor desconhecido = H.264).
+    pub fn fromFlags(flags: u8) Codec {
+        return switch ((flags >> 2) & 3) {
+            1 => .hevc,
+            2 => .av1,
+            else => .h264,
+        };
+    }
+
+    pub fn name(cd: Codec) []const u8 {
+        return switch (cd) {
+            .h264 => "H.264",
+            .hevc => "HEVC",
+            .av1 => "AV1",
+        };
+    }
+};
+
 pub const EncoderOptions = struct {
+    codec: Codec = .h264, // só o encoder em hardware faz outro que não H.264
     width: u32,
     height: u32,
     fps: u32,
@@ -442,7 +471,7 @@ pub const HwEncoder = struct {
     /// Falha (com o motivo em `err`) se não houver GPU/driver compatível.
     pub fn init(opts: EncoderOptions, err: []u8) !HwEncoder {
         @memset(err, 0);
-        const h = hw.hwenc_open(hw.HW_CODEC_H264, @intCast(opts.width), @intCast(opts.height), @intCast(@max(1, opts.fps)), @intCast(opts.bitrate), @intFromBool(opts.mode == .screen), opts.temporal_layers, err.ptr, @intCast(err.len)) orelse return error.HwUnavailable;
+        const h = hw.hwenc_open(@intFromEnum(opts.codec), @intCast(opts.width), @intCast(opts.height), @intCast(@max(1, opts.fps)), @intCast(opts.bitrate), @intFromBool(opts.mode == .screen), opts.temporal_layers, err.ptr, @intCast(err.len)) orelse return error.HwUnavailable;
         return .{ .h = h, .opts = opts };
     }
 
@@ -468,7 +497,7 @@ pub const HwEncoder = struct {
         const bits = data[0..@intCast(len)];
         try out.appendSlice(gpa, bits);
         // o tipo de quadro que o driver informa nem sempre é confiável: olha o bitstream
-        return idr != 0 or hasIdrNal(bits);
+        return idr != 0 or hasKeyNal(e.opts.codec, bits);
     }
 };
 
@@ -491,6 +520,21 @@ pub fn isDroppable(bits: []const u8) bool {
     return slices > 0;
 }
 
+/// Quadro-chave nesse codec? (H.264: IDR; HEVC: IRAP, tipos 16–21)
+pub fn hasKeyNal(cd: Codec, bits: []const u8) bool {
+    if (cd == .h264) return hasIdrNal(bits);
+    if (cd != .hevc) return false;
+    var i: usize = 0;
+    while (i + 3 < bits.len) : (i += 1) {
+        if (bits[i] == 0 and bits[i + 1] == 0 and bits[i + 2] == 1) {
+            const typ = (bits[i + 3] >> 1) & 0x3f;
+            if (typ >= 16 and typ <= 21) return true;
+            i += 2;
+        }
+    }
+    return false;
+}
+
 /// Tem um NAL de IDR (tipo 5) no bitstream Annex B?
 pub fn hasIdrNal(bits: []const u8) bool {
     var i: usize = 0;
@@ -509,9 +553,9 @@ pub fn hasIdrNal(bits: []const u8) bool {
 pub const HwDecoder = struct {
     h: *hw.hwdec,
 
-    pub fn init(err: []u8) !HwDecoder {
+    pub fn init(cd: Codec, err: []u8) !HwDecoder {
         @memset(err, 0);
-        const h = hw.hwdec_open(hw.HW_CODEC_H264, err.ptr, @intCast(err.len)) orelse return error.HwUnavailable;
+        const h = hw.hwdec_open(@intFromEnum(cd), err.ptr, @intCast(err.len)) orelse return error.HwUnavailable;
         return .{ .h = h };
     }
 

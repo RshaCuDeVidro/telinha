@@ -20,6 +20,26 @@ pub var gpu_yuv = std.atomic.Value(bool).init(false);
 pub const Layout = enum { rgba, i420, nv12 };
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+
+/// Codecs que esse PC decodifica (H.264 sempre; HEVC se a placa decodifica).
+/// Testado uma vez por processo (abrir o decoder da placa leva ~100 ms).
+var decode_codecs: std.atomic.Value(u8) = .init(0);
+
+pub fn decodeCodecs() u8 {
+    const known = decode_codecs.load(.acquire);
+    if (known != 0) return known;
+    var mask: u8 = proto.codecs_h264;
+    if (getenv("TELINHA_SEM_HEVC") == null) {
+        var err: [256]u8 = undefined;
+        if (codec.HwDecoder.init(.hevc, &err)) |h| {
+            var hd = h;
+            hd.deinit();
+            mask |= codec.Codec.hevc.bit();
+        } else |_| {}
+    }
+    decode_codecs.store(mask, .release);
+    return mask;
+}
 fn debugEnabled() bool {
     const S = struct {
         var checked = false;
@@ -196,6 +216,7 @@ pub const View = struct {
     kbps: f32 = 0,
     decode_ms: f32 = 0,
     decoder_name: []const u8 = "",
+    codec: codec.Codec = .h264, // codec da transmissão (o último quadro)
     latency_ms: f32 = 0, // escrita pela UI quando o quadro vai pra tela
     stat_frames: u32 = 0,
     stat_bytes: u64 = 0,
@@ -254,7 +275,7 @@ pub const View = struct {
                 const ts = std.mem.readInt(u64, frame[5..13], .little);
                 const fw = std.mem.readInt(u16, frame[13..15], .little);
                 const fh = std.mem.readInt(u16, frame[15..17], .little);
-                cb.addVideo(frame[proto.frame_header_len..], ts, flags & proto.frame_key != 0, fw, fh);
+                cb.addVideo(frame[proto.frame_header_len..], ts, flags & proto.frame_key != 0, fw, fh, codec.Codec.fromFlags(flags));
             }
         }
         v.qmutex.lock();
@@ -323,32 +344,60 @@ pub const View = struct {
     const Decoder = union(enum) {
         hw: codec.HwDecoder,
         sw: codec.Decoder,
+        none: void, // codec que esse PC não decodifica (espera a sala voltar pro H.264)
 
         fn deinit(d: *Decoder) void {
             switch (d.*) {
+                .none => {},
                 inline else => |*x| x.deinit(),
             }
+        }
+
+        /// Decoder pra esse codec: H.264 na placa (se der) ou openh264; HEVC/AV1 só na placa.
+        fn open(cd: codec.Codec, hw_ok: bool) Decoder {
+            var err: [256]u8 = undefined;
+            if (hw_ok or cd != .h264) {
+                if (codec.HwDecoder.init(cd, &err)) |h| return .{ .hw = h } else |_| {}
+            }
+            if (cd != .h264) return .none;
+            return .{ .sw = codec.Decoder.init() catch return .none };
         }
     };
 
     fn decodeLoop(v: *View) void {
         defer v.release();
-        var err: [256]u8 = undefined;
-        var dec: Decoder = blk: {
-            if (v.client.hw_decode) {
-                if (codec.HwDecoder.init(&err)) |h| break :blk .{ .hw = h } else |_| {}
-            }
-            break :blk .{ .sw = codec.Decoder.init() catch return };
-        };
+        var dec_codec: codec.Codec = .h264;
+        var dec = Decoder.open(.h264, v.client.hw_decode);
+        if (dec == .none) return;
         defer dec.deinit();
         v.decoder_name = switch (dec) {
             .hw => |*h| h.name(),
             .sw => "openh264",
+            .none => "nenhum",
         };
         v.stat_since = sync.nowMs();
         while (v.pop()) |item| {
             const frame, const behind = item;
             defer gpa.free(frame);
+            // a transmissão trocou de codec (alguém entrou sem HEVC, ou saiu): outro decoder
+            if (frame.len > 4) {
+                const cd = codec.Codec.fromFlags(frame[4]);
+                if (cd != dec_codec) {
+                    dec.deinit();
+                    dec = Decoder.open(cd, v.client.hw_decode);
+                    dec_codec = cd;
+                    v.decoder_name = switch (dec) {
+                        .hw => |*h| h.name(),
+                        .sw => "openh264",
+                        .none => "nenhum",
+                    };
+                    v.codec = cd;
+                    v.qmutex.lock();
+                    v.waiting_key = true;
+                    v.qmutex.unlock();
+                }
+            }
+            if (dec == .none) continue; // espera um codec que dê
             v.decodeFrame(&dec, frame, behind) catch {
                 // perdeu referência ou veio lixo: recomeça do próximo IDR
                 if (dec == .hw) {
@@ -394,6 +443,7 @@ pub const View = struct {
         const decoded: ?Out = switch (dec.*) {
             .sw => |*d| if (try d.decode(bitstream)) |p| .{ .i420 = p } else null,
             .hw => |*d| if (try d.decode(bitstream)) |f| .{ .nv12 = f } else null,
+            .none => null,
         };
         const pic = decoded orelse {
             if (debugEnabled()) std.debug.print("[telinha] decoder não devolveu imagem (quadro {s}, {d} bytes)\n", .{ if (key) "IDR" else "P", bitstream.len });
@@ -490,6 +540,9 @@ pub const Client = struct {
     closing: std.atomic.Value(bool) = .init(false),
     /// Pedido de IDR do servidor, por tipo de transmissão (tela, câmera).
     keyreq: [2]std.atomic.Value(bool) = .{ .init(false), .init(false) },
+    /// Codecs que a sala libera pra cada transmissão nossa (tela, câmera):
+    /// o que todo mundo que assiste decodifica (mensagem `codec`).
+    codecs_allowed: [2]std.atomic.Value(u8) = .{ .init(proto.codecs_h264), .init(proto.codecs_h264) },
     /// Algum espectador não está dando conta da nossa taxa de bits: piso (% do
     /// alvo) até onde baixar. 0 = nenhum aviso pendente. Por tipo.
     viewer_slow: [2]std.atomic.Value(u8) = .{ .init(0), .init(0) },
@@ -707,6 +760,7 @@ pub const Client = struct {
         b.u64_(cl.client_key) catch return;
         // TELINHA_VERSAO_TESTE: finge outra versão (testes do aviso de versão nova)
         b.str(if (getenv("TELINHA_VERSAO_TESTE")) |v| std.mem.span(v) else proto.app_version) catch return;
+        b.u8_(if (cl.hw_decode) decodeCodecs() else proto.codecs_h264) catch return;
         cl.queue.pushOwned(b.finish() catch return);
 
         var rb: proto.RecvBuf = .{};
@@ -990,6 +1044,11 @@ pub const Client = struct {
                         break;
                     }
                 }
+            },
+            .codec => {
+                const kind = try r.u8_();
+                const mask = try r.u8_();
+                if (kind <= proto.kind_camera) cl.codecs_allowed[kind].store(mask | proto.codecs_h264, .release);
             },
             .frame => {
                 const stream = try r.u32_();

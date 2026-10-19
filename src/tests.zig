@@ -143,6 +143,52 @@ test "NVENC: um IDR sozinho já vira imagem (sem atraso de reordenação)" {
     }
 }
 
+/// PSNR do brilho de 20 quadros de "texto" rolando, codificado e decodificado na placa.
+fn hwRoundTrip(cd: codec.Codec, w: u32, h: u32) !struct { psnr: f64, bytes: usize } {
+    var err: [256]u8 = undefined;
+    var enc = codec.HwEncoder.init(.{ .codec = cd, .width = w, .height = h, .fps = 30, .bitrate = 2_000_000 }, &err) catch return error.SkipZigTest;
+    defer enc.deinit();
+    var dec = codec.HwDecoder.init(cd, &err) catch return error.SkipZigTest;
+    defer dec.deinit();
+    const gpa = std.heap.c_allocator;
+    const img = try gpa.alloc(u8, w * h * 4);
+    defer gpa.free(img);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    var bytes: usize = 0;
+    var psnr_sum: f64 = 0;
+    for (0..20) |i| {
+        for (0..h) |y| for (0..w) |x| {
+            const v: u8 = if (((x + i * 3) / 2 + y / 9) % 3 == 0) 230 else 25;
+            img[(y * w + x) * 4 ..][0..4].* = .{ v, v, v, 255 };
+        };
+        out.clearRetainingCapacity();
+        const key = try enc.encode(img.ptr, w * 4, .bgrx, i == 0 or i == 10, &out);
+        if (i == 0 or i == 10) try testing.expect(key);
+        bytes += out.items.len;
+        // o quadro tem que sair na mesma chamada
+        const f = (try dec.decode(out.items)) orelse return error.DecoderHeldFrame;
+        try testing.expectEqual(w, f.w);
+        try testing.expectEqual(h, f.h);
+        var se: f64 = 0;
+        for (0..h) |y| for (0..w) |x| {
+            const d = @as(f64, @floatFromInt(f.y[y * w + x])) - (16.0 + @as(f64, @floatFromInt(img[(y * w + x) * 4])) * 219.0 / 255.0);
+            se += d * d;
+        };
+        psnr_sum += 10 * std.math.log10(255.0 * 255.0 / (se / @as(f64, @floatFromInt(w * h))));
+    }
+    return .{ .psnr = psnr_sum / 20, .bytes = bytes };
+}
+
+test "HEVC: NVENC codifica, NVDEC decodifica na hora, e rende mais que o H.264" {
+    initPool();
+    const hevc = try hwRoundTrip(.hevc, 1280, 720);
+    const avc = try hwRoundTrip(.h264, 1280, 720);
+    std.debug.print("720p, 2 Mbit/s, texto rolando: HEVC {d:.1} dB ({d} KB) · H.264 {d:.1} dB ({d} KB)\n", .{ hevc.psnr, hevc.bytes / 1024, avc.psnr, avc.bytes / 1024 });
+    // mesma banda: o HEVC não pode sair pior
+    try testing.expect(hevc.psnr > avc.psnr - 0.3);
+}
+
 test "Opus: codifica e decodifica 10 ms de áudio" {
     var err: c_int = 0;
     const enc = audio.c.opus_encoder_create(audio.rate, audio.channels, audio.c.OPUS_APPLICATION_RESTRICTED_LOWDELAY, &err) orelse return error.OpusInit;
@@ -1025,6 +1071,53 @@ test "mp4: gravação fragmentada abre e decodifica no ffmpeg (inclusive sem o f
     try testing.expectEqualStrings("", errs);
 }
 
+test "mp4: HEVC (NVENC) vira hvc1 que o ffmpeg abre e decodifica, clipe e gravação" {
+    initPool();
+    const gpa = std.heap.c_allocator;
+    const w = 640;
+    const h = 360;
+    var err: [256]u8 = undefined;
+    var enc = codec.HwEncoder.init(.{ .codec = .hevc, .width = w, .height = h, .fps = 30, .bitrate = 1_500_000 }, &err) catch return error.SkipZigTest;
+    defer enc.deinit();
+    const img = try gpa.alloc(u8, w * h * 4);
+    defer gpa.free(img);
+    var video: std.ArrayList(mp4.VideoSample) = .empty;
+    defer {
+        for (video.items) |v| gpa.free(v.data);
+        video.deinit(gpa);
+    }
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    for (0..40) |f| {
+        movingSquare(img, w, h, f % 30);
+        out.clearRetainingCapacity();
+        const key = try enc.encode(img.ptr, w * 4, .bgrx, f == 0 or f == 25, &out);
+        try video.append(gpa, .{ .data = try gpa.dupe(u8, out.items), .ts_us = 1_000_000 + @as(u64, f) * 33_333, .key = key });
+    }
+    try testing.expect(mp4.isHevc(video.items[0].data));
+    const ps = mp4.paramSets(video.items[0].data);
+    try testing.expect(ps.hevc and ps.vps.len > 0 and ps.sps.len > 0 and ps.pps.len > 0);
+    var path_buf: [96]u8 = undefined;
+    const clip_path = try std.fmt.bufPrintZ(&path_buf, "/tmp/telinha-teste-hevc-{d}.mp4", .{getpid()});
+    defer _ = unlink(clip_path.ptr);
+    try mp4.writeClip(clip_path, w, h, video.items, &.{});
+    var rec_buf: [96]u8 = undefined;
+    const rec_path = try std.fmt.bufPrintZ(&rec_buf, "/tmp/telinha-teste-hevc-grav-{d}.mp4", .{getpid()});
+    defer _ = unlink(rec_path.ptr);
+    const r = try mp4.Recorder.start(rec_path, w, h, video.items[0], false);
+    for (video.items[1..]) |v| try r.addVideo(v);
+    r.finish();
+    if (access("/usr/bin/ffprobe", 0) != 0) return;
+    var cmd_buf: [256]u8 = undefined;
+    var res: [2048]u8 = undefined;
+    for ([_][:0]const u8{ clip_path, rec_path }) |path| {
+        const probe = run(try std.fmt.bufPrintZ(&cmd_buf, "ffprobe -v error -count_frames -show_entries stream=codec_name,codec_tag_string,width,height,nb_read_frames -of csv=p=0 {s} 2>&1", .{path}), &res);
+        try testing.expect(std.mem.find(u8, probe, "hevc,hvc1,640,360,40") != null);
+        const errs = run(try std.fmt.bufPrintZ(&cmd_buf, "ffmpeg -v error -i {s} -f null - 2>&1", .{path}), &res);
+        try testing.expectEqualStrings("", errs);
+    }
+}
+
 test "mp4: NAL units do Annex B, SPS/PPS e conversão pra tamanho+NAL" {
     const bs = [_]u8{ 0, 0, 0, 1, 0x67, 0x64, 0, 0x1f, 0xAA, 0, 0, 1, 0x68, 0xEE, 0, 0, 0, 1, 0x65, 0x88, 0x84, 0, 0, 1, 0x09, 0x10 };
     const ps = mp4.paramSets(&bs);
@@ -1032,7 +1125,7 @@ test "mp4: NAL units do Annex B, SPS/PPS e conversão pra tamanho+NAL" {
     try testing.expectEqualSlices(u8, &.{ 0x68, 0xEE }, ps.pps);
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(std.heap.c_allocator);
-    try mp4.toAvcc(&out, &bs);
+    try mp4.toAvcc(&out, &bs, false);
     // só a fatia IDR (SPS/PPS vão no avcC; AUD sai)
     try testing.expectEqualSlices(u8, &.{ 0, 0, 0, 3, 0x65, 0x88, 0x84 }, out.items);
 }

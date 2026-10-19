@@ -341,6 +341,7 @@ const Pipeline = struct {
     timing: Timing = .{},
     /// Encoder em hardware em uso? Decidido no início; vira false se o NVENC falhar.
     use_hw: std.atomic.Value(bool) = .init(false),
+    hevc_ok: bool = false, // a placa codifica HEVC (testado no começo)
     audio_sender: ?*audio.Sender = null,
     audio_live: std.atomic.Value(bool) = .init(false), // tem som saindo (vai no anúncio)
     reannounce: std.atomic.Value(bool) = .init(false), // o som mudou: anunciar de novo
@@ -380,6 +381,13 @@ const Pipeline = struct {
                 var pr = probe;
                 pr.deinit();
                 p.use_hw.store(true, .release);
+                if (getenv("TELINHA_SEM_HEVC") == null) {
+                    if (codec.HwEncoder.init(.{ .codec = .hevc, .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000 }, &err)) |hp| {
+                        var hh = hp;
+                        hh.deinit();
+                        p.hevc_ok = true;
+                    } else |_| {}
+                }
             } else |_| {
                 if (debugEnabled()) std.debug.print("[telinha] sem encoder em hardware: {s}\n", .{std.mem.sliceTo(&err, 0)});
             }
@@ -798,7 +806,11 @@ const Pipeline = struct {
 
             // (re)cria o encoder se mudou resolução ou configuração
             const renew = key and hw_ignores_idr and enc != null and enc.?.isHw();
-            if (enc == null or enc.?.width() != sl.w or enc.?.height() != sl.h or gen != enc_gen or enc.?.isHw() != want_hw or renew) {
+            // HEVC só se a placa codifica e todo mundo que assiste decodifica
+            // (a sala avisa: mensagem `codec`); senão H.264
+            const allowed = s.client.codecs_allowed[kind].load(.acquire);
+            const want_codec: codec.Codec = if (want_hw and p.hevc_ok and allowed & codec.Codec.hevc.bit() != 0) .hevc else .h264;
+            if (enc == null or enc.?.width() != sl.w or enc.?.height() != sl.h or gen != enc_gen or enc.?.isHw() != want_hw or enc.?.codecOf() != want_codec or renew) {
                 if (enc) |*e| e.deinit();
                 enc = null;
                 const target = targetBitrate(sl.w, sl.h, fps, quality);
@@ -808,13 +820,20 @@ const Pipeline = struct {
                 // quadros pra quem não dá conta. No openh264 e no modo jogo é de
                 // graça; com texto, o NVENC gasta ~3x mais bits (zig build bench
                 // com TELINHA_BENCH_CAMADAS), então lá fica uma camada só
-                const layers: u8 = if (want_hw and mode == .screen) 1 else 2;
-                const opts: codec.EncoderOptions = .{ .width = sl.w, .height = sl.h, .fps = fps, .bitrate = bw.bps, .mode = mode, .temporal_layers = layers };
+                const layers: u8 = if (want_hw and (mode == .screen or want_codec != .h264)) 1 else 2;
+                const opts: codec.EncoderOptions = .{ .codec = want_codec, .width = sl.w, .height = sl.h, .fps = fps, .bitrate = bw.bps, .mode = mode, .temporal_layers = layers };
                 if (want_hw) {
                     var err: [256]u8 = undefined;
                     if (codec.HwEncoder.init(opts, &err)) |h| {
                         enc = .{ .hw = h };
-                    } else |_| {
+                    } else |_| if (want_codec != .h264) {
+                        // HEVC não abriu nessa resolução: H.264 daqui pra frente
+                        if (debugEnabled()) std.debug.print("[telinha] HEVC falhou ({s}), voltando pro H.264\n", .{std.mem.sliceTo(&err, 0)});
+                        p.hevc_ok = false;
+                        p.doneWith(i, false);
+                        s.client.keyreq[kind].store(true, .release);
+                        continue;
+                    } else {
                         // NVENC falhou nessa resolução: segue em software daqui pra frente
                         if (debugEnabled()) std.debug.print("[telinha] NVENC falhou ({s}), usando software\n", .{std.mem.sliceTo(&err, 0)});
                         p.use_hw.store(false, .release);
@@ -875,7 +894,9 @@ const Pipeline = struct {
             try msg.begin(.frame);
             try msg.u32_(frame_seq);
             const cam: u8 = if (kind == proto.kind_camera) proto.frame_camera else 0;
-            try msg.u8_(cam | if (is_key) proto.frame_key else if (codec.isDroppable(out.items)) proto.frame_droppable else 0);
+            const cd = enc.?.codecOf();
+            const cflag: u8 = @as(u8, @intFromEnum(cd)) << proto.frame_codec_shift;
+            try msg.u8_(cam | cflag | if (is_key) proto.frame_key else if (cd == .h264 and codec.isDroppable(out.items)) proto.frame_droppable else 0);
             try msg.u64_(if (resend) s.client.serverNowUs() else sl.ts);
             try msg.u16_(@intCast(sl.w));
             try msg.u16_(@intCast(sl.h));
@@ -886,7 +907,7 @@ const Pipeline = struct {
             stat_bytes += m.data.len;
             stat_frames += 1;
             if (is_key) last_key_us = sync.nowUs();
-            if (s.clip) |cb| cb.addVideo(out.items, if (resend) s.client.serverNowUs() else sl.ts, is_key, @intCast(sl.w), @intCast(sl.h));
+            if (s.clip) |cb| cb.addVideo(out.items, if (resend) s.client.serverNowUs() else sl.ts, is_key, @intCast(sl.w), @intCast(sl.h), cd);
             // registra antes de enfileirar: a confirmação pode voltar muito rápido
             s.client.frameSent(kind, frame_seq, is_key);
             s.client.queue.pushOwned(m);
@@ -1030,6 +1051,12 @@ const Encoder = union(enum) {
     }
     fn isHw(e: *const Encoder) bool {
         return e.* == .hw;
+    }
+    fn codecOf(e: *const Encoder) codec.Codec {
+        return switch (e.*) {
+            .hw => |x| x.opts.codec,
+            .sw => .h264,
+        };
     }
     fn setBitrate(e: *Encoder, bps: u32) void {
         switch (e.*) {

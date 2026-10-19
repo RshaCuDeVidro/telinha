@@ -44,6 +44,7 @@ pub const Type = enum(u8) {
     notice = 20, // S→C u8 tipo (notice_*), str texto: algo que o admin fez com você
     pointer = 21, // C→S u32 stream, u16 x, u16 y, u8 flags | S→C u32 de, u32 stream, u16 x, u16 y, u8 flags
     react = 22, // C→S u32 id_da_mensagem, u8 reação, u8 ligado | S→C u32 id, u32 de, u8 reação, u8 ligado
+    codec = 23, // S→C u8 tipo (kind_*), u8 codecs (bits 1<<codec): o que todo mundo que assiste consegue decodificar
     _,
 };
 
@@ -150,6 +151,11 @@ pub const frame_key: u8 = 1;
 pub const frame_droppable: u8 = 2;
 /// Quadro da câmera (não da tela).
 pub const frame_camera: u8 = 0x80;
+/// Codec do quadro (codec.Codec: 0 H.264, 1 HEVC, 2 AV1) nos bits 2–3 das flags.
+pub const frame_codec_shift = 2;
+pub const frame_codec_mask: u8 = 0x0C;
+/// Codecs que um app decodifica (hello) / que a sala aceita (codec): bits 1<<codec.
+pub const codecs_h264: u8 = 1;
 pub const frame_header_len = 4 + 1 + 8 + 2 + 2 + 2 + 2;
 
 /// Mensagem pronta pra enviar (em claro; a escritora cifra por conexão),

@@ -9,12 +9,13 @@
 const std = @import("std");
 const sync = @import("sync.zig");
 const mp4 = @import("mp4.zig");
+const codec = @import("codec.zig");
 const gpa = std.heap.c_allocator;
 
 pub const keep_us = 30_000_000;
 const max_bytes = 160 * 1024 * 1024; // teto por transmissão (vídeo pesado não come a RAM)
 
-const Frame = struct { data: []u8, ts_us: u64, key: bool, w: u16, h: u16 };
+const Frame = struct { data: []u8, ts_us: u64, key: bool, w: u16, h: u16, hevc: bool };
 const Packet = struct { data: []u8, ts_us: u64 };
 
 pub const Buffer = struct {
@@ -45,30 +46,31 @@ pub const Buffer = struct {
     }
 
     /// Um quadro (Annex B) com a hora da captura.
-    pub fn addVideo(b: *Buffer, data: []const u8, ts_in: u64, key: bool, w: u16, h: u16) void {
+    pub fn addVideo(b: *Buffer, data: []const u8, ts_in: u64, key: bool, w: u16, h: u16, cd: codec.Codec) void {
+        const hevc = cd == .hevc;
         b.mutex.lock();
         defer b.mutex.unlock();
         // hora sempre crescendo (um IDR reenviado com a tela parada leva a hora
         // do reenvio, e o quadro seguinte pode ter sido capturado um pouco antes)
         const ts_us = @max(ts_in, b.last_ts_us + 1000);
         b.last_ts_us = ts_us;
-        // mudou a resolução: o que tinha antes não entra no mesmo arquivo
+        // mudou a resolução ou o codec: o que tinha antes não entra no mesmo arquivo
         if (key and b.frames.items.len > 0) {
             const last = b.frames.items[b.frames.items.len - 1];
-            if (last.w != w or last.h != h) b.dropBefore(b.frames.items.len);
+            if (last.w != w or last.h != h or last.hevc != hevc) b.dropBefore(b.frames.items.len);
         }
         if (b.frames.items.len == 0 and !key) {
-            b.feedRecorder(data, ts_us, key, w, h);
+            b.feedRecorder(data, ts_us, key, w, h, hevc);
             return; // sem IDR ainda: nada pra guardar
         }
         const copy = gpa.dupe(u8, data) catch return;
-        b.frames.append(gpa, .{ .data = copy, .ts_us = ts_us, .key = key, .w = w, .h = h }) catch {
+        b.frames.append(gpa, .{ .data = copy, .ts_us = ts_us, .key = key, .w = w, .h = h, .hevc = hevc }) catch {
             gpa.free(copy);
             return;
         };
         b.bytes += copy.len;
         b.trim(ts_us);
-        b.feedRecorder(data, ts_us, key, w, h);
+        b.feedRecorder(data, ts_us, key, w, h, hevc);
     }
 
     pub fn addAudio(b: *Buffer, data: []const u8, ts_us: u64) void {
@@ -196,7 +198,7 @@ pub const Buffer = struct {
         b.rec_waiting = true;
     }
 
-    fn feedRecorder(b: *Buffer, data: []const u8, ts_us: u64, key: bool, w: u16, h: u16) void {
+    fn feedRecorder(b: *Buffer, data: []const u8, ts_us: u64, key: bool, w: u16, h: u16, hevc: bool) void {
         if (b.rec_waiting and key) {
             b.rec_waiting = false;
             const n = std.mem.len(@as([*:0]const u8, &b.rec_path));
@@ -207,8 +209,8 @@ pub const Buffer = struct {
             return;
         }
         const r = b.recorder orelse return;
-        if (key and (w != r.w or h != r.h)) {
-            // resolução mudou no meio: fecha esse arquivo (o próximo IDR não cabe nele)
+        if (key and (w != r.w or h != r.h or hevc != r.hevc)) {
+            // resolução ou codec mudou no meio: fecha esse arquivo (o próximo IDR não cabe nele)
             r.finish();
             b.recorder = null;
             return;

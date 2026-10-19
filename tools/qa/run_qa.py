@@ -794,6 +794,36 @@ def chat_imagem_reacao_mencao():
 
 
 @test
+def hevc():
+    """HEVC na placa: transmite em HEVC quando todo mundo decodifica; quem entra só com H.264 faz voltar pro H.264 (e quem já assistia continua vendo)."""
+    with Session("hevc") as s:
+        p = port()
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir"])
+        st = ana.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live" and st["sharer"]["encoder"], 20, "a Ana transmitir")
+        if "NVENC" not in st["sharer"]["encoder"]:
+            log(f"sem NVENC aqui ({st['sharer']['encoder']}): pulando")
+            return
+        bia = s.app("bia", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        aid = bia.member_id("Ana")
+        st = bia.wait(lambda st: any(v["stream"] == aid and v["shown"] and v["codec"] == "HEVC" for v in st["views"]), 20, "a Bia ver em HEVC")
+        log(f"Bia: {next(v for v in st['views'] if v['stream'] == aid)}")
+        ana.wait(lambda st: st["sharer"]["encoder"] == "NVENC (HEVC)", 5, "a Ana codificar em HEVC")
+        # quem não decodifica HEVC entra: tudo volta pro H.264
+        caio = s.app("caio", 93, ["--nome", "Caio", "--entrar", f"127.0.0.1:{p}", "--assistir"], extra_env={"TELINHA_SEM_HEVC": "1"})
+        caio.wait(lambda st: any(v["stream"] == aid and v["shown"] and v["codec"] == "H.264" for v in st["views"]), 20, "o Caio ver em H.264")
+        ana.wait(lambda st: st["sharer"]["encoder"] == "NVENC", 5, "a Ana voltar pro H.264")
+        bia.wait(lambda st: any(v["stream"] == aid and v["codec"] == "H.264" for v in st["views"]), 10, "a Bia trocar pro H.264")
+        f0 = next(v for v in bia.state()["views"] if v["stream"] == aid)
+        time.sleep(1.5)
+        f1 = next(v for v in bia.state()["views"] if v["stream"] == aid)
+        expect(f1["shown"] and f1["fps"] > 0, f"a Bia parou de ver depois da troca: {f0} → {f1}")
+        # o Caio sai: HEVC de novo
+        caio.stop()
+        ana.wait(lambda st: st["sharer"]["encoder"] == "NVENC (HEVC)", 15, "a Ana voltar pro HEVC")
+        bia.wait(lambda st: any(v["stream"] == aid and v["codec"] == "HEVC" and v["shown"] for v in st["views"]), 10, "a Bia ver em HEVC de novo")
+
+
+@test
 def versao_nova():
     """Aviso de versão nova: pelo GitHub (de mentira, local) na tela inicial, e por alguém da sala que está numa versão mais nova."""
     with Session("versao") as s:

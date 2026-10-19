@@ -29,6 +29,11 @@ const TestClient = struct {
     }
 
     fn connectKey(port: u16, name: []const u8, password: []const u8, token: []const u8, key: u64) !TestClient {
+        return connectCaps(port, name, password, token, key, proto.codecs_h264);
+    }
+
+    /// Com os codecs que esse "app" decodifica (bits 1<<codec).
+    fn connectCaps(port: u16, name: []const u8, password: []const u8, token: []const u8, key: u64, codecs: u8) !TestClient {
         const s = try net.connect("127.0.0.1", port);
         errdefer net.close(s);
         net.setRecvTimeout(s, 5000);
@@ -43,6 +48,8 @@ const TestClient = struct {
         try b.str(name);
         try b.str(token);
         try b.u64_(key);
+        try b.str("3.0.0");
+        try b.u8_(codecs);
         try c.send(try b.finish());
         return c;
     }
@@ -422,6 +429,56 @@ test "chat: imagem chega pra todos e no histórico; reações; limites" {
         _ = proto.recvMsg(c.sock, &c.ch, &c.rb) catch break;
     }
     try testing.expect(sync.nowMs() - t0 < 4000);
+}
+
+/// Próxima mensagem `codec` (tipo, codecs liberados).
+fn nextCodec(c: *TestClient) ![2]u8 {
+    const p = try c.expect(.codec);
+    return .{ p[0], p[1] };
+}
+
+test "codec: a transmissão só usa HEVC se todo mundo que assiste decodifica" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+    const hevc: u8 = proto.codecs_h264 | 2;
+    var a = try TestClient.connect(port, "A", "", "");
+    defer a.close();
+    try a.welcome();
+    try a.streamStart(proto.kind_screen, 0);
+    // ninguém assistindo: libera tudo
+    var m = try nextCodec(&a);
+    try testing.expectEqual(proto.kind_screen, m[0]);
+    try testing.expect(m[1] & 2 != 0);
+    // quem decodifica HEVC entra assistindo: HEVC continua liberado
+    var b = try TestClient.connectCaps(port, "B", "", "", 0, hevc);
+    defer b.close();
+    try b.welcome();
+    try b.watch(a.id, 0);
+    m = try nextCodec(&a);
+    try testing.expectEqual(hevc, m[1]);
+    // quem só tem H.264 entra assistindo: volta pro H.264
+    var c = try TestClient.connectCaps(port, "C", "", "", 0, proto.codecs_h264);
+    defer c.close();
+    try c.welcome();
+    try c.watch(a.id, 0);
+    m = try nextCodec(&a);
+    try testing.expectEqual(proto.codecs_h264, m[1]);
+    // ele para de assistir: HEVC de novo
+    {
+        const w = try proto.Msg.alloc(.watch, 6);
+        std.mem.writeInt(u32, w.payload()[0..4], a.id, .little);
+        w.payload()[4] = 0;
+        w.payload()[5] = 0;
+        try c.send(w);
+    }
+    m = try nextCodec(&a);
+    try testing.expectEqual(hevc, m[1]);
+    // a câmera é outra transmissão, com a própria negociação
+    try a.streamStart(proto.kind_camera, 0);
+    m = try nextCodec(&a);
+    try testing.expectEqual(proto.kind_camera, m[0]);
 }
 
 test "sala: frames só vão pra quem assiste, começando por IDR" {

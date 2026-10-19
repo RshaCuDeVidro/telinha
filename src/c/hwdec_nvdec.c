@@ -1,4 +1,4 @@
-// H.264 com NVIDIA NVDEC (via nvcuvid, carregado em runtime).
+// H.264 ou HEVC com NVIDIA NVDEC (via nvcuvid, carregado em runtime).
 // Parser com ulMaxDisplayDelay = 0 e cada pacote marcado como quadro
 // completo: o quadro decodificado sai na mesma chamada (latência mínima).
 #include "hwdec.h"
@@ -24,6 +24,7 @@ struct nvdec {
     uint8_t *host; // NV12 na memória da CPU
     size_t host_cap;
     int have, err;
+    cudaVideoCodec codec;
 };
 
 static void set_err(char *err, int errlen, const char *msg, int code) {
@@ -40,7 +41,7 @@ static int CUDAAPI on_sequence(void *ud, CUVIDEOFORMAT *f) {
         d->cv->cuvidDestroyDecoder(d->dec);
         d->dec = NULL;
     }
-    if (f->codec != cudaVideoCodec_H264 || f->chroma_format != cudaVideoChromaFormat_420 || f->bit_depth_luma_minus8 != 0) {
+    if (f->codec != d->codec || f->chroma_format != cudaVideoChromaFormat_420 || f->bit_depth_luma_minus8 != 0) {
         d->err = 1;
         return 0;
     }
@@ -145,12 +146,13 @@ void nvdec_close(nvdec *d) {
 }
 
 nvdec *nvdec_open(int codec, char *err, int errlen) {
-    if (codec != HW_CODEC_H264) {
-        set_err(err, errlen, "NVDEC: codec ainda não suportado", codec);
+    if (codec != HW_CODEC_H264 && codec != HW_CODEC_HEVC) {
+        set_err(err, errlen, "NVDEC: codec não suportado", codec);
         return NULL;
     }
     struct nvdec *d = calloc(1, sizeof *d);
     if (!d) return NULL;
+    d->codec = codec == HW_CODEC_HEVC ? cudaVideoCodec_HEVC : cudaVideoCodec_H264;
     if (cuda_load_functions(&d->cu, NULL) < 0 || cuvid_load_functions(&d->cv, NULL) < 0) {
         set_err(err, errlen, "driver NVIDIA (CUDA/NVDEC) não encontrado", 0);
         nvdec_close(d);
@@ -170,20 +172,20 @@ nvdec *nvdec_open(int codec, char *err, int errlen) {
     if (d->cv->cuvidGetDecoderCaps) {
         CUVIDDECODECAPS caps;
         memset(&caps, 0, sizeof caps);
-        caps.eCodecType = cudaVideoCodec_H264;
+        caps.eCodecType = d->codec;
         caps.eChromaFormat = cudaVideoChromaFormat_420;
         caps.nBitDepthMinus8 = 0;
         if (d->cv->cuvidGetDecoderCaps(&caps) != CUDA_SUCCESS || !caps.bIsSupported) {
             CUcontext dummy;
             d->cu->cuCtxPopCurrent(&dummy);
-            set_err(err, errlen, "a placa não decodifica H.264", 0);
+            set_err(err, errlen, d->codec == cudaVideoCodec_HEVC ? "a placa não decodifica HEVC" : "a placa não decodifica H.264", 0);
             nvdec_close(d);
             return NULL;
         }
     }
     CUVIDPARSERPARAMS pp;
     memset(&pp, 0, sizeof pp);
-    pp.CodecType = cudaVideoCodec_H264;
+    pp.CodecType = d->codec;
     pp.ulMaxNumDecodeSurfaces = 8;
     pp.ulMaxDisplayDelay = 0; // sai na hora
     pp.pUserData = d;

@@ -58,6 +58,7 @@ const StreamState = struct {
     last_keyreq_ms: u64 = 0,
     last_slow_ms: u64 = 0,
     last_key_ms: u64 = 0, // último IDR que passou
+    codecs_sent: u8 = 0, // codecs liberados que o transmissor já sabe (0 = ainda nada)
 };
 
 const Conn = struct {
@@ -72,6 +73,7 @@ const Conn = struct {
     owner: bool = false, // entrou com o token de admin (quem criou a sala)
     client_key: u64 = 0, // aleatória, do app de quem conectou (banimento)
     app_version: [16]u8 = [_]u8{0} ** 16, // "3.0.0" (vazio = app que não conta)
+    decode_codecs: u8 = proto.codecs_h264, // o que essa pessoa decodifica (H.264 sempre)
     route: u8 = proto.route_unknown,
     via_tunnel: bool = false,
     ip: [16]u8 = undefined,
@@ -586,6 +588,7 @@ pub const Server = struct {
             const n = @min(v.len, cn.app_version.len - 1);
             @memcpy(cn.app_version[0..n], v[0..n]);
         } else |_| {}
+        cn.decode_codecs = (r.u8_() catch 0) | proto.codecs_h264;
         try s.join(cn, name, token);
     }
 
@@ -1129,7 +1132,34 @@ pub const Server = struct {
     }
 
     /// Chamado com o mutex travado.
+    /// Codec de cada transmissão: só o que **todo mundo** que assiste decodifica
+    /// (quem entra com um app sem HEVC faz a transmissão voltar pro H.264 na hora).
+    /// Avisa o transmissor quando muda. Chamado com o mutex travado.
+    fn updateCodecs(s: *Server) void {
+        for (s.conns.items) |owner| {
+            for (&owner.streams, 0..) |*ss, kind| {
+                if (!ss.on) {
+                    ss.codecs_sent = 0;
+                    continue;
+                }
+                const stream = proto.streamId(owner.id, @intCast(kind));
+                var mask: u8 = 0xFF;
+                for (s.conns.items) |o| {
+                    if (contains(&o.watching, stream)) mask &= o.decode_codecs;
+                }
+                mask |= proto.codecs_h264;
+                if (mask == ss.codecs_sent) continue;
+                ss.codecs_sent = mask;
+                const m = proto.Msg.alloc(.codec, 2) catch continue;
+                m.payload()[0] = @intCast(kind);
+                m.payload()[1] = mask;
+                owner.queue.pushOwned(m);
+            }
+        }
+    }
+
     fn broadcastMembers(s: *Server) !void {
+        s.updateCodecs();
         var b: proto.Builder = .{};
         defer b.deinit();
         try b.begin(.members);

@@ -6,7 +6,8 @@
 //!   Gravação: MP4 fragmentado (moov sem amostras + moof/mdat a cada ~2 s): se
 //!             o app cair no meio, o que já foi escrito continua tocável.
 //!
-//! Vídeo em avc1 (SPS/PPS no avcC, quadros com tamanho de 4 bytes na frente,
+//! Vídeo em avc1 (H.264: SPS/PPS no avcC) ou hvc1 (HEVC: VPS/SPS/PPS no
+//! hvcC) — o codec é reconhecido pelo primeiro IDR —, quadros com tamanho de 4 bytes na frente,
 //! timescale 90 kHz, quadros com duração variável: a tela só manda quando
 //! muda). Opus em 'Opus' + dOps, pacotes de 10 ms (480 amostras a 48 kHz);
 //! buracos no som (silêncio que nem foi enviado) viram pacotes vazios, que o
@@ -54,9 +55,32 @@ pub const AudioSample = struct {
 // H.264
 
 pub const ParamSets = struct {
+    hevc: bool = false,
+    vps: []const u8 = &.{}, // só HEVC
     sps: []const u8 = &.{},
     pps: []const u8 = &.{},
+
+    fn complete(ps: ParamSets) bool {
+        return ps.sps.len >= 4 and ps.pps.len > 0 and (!ps.hevc or ps.vps.len > 0);
+    }
 };
+
+/// Tipo da NAL no HEVC (cabeçalho de 2 bytes).
+fn hevcType(nal: []const u8) u8 {
+    return (nal[0] >> 1) & 0x3F;
+}
+
+/// O bitstream é HEVC? (o IDR do HEVC traz VPS/SPS/PPS — tipos 32–34 com o
+/// segundo byte do cabeçalho 0x01 —, coisa que não existe no H.264)
+pub fn isHevc(annexb: []const u8) bool {
+    var it: NalIter = .{ .data = annexb };
+    while (it.next()) |nal| {
+        if (nal.len < 3) continue;
+        const t = hevcType(nal);
+        if (nal[0] & 0x81 == 0 and nal[1] == 0x01 and t >= 32 and t <= 34) return true;
+    }
+    return false;
+}
 
 /// Percorre as NAL units de um bitstream Annex B.
 pub const NalIter = struct {
@@ -81,10 +105,28 @@ pub const NalIter = struct {
     }
 };
 
-/// SPS/PPS de um quadro (o IDR traz os dois).
+/// SPS/PPS (e VPS no HEVC) de um quadro (o IDR traz todos).
 pub fn paramSets(annexb: []const u8) ParamSets {
-    var ps: ParamSets = .{};
+    var ps: ParamSets = .{ .hevc = isHevc(annexb) };
     var it: NalIter = .{ .data = annexb };
+    if (ps.hevc) {
+        while (it.next()) |nal| {
+            if (nal.len < 3) continue;
+            switch (hevcType(nal)) {
+                32 => if (ps.vps.len == 0) {
+                    ps.vps = nal;
+                },
+                33 => if (ps.sps.len == 0) {
+                    ps.sps = nal;
+                },
+                34 => if (ps.pps.len == 0) {
+                    ps.pps = nal;
+                },
+                else => {},
+            }
+        }
+        return ps;
+    }
     while (it.next()) |nal| {
         if (nal.len == 0) continue;
         switch (nal[0] & 0x1F) {
@@ -100,12 +142,18 @@ pub fn paramSets(annexb: []const u8) ParamSets {
     return ps;
 }
 
-/// Annex B → tamanho (4 bytes) + NAL, sem SPS/PPS/AUD (vão no avcC).
-pub fn toAvcc(out: *std.ArrayList(u8), annexb: []const u8) !void {
+/// Annex B → tamanho (4 bytes) + NAL, sem SPS/PPS/AUD (vão no avcC/hvcC).
+pub fn toAvcc(out: *std.ArrayList(u8), annexb: []const u8, hevc: bool) !void {
     var it: NalIter = .{ .data = annexb };
     while (it.next()) |nal| {
         if (nal.len == 0) continue;
-        switch (nal[0] & 0x1F) {
+        if (hevc) {
+            if (nal.len < 2) continue;
+            switch (hevcType(nal)) {
+                32, 33, 34, 35 => continue, // VPS, SPS, PPS, AUD
+                else => {},
+            }
+        } else switch (nal[0] & 0x1F) {
             7, 8, 9 => continue,
             else => {},
         }
@@ -244,8 +292,57 @@ fn dinf(b: Box) !void {
     b.end(at);
 }
 
-fn avc1(b: Box, w: u32, h: u32, ps: ParamSets) !void {
-    const at = try b.begin("avc1");
+/// RBSP (sem os bytes 03 de prevenção) dos primeiros `out.len` bytes da NAL.
+fn unescape(nal: []const u8, out: []u8) []u8 {
+    var n: usize = 0;
+    var zeros: usize = 0;
+    for (nal) |byte| {
+        if (n == out.len) break;
+        if (zeros >= 2 and byte == 3) {
+            zeros = 0;
+            continue;
+        }
+        zeros = if (byte == 0) zeros + 1 else 0;
+        out[n] = byte;
+        n += 1;
+    }
+    return out[0..n];
+}
+
+/// hvc1 + hvcC (ISO 14496-15 §8.3): perfil/nível copiados do SPS; 4:2:0 8 bits.
+fn hvc1(b: Box, w: u32, h: u32, ps: ParamSets) !void {
+    const at = try b.begin("hvc1");
+    try visualHeader(b, w, h);
+    const cc = try b.begin("hvcC");
+    // SPS: cabeçalho (2), vps_id/max_sub_layers/nesting (1), profile_tier_level
+    var buf: [16]u8 = undefined;
+    const r = unescape(ps.sps, &buf);
+    if (r.len < 16) return error.BadSps;
+    try b.u8_(1); // configurationVersion
+    try b.u8_(r[3]); // profile_space, tier, profile_idc
+    try b.bytes(r[4..8]); // compatibility flags
+    try b.bytes(r[8..14]); // constraint flags
+    try b.u8_(r[14]); // level_idc
+    try b.u16_(0xF000); // min_spatial_segmentation_idc = 0
+    try b.u8_(0xFC); // parallelismType = 0
+    try b.u8_(0xFC | 1); // chroma 4:2:0
+    try b.u8_(0xF8); // 8 bits
+    try b.u8_(0xF8);
+    try b.u16_(0); // avgFrameRate
+    try b.u8_(0x0F); // 1 camada temporal, aninhada; tamanhos de 4 bytes
+    try b.u8_(3); // VPS, SPS, PPS
+    for ([_][]const u8{ ps.vps, ps.sps, ps.pps }) |nal| {
+        try b.u8_(0x80 | hevcType(nal)); // array_completeness
+        try b.u16_(1);
+        try b.u16_(@intCast(nal.len));
+        try b.bytes(nal);
+    }
+    b.end(cc);
+    b.end(at);
+}
+
+/// Começo comum das entradas de vídeo (avc1/hvc1).
+fn visualHeader(b: Box, w: u32, h: u32) !void {
     try b.zeros(6);
     try b.u16_(1); // data_reference_index
     try b.zeros(16);
@@ -262,6 +359,11 @@ fn avc1(b: Box, w: u32, h: u32, ps: ParamSets) !void {
     try b.bytes(&name);
     try b.u16_(0x0018);
     try b.u16_(0xFFFF);
+}
+
+fn avc1(b: Box, w: u32, h: u32, ps: ParamSets) !void {
+    const at = try b.begin("avc1");
+    try visualHeader(b, w, h);
     // avcC
     const cc = try b.begin("avcC");
     try b.u8_(1);
@@ -312,7 +414,7 @@ fn opusEntry(b: Box) !void {
 fn stsd(b: Box, video: bool, w: u32, h: u32, ps: ParamSets) !void {
     const at = try b.beginFull("stsd", 0, 0);
     try b.u32_(1);
-    if (video) try avc1(b, w, h, ps) else try opusEntry(b);
+    if (!video) try opusEntry(b) else if (ps.hevc) try hvc1(b, w, h, ps) else try avc1(b, w, h, ps);
     b.end(at);
 }
 
@@ -348,7 +450,7 @@ fn usToTicks(us: u64, timescale: u64) u64 {
 
 /// Vídeo: duração de cada quadro = até o próximo (a tela parada fica um
 /// quadro só, longo). O último dura `last_us`.
-fn buildVideo(t: *Track, samples: []const VideoSample, last_us: u64) !void {
+fn buildVideo(t: *Track, samples: []const VideoSample, last_us: u64, hevc: bool) !void {
     t.start_us = samples[0].ts_us;
     var prev_us: u64 = 0;
     for (samples, 0..) |s, i| {
@@ -356,7 +458,7 @@ fn buildVideo(t: *Track, samples: []const VideoSample, last_us: u64) !void {
         if (s.ts_us < prev_us) return error.TimeGoesBack;
         prev_us = s.ts_us;
         const before = t.data.items.len;
-        try toAvcc(&t.data, s.data);
+        try toAvcc(&t.data, s.data, hevc);
         const size = t.data.items.len - before;
         if (size == 0) continue;
         try t.sizes.append(gpa, @intCast(size));
@@ -496,13 +598,13 @@ fn writeAll(path: [:0]const u8, parts: []const []const u8) !void {
 pub fn writeClip(path: [:0]const u8, w: u32, h: u32, video: []const VideoSample, audio_samples: []const AudioSample) !void {
     if (video.len == 0 or !video[0].key) return error.NoKeyframe;
     const ps = paramSets(video[0].data);
-    if (ps.sps.len < 4 or ps.pps.len == 0) return error.NoParamSets;
+    if (!ps.complete()) return error.NoParamSets;
     var vt: Track = .{};
     defer vt.deinit();
     // último quadro: a média (ou 1/30 s)
     const span = video[video.len - 1].ts_us -| video[0].ts_us;
     const last_us: u64 = if (video.len > 1) @max(span / (video.len - 1), 10_000) else 33_333;
-    try buildVideo(&vt, video, last_us);
+    try buildVideo(&vt, video, last_us, ps.hevc);
     var at: Track = .{};
     defer at.deinit();
     const end_us = video[video.len - 1].ts_us + last_us;
@@ -536,6 +638,7 @@ pub fn writeClip(path: [:0]const u8, w: u32, h: u32, video: []const VideoSample,
 // Gravação (MP4 fragmentado)
 
 pub const Recorder = struct {
+    hevc: bool, // codec do arquivo (do primeiro IDR)
     file: *cio.FILE,
     w: u32,
     h: u32,
@@ -557,12 +660,12 @@ pub const Recorder = struct {
     pub fn start(path: [:0]const u8, w: u32, h: u32, first: VideoSample, with_audio: bool) !*Recorder {
         if (!first.key) return error.NoKeyframe;
         const ps = paramSets(first.data);
-        if (ps.sps.len < 4 or ps.pps.len == 0) return error.NoParamSets;
+        if (!ps.complete()) return error.NoParamSets;
         const f = openFile(path, "wb") orelse return error.FileOpen;
         errdefer _ = cio.fclose(f);
         const r = try gpa.create(Recorder);
         errdefer gpa.destroy(r);
-        r.* = .{ .file = f, .w = w, .h = h, .with_audio = with_audio, .start_us = first.ts_us, .audio_next_us = first.ts_us, .last_video_us = first.ts_us -| 1000 };
+        r.* = .{ .hevc = ps.hevc, .file = f, .w = w, .h = h, .with_audio = with_audio, .start_us = first.ts_us, .audio_next_us = first.ts_us, .last_video_us = first.ts_us -| 1000 };
         var head: std.ArrayList(u8) = .empty;
         defer head.deinit(gpa);
         const b: Box = .{ .buf = &head };
@@ -618,7 +721,7 @@ pub const Recorder = struct {
         // durações: até o próximo quadro (no fim, 1/30 s)
         for (r.video.items[0..n_video], 0..) |s, i| {
             const before = vt.data.items.len;
-            try toAvcc(&vt.data, s.data);
+            try toAvcc(&vt.data, s.data, r.hevc);
             const size = vt.data.items.len - before;
             if (size == 0) continue;
             try vt.sizes.append(gpa, @intCast(size));

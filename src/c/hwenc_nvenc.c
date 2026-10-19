@@ -1,4 +1,4 @@
-// H.264 com NVIDIA NVENC (API 11.1: drivers 470+ no Linux/Windows).
+// H.264 ou HEVC com NVIDIA NVENC (API 11.1: drivers 470+ no Linux/Windows).
 // libcuda/libnvidia-encode (ou nvcuda.dll/nvEncodeAPI64.dll) são carregadas
 // pelo loader do nv-codec-headers, então nada disso é dependência de build.
 //
@@ -36,6 +36,7 @@ struct nvenc {
     size_t bits_cap;
     uint64_t frame;
     int bitrate;
+    int hevc;
     int layers;         // camadas temporais (1 ou 2)
     uint32_t since_idr; // quadros desde o último IDR (com 2 camadas)
 };
@@ -87,16 +88,20 @@ void nvenc_close(nvenc *e) {
 }
 
 nvenc *nvenc_open(int codec, int width, int height, int fps, int bitrate, int screen_mode, int temporal_layers, char *err, int errlen) {
-    if (codec != HW_CODEC_H264) {
-        set_err(err, errlen, "NVENC: codec ainda não suportado", codec);
+    if (codec != HW_CODEC_H264 && codec != HW_CODEC_HEVC) {
+        set_err(err, errlen, "NVENC: codec não suportado", codec);
         return NULL;
     }
+    const int hevc = codec == HW_CODEC_HEVC;
+    const GUID codec_guid = hevc ? NV_ENC_CODEC_HEVC_GUID : NV_ENC_CODEC_H264_GUID;
     nvenc *e = calloc(1, sizeof *e);
     if (!e) return NULL;
     e->width = width;
     e->height = height;
     e->fps = fps;
-    e->layers = temporal_layers > 1 ? 2 : 1;
+    // HEVC: uma camada só (o truque dos quadros alternados é do H.264)
+    e->layers = temporal_layers > 1 && !hevc ? 2 : 1;
+    e->hevc = hevc;
 
     if (cuda_load_functions(&e->cu, NULL) < 0 || nvenc_load_functions(&e->nv, NULL) < 0) {
         set_err(err, errlen, "driver NVIDIA (CUDA/NVENC) não encontrado", 0);
@@ -154,7 +159,21 @@ nvenc *nvenc_open(int codec, int width, int height, int fps, int bitrate, int sc
     NV_ENC_PRESET_CONFIG pc = {0};
     pc.version = NV_ENC_PRESET_CONFIG_VER;
     pc.presetCfg.version = NV_ENC_CONFIG_VER;
-    st = e->api.nvEncGetEncodePresetConfigEx(e->enc, NV_ENC_CODEC_H264_GUID, preset, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY, &pc);
+    if (hevc) {
+        // a placa codifica HEVC? (Maxwell 2ª geração em diante)
+        GUID guids[16];
+        uint32_t n = 0;
+        int found = 0;
+        if (e->api.nvEncGetEncodeGUIDs(e->enc, guids, 16, &n) == NV_ENC_SUCCESS)
+            for (uint32_t i = 0; i < n; i++)
+                if (!memcmp(&guids[i], &NV_ENC_CODEC_HEVC_GUID, sizeof(GUID))) found = 1;
+        if (!found) {
+            set_err(err, errlen, "a placa não codifica HEVC", 0);
+            nvenc_close(e);
+            return NULL;
+        }
+    }
+    st = e->api.nvEncGetEncodePresetConfigEx(e->enc, codec_guid, preset, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY, &pc);
     if (st != NV_ENC_SUCCESS) {
         set_err(err, errlen, "preset do NVENC indisponível", st);
         nvenc_close(e);
@@ -166,7 +185,7 @@ nvenc *nvenc_open(int codec, int width, int height, int fps, int bitrate, int sc
     // (+3,8 dB com 17% menos bits no bench). Sem B-frames; o decoder do
     // openh264 segura um quadro em perfis Main/High achando que pode haver
     // reordenação, e o codec.zig pede pra ele soltar na hora (FlushFrame).
-    e->cfg.profileGUID = NV_ENC_H264_PROFILE_HIGH_GUID;
+    e->cfg.profileGUID = hevc ? NV_ENC_HEVC_PROFILE_MAIN_GUID : NV_ENC_H264_PROFILE_HIGH_GUID;
     e->cfg.gopLength = NVENC_INFINITE_GOPLENGTH;
     e->cfg.frameIntervalP = 1; // sem B-frames
     configure_rc(e, bitrate);
@@ -176,20 +195,29 @@ nvenc *nvenc_open(int codec, int width, int height, int fps, int bitrate, int sc
     } else {
         e->cfg.rcParams.enableAQ = 1;
     }
-    NV_ENC_CONFIG_H264 *h = &e->cfg.encodeCodecConfig.h264Config;
-    h->idrPeriod = NVENC_INFINITE_GOPLENGTH;
-    h->repeatSPSPPS = 1; // todo IDR leva SPS/PPS (quem entra depois consegue decodificar)
-    h->outputAUD = 0;
-    h->chromaFormatIDC = 1;
-    // CABAC: ~20% menos bits que CAVLC pela mesma qualidade; custa ~50% a mais
-    // pra decodificar em software (openh264), o NVDEC nem sente
-    h->entropyCodingMode = NV_ENC_H264_ENTROPY_CODING_MODE_CABAC;
-    h->adaptiveTransformMode = NV_ENC_H264_ADAPTIVE_TRANSFORM_ENABLE;
+    if (hevc) {
+        NV_ENC_CONFIG_HEVC *h = &e->cfg.encodeCodecConfig.hevcConfig;
+        h->idrPeriod = NVENC_INFINITE_GOPLENGTH;
+        h->repeatSPSPPS = 1; // todo IDR leva VPS/SPS/PPS
+        h->outputAUD = 0;
+        h->chromaFormatIDC = 1;
+        h->pixelBitDepthMinus8 = 0;
+    } else {
+        NV_ENC_CONFIG_H264 *h = &e->cfg.encodeCodecConfig.h264Config;
+        h->idrPeriod = NVENC_INFINITE_GOPLENGTH;
+        h->repeatSPSPPS = 1; // todo IDR leva SPS/PPS (quem entra depois consegue decodificar)
+        h->outputAUD = 0;
+        h->chromaFormatIDC = 1;
+        // CABAC: ~20% menos bits que CAVLC pela mesma qualidade; custa ~50% a mais
+        // pra decodificar em software (openh264), o NVDEC nem sente
+        h->entropyCodingMode = NV_ENC_H264_ENTROPY_CODING_MODE_CABAC;
+        h->adaptiveTransformMode = NV_ENC_H264_ADAPTIVE_TRANSFORM_ENABLE;
+    }
 
     NV_ENC_INITIALIZE_PARAMS *ip = &e->init;
     memset(ip, 0, sizeof *ip);
     ip->version = NV_ENC_INITIALIZE_PARAMS_VER;
-    ip->encodeGUID = NV_ENC_CODEC_H264_GUID;
+    ip->encodeGUID = codec_guid;
     ip->presetGUID = preset;
     ip->tuningInfo = NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY;
     ip->encodeWidth = (uint32_t)width;
@@ -313,6 +341,5 @@ void nvenc_set_bitrate(nvenc *e, int bitrate) {
 }
 
 const char *nvenc_name(nvenc *e) {
-    (void)e;
-    return "NVENC";
+    return e->hevc ? "NVENC (HEVC)" : "NVENC";
 }
