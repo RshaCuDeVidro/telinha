@@ -40,6 +40,13 @@ pub const Config = struct {
     voice_sensitivity: i32 = 50, // 0..100: quanto maior, mais fácil o microfone abrir
     mic_on_join: bool = false, // entrar na sala com o microfone ligado
     sounds: bool = true, // sons de aviso (entrou/saiu, ao vivo, microfone)
+    /// Identifica esse app pra sala (aleatória, criada na primeira vez): é o
+    /// que o banimento usa pra reconhecer quem volta.
+    client_key: u64 = 0,
+    notifications: bool = true, // notificação do sistema com o telinha em segundo plano
+    clips: bool = true, // guardar os últimos 30 s do que assiste (pra clipe)
+    camera_device: [160]u8 = zstr("", 160), // vazio = a primeira câmera
+    camera_res: i32 = 1, // 0 = 480p, 1 = 720p
 };
 
 fn zstr(comptime s: []const u8, comptime n: usize) [n]u8 {
@@ -92,6 +99,17 @@ fn openNamed(comptime name: []const u8, write: bool) ?*c.FILE {
 }
 
 pub fn load() Config {
+    var cfg = loadFile();
+    if (cfg.client_key == 0) {
+        var rnd: [8]u8 = undefined;
+        sync.osRandom(&rnd);
+        cfg.client_key = std.mem.readInt(u64, &rnd, .little) | 1;
+        save(&cfg);
+    }
+    return cfg;
+}
+
+fn loadFile() Config {
     var cfg: Config = .{};
     const f = openFile(false) orelse return cfg;
     defer _ = c.fclose(f);
@@ -102,9 +120,23 @@ pub fn load() Config {
         const k = l[0..eq];
         const v = l[eq + 1 ..];
         const int = std.fmt.parseInt(i32, v, 10) catch 0;
-        if (std.mem.eql(u8, k, "name")) setStr(&cfg.name, v) else if (std.mem.eql(u8, k, "join_addr")) setStr(&cfg.join_addr, v) else if (std.mem.eql(u8, k, "join_pass")) setStr(&cfg.join_pass, v) else if (std.mem.eql(u8, k, "room_name")) setStr(&cfg.room_name, v) else if (std.mem.eql(u8, k, "host_pass")) setStr(&cfg.host_pass, v) else if (std.mem.eql(u8, k, "host_port")) cfg.host_port = std.math.clamp(int, 1, 65535) else if (std.mem.eql(u8, k, "fps")) cfg.fps = std.math.clamp(int, 1, 60) else if (std.mem.eql(u8, k, "quality")) cfg.quality = std.math.clamp(int, 20, 100) else if (std.mem.eql(u8, k, "mode")) cfg.mode = std.math.clamp(int, 0, 1) else if (std.mem.eql(u8, k, "stats_always")) cfg.stats_always = int != 0 else if (std.mem.eql(u8, k, "hardware")) cfg.hardware = int != 0 else if (std.mem.eql(u8, k, "admin_token")) setStr(&cfg.admin_token, v) else if (std.mem.eql(u8, k, "public_addr")) setStr(&cfg.public_addr, v) else if (std.mem.eql(u8, k, "resolution")) cfg.resolution = std.math.clamp(int, 0, 3) else if (std.mem.eql(u8, k, "cursor")) cfg.cursor = int != 0 else if (std.mem.eql(u8, k, "show_chat")) cfg.show_chat = int != 0 else if (std.mem.eql(u8, k, "audio")) cfg.audio = int != 0 else if (std.mem.eql(u8, k, "tunnel_host")) setStr(&cfg.tunnel_host, v) else if (std.mem.eql(u8, k, "mic_device")) setStr(&cfg.mic_device, v) else if (std.mem.eql(u8, k, "noise_suppression")) cfg.noise_suppression = int != 0 else if (std.mem.eql(u8, k, "echo_cancellation")) cfg.echo_cancellation = int != 0 else if (std.mem.eql(u8, k, "voice_sensitivity")) cfg.voice_sensitivity = std.math.clamp(int, 0, 100) else if (std.mem.eql(u8, k, "mic_on_join")) cfg.mic_on_join = int != 0 else if (std.mem.eql(u8, k, "sounds")) cfg.sounds = int != 0;
+        if (std.mem.eql(u8, k, "name")) setStr(&cfg.name, v) else if (std.mem.eql(u8, k, "join_addr")) setStr(&cfg.join_addr, v) else if (std.mem.eql(u8, k, "join_pass")) setStr(&cfg.join_pass, v) else if (std.mem.eql(u8, k, "room_name")) setStr(&cfg.room_name, v) else if (std.mem.eql(u8, k, "host_pass")) setStr(&cfg.host_pass, v) else if (std.mem.eql(u8, k, "host_port")) cfg.host_port = std.math.clamp(int, 1, 65535) else if (std.mem.eql(u8, k, "fps")) cfg.fps = std.math.clamp(int, 1, 60) else if (std.mem.eql(u8, k, "quality")) cfg.quality = std.math.clamp(int, 20, 100) else if (std.mem.eql(u8, k, "mode")) cfg.mode = std.math.clamp(int, 0, 1) else if (std.mem.eql(u8, k, "stats_always")) cfg.stats_always = int != 0 else if (std.mem.eql(u8, k, "hardware")) cfg.hardware = int != 0 else if (std.mem.eql(u8, k, "admin_token")) setStr(&cfg.admin_token, v) else if (std.mem.eql(u8, k, "public_addr")) setStr(&cfg.public_addr, v) else if (std.mem.eql(u8, k, "resolution")) cfg.resolution = std.math.clamp(int, 0, 3) else if (std.mem.eql(u8, k, "cursor")) cfg.cursor = int != 0 else if (std.mem.eql(u8, k, "show_chat")) cfg.show_chat = int != 0 else if (std.mem.eql(u8, k, "audio")) cfg.audio = int != 0 else if (std.mem.eql(u8, k, "tunnel_host")) setStr(&cfg.tunnel_host, v) else if (std.mem.eql(u8, k, "mic_device")) setStr(&cfg.mic_device, v) else if (std.mem.eql(u8, k, "noise_suppression")) cfg.noise_suppression = int != 0 else if (std.mem.eql(u8, k, "echo_cancellation")) cfg.echo_cancellation = int != 0 else if (std.mem.eql(u8, k, "voice_sensitivity")) cfg.voice_sensitivity = std.math.clamp(int, 0, 100) else if (std.mem.eql(u8, k, "mic_on_join")) cfg.mic_on_join = int != 0 else if (std.mem.eql(u8, k, "sounds")) cfg.sounds = int != 0 else loadMore(&cfg, k, v, int);
     }
     return cfg;
+}
+
+fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
+    if (std.mem.eql(u8, k, "client_key")) {
+        cfg.client_key = std.fmt.parseInt(u64, v, 16) catch 0;
+    } else if (std.mem.eql(u8, k, "notifications")) {
+        cfg.notifications = int != 0;
+    } else if (std.mem.eql(u8, k, "clips")) {
+        cfg.clips = int != 0;
+    } else if (std.mem.eql(u8, k, "camera_device")) {
+        setStr(&cfg.camera_device, v);
+    } else if (std.mem.eql(u8, k, "camera_res")) {
+        cfg.camera_res = std.math.clamp(int, 0, 1);
+    }
 }
 
 pub fn save(cfg: *const Config) void {
@@ -146,6 +178,11 @@ pub fn save(cfg: *const Config) void {
         @intFromBool(cfg.echo_cancellation), cfg.voice_sensitivity,      @intFromBool(cfg.mic_on_join), @intFromBool(cfg.sounds),
     }) catch return;
     _ = c.fwrite(s.ptr, 1, s.len, f);
+    var more: [512]u8 = undefined;
+    const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\n", .{
+        cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res,
+    }) catch return;
+    _ = c.fwrite(m.ptr, 1, m.len, f);
 }
 
 /// Volume da voz de cada pessoa, lembrado pelo nome entre uma sala e outra

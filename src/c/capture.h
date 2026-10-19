@@ -24,6 +24,10 @@ typedef struct cap_frame {
     int cursor_draw; // 1 = desenhar
     int cursor_x, cursor_y;
     float cursor_scale; // pixels do quadro por pixel lógico
+    // Onde está a ponta do cursor no quadro (seja quem for que desenha), pra
+    // quem assiste poder dar zoom seguindo o mouse. cursor_known = 0: não sabe.
+    int cursor_known;
+    int cursor_px, cursor_py;
 } cap_frame;
 
 typedef struct cap_ctx cap_ctx;

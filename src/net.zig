@@ -172,6 +172,13 @@ pub fn shutdown(s: Socket) void {
     _ = c.shutdown(s, if (is_windows) c.SD_BOTH else c.SHUT_RDWR);
 }
 
+/// Fecha só o envio: o que já está na fila sai e depois vai o FIN. O outro
+/// lado lê tudo e fecha. (Um close com dados chegando manda RST, e o RST
+/// joga fora o que ainda não tinha saído, tipo o aviso de "sala fechada".)
+pub fn shutdownWrite(s: Socket) void {
+    _ = c.shutdown(s, if (is_windows) c.SD_SEND else c.SHUT_WR);
+}
+
 pub fn close(s: Socket) void {
     if (is_windows) _ = c.closesocket(s) else _ = c.close(s);
 }
@@ -260,4 +267,78 @@ pub fn localIp4(s: Socket) ?[4]u8 {
         if (std.mem.eql(u8, a6.addr[0..12], &.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff })) return a6.addr[12..16].*;
     }
     return null;
+}
+
+// ------------------------------------------------------------ rota
+
+pub const Route = enum { unknown, local, lan, internet4, internet6 };
+
+/// Endereço (IPv4 como 4 bytes, IPv6 como 16; IPv4 mapeado em IPv6 vira IPv4).
+const Addr = struct {
+    bytes: [16]u8 = undefined,
+    len: usize = 0,
+
+    fn slice(a: *const Addr) []const u8 {
+        return a.bytes[0..a.len];
+    }
+};
+
+fn sockAddr(st: *align(8) const [128]u8) Addr {
+    var out: Addr = .{};
+    const family = std.mem.readInt(u16, st[0..2], .little);
+    if (family == c.AF_INET) {
+        const a: *const c.struct_sockaddr_in = @ptrCast(st);
+        @memcpy(out.bytes[0..4], std.mem.asBytes(&a.sin_addr)[0..4]);
+        out.len = 4;
+    } else if (family == c.AF_INET6) {
+        const a6: *const SockAddrIn6 = @ptrCast(st);
+        if (std.mem.eql(u8, a6.addr[0..12], &.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff })) {
+            @memcpy(out.bytes[0..4], a6.addr[12..16]);
+            out.len = 4;
+        } else {
+            out.bytes = a6.addr;
+            out.len = 16;
+        }
+    }
+    return out;
+}
+
+fn peerAndLocal(s: Socket) ?struct { Addr, Addr } {
+    var st: [128]u8 align(8) = undefined;
+    var len: if (is_windows) c_int else c.socklen_t = st.len;
+    if (c.getpeername(s, @ptrCast(&st), &len) != 0) return null;
+    const peer = sockAddr(&st);
+    len = st.len;
+    if (c.getsockname(s, @ptrCast(&st), &len) != 0) return null;
+    return .{ peer, sockAddr(&st) };
+}
+
+/// Endereço de quem está do outro lado (4 bytes IPv4, 16 IPv6; vazio se não der).
+pub fn peerAddress(s: Socket, out: *[16]u8) []u8 {
+    const peer, _ = peerAndLocal(s) orelse return out[0..0];
+    @memcpy(out[0..peer.len], peer.slice());
+    return out[0..peer.len];
+}
+
+/// Por onde veio uma conexão aceita: dessa máquina, da rede local, ou da internet.
+pub fn peerRoute(s: Socket) Route {
+    const peer, const local = peerAndLocal(s) orelse return .unknown;
+    return classify(peer.slice(), local.slice());
+}
+
+pub fn classify(peer: []const u8, local: []const u8) Route {
+    if (peer.len == 0) return .unknown;
+    if (std.mem.eql(u8, peer, local)) return .local; // conectou no próprio IP
+    if (peer.len == 4) {
+        const a = peer;
+        if (a[0] == 127) return .local;
+        if (a[0] == 10 or (a[0] == 172 and a[1] & 0xF0 == 16) or (a[0] == 192 and a[1] == 168) or
+            (a[0] == 169 and a[1] == 254) or (a[0] == 100 and a[1] & 0xC0 == 64)) return .lan; // 100.64/10: CGNAT e Tailscale
+        return .internet4;
+    }
+    const loopback = [_]u8{0} ** 15 ++ [_]u8{1};
+    if (std.mem.eql(u8, peer, &loopback)) return .local;
+    if (peer[0] == 0xfe and peer[1] & 0xC0 == 0x80) return .lan; // fe80::/10
+    if (peer[0] & 0xFE == 0xfc) return .lan; // fc00::/7 (ULA, Tailscale)
+    return .internet6;
 }

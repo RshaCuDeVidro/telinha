@@ -130,10 +130,22 @@ pub fn main(init: std.process.Init) !void {
         idle_frames = if (active) 0 else idle_frames + 1;
     }
 
+    // fechou: a janela some na hora; a limpeza (avisar a sala, salvar a
+    // configuração) vem depois, com prazo
+    c.glfwHideWindow(win);
+    c.glfwPollEvents();
+    sync.spawn(exitDeadline, .{}) catch {};
     app.shutdown();
     c.ImGui_ImplOpenGL3_Shutdown();
     c.ImGui_ImplGlfw_Shutdown();
     c.igDestroyContext(null);
+    sync.hardExit(0);
+}
+
+/// Se a limpeza travar (driver, áudio, rede), sai mesmo assim.
+fn exitDeadline() void {
+    sync.sleepMs(4000);
+    sync.hardExit(0);
 }
 
 extern fn glViewport(x: c_int, y: c_int, w: c_int, h: c_int) callconv(.c) void;

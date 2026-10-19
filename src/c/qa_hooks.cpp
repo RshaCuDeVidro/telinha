@@ -32,6 +32,9 @@ void ImGuiTestEngineHook_ItemAdd(ImGuiContext* ctx, ImGuiID id, const ImRect& bb
         it.cx1 = w->ClipRect.Max.x;
         it.cy1 = w->ClipRect.Max.y;
         copy_str(it.window, sizeof it.window, w->Name);
+        // janela que ainda está se medindo (1º quadro de popup com tamanho
+        // automático): os itens existem, mas não estão na tela nem no lugar
+        it.hidden = w->Hidden || w->HiddenFramesCannotSkipItems > 0 || w->HiddenFramesCanSkipItems > 0;
     }
     g_items.push_back(it);
 }

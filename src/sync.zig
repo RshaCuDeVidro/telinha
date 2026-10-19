@@ -96,12 +96,26 @@ pub fn sleepMs(ms: u32) void {
 
 /// Horário local (hora, minuto) pra mostrar no chat.
 pub fn localTime() struct { h: u8, m: u8 } {
+    const t = localTimeAgo(0);
+    return .{ .h = t.h, .m = t.m };
+}
+
+/// Horário local de `seconds` atrás (mensagem antiga do chat).
+pub fn localTimeAgo(seconds: i64) struct { h: u8, m: u8 } {
     if (is_windows) {
+        var ft: c.FILETIME = undefined;
+        c.GetSystemTimeAsFileTime(&ft);
+        var q: u64 = (@as(u64, ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+        q -%= @as(u64, @intCast(@max(seconds, 0))) * 10_000_000;
+        const utc: c.FILETIME = .{ .dwLowDateTime = @truncate(q), .dwHighDateTime = @truncate(q >> 32) };
+        var local: c.FILETIME = undefined;
         var st: c.SYSTEMTIME = undefined;
-        c.GetLocalTime(&st);
+        if (c.FileTimeToLocalFileTime(&utc, &local) == 0 or c.FileTimeToSystemTime(&local, &st) == 0) {
+            c.GetLocalTime(&st);
+        }
         return .{ .h = @intCast(st.wHour), .m = @intCast(st.wMinute) };
     } else {
-        var t: c.time_t = c.time(null);
+        var t: c.time_t = c.time(null) - @as(c.time_t, @intCast(@max(seconds, 0)));
         var tm: c.struct_tm = undefined;
         _ = c.localtime_r(&t, &tm);
         return .{ .h = @intCast(tm.tm_hour), .m = @intCast(tm.tm_min) };
@@ -123,6 +137,21 @@ pub fn osRandom(buf: []u8) void {
             off += @intCast(n);
         }
     }
+}
+
+extern "c" fn _exit(code: c_int) noreturn;
+extern "kernel32" fn TerminateProcess(process: ?*anyopaque, code: c_uint) callconv(.winapi) c_int;
+extern "kernel32" fn GetCurrentProcess() callconv(.winapi) ?*anyopaque;
+
+/// Termina o processo na hora, sem os destrutores das bibliotecas. O do
+/// NVDEC (libnvcuvid) e o do PipeWire travam esperando threads internas
+/// deles, e o app ficava vivo depois de fechar a janela.
+pub fn hardExit(code: u8) noreturn {
+    if (is_windows) {
+        _ = TerminateProcess(GetCurrentProcess(), code);
+        unreachable;
+    }
+    _exit(code);
 }
 
 extern "c" fn setpriority(which: c_int, who: c_uint, prio: c_int) c_int;

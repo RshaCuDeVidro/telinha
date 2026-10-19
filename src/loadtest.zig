@@ -43,6 +43,7 @@ const Conn = struct {
         try b.begin(.hello);
         try b.str(name);
         try b.str("");
+        try b.u64_(0);
         try c.send(try b.finish());
         while (true) {
             const t = try proto.recvMsg(c.sock, &c.ch, &c.rb);
@@ -57,7 +58,7 @@ const Conn = struct {
     /// Confirma um frame recebido (como o cliente de verdade faz).
     fn ack(c: *Conn, payload: []const u8) void {
         const m = proto.Msg.alloc(.ack, 8) catch return;
-        @memcpy(m.payload()[0..8], payload[0..8]); // u32 de, u32 seq
+        @memcpy(m.payload()[0..8], payload[0..8]); // u32 stream, u32 seq
         c.send(m) catch {};
     }
 
@@ -127,7 +128,7 @@ fn streamerReader(c: *Conn) void {
         const t = proto.recvMsg(c.sock, &c.ch, &c.rb) catch return;
         switch (t) {
             .ack => {
-                const seq = std.mem.readInt(u32, proto.payloadOf(&c.rb)[0..4], .little);
+                const seq = std.mem.readInt(u32, proto.payloadOf(&c.rb)[1..5], .little); // u8 tipo, u32 seq
                 inflight_mutex.lock();
                 inflight.acked(seq, sync.nowUs());
                 inflight_mutex.unlock();
@@ -138,7 +139,7 @@ fn streamerReader(c: *Conn) void {
             },
             .viewer_slow => {
                 _ = slow_hints.fetchAdd(1, .monotonic);
-                slow_floor.store(proto.payloadOf(&c.rb)[0], .release);
+                slow_floor.store(proto.payloadOf(&c.rb)[1], .release); // u8 tipo, u8 piso
             },
             else => {},
         }
@@ -254,12 +255,13 @@ pub fn main(init: std.process.Init) !void {
         break :blk try Conn.open(port + 1, "transmissor", false);
     };
     {
-        const m = try proto.Msg.alloc(.stream_start, 6);
+        const m = try proto.Msg.alloc(.stream_start, 7);
         const p = m.payload();
-        std.mem.writeInt(u16, p[0..2], 1280, .little);
-        std.mem.writeInt(u16, p[2..4], 720, .little);
-        p[4] = 30;
-        p[5] = 0;
+        p[0] = proto.kind_screen;
+        std.mem.writeInt(u16, p[1..3], 1280, .little);
+        std.mem.writeInt(u16, p[3..5], 720, .little);
+        p[5] = 30;
+        p[6] = 0;
         try streamer.send(m);
     }
     try sync.spawn(streamerReader, .{streamer});
@@ -272,9 +274,10 @@ pub fn main(init: std.process.Init) !void {
         const slow = i >= n_viewers;
         const name = try std.fmt.bufPrint(&name_buf, "{s} {d}", .{ if (slow) "lento" else "espectador", i });
         const v = try Conn.open(port, name, slow);
-        const m = try proto.Msg.alloc(.watch, 5);
+        const m = try proto.Msg.alloc(.watch, 6);
         std.mem.writeInt(u32, m.payload()[0..4], streamer.id, .little);
         m.payload()[4] = 1;
+        m.payload()[5] = 0;
         try v.send(m);
         try sync.spawn(viewerLoop, .{ v, &stats[i], slow });
     }
@@ -352,7 +355,9 @@ pub fn main(init: std.process.Init) !void {
         std.mem.writeInt(u64, p[5..13], sync.nowUs(), .little);
         std.mem.writeInt(u16, p[13..15], w, .little);
         std.mem.writeInt(u16, p[15..17], h, .little);
-        @memcpy(p[17..], out.items);
+        std.mem.writeInt(u16, p[17..19], proto.coord_none, .little);
+        std.mem.writeInt(u16, p[19..21], proto.coord_none, .little);
+        @memcpy(p[21..], out.items);
         inflight_mutex.lock();
         inflight.sent(seq -% 1, sync.nowUs(), key);
         inflight_mutex.unlock();

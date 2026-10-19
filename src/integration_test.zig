@@ -20,10 +20,15 @@ const TestClient = struct {
     ch: crypto.Channel,
     rb: proto.RecvBuf = .{},
     id: u32 = 0,
+    route: u8 = 0,
     seen: [32]bool = [_]bool{false} ** 32, // tipos de mensagem já recebidos
     last_slow_floor: u8 = 0,
 
     fn connect(port: u16, name: []const u8, password: []const u8, token: []const u8) !TestClient {
+        return connectKey(port, name, password, token, 0);
+    }
+
+    fn connectKey(port: u16, name: []const u8, password: []const u8, token: []const u8, key: u64) !TestClient {
         const s = try net.connect("127.0.0.1", port);
         errdefer net.close(s);
         net.setRecvTimeout(s, 5000);
@@ -37,6 +42,7 @@ const TestClient = struct {
         try b.begin(.hello);
         try b.str(name);
         try b.str(token);
+        try b.u64_(key);
         try c.send(try b.finish());
         return c;
     }
@@ -56,7 +62,7 @@ const TestClient = struct {
         for (0..2000) |_| {
             const t = try proto.recvMsg(c.sock, &c.ch, &c.rb);
             if (@intFromEnum(t) < c.seen.len) c.seen[@intFromEnum(t)] = true;
-            if (t == .viewer_slow) c.last_slow_floor = proto.payloadOf(&c.rb)[0];
+            if (t == .viewer_slow) c.last_slow_floor = proto.payloadOf(&c.rb)[1];
             if (t == typ) return proto.payloadOf(&c.rb);
         }
         return error.NotFound;
@@ -65,13 +71,81 @@ const TestClient = struct {
     /// Espectador: confirma um frame recebido (payload S→C de `frame`).
     fn ackFrame(c: *TestClient, payload: []const u8) !void {
         const m = try proto.Msg.alloc(.ack, 8);
-        @memcpy(m.payload()[0..8], payload[0..8]); // u32 de, u32 seq
+        @memcpy(m.payload()[0..8], payload[0..8]); // u32 stream, u32 seq
         try c.send(m);
     }
 
     fn welcome(c: *TestClient) !void {
         var r: proto.Reader = .{ .data = try c.expect(.welcome) };
         c.id = try r.u32_();
+        _ = try r.str(); // sala
+        _ = try r.u8_(); // admin
+        _ = try r.u64_(); // relógio
+        _ = try r.u64_(); // instância
+        c.route = try r.u8_();
+    }
+
+    fn streamStart(c: *TestClient, kind: u8, flags: u8) !void {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.stream_start);
+        try b.u8_(kind);
+        try b.u16_(64);
+        try b.u16_(64);
+        try b.u8_(30);
+        try b.u8_(flags);
+        try c.send(try b.finish());
+    }
+
+    fn watch(c: *TestClient, stream: u32, opts: u8) !void {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.watch);
+        try b.u32_(stream);
+        try b.u8_(1);
+        try b.u8_(opts);
+        try c.send(try b.finish());
+    }
+
+    fn admin(c: *TestClient, action: u8, target: u32, value: u8) !void {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.admin);
+        try b.u8_(action);
+        try b.u32_(target);
+        try b.u8_(value);
+        try c.send(try b.finish());
+    }
+
+    fn chat(c: *TestClient, text: []const u8) !void {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.chat);
+        try b.str(text);
+        try c.send(try b.finish());
+    }
+
+    /// Próxima lista de membros (já decodificada).
+    fn members(c: *TestClient) !MemberList {
+        return parseMembers(try c.expect(.members));
+    }
+
+    /// Espera o motivo da saída (denied) e fecha, como o app faz: retorna o código.
+    fn denied(c: *TestClient) !u8 {
+        var r: proto.Reader = .{ .data = try c.expect(.denied) };
+        _ = try r.str();
+        const code = try r.u8_();
+        net.shutdown(c.sock);
+        return code;
+    }
+
+    /// Lê listas de membros até `id` aparecer com `flag` ligada (ou desligada).
+    fn waitFlag(c: *TestClient, id: u32, flag: u8, on: bool) !MemberList {
+        while (true) {
+            const l = try c.members();
+            const m = l.get(id) orelse continue;
+            if ((m.flags & flag != 0) == on) return l;
+        }
     }
 
     fn close(c: *TestClient) void {
@@ -79,6 +153,43 @@ const TestClient = struct {
         net.close(c.sock);
     }
 };
+
+const MemberInfo = struct { id: u32, flags: u8, route: u8, owner: bool, cam_w: u16 };
+const MemberList = struct {
+    room_flags: u8,
+    n: usize,
+    items: [16]MemberInfo,
+
+    fn get(l: *const MemberList, id: u32) ?MemberInfo {
+        for (l.items[0..l.n]) |m| if (m.id == id) return m;
+        return null;
+    }
+};
+
+fn parseMembers(payload: []const u8) !MemberList {
+    var r: proto.Reader = .{ .data = payload };
+    var l: MemberList = .{ .room_flags = try r.u8_(), .n = 0, .items = undefined };
+    const n = try r.u16_();
+    for (0..n) |_| {
+        var m: MemberInfo = undefined;
+        m.id = try r.u32_();
+        _ = try r.str();
+        m.flags = try r.u8_();
+        const route = try r.u8_();
+        m.route = route & 0x7F;
+        m.owner = route & 0x80 != 0;
+        _ = try r.take(2 + 2 + 1); // tela
+        m.cam_w = try r.u16_();
+        _ = try r.take(2 + 1);
+        const k = try r.u16_();
+        _ = try r.take(@as(usize, k) * 4);
+        if (l.n < l.items.len) {
+            l.items[l.n] = m;
+            l.n += 1;
+        }
+    }
+    return l;
+}
 
 fn frameMsg(key: bool, payload_len: usize) !*proto.Msg {
     return frameSeq(key, payload_len, 1);
@@ -93,7 +204,16 @@ fn frameSeq(key: bool, payload_len: usize, seq: u32) !*proto.Msg {
     std.mem.writeInt(u64, p[5..13], 0, .little);
     std.mem.writeInt(u16, p[13..15], 64, .little);
     std.mem.writeInt(u16, p[15..17], 64, .little);
+    std.mem.writeInt(u16, p[17..19], proto.coord_none, .little);
+    std.mem.writeInt(u16, p[19..21], proto.coord_none, .little);
     return m;
+}
+
+/// Transmissor com uma tela no ar e um espectador assistindo, já no primeiro IDR.
+fn liveRoom(streamer: *TestClient, viewer: *TestClient) !void {
+    try streamer.streamStart(proto.kind_screen, 0);
+    try viewer.watch(streamer.id, 0);
+    _ = try streamer.expect(.keyreq);
 }
 
 test "sala: entrar, senha errada, chat" {
@@ -105,6 +225,8 @@ test "sala: entrar, senha errada, chat" {
     var a = try TestClient.connect(port, "Ana", "abc", "");
     defer a.close();
     try a.welcome();
+    // conectou em 127.0.0.1: "nessa máquina"
+    try testing.expectEqual(proto.route_local, a.route);
 
     // senha errada: servidor manda o marcador e fecha
     var bad = try TestClient.connect(port, "Mal", "errada", "");
@@ -114,25 +236,75 @@ test "sala: entrar, senha errada, chat" {
     var b = try TestClient.connect(port, "Ana", "abc", ""); // nome repetido
     defer b.close();
     try b.welcome();
-
-    var m: proto.Builder = .{};
-    defer m.deinit();
-    try m.begin(.chat);
-    try m.str("olá sala");
-    try b.send(try m.finish());
+    try b.chat("olá sala");
 
     // a Ana original recebe a mensagem do "Ana (2)"
     while (true) {
         var r: proto.Reader = .{ .data = try a.expect(.chat) };
+        const id = try r.u32_();
         const from = try r.u32_();
         const name = try r.str();
         const text = try r.str();
+        _ = try r.u64_(); // hora
+        const flags = try r.u8_();
         if (from == 0) continue; // mensagens do sistema
+        try testing.expect(id != 0);
         try testing.expectEqual(b.id, from);
         try testing.expectEqualStrings("Ana (2)", name);
         try testing.expectEqualStrings("olá sala", text);
+        try testing.expectEqual(@as(u8, 0), flags & proto.chat_history);
         break;
     }
+}
+
+test "chat: quem entra depois recebe o histórico (marcado como antigo)" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+    var a = try TestClient.connect(port, "A", "", "");
+    defer a.close();
+    try a.welcome();
+    try a.chat("primeira");
+    try a.chat("segunda");
+    // espera as duas voltarem (o servidor já guardou)
+    var got: usize = 0;
+    while (got < 2) {
+        var r: proto.Reader = .{ .data = try a.expect(.chat) };
+        _ = try r.u32_();
+        if (try r.u32_() == a.id) got += 1;
+    }
+    var b = try TestClient.connect(port, "B", "", "");
+    defer b.close();
+    try b.welcome();
+    var texts: [8][]const u8 = undefined;
+    var bufs: [8][32]u8 = undefined;
+    var n: usize = 0;
+    var last_id: u32 = 0;
+    while (n < 3) {
+        var r: proto.Reader = .{ .data = try b.expect(.chat) };
+        const id = try r.u32_();
+        const from = try r.u32_();
+        _ = try r.str();
+        const text = try r.str();
+        _ = try r.u64_();
+        const flags = try r.u8_();
+        try testing.expect(id > last_id); // em ordem
+        last_id = id;
+        if (flags & proto.chat_history == 0) {
+            // a primeira mensagem nova é o "B entrou na sala" (depois do histórico)
+            try testing.expectEqual(@as(u32, 0), from);
+            break;
+        }
+        const k = @min(text.len, 32);
+        @memcpy(bufs[n][0..k], text[0..k]);
+        texts[n] = bufs[n][0..k];
+        n += 1;
+    }
+    // "A entrou na sala" + as duas mensagens
+    try testing.expectEqual(@as(usize, 3), n);
+    try testing.expectEqualStrings("primeira", texts[1]);
+    try testing.expectEqualStrings("segunda", texts[2]);
 }
 
 test "sala: frames só vão pra quem assiste, começando por IDR" {
@@ -148,64 +320,287 @@ test "sala: frames só vão pra quem assiste, começando por IDR" {
     defer viewer.close();
     try viewer.welcome();
 
-    var b: proto.Builder = .{};
-    defer b.deinit();
-    try b.begin(.stream_start);
-    try b.u16_(64);
-    try b.u16_(64);
-    try b.u8_(30);
-    try streamer.send(try b.finish());
-
-    try b.begin(.watch);
-    try b.u32_(streamer.id);
-    try b.u8_(1);
-    try viewer.send(try b.finish());
-
     // o servidor pede um IDR pro transmissor
-    _ = try streamer.expect(.keyreq);
+    try liveRoom(&streamer, &viewer);
     // um P-frame antes do IDR não pode chegar no espectador
     try streamer.send(try frameSeq(false, 100, 7));
     try streamer.send(try frameSeq(true, 200, 8));
     // o servidor confirma cada frame pro transmissor (controle de banda dele)
     {
         var a: proto.Reader = .{ .data = try streamer.expect(.ack) };
+        try testing.expectEqual(proto.kind_screen, try a.u8_());
         try testing.expectEqual(@as(u32, 7), try a.u32_());
         a = .{ .data = try streamer.expect(.ack) };
+        _ = try a.u8_();
         try testing.expectEqual(@as(u32, 8), try a.u32_());
     }
     var r: proto.Reader = .{ .data = try viewer.expect(.frame) };
     try testing.expectEqual(streamer.id, try r.u32_());
     _ = try r.u32_(); // seq
     try testing.expectEqual(proto.frame_key, try r.u8_());
-    try testing.expectEqual(@as(usize, 8 + 2 + 2 + 200), r.rest().len);
+    try testing.expectEqual(@as(usize, 8 + 2 + 2 + 2 + 2 + 200), r.rest().len);
 }
 
-test "sala: admin expulsa, membro comum não" {
+test "câmera: transmissão própria (stream com o bit de câmera), separada da tela" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+    var streamer = try TestClient.connect(port, "T", "", "");
+    defer streamer.close();
+    try streamer.welcome();
+    var viewer = try TestClient.connect(port, "E", "", "");
+    defer viewer.close();
+    try viewer.welcome();
+
+    try streamer.streamStart(proto.kind_screen, 0);
+    try streamer.streamStart(proto.kind_camera, 0);
+    const cam = proto.streamId(streamer.id, proto.kind_camera);
+    // os membros mostram a câmera ligada
+    while (true) {
+        const l = try viewer.members();
+        const m = l.get(streamer.id) orelse continue;
+        if (m.flags & proto.member_camera != 0 and m.flags & proto.member_streaming != 0) {
+            try testing.expectEqual(@as(u16, 64), m.cam_w);
+            break;
+        }
+    }
+    // assiste só a câmera: o pedido de IDR é da câmera
+    try viewer.watch(cam, 0);
+    var k: proto.Reader = .{ .data = try streamer.expect(.keyreq) };
+    try testing.expectEqual(proto.kind_camera, try k.u8_());
+    // quadro da tela não chega; o da câmera sim, com o stream da câmera
+    try streamer.send(try frameSeq(true, 50, 1));
+    const cm = try frameSeq(true, 60, 2);
+    cm.payload()[4] |= proto.frame_camera;
+    try streamer.send(cm);
+    var r: proto.Reader = .{ .data = try viewer.expect(.frame) };
+    try testing.expectEqual(cam, try r.u32_());
+    try testing.expectEqual(@as(u32, 2), try r.u32_());
+    // a câmera desliga: o espectador para de receber, a tela continua no ar
+    var b: proto.Builder = .{};
+    defer b.deinit();
+    try b.begin(.stream_stop);
+    try b.u8_(proto.kind_camera);
+    try streamer.send(try b.finish());
+    while (true) {
+        const l = try viewer.members();
+        const m = l.get(streamer.id) orelse continue;
+        if (m.flags & proto.member_camera == 0) {
+            try testing.expect(m.flags & proto.member_streaming != 0);
+            break;
+        }
+    }
+}
+
+test "sala: dono fecha a sala -> todo mundo fica sabendo (e não tenta reconectar)" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port, .admin_token = "dono" });
+    var a = try TestClient.connect(port, "A", "", "");
+    defer a.close();
+    try a.welcome();
+    var b = try TestClient.connect(port, "B", "", "");
+    defer b.close();
+    try b.welcome();
+    // cliente mandando coisa enquanto a sala fecha (o aviso não pode virar RST)
+    try a.chat("oi");
+    srv.stop();
+    try testing.expectEqual(proto.deny_closed, try a.denied());
+    try testing.expectEqual(proto.deny_closed, try b.denied());
+}
+
+test "admin: expulsa, bane (não volta), silencia, para transmissão, dá admin e tranca a sala" {
     net.init();
     const port = freshPort();
     const srv = try Server.start(.{ .port = port, .admin_token = "token-do-dono" });
     defer srv.stop();
 
-    var admin = try TestClient.connect(port, "Dono", "", "token-do-dono");
-    defer admin.close();
-    try admin.welcome();
+    var dono = try TestClient.connect(port, "Dono", "", "token-do-dono");
+    defer dono.close();
+    try dono.welcome();
+    var v = try TestClient.connectKey(port, "Visita", "", "", 0x1234);
+    defer v.close();
+    try v.welcome();
+    var w = try TestClient.connect(port, "Outra", "", "");
+    defer w.close();
+    try w.welcome();
+
+    // membro comum não manda em ninguém
+    try v.admin(proto.admin_kick, dono.id, 0);
+    try v.admin(proto.admin_mute, w.id, 1);
+    // dono silencia a visita: ela recebe o aviso, os membros mostram, a voz dela some
+    try dono.admin(proto.admin_mute, v.id, 1);
+    {
+        var r: proto.Reader = .{ .data = try v.expect(.notice) };
+        try testing.expectEqual(proto.notice_muted, try r.u8_());
+    }
+    while (true) {
+        const l = try w.members();
+        if (l.get(v.id)) |m| if (m.flags & proto.member_muted != 0) {
+            try testing.expect(l.get(w.id).?.flags & proto.member_muted == 0); // a outra não
+            try testing.expect(l.get(dono.id).?.owner);
+            break;
+        };
+    }
+    const pac = try proto.Msg.alloc(.voice, 8);
+    @memset(pac.payload(), 0x55);
+    try v.send(pac);
+    try v.chat("marcador");
+    while (true) {
+        const t = try proto.recvMsg(w.sock, &w.ch, &w.rb);
+        try testing.expect(t != .voice);
+        if (t == .chat) {
+            var r: proto.Reader = .{ .data = proto.payloadOf(&w.rb) };
+            _ = try r.u32_();
+            if (try r.u32_() == v.id) break;
+        }
+    }
+    // dono para a transmissão da outra
+    try w.streamStart(proto.kind_screen, 0);
+    _ = try dono.waitFlag(w.id, proto.member_streaming, true);
+    try dono.admin(proto.admin_stop_stream, w.id, proto.kind_screen);
+    {
+        var r: proto.Reader = .{ .data = try w.expect(.notice) };
+        try testing.expectEqual(proto.notice_stream_stopped, try r.u8_());
+        _ = try r.str();
+        try testing.expectEqual(proto.kind_screen, try r.u8_());
+    }
+    _ = try dono.waitFlag(w.id, proto.member_streaming, false);
+    // dá admin pra outra: ela pode expulsar membro comum, mas não o dono
+    try dono.admin(proto.admin_set_admin, w.id, 1);
+    {
+        var r: proto.Reader = .{ .data = try w.expect(.notice) };
+        try testing.expectEqual(proto.notice_admin_on, try r.u8_());
+    }
+    try w.admin(proto.admin_kick, dono.id, 0);
+    // dono bane a visita: sai com o motivo e não volta (nem com outro nome, pela chave do app)
+    try dono.admin(proto.admin_ban, v.id, 0);
+    try testing.expectEqual(proto.deny_banned, try v.denied());
+    sync.sleepMs(300);
+    try testing.expectEqual(@as(usize, 2), srv.memberCount());
+    var v2 = try TestClient.connectKey(port, "Disfarce", "", "", 0x1234);
+    defer v2.close();
+    try testing.expectEqual(proto.deny_banned, try v2.denied());
+    var v3 = try TestClient.connect(port, "visita", "", ""); // mesmo nome (maiúscula/minúscula não importa)
+    defer v3.close();
+    try testing.expectEqual(proto.deny_banned, try v3.denied());
+    // tranca: ninguém novo entra; destranca: entra
+    try dono.admin(proto.admin_lock, 0, 1);
+    while ((try dono.members()).room_flags & proto.room_locked == 0) {}
+    var x = try TestClient.connect(port, "Novo", "", "");
+    defer x.close();
+    try testing.expectEqual(proto.deny_locked, try x.denied());
+    try dono.admin(proto.admin_lock, 0, 0);
+    while ((try dono.members()).room_flags & proto.room_locked != 0) {}
+    var y = try TestClient.connect(port, "Novo", "", "");
+    defer y.close();
+    try y.welcome();
+    // o dono ainda está lá (ninguém conseguiu expulsar)
+    try testing.expectEqual(@as(usize, 3), srv.memberCount());
+}
+
+test "ponteiro: chega em quem assiste e em quem transmite, não nos outros" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+    var t = try TestClient.connect(port, "T", "", "");
+    defer t.close();
+    try t.welcome();
+    var e = try TestClient.connect(port, "E", "", "");
+    defer e.close();
+    try e.welcome();
+    var o = try TestClient.connect(port, "O", "", "");
+    defer o.close();
+    try o.welcome();
+    var f = try TestClient.connect(port, "F", "", "");
+    defer f.close();
+    try f.welcome();
+    try liveRoom(&t, &e);
+    try o.watch(t.id, 0);
+    // espera os dois aparecerem assistindo
+    while (true) {
+        const l = try t.members();
+        _ = l;
+        if (srv.watchingCount(o.id) == 1 and srv.watchingCount(e.id) == 1) break;
+    }
+    const m = try proto.Msg.alloc(.pointer, 9);
+    std.mem.writeInt(u32, m.payload()[0..4], t.id, .little);
+    std.mem.writeInt(u16, m.payload()[4..6], 1000, .little);
+    std.mem.writeInt(u16, m.payload()[6..8], 2000, .little);
+    m.payload()[8] = proto.pointer_visible | proto.pointer_ping;
+    try e.send(m);
+    for ([_]*TestClient{ &t, &o }) |who| {
+        var r: proto.Reader = .{ .data = try who.expect(.pointer) };
+        try testing.expectEqual(e.id, try r.u32_());
+        try testing.expectEqual(t.id, try r.u32_());
+        try testing.expectEqual(@as(u16, 1000), try r.u16_());
+        try testing.expectEqual(@as(u16, 2000), try r.u16_());
+    }
+    // F não assiste: o próximo chat chega antes de qualquer ponteiro
+    try e.chat("fim");
+    while (true) {
+        const ty = try proto.recvMsg(f.sock, &f.ch, &f.rb);
+        try testing.expect(ty != .pointer);
+        if (ty == .chat) {
+            var r: proto.Reader = .{ .data = proto.payloadOf(&f.rb) };
+            _ = try r.u32_();
+            if (try r.u32_() == e.id) break;
+        }
+    }
+}
+
+test "clipes: quem guarda clipes recebe IDR de vez em quando" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port, .clip_key_interval_ms = 600 });
+    defer srv.stop();
+    var t = try TestClient.connect(port, "T", "", "");
+    defer t.close();
+    try t.welcome();
+    var e = try TestClient.connect(port, "E", "", "");
+    defer e.close();
+    try e.welcome();
+    try t.streamStart(proto.kind_screen, 0);
+    try e.watch(t.id, proto.watch_clips);
+    _ = try t.expect(.keyreq);
+    try t.send(try frameSeq(true, 100, 0));
+    try e.ackFrame(try e.expect(.frame));
+    // tela parada: mesmo assim, passado o intervalo, o servidor pede outro IDR
+    const t0 = sync.nowMs();
+    _ = try t.expect(.keyreq);
+    try testing.expect(sync.nowMs() - t0 >= 300);
+}
+
+test "sala: membro comum não expulsa ninguém; o dono sim" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port, .admin_token = "token-do-dono" });
+    defer srv.stop();
+
+    var dono = try TestClient.connect(port, "Dono", "", "token-do-dono");
+    defer dono.close();
+    try dono.welcome();
     var other = try TestClient.connect(port, "Visita", "", "");
     defer other.close();
     try other.welcome();
 
     var b: proto.Builder = .{};
     defer b.deinit();
-    // visita tenta expulsar o dono: nada acontece
+    // visita tenta expulsar o dono: nada acontece (mensagem antiga, kick)
     try b.begin(.kick);
-    try b.u32_(admin.id);
+    try b.u32_(dono.id);
     try other.send(try b.finish());
     // dono expulsa a visita
     try b.begin(.kick);
     try b.u32_(other.id);
-    try admin.send(try b.finish());
+    try dono.send(try b.finish());
 
     var r: proto.Reader = .{ .data = try other.expect(.denied) };
-    try testing.expectEqualStrings("Você foi removido da sala.", try r.str());
+    try testing.expect(std.mem.find(u8, try r.str(), "expulsou") != null);
+    try testing.expectEqual(proto.deny_kicked, try r.u8_());
+    net.shutdown(other.sock); // como o app faz depois do aviso
     sync.sleepMs(500);
     try testing.expectEqual(@as(usize, 1), srv.memberCount());
 }
@@ -247,18 +642,7 @@ test "sala: espectador que atrasa perde o atraso, escoa e recomeça de um IDR" {
     defer viewer.close();
     try viewer.welcome();
 
-    var b: proto.Builder = .{};
-    defer b.deinit();
-    try b.begin(.stream_start);
-    try b.u16_(64);
-    try b.u16_(64);
-    try b.u8_(30);
-    try streamer.send(try b.finish());
-    try b.begin(.watch);
-    try b.u32_(streamer.id);
-    try b.u8_(1);
-    try viewer.send(try b.finish());
-    _ = try streamer.expect(.keyreq);
+    try liveRoom(&streamer, &viewer);
     var seq: u32 = 0;
     try streamer.send(try frameSeq(true, 1000, seq));
     seq += 1;
@@ -299,21 +683,12 @@ test "sala: espectador pede IDR (keyreq) quando perde a referência" {
     defer viewer.close();
     try viewer.welcome();
 
-    var b: proto.Builder = .{};
-    defer b.deinit();
-    try b.begin(.stream_start);
-    try b.u16_(64);
-    try b.u16_(64);
-    try b.u8_(30);
-    try streamer.send(try b.finish());
-    try b.begin(.watch);
-    try b.u32_(streamer.id);
-    try b.u8_(1);
-    try viewer.send(try b.finish());
-    _ = try streamer.expect(.keyreq);
+    try liveRoom(&streamer, &viewer);
     try streamer.send(try frameSeq(true, 100, 0));
     try viewer.ackFrame(try viewer.expect(.frame));
 
+    var b: proto.Builder = .{};
+    defer b.deinit();
     sync.sleepMs(600); // passa o limite de 1 pedido a cada 500 ms
     try b.begin(.keyreq);
     try b.u32_(streamer.id);
@@ -340,24 +715,15 @@ test "sala: tela parada não deixa o espectador preso esperando IDR" {
     defer viewer.close();
     try viewer.welcome();
 
-    var b: proto.Builder = .{};
-    defer b.deinit();
-    try b.begin(.stream_start);
-    try b.u16_(64);
-    try b.u16_(64);
-    try b.u8_(30);
-    try streamer.send(try b.finish());
-    try b.begin(.watch);
-    try b.u32_(streamer.id);
-    try b.u8_(1);
-    try viewer.send(try b.finish());
-    _ = try streamer.expect(.keyreq);
+    try liveRoom(&streamer, &viewer);
     try streamer.send(try frameSeq(true, 100, 0));
     try viewer.ackFrame(try viewer.expect(.frame));
 
     // o decoder do espectador perde a referência logo depois do primeiro IDR:
     // o pedido cai no limite de 1 a cada 500 ms, e a tela do transmissor está
     // parada (nenhum quadro novo pra disparar o pedido em forwardFrame)
+    var b: proto.Builder = .{};
+    defer b.deinit();
     try b.begin(.keyreq);
     try b.u32_(streamer.id);
     try viewer.send(try b.finish());
@@ -389,18 +755,7 @@ test "sala: decoder que não dá conta passa a receber só os quadros de referê
     defer viewer.close();
     try viewer.welcome();
 
-    var b: proto.Builder = .{};
-    defer b.deinit();
-    try b.begin(.stream_start);
-    try b.u16_(64);
-    try b.u16_(64);
-    try b.u8_(30);
-    try streamer.send(try b.finish());
-    try b.begin(.watch);
-    try b.u32_(streamer.id);
-    try b.u8_(1);
-    try viewer.send(try b.finish());
-    _ = try streamer.expect(.keyreq);
+    try liveRoom(&streamer, &viewer);
 
     // antes: todo quadro chega, inclusive os puláveis
     try streamer.send(try frameSeq(true, 100, 0));
@@ -413,6 +768,8 @@ test "sala: decoder que não dá conta passa a receber só os quadros de referê
     }
 
     // o decoder dele ficou pra trás: pede IDR
+    var b: proto.Builder = .{};
+    defer b.deinit();
     sync.sleepMs(600);
     try b.begin(.keyreq);
     try b.u32_(streamer.id);
@@ -442,16 +799,11 @@ test "sala: watch só aceita quem existe" {
     var viewer = try TestClient.connect(port, "E", "", "");
     defer viewer.close();
     try viewer.welcome();
+    // ids que não existem (e o próprio): ignorados, nada de lista crescendo
+    for ([_]u32{ 999, 12345, viewer.id, proto.streamId(viewer.id, proto.kind_camera) }) |id| try viewer.watch(id, 0);
+    // o servidor continua respondendo normalmente
     var b: proto.Builder = .{};
     defer b.deinit();
-    // ids que não existem (e o próprio): ignorados, nada de lista crescendo
-    for ([_]u32{ 999, 12345, viewer.id }) |id| {
-        try b.begin(.watch);
-        try b.u32_(id);
-        try b.u8_(1);
-        try viewer.send(try b.finish());
-    }
-    // o servidor continua respondendo normalmente
     try b.begin(.ping);
     try b.u64_(77);
     try viewer.send(try b.finish());
@@ -473,34 +825,13 @@ test "sala: áudio chega em quem assiste, com o remetente certo" {
     defer viewer.close();
     try viewer.welcome();
 
-    var b: proto.Builder = .{};
-    defer b.deinit();
-    try b.begin(.stream_start);
-    try b.u16_(64);
-    try b.u16_(64);
-    try b.u8_(30);
-    try b.u8_(proto.stream_audio);
-    try streamer.send(try b.finish());
-    try b.begin(.watch);
-    try b.u32_(streamer.id);
-    try b.u8_(1);
-    try viewer.send(try b.finish());
+    try streamer.streamStart(proto.kind_screen, proto.stream_audio);
+    try viewer.watch(streamer.id, 0);
 
     // a lista de membros marca que a transmissão tem áudio
     while (true) {
-        var r: proto.Reader = .{ .data = try viewer.expect(.members) };
-        const n = try r.u16_();
-        var found = false;
-        for (0..n) |_| {
-            const id = try r.u32_();
-            _ = try r.str();
-            const flags = try r.u8_();
-            _ = try r.take(2 + 2 + 1);
-            const k = try r.u16_();
-            _ = try r.take(@as(usize, k) * 4);
-            if (id == streamer.id and flags & proto.member_audio != 0) found = true;
-        }
-        if (found) break;
+        const l = try viewer.members();
+        if (l.get(streamer.id)) |m| if (m.flags & proto.member_audio != 0) break;
     }
 
     const opus_fake = [_]u8{ 0xfc, 1, 2, 3, 4, 5, 6, 7 };
@@ -604,6 +935,16 @@ test "link público: visitante entra na sala pelo túnel (protocolo do bore)" {
     defer v.close();
     try v.welcome();
     try testing.expect(v.id != 0);
+    // o servidor sabe que ele veio pelo túnel
+    try testing.expectEqual(proto.route_tunnel, v.route);
+    // quem entrou direto continua quando o link é desligado; o visitante sai
+    var d = try TestClient.connect(room_port, "Direto", "segredo", "");
+    defer d.close();
+    try d.welcome();
+    srv.closeTunnelConns();
+    try testing.expectEqual(proto.deny_link_closed, try v.denied());
+    sync.sleepMs(300);
+    try testing.expectEqual(@as(usize, 1), srv.memberCount());
 }
 
 test "link público: mensagens do protocolo do bore" {
@@ -642,20 +983,9 @@ test "voz: chega em todo mundo menos quem fala e quem está surdo; estado aparec
     var seen_mic = false;
     var seen_deaf = false;
     while (!(seen_mic and seen_deaf)) {
-        var r: proto.Reader = .{ .data = try b.expect(.members) };
-        const n = try r.u16_();
-        seen_mic = false;
-        seen_deaf = false;
-        for (0..n) |_| {
-            const id = try r.u32_();
-            _ = try r.str();
-            const flags = try r.u8_();
-            _ = try r.take(2 + 2 + 1);
-            const k = try r.u16_();
-            _ = try r.take(@as(usize, k) * 4);
-            if (id == a.id and flags & proto.member_mic != 0) seen_mic = true;
-            if (id == c.id and flags & proto.member_deaf != 0) seen_deaf = true;
-        }
+        const l = try b.members();
+        seen_mic = if (l.get(a.id)) |m| m.flags & proto.member_mic != 0 else false;
+        seen_deaf = if (l.get(c.id)) |m| m.flags & proto.member_deaf != 0 else false;
     }
 
     // A fala
@@ -678,6 +1008,7 @@ test "voz: chega em todo mundo menos quem fala e quem está surdo; estado aparec
         try testing.expect(t != .voice);
         if (t == .chat) {
             var cr: proto.Reader = .{ .data = proto.payloadOf(&c.rb) };
+            _ = try cr.u32_();
             if (try cr.u32_() == a.id) break;
         }
     }

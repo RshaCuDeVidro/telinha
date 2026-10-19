@@ -876,6 +876,7 @@ static int hyprland_cursor(int *x, int *y) {
 // Preenche os campos de cursor do quadro (cursor desenhado por quem chama).
 static int fill_cursor(struct cap_ctx *c, cap_frame *out) {
     out->cursor_draw = 0;
+    out->cursor_known = 0;
     if (!c->soft_cursor) return 0;
     int gx, gy;
     if (hyprland_cursor(&gx, &gy) < 0) return 0;
@@ -885,6 +886,9 @@ static int fill_cursor(struct cap_ctx *c, cap_frame *out) {
     out->cursor_x = (int)((float)(gx - c->stream_x) * scale);
     out->cursor_y = (int)((float)(gy - c->stream_y) * scale);
     out->cursor_scale = scale;
+    out->cursor_known = 1;
+    out->cursor_px = out->cursor_x;
+    out->cursor_py = out->cursor_y;
     int moved = gx != c->cursor_gx || gy != c->cursor_gy;
     c->cursor_gx = gx;
     c->cursor_gy = gy;
@@ -994,9 +998,12 @@ static int open_x11(struct cap_ctx *c, char *err, int errlen) {
     return c->xbuf ? 0 : -1;
 }
 
-static void draw_x11_cursor(struct cap_ctx *c, uint8_t *buf) {
+static void draw_x11_cursor(struct cap_ctx *c, uint8_t *buf, cap_frame *out) {
     XFixesCursorImage *ci = XFixesGetCursorImage(c->dpy);
     if (!ci) return;
+    out->cursor_known = 1;
+    out->cursor_px = ci->x;
+    out->cursor_py = ci->y;
     int x0 = ci->x - ci->xhot, y0 = ci->y - ci->yhot;
     for (int y = 0; y < ci->height; y++) {
         int sy = y0 + y;
@@ -1029,7 +1036,8 @@ static int next_x11(struct cap_ctx *c, cap_frame *out, char *err, int errlen) {
     }
     for (int y = 0; y < c->xh; y++)
         memcpy(c->xbuf + (size_t)y * c->xw * 4, c->img->data + (size_t)y * c->img->bytes_per_line, (size_t)c->xw * 4);
-    if (c->show_cursor && c->has_xfixes) draw_x11_cursor(c, c->xbuf);
+    out->cursor_known = 0;
+    if (c->show_cursor && c->has_xfixes) draw_x11_cursor(c, c->xbuf, out);
     out->data = c->xbuf;
     out->width = c->xw;
     out->height = c->xh;

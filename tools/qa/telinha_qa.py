@@ -136,6 +136,11 @@ class Session:
             for m in ["alsa", "alsa-midi", "bluez", "bluez.seat-monitoring", "bluez-midi", "v4l2", "libcamera"]:
                 f.write(f"    monitor.{m} = disabled\n")
             f.write("  }\n}\n")
+        # gerador de vídeo de teste (vira uma "câmera" de mentira nos testes)
+        pw = os.path.join(cfg, "pipewire", "pipewire.conf.d")
+        os.makedirs(pw)
+        with open(os.path.join(pw, "90-teste.conf"), "w") as f:
+            f.write("context.spa-libs = {\n    videotestsrc = videotestsrc/libspa-videotestsrc\n}\n")
         self.audio_cfg = cfg
         env = self.audio_env({})
         self.spawn("dbus", ["dbus-daemon", "--session", f"--address=unix:path={self.runtime}/bus", "--nofork", "--nopidfile"], env)
@@ -180,6 +185,16 @@ class Session:
             w.writeframes(bytes(frames))
         return self.spawn(name, ["pw-play", path], self.audio_env({}))
 
+    def fake_camera(self, name="camfake", desc="Camera de teste"):
+        """Uma câmera de mentira (padrão de teste do PipeWire) no áudio privado."""
+        r = subprocess.run(["pw-cli", "create-node", "adapter",
+                            f"{{ factory.name=videotestsrc node.name={name} node.description=\"{desc}\" "
+                            "media.class=Video/Source media.role=Camera object.linger=true }"],
+                           env=self.audio_env({}), capture_output=True, text=True, timeout=10)
+        if "error" in r.stdout + r.stderr:
+            raise QAError(f"não consegui criar a câmera de teste: {r.stdout} {r.stderr}")
+        time.sleep(0.3)
+
     def _wait_file(self, path, timeout=5.0):
         t = time.time()
         while time.time() - t < timeout:
@@ -189,8 +204,14 @@ class Session:
         raise QAError(f"não apareceu: {path}")
 
     # -------------------------------------------------------------------- apps
-    def app(self, name, display, args, size=(1280, 760), extra_env=None, audio=None):
+    def app(self, name, display, args, size=(1280, 760), extra_env=None, audio=None, wrap=None, config=None):
         a = App(self, name, display, args, size, extra_env or {}, self.runtime is not None if audio is None else audio)
+        a.wrap = wrap or []
+        if config:
+            os.makedirs(os.path.join(a.cfg, "telinha"), exist_ok=True)
+            with open(os.path.join(a.cfg, "telinha", "config.ini"), "w") as f:
+                for k, v in config.items():
+                    f.write(f"{k}={v}\n")
         self.apps.append(a)
         a.start()
         return a
@@ -235,7 +256,7 @@ class App:
     def start(self):
         self.d = self.s.display(self.num, f"{max(self.size[0], 1280)}x{max(self.size[1], 760)}")
         w, h = self.size
-        cmd = [APP, "--janela", f"0,0,{w},{h}"] + self.args
+        cmd = getattr(self, "wrap", []) + [APP, "--janela", f"0,0,{w},{h}"] + self.args
         self.proc = self.s.spawn(self.name, cmd, self.env())
         self.wait(lambda st: st.get("screen") is not None, 15, "o app abrir")
 
@@ -282,12 +303,17 @@ class App:
     def find(self, label=None, contains=None, window=None, within=None, timeout=5.0, need=True):
         """Item visível com esse rótulo (ou contendo o texto), dentro de `within` (x0,y0,x1,y1)."""
         t0 = time.time()
+        last_key = None
         while True:
             win, items = self.items()
             hits = []
             for it in items:
-                if label is not None and it["label"] != label and it["label"].split("##")[0] != label:
-                    continue
+                if label is not None:
+                    lb = it["label"]
+                    # "##id" acha também "<ícone>##id"; "Texto" acha "Texto##id"
+                    ok = lb == label or lb.split("##")[0] == label or (label.startswith("##") and lb.endswith(label))
+                    if not ok:
+                        continue
                 if contains is not None and contains not in it["label"]:
                     continue
                 if window is not None and window not in it["window"]:
@@ -303,7 +329,15 @@ class App:
                         continue
                 hits.append(dict(it, vx0=x0, vy0=y0, vx1=x1, vy1=y1, wx=win[0], wy=win[1]))
             if hits:
-                return hits[-1]  # o último desenhado fica por cima
+                # o menor ganha (a janela inteira também é um "item" com o nome dela)
+                best = min(hits, key=lambda h: (h["vx1"] - h["vx0"]) * (h["vy1"] - h["vy0"]))
+                # só confia numa posição que se repetiu (sem layout mudando no meio)
+                key = (best["label"], best["window"], best["vx0"], best["vy0"], best["vx1"], best["vy1"])
+                if key == last_key:
+                    return best
+                last_key = key
+                time.sleep(0.09)
+                continue
             if time.time() - t0 > timeout:
                 if need:
                     raise QAError(f"[{self.name}] não achei o item {label or contains!r}" + (f" em {within}" if within else ""))
@@ -329,9 +363,19 @@ class App:
         raise QAError(f"[{self.name}] passou {timeout:.0f} s esperando {what}. Estado: {json.dumps(brief, ensure_ascii=False)[:1500]}")
 
     def tile(self, owner, timeout=10.0):
-        st = self.wait(lambda s: any(t["owner"] == owner for t in s["tiles"]), timeout, f"o quadro de {owner}")
-        t = next(t for t in st["tiles"] if t["owner"] == owner)
+        st = self.wait(lambda s: any(t["stream"] == owner for t in s["tiles"]), timeout, f"o quadro de {owner}")
+        t = next(t for t in st["tiles"] if t["stream"] == owner)
         return (t["x0"], t["y0"], t["x1"], t["y1"])
+
+    def member_row(self, mid, timeout=10.0):
+        st = self.wait(lambda s: any(r["id"] == mid for r in s["member_rows"]), timeout, f"a linha do membro {mid}")
+        r = next(r for r in st["member_rows"] if r["id"] == mid)
+        return (r["x0"], r["y0"], r["x1"], r["y1"])
+
+    def click_rect(self, r, button=1):
+        """Clica no meio de um retângulo (coordenadas da janela)."""
+        win, _ = self.items()
+        self.click_at(win[0] + (r[0] + r[2]) / 2, win[1] + (r[1] + r[3]) / 2, button)
 
     def member_id(self, name):
         st = self.wait(lambda s: any(m["name"] == name for m in s["members"]), 10, f"{name} na lista")

@@ -113,6 +113,21 @@ const ic = struct {
     const headphones = &iconArr(0xF025);
     const power = &iconArr(0xF011);
     const rotate = &iconArr(0xF2F9);
+    const shield = &iconArr(0xF3ED);
+    const video = &iconArr(0xF03D);
+    const video_slash = &iconArr(0xF4E2);
+    const lock_open = &iconArr(0xF3C1);
+    const laptop = &iconArr(0xF109);
+    const house = &iconArr(0xF015);
+    const gavel = &iconArr(0xF0E3);
+    const zoom_in = &iconArr(0xF00E);
+    const crosshairs = &iconArr(0xF05B);
+    const scissors = &iconArr(0xF0C4);
+    const record = &iconArr(0xF192);
+    const window_restore = &iconArr(0xF2D2);
+    const bell = &iconArr(0xF0F3);
+    const hand_pointer = &iconArr(0xF25A);
+    const folder = &iconArr(0xF07B);
 };
 
 fn S(x: f32) f32 {
@@ -318,8 +333,10 @@ const Reconnect = struct {
     at: f64 = 0,
     // o que restaurar quando voltar (por nome: depois de o servidor reiniciar os ids mudam)
     share: bool = false,
+    camera: bool = false,
     watch: [16][48]u8 = undefined,
     watch_len: [16]usize = undefined,
+    watch_kind: [16]u8 = undefined, // tela ou câmera
     n_watch: usize = 0,
 };
 const max_reconnect = 6;
@@ -341,12 +358,15 @@ pub const App = struct {
     upnp: ?*upnp.Mapper = null, // porta aberta no roteador (conexão direta)
     own_tunnel_open: bool = false, // card: "prefere seu próprio túnel?" aberto
     sharer: ?*Sharer = null,
+    camera: ?*Sharer = null, // câmera ao vivo (a transmissão de tipo câmera)
+    leave_confirm: bool = false, // "fechar a sala?" aberto
+    admin_muted: bool = false, // o admin silenciou nosso microfone
     connect_label: [300]u8 = undefined,
     connect_label_len: usize = 0,
     was_connected: bool = false,
 
     views: std.ArrayList(*View) = .empty,
-    focused: ?u32 = null, // dono da transmissão em destaque (0 = eu)
+    focused: ?u32 = null, // stream em destaque (minhas prévias: proto.streamId(0, tipo))
     theater: bool = false,
     fullscreen: bool = false,
     saved_win: [4]c_int = .{ 0, 0, 1280, 760 },
@@ -383,8 +403,11 @@ pub const App = struct {
     /// na tela mesmo com o mouse fora do quadro).
     tile_controls: ?u32 = null,
     /// Onde cada transmissão foi desenhada nesse quadro (modo de testes).
-    tile_rects: [40]struct { owner: u32, x0: f32, y0: f32, x1: f32, y1: f32 } = undefined,
+    tile_rects: [40]struct { stream: u32, x0: f32, y0: f32, x1: f32, y1: f32 } = undefined,
     n_tile_rects: usize = 0,
+    /// Onde cada membro aparece na lista (modo de testes).
+    member_rects: [64]struct { id: u32, x0: f32, y0: f32, x1: f32, y1: f32 } = undefined,
+    n_member_rects: usize = 0,
 
     // voz
     mic: ?*voice.Mic = null,
@@ -403,6 +426,9 @@ pub const App = struct {
     // opções de linha de comando
     auto_share: bool = false,
     auto_watch: bool = false,
+    /// --assistir: transmissões que já assistimos sozinhos (fechar uma não faz ela voltar)
+    auto_watched: [64]u32 = undefined,
+    n_auto_watched: usize = 0,
     auto_public: bool = false,
 
     pub fn init(window: *c.GLFWwindow) App {
@@ -629,7 +655,8 @@ pub const App = struct {
 
     /// Liga/desliga o microfone conforme o que a pessoa quer e avisa a sala.
     fn applyVoice(a: *App) void {
-        if (a.mic_wanted and !a.deaf) a.startMic() else a.stopMic();
+        // silenciado pelo admin: o servidor descartaria a voz; nem abre o microfone
+        if (a.mic_wanted and !a.deaf and !a.admin_muted) a.startMic() else a.stopMic();
         if (a.client) |cl| {
             var flags: u8 = 0;
             if (a.mic != null) flags |= proto.voice_mic;
@@ -639,6 +666,10 @@ pub const App = struct {
     }
 
     fn toggleMic(a: *App) void {
+        if (a.admin_muted) {
+            a.toast("O admin da sala silenciou seu microfone.", .{}, true);
+            return;
+        }
         if (a.deaf) {
             // como no Discord: ligar o microfone tira o "surdo"
             a.setDeaf(false);
@@ -728,21 +759,26 @@ pub const App = struct {
         a.upnp = null;
     }
 
+    /// Desliga o link público. Quem entrou por ele sai da sala (o túnel é o
+    /// caminho dessas pessoas até aqui; sem ele, ficariam "penduradas").
     fn stopTunnel(a: *App) void {
-        if (a.tunnel) |t| t.stop();
+        const t = a.tunnel orelse return;
+        if (a.server) |s| s.closeTunnelConns();
+        t.stop();
         a.tunnel = null;
     }
 
     fn connect(a: *App, host: []const u8, port: u16, pass: []const u8, admin_token: []const u8) void {
         a.home_error_len = 0;
         config.save(&a.cfg);
-        a.client = Client.create(.{ .host = host, .port = port, .name = a.myName(), .password = pass, .admin_token = admin_token, .hw_decode = a.cfg.hardware, .wake = wakeUi }) catch {
+        a.client = Client.create(.{ .host = host, .port = port, .name = a.myName(), .password = pass, .admin_token = admin_token, .client_key = a.cfg.client_key, .hw_decode = a.cfg.hardware, .wake = wakeUi }) catch {
             a.setHomeError("Falha ao iniciar a conexão.");
             return;
         };
         const s = std.fmt.bufPrint(&a.connect_label, "{s}:{d}", .{ host, port }) catch "";
         a.connect_label_len = s.len;
         a.was_connected = false;
+        a.n_auto_watched = 0; // ids da conexão nova
         a.screen = .room;
         a.chat_seen = 0;
         a.chat_unread = 0;
@@ -757,6 +793,12 @@ pub const App = struct {
         a.n_known = 0;
         a.known_ready = false;
         a.stopSharing();
+        a.stopCamera();
+        a.leave_confirm = false;
+        a.admin_muted = false;
+        // a sala fecha primeiro (todo mundo recebe "o dono fechou a sala",
+        // inclusive quem está do outro lado do túnel), depois os caminhos
+        if (a.server) |s| s.stop();
         for (a.views.items) |v| {
             freeViewGpu(v);
             if (a.client) |cl| cl.unwatch(v);
@@ -764,9 +806,9 @@ pub const App = struct {
         a.views.clearRetainingCapacity();
         if (a.client) |cl| cl.close();
         a.client = null;
-        a.stopTunnel();
+        if (a.tunnel) |t| t.stop();
+        a.tunnel = null;
         a.stopUpnp();
-        if (a.server) |s| s.stop();
         a.server = null;
         a.screen = .home;
         a.theater = false;
@@ -781,6 +823,7 @@ pub const App = struct {
         const r = &a.reconnect;
         if (r.attempt == 0) {
             r.share = a.sharer != null;
+            r.camera = a.camera != null;
             r.n_watch = 0;
             if (a.client) |cl| {
                 cl.mutex.lock();
@@ -788,10 +831,11 @@ pub const App = struct {
                 for (a.views.items) |v| {
                     if (r.n_watch == r.watch.len) break;
                     for (cl.members.items) |*m| {
-                        if (m.id != v.owner) continue;
+                        if (m.id != v.member()) continue;
                         const n = m.name_len;
                         @memcpy(r.watch[r.n_watch][0..n], m.name[0..n]);
                         r.watch_len[r.n_watch] = n;
+                        r.watch_kind[r.n_watch] = v.kind();
                         r.n_watch += 1;
                     }
                 }
@@ -811,6 +855,8 @@ pub const App = struct {
         a.n_known = 0; // ids podem mudar (servidor reiniciou): sem sons de entrou/saiu
         a.known_ready = false;
         a.stopSharing();
+        a.stopCamera();
+        a.admin_muted = false; // conexão nova: o servidor não lembra
         for (a.views.items) |v| {
             freeViewGpu(v);
             if (a.client) |cl| cl.unwatch(v);
@@ -829,6 +875,7 @@ pub const App = struct {
         const r = a.reconnect;
         a.reconnect = .{};
         if (r.share) a.startSharing();
+        if (r.camera) a.toggleCamera();
         a.applyVoice();
         a.rewatch = r;
         a.rewatch_until = c.igGetTime() + 20;
@@ -848,16 +895,18 @@ pub const App = struct {
         var i: usize = 0;
         while (i < a.rewatch.n_watch) {
             const name = a.rewatch.watch[i][0..a.rewatch.watch_len[i]];
+            const kind = a.rewatch.watch_kind[i];
             const found = for (cl.members.items) |*m| {
-                if (m.streaming and m.id != cl.my_id and std.mem.eql(u8, m.nameSlice(), name)) break m.id;
+                if (m.live(kind) and m.id != cl.my_id and std.mem.eql(u8, m.nameSlice(), name)) break m.id;
             } else null;
             if (found) |id| {
-                want[n_want] = id;
+                want[n_want] = proto.streamId(id, kind);
                 n_want += 1;
                 // tira da lista
                 a.rewatch.n_watch -= 1;
                 a.rewatch.watch[i] = a.rewatch.watch[a.rewatch.n_watch];
                 a.rewatch.watch_len[i] = a.rewatch.watch_len[a.rewatch.n_watch];
+                a.rewatch.watch_kind[i] = a.rewatch.watch_kind[a.rewatch.n_watch];
             } else i += 1;
         }
         cl.mutex.unlock();
@@ -893,6 +942,70 @@ pub const App = struct {
         };
     }
 
+    /// Avisos do admin (silenciou, parou a transmissão, deu/tirou admin).
+    fn handleNotices(a: *App, cl: *Client) void {
+        while (cl.takeNotice()) |n| {
+            switch (n.kind) {
+                proto.notice_muted => {
+                    a.admin_muted = true;
+                    a.applyVoice();
+                },
+                proto.notice_unmuted => {
+                    a.admin_muted = false;
+                    a.applyVoice();
+                },
+                proto.notice_stream_stopped => if (n.extra == proto.kind_camera) a.stopCamera() else a.stopSharing(),
+                else => {},
+            }
+            const bad = n.kind == proto.notice_muted or n.kind == proto.notice_stream_stopped or n.kind == proto.notice_admin_off;
+            a.toast("{s}", .{n.textSlice()}, bad);
+        }
+    }
+
+    /// Liga/desliga a câmera (uma transmissão a mais, do tipo câmera).
+    fn toggleCamera(a: *App) void {
+        if (a.camera != null) {
+            a.stopCamera();
+            return;
+        }
+        const cl = a.client orelse return;
+        var st: sharer_mod.Settings = .{
+            .kind = proto.kind_camera,
+            .fps = 30,
+            .quality = 55,
+            .max_height = if (a.cfg.camera_res == 0) 480 else 720,
+            .cursor = false,
+            .mode = .motion,
+            .hardware = a.cfg.hardware,
+            .audio = false,
+        };
+        config.setStr(&st.camera_id, config.getStr(&a.cfg.camera_device));
+        a.camera = Sharer.start(cl, st) catch {
+            a.toast("Não consegui ligar a câmera.", .{}, true);
+            return;
+        };
+    }
+
+    fn stopCamera(a: *App) void {
+        if (a.camera) |cam| {
+            gl.delete(&cam.preview_tex);
+            cam.stop();
+        }
+        a.camera = null;
+        if (a.focused == proto.streamId(0, proto.kind_camera)) a.focused = null;
+    }
+
+    /// "Sair" de quem hospeda fecha a sala pra todo mundo: pergunta antes.
+    fn askLeave(a: *App) void {
+        if (a.server) |s| {
+            if (s.memberCount() > 1) {
+                a.leave_confirm = true;
+                return;
+            }
+        }
+        a.leaveRoom();
+    }
+
     fn stopSharing(a: *App) void {
         audio.mixer.self_mute.store(false, .monotonic);
         a.audio_err_shown = false;
@@ -904,28 +1017,29 @@ pub const App = struct {
         if (a.focused == 0) a.focused = null;
     }
 
-    fn findView(a: *App, owner: u32) ?*View {
-        for (a.views.items) |v| if (v.owner == owner) return v;
+    fn findView(a: *App, stream: u32) ?*View {
+        for (a.views.items) |v| if (v.stream == stream) return v;
         return null;
     }
 
-    fn watch(a: *App, owner: u32) void {
+    fn watch(a: *App, stream: u32) void {
         const cl = a.client orelse return;
-        if (a.findView(owner) != null) return;
-        const v = cl.watch(owner) catch return;
+        if (a.findView(stream) != null) return;
+        const v = cl.watch(stream, if (a.cfg.clips) proto.watch_clips else 0) catch return;
         a.views.append(std.heap.c_allocator, v) catch {};
     }
 
-    fn unwatch(a: *App, owner: u32) void {
+    fn unwatch(a: *App, stream: u32) void {
         const cl = a.client orelse return;
         for (a.views.items, 0..) |v, i| {
-            if (v.owner != owner) continue;
+            if (v.stream != stream) continue;
             freeViewGpu(v);
             cl.unwatch(v);
             _ = a.views.orderedRemove(i);
             break;
         }
-        if (a.focused == owner) a.focused = null;
+        if (a.focused == stream) a.focused = null;
+        if (a.tile_controls == stream) a.tile_controls = null;
         if (a.views.items.len == 0 and a.sharer == null) a.theater = false;
     }
 
@@ -990,7 +1104,8 @@ pub const App = struct {
                 }
             }
         }
-        if (a.sharer) |s| {
+        for ([_]?*Sharer{ a.sharer, a.camera }) |maybe| {
+            const s = maybe orelse continue;
             s.mutex.lock();
             defer s.mutex.unlock();
             if (s.preview_new and s.preview.len > 0) {
@@ -1026,14 +1141,24 @@ pub const App = struct {
             var want: [32]u32 = undefined;
             var n_want: usize = 0;
             cl.mutex.lock();
-            for (cl.members.items) |m| {
-                if (m.streaming and m.id != cl.my_id and n_want < want.len) {
-                    want[n_want] = m.id;
-                    n_want += 1;
+            for (cl.members.items) |*m| {
+                if (m.id == cl.my_id) continue;
+                for ([_]u8{ proto.kind_screen, proto.kind_camera }) |k| {
+                    if (m.live(k) and n_want < want.len) {
+                        want[n_want] = proto.streamId(m.id, k);
+                        n_want += 1;
+                    }
                 }
             }
             cl.mutex.unlock();
-            for (want[0..n_want]) |id| if (a.findView(id) == null) a.watch(id);
+            for (want[0..n_want]) |id| {
+                if (std.mem.findScalar(u32, a.auto_watched[0..a.n_auto_watched], id) != null) continue;
+                if (a.n_auto_watched < a.auto_watched.len) {
+                    a.auto_watched[a.n_auto_watched] = id;
+                    a.n_auto_watched += 1;
+                }
+                if (a.findView(id) == null) a.watch(id);
+            }
         }
         if (st == .failed) {
             cl.mutex.lock();
@@ -1051,6 +1176,16 @@ pub const App = struct {
                 a.setHomeError(if (a.reconnect.attempt > 0) "Não consegui reconectar na sala." else cl.errSlice());
                 a.leaveRoom();
                 return;
+            }
+        }
+        if (st == .connected) a.handleNotices(cl);
+        if (a.camera) |cam| {
+            cam.mutex.lock();
+            const cst = cam.state;
+            cam.mutex.unlock();
+            if (cst == .failed) {
+                a.toast("A câmera parou: {s}", .{cam.errSlice()}, true);
+                a.stopCamera();
             }
         }
         // transmissão falhou?
@@ -1079,12 +1214,12 @@ pub const App = struct {
         var n_gone: usize = 0;
         while (i > 0) {
             i -= 1;
-            const owner = a.views.items[i].owner;
-            const live = for (cl.members.items) |m| {
-                if (m.id == owner) break m.streaming;
+            const v = a.views.items[i];
+            const live = for (cl.members.items) |*m| {
+                if (m.id == v.member()) break m.live(v.kind());
             } else false;
             if (!live and n_gone < gone.len) {
-                gone[n_gone] = owner;
+                gone[n_gone] = v.stream;
                 n_gone += 1;
             }
         }
@@ -1094,6 +1229,7 @@ pub const App = struct {
 
     pub fn frame(a: *App) void {
         a.n_tile_rects = 0;
+        a.n_member_rects = 0;
         a.checkState();
         a.uploadTextures();
 
@@ -1269,6 +1405,7 @@ pub const App = struct {
         } else {
             if (a.share_modal) a.drawShareModal();
             if (a.settings_modal) a.drawSettingsModal();
+            if (a.leave_confirm) a.drawLeaveConfirm();
         }
     }
 
@@ -1276,6 +1413,50 @@ pub const App = struct {
         if (a.settings_modal) config.save(&a.cfg); // o que o "Fechar" faria
         a.settings_modal = false;
         a.share_modal = false;
+        a.leave_confirm = false;
+    }
+
+    fn drawLeaveConfirm(a: *App) void {
+        _ = c.igOpenPopup_Str("Fechar a sala", 0);
+        const vp = c.igGetMainViewport();
+        c.igSetNextWindowPos(v2(vp.*.Pos.x + vp.*.Size.x / 2, vp.*.Pos.y + vp.*.Size.y / 2), c.ImGuiCond_Always, v2(0.5, 0.5));
+        c.igSetNextWindowSize(v2(S(400), 0), c.ImGuiCond_Always);
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(24), S(22)));
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, S(10));
+        c.igPushStyleColor_U32(c.ImGuiCol_PopupBg, col.bg_main);
+        c.igPushStyleColor_U32(c.ImGuiCol_ModalWindowDimBg, rgba(0x000000, 170));
+        defer {
+            c.igPopStyleColor(2);
+            c.igPopStyleVar(2);
+        }
+        if (!c.igBeginPopupModal("Fechar a sala", null, c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoResize | c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_AlwaysAutoResize)) return;
+        defer c.igEndPopup();
+        const w = S(352);
+        pushFont(font_bold, 19);
+        textColored(col.header, "Fechar a sala?");
+        popFont();
+        c.igDummy(v2(0, S(6)));
+        const others = if (a.server) |sv| sv.memberCount() -| 1 else 0;
+        c.igPushTextWrapPos(c.igGetCursorPosX() + w);
+        pushFont(font_regular, 14);
+        var who_buf: [32]u8 = undefined;
+        const who = if (others == 1) "a pessoa" else std.fmt.bufPrint(&who_buf, "as {d} pessoas", .{others}) catch "todo mundo";
+        textColored(col.muted, fmtZ("A sala é sua: fechando, {s} que {s} aqui {s} da sala (e fica sabendo que você fechou).", .{
+            who, if (others == 1) "está" else "estão", if (others == 1) "sai" else "saem",
+        }));
+        popFont();
+        c.igPopTextWrapPos();
+        c.igDummy(v2(0, S(18)));
+        const bw = (w - S(10)) / 2;
+        if (secondaryButton("Cancelar##sair", v2(bw, S(40))) or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
+            a.leave_confirm = false;
+            c.igCloseCurrentPopup();
+        }
+        c.igSameLine(0, S(10));
+        if (primaryButton("Fechar a sala", v2(bw, S(40)), col.red, col.red_hover, col.red_hover)) {
+            c.igCloseCurrentPopup();
+            a.leaveRoom();
+        }
     }
 
     /// Janela por cima de tudo (recebe clique, diferente da foreground draw list).
@@ -1333,6 +1514,15 @@ pub const App = struct {
             wakeUi(); // mantém a contagem andando
             return;
         }
+        cl.mutex.lock();
+        const final = cl.final;
+        cl.mutex.unlock();
+        if (final) {
+            // expulso, sala fechada, link desligado: reconectar não adianta
+            c.igSetCursorScreenPos(v2(size.x / 2 - S(80), size.y / 2 + S(30)));
+            if (primaryButton("Voltar ao início", v2(S(160), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.leaveRoom();
+            return;
+        }
         c.igSetCursorScreenPos(v2(size.x / 2 - S(130), size.y / 2 + S(30)));
         if (primaryButton("Reconectar", v2(S(125), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) {
             const was_host = a.server != null;
@@ -1371,6 +1561,9 @@ pub const App = struct {
         };
         const ping = cl.ping_ms;
         const my_id = cl.my_id;
+        const my_route = cl.route;
+        const locked = cl.room_locked;
+        const i_am_admin = cl.is_admin;
         var members: [64]Member = undefined;
         const n_members = @min(cl.members.items.len, members.len);
         @memcpy(members[0..n_members], cl.members.items[0..n_members]);
@@ -1379,10 +1572,26 @@ pub const App = struct {
         const hh = S(56);
         rectFill(d, origin.x, origin.y + hh - 1, origin.x + size.x, origin.y + hh, rgba(0x000000, 60), 0);
         drawTextF(d, font_bold, 16, v2(origin.x + S(16), origin.y + S(10)), col.header, if (room_name.len > 0) room_name else "telinha");
-        const sub = if (a.server) |s| fmtZ("{s} anfitrião · porta {d}", .{ ic.crown, s.port }) else fmtZ("{s}", .{a.connect_label[0..a.connect_label_len]});
+        // quem hospeda vê a porta; quem entrou vê por onde chegou (o link público passa mesmo pelo túnel)
+        const sub = if (a.server) |s|
+            fmtZ("{s} anfitrião · porta {d}", .{ ic.crown, s.port })
+        else if (my_route == proto.route_tunnel)
+            fmtZ("{s} via link público · {s}", .{ ic.globe, a.connect_label[0..a.connect_label_len] })
+        else
+            fmtZ("{s}", .{a.connect_label[0..a.connect_label_len]});
         drawTextF(d, font_regular, 12.5, v2(origin.x + S(16), origin.y + S(32)), col.muted, sub);
-        // convite
+        // convite e cadeado da sala (admin tranca: ninguém novo entra)
         {
+            c.igSetCursorScreenPos(v2(origin.x + size.x - S(116), origin.y + S(8)));
+            if (i_am_admin) {
+                if (iconButton("##lockroom", if (locked) ic.lock else ic.lock_open, S(28), if (locked) col.yellow else col.muted, col.hover, if (locked) "Sala trancada: ninguém novo entra. Clique pra destrancar." else "Trancar a sala (ninguém novo entra)"))
+                    cl.admin(proto.admin_lock, 0, @intFromBool(!locked));
+            } else if (locked) {
+                const ls = textSizeF(font_regular, 15, ic.lock);
+                drawTextF(d, font_regular, 15, v2(origin.x + size.x - S(102) - ls.x / 2, origin.y + S(14)), col.yellow, ic.lock);
+                if (c.igIsMouseHoveringRect(v2(origin.x + size.x - S(116), origin.y + S(8)), v2(origin.x + size.x - S(88), origin.y + S(36)), true))
+                    tooltipText("Sala trancada: ninguém novo entra");
+            }
             c.igSetCursorScreenPos(v2(origin.x + size.x - S(84), origin.y + S(8)));
             if (iconButton("##invite", ic.user_plus, S(28), col.muted, col.hover, "Copiar convite da sala")) a.copyInvite();
             c.igSetCursorScreenPos(origin);
@@ -1408,20 +1617,18 @@ pub const App = struct {
         const list_h = size.y - hh - S(56) - S(50);
         _ = c.igBeginChild_Str("lists", v2(size.x, list_h), 0, 0);
         var n_live: usize = 0;
-        for (members[0..n_members]) |m| {
+        for (members[0..n_members]) |*m| {
             if (m.streaming) n_live += 1;
+            if (m.camera()) n_live += 1;
         }
         if (n_live > 0) {
             sectionHeader(fmtZ("AO VIVO — {d}", .{n_live}));
             for (members[0..n_members]) |*m| {
-                if (!m.streaming) continue;
-                a.liveRow(m, my_id, size.x, members[0..n_members]);
+                if (m.streaming) a.liveRow(m, proto.kind_screen, my_id, size.x, members[0..n_members]);
+                if (m.camera()) a.liveRow(m, proto.kind_camera, my_id, size.x, members[0..n_members]);
             }
         }
         sectionHeader(fmtZ("MEMBROS — {d}", .{n_members}));
-        cl.mutex.lock();
-        const i_am_admin = cl.is_admin;
-        cl.mutex.unlock();
         for (members[0..n_members]) |*m| a.memberRow(m, my_id, size.x, i_am_admin);
         a.memberMenu(cl, members[0..n_members]);
         c.igEndChild();
@@ -1434,7 +1641,7 @@ pub const App = struct {
     }
 
     /// Faixa acima do painel do usuário (como a de voz do Discord):
-    /// compartilhar tela e sair.
+    /// compartilhar tela, câmera e sair.
     fn drawRoomStrip(a: *App, size: c.ImVec2_c) void {
         const d = drawList();
         const p = c.igGetCursorScreenPos();
@@ -1443,7 +1650,8 @@ pub const App = struct {
         const live = a.sharer != null;
         const bh = S(34);
         const leave_w = S(40);
-        const share_w = size.x - S(16) - leave_w - S(8);
+        const cam_w = S(40);
+        const share_w = size.x - S(16) - leave_w - cam_w - S(16);
         c.igSetCursorScreenPos(v2(p.x + S(8), p.y + (size.y - bh) / 2));
         const lbl = if (live) fmtZ("{s}  Ao vivo (configurar)##share", .{ic.desktop}) else fmtZ("{s}  Compartilhar tela##share", .{ic.desktop});
         if (if (live)
@@ -1451,15 +1659,23 @@ pub const App = struct {
         else
             secondaryButton(lbl, v2(share_w, bh))) a.openShareModal();
         c.igSameLine(0, S(8));
-        if (primaryButton(fmtZ("{s}##leave", .{ic.leave}), v2(leave_w, bh), rgb(0x3F2A2F), col.red, rgb(0xA12828))) a.leaveRoom();
+        const cam_on = a.camera != null;
+        if (if (cam_on)
+            primaryButton(fmtZ("{s}##camera", .{ic.video}), v2(cam_w, bh), col.red, rgb(0xC03537), rgb(0xA12828))
+        else
+            secondaryButton(fmtZ("{s}##camera", .{ic.video}), v2(cam_w, bh))) a.toggleCamera();
+        if (c.igIsItemHovered(0)) tooltipText(if (cam_on) "Desligar a câmera" else "Ligar a câmera");
+        c.igSameLine(0, S(8));
+        if (primaryButton(fmtZ("{s}##leave", .{ic.leave}), v2(leave_w, bh), rgb(0x3F2A2F), col.red, rgb(0xA12828))) a.askLeave();
         if (c.igIsItemHovered(0)) tooltipText(if (a.server != null) "Fechar a sala" else "Sair da sala");
         c.igSetCursorScreenPos(v2(p.x, p.y + size.y));
     }
 
-    fn liveRow(a: *App, m: *const Member, my_id: u32, width: f32, all: []const Member) void {
+    fn liveRow(a: *App, m: *const Member, kind: u8, my_id: u32, width: f32, all: []const Member) void {
         const d = drawList();
         const h = S(48);
-        c.igPushID_Int(@intCast(m.id + 100000));
+        const stream = proto.streamId(m.id, kind);
+        c.igPushID_Int(@intCast(m.id + 100000 + @as(u32, kind) * 100000));
         defer c.igPopID();
         c.igSetCursorPosX(S(8));
         const p = c.igGetCursorScreenPos();
@@ -1467,15 +1683,18 @@ pub const App = struct {
         const clicked = c.igInvisibleButton("live", v2(row_w, h), 0);
         const hovered = c.igIsItemHovered(0);
         const is_me = m.id == my_id;
-        const watching = a.findView(m.id) != null;
+        const watching = a.findView(stream) != null;
         if (hovered or watching) rectFill(d, p.x, p.y, p.x + row_w, p.y + h, if (watching) col.selected else col.hover, S(6));
         drawAvatar(d, v2(p.x + S(22), p.y + h / 2), S(15), m.id, m.nameSlice(), true);
-        drawTextF(d, font_semibold, 14.5, v2(p.x + S(46), p.y + S(7)), col.text, m.nameSlice());
+        const camera = kind == proto.kind_camera;
+        drawTextF(d, font_semibold, 14.5, v2(p.x + S(46), p.y + S(7)), col.text, if (camera) fmtZ("{s}  {s}", .{ m.nameSlice(), ic.video }) else fmtZ("{s}", .{m.nameSlice()}));
         var viewers: usize = 0;
         for (all) |*o| {
-            if (o.isWatching(m.id)) viewers += 1;
+            if (o.isWatching(stream)) viewers += 1;
         }
-        const info = if (m.audio)
+        const info = if (camera)
+            fmtZ("câmera · {d}x{d} · {s} {d}", .{ m.cam_w, m.cam_h, ic.eye, viewers })
+        else if (m.audio)
             fmtZ("{d}x{d} · {d} fps · {s} · {s} {d}", .{ m.w, m.h, m.fps, ic.volume, ic.eye, viewers })
         else
             fmtZ("{d}x{d} · {d} fps · {s} {d}", .{ m.w, m.h, m.fps, ic.eye, viewers });
@@ -1488,7 +1707,7 @@ pub const App = struct {
         tip_len = action.len;
         var first = true;
         for (all) |*o| {
-            if (!o.isWatching(m.id)) continue;
+            if (!o.isWatching(stream)) continue;
             const sep: []const u8 = if (first) "\nAssistindo: " else ", ";
             first = false;
             const part = std.fmt.bufPrint(tip_buf[tip_len .. tip_buf.len - 1], "{s}{s}", .{ sep, o.nameSlice() }) catch break;
@@ -1501,10 +1720,31 @@ pub const App = struct {
             const gs = textSizeF(font_regular, 15, glyph);
             drawTextF(d, font_regular, 15, v2(p.x + row_w - gs.x - S(10), p.y + (h - gs.y) / 2), if (hovered) col.header else col.muted, glyph);
             if (clicked) {
-                if (watching) a.unwatch(m.id) else a.watch(m.id);
+                if (watching) a.unwatch(stream) else a.watch(stream);
             }
         }
         c.igDummy(v2(0, S(2)));
+    }
+
+    fn routeText(route: u8) [:0]const u8 {
+        return switch (route) {
+            proto.route_local => "Nessa mesma máquina",
+            proto.route_lan => "Rede local (ou VPN tipo Tailscale)",
+            proto.route_internet => "Direto pela internet (IPv4)",
+            proto.route_internet6 => "Direto pela internet (IPv6)",
+            proto.route_tunnel => "Pelo link público (túnel)",
+            else => "",
+        };
+    }
+
+    fn routeIcon(route: u8) []const u8 {
+        return switch (route) {
+            proto.route_local => ic.laptop,
+            proto.route_lan => ic.house,
+            proto.route_tunnel => ic.globe,
+            proto.route_internet, proto.route_internet6 => ic.link,
+            else => "",
+        };
     }
 
     fn memberRow(a: *App, m: *const Member, my_id: u32, width: f32, i_am_admin: bool) void {
@@ -1517,10 +1757,20 @@ pub const App = struct {
         const row_w = width - S(16);
         _ = c.igInvisibleButton("m", v2(row_w, h), c.ImGuiButtonFlags_MouseButtonLeft | c.ImGuiButtonFlags_MouseButtonRight);
         const hovered = c.igIsItemHovered(0);
+        if (a.n_member_rects < a.member_rects.len) {
+            a.member_rects[a.n_member_rects] = .{ .id = m.id, .x0 = p.x, .y0 = p.y, .x1 = p.x + row_w, .y1 = p.y + h };
+            a.n_member_rects += 1;
+        }
         if (hovered) rectFill(d, p.x, p.y, p.x + row_w, p.y + h, col.hover, S(6));
-        if (hovered and m.id != my_id) {
-            tooltipText(if (i_am_admin) "Clique direito: volume da voz, expulsar" else "Clique direito: volume da voz");
-            if (c.igIsItemClicked(1)) {
+        if (hovered) {
+            var tip: [200]u8 = undefined;
+            const route = routeText(m.route);
+            const action: []const u8 = if (m.id == my_id) "" else if (i_am_admin) "Clique direito: volume da voz e ações de admin" else "Clique direito: volume da voz";
+            const t = std.fmt.bufPrintZ(&tip, "{s}{s}{s}{s}", .{
+                if (route.len > 0) "Conectado: " else "", route, if (route.len > 0 and action.len > 0) "\n" else "", action,
+            }) catch "";
+            if (t.len > 0) tooltipText(t);
+            if (m.id != my_id and c.igIsItemClicked(1)) {
                 a.menu_target = m.id;
                 a.open_member_menu = true; // abre fora do PushID do membro
             }
@@ -1533,15 +1783,24 @@ pub const App = struct {
         drawTextF(d, font_semibold, 14.5, v2(p.x + S(46), p.y + (h - S(18)) / 2), name_col, m.nameSlice());
         const ns = textSizeF(font_semibold, 14.5, m.nameSlice());
         var tx = p.x + S(50) + ns.x;
-        if (m.admin) {
+        if (m.owner) {
             drawTextF(d, font_regular, 11, v2(tx, p.y + (h - S(13)) / 2), col.yellow, ic.crown);
+            tx += S(18);
+        } else if (m.admin) {
+            drawTextF(d, font_regular, 11, v2(tx, p.y + (h - S(13)) / 2), col.blurple, ic.shield);
             tx += S(18);
         }
         if (m.id == my_id) drawTextF(d, font_regular, 12, v2(tx, p.y + (h - S(15)) / 2), col.faint, "(você)");
         var rx = p.x + row_w - S(10);
         if (m.streaming) rx -= liveBadge(d, v2(p.x + row_w - S(58), p.y + (h - S(15)) / 2)) + S(14);
-        // microfone desligado / surdo
+        // câmera, microfone desligado / silenciado pelo admin, surdo, rota
         const iy = p.y + (h - S(14)) / 2;
+        if (m.camera()) {
+            const gs = textSizeF(font_regular, 13, ic.video);
+            rx -= gs.x;
+            drawTextF(d, font_regular, 13, v2(rx, iy), col.green, ic.video);
+            rx -= S(8);
+        }
         if (m.deaf()) {
             const gs = textSizeF(font_regular, 13, ic.headphones);
             rx -= gs.x;
@@ -1549,10 +1808,22 @@ pub const App = struct {
             slash(d, v2(rx - S(2), iy - S(2)), gs.x + S(4));
             rx -= S(8);
         }
-        if (!m.micOn()) {
+        if (m.muted()) {
+            const gs = textSizeF(font_regular, 13, ic.mic_slash);
+            rx -= gs.x;
+            drawTextF(d, font_regular, 13, v2(rx, iy), col.red, ic.mic_slash);
+            rx -= S(8);
+        } else if (!m.micOn()) {
             const gs = textSizeF(font_regular, 13, ic.mic_slash);
             rx -= gs.x;
             drawTextF(d, font_regular, 13, v2(rx, iy), col.faint, ic.mic_slash);
+            rx -= S(8);
+        }
+        if (m.route == proto.route_tunnel or m.route == proto.route_local) {
+            const glyph = routeIcon(m.route);
+            const gs = textSizeF(font_regular, 11, glyph);
+            rx -= gs.x;
+            drawTextF(d, font_regular, 11, v2(rx, iy + S(1)), col.faint, glyph);
         }
     }
 
@@ -1569,28 +1840,35 @@ pub const App = struct {
         }
         if (!c.igBeginPopup("membermenu", 0)) return;
         defer c.igEndPopup();
-        const name = for (members) |*m| {
-            if (m.id == a.menu_target) break m.nameSlice();
+        const target = for (members) |*m| {
+            if (m.id == a.menu_target) break m;
         } else {
             // a pessoa saiu com o menu aberto
             c.igCloseCurrentPopup();
             return;
         };
+        const name = target.nameSlice();
         pushFont(font_semibold, 13);
         textColored(col.muted, name);
         popFont();
+        const route = routeText(target.route);
+        if (route.len > 0) {
+            pushFont(font_regular, 12);
+            textColored(col.faint, route);
+            popFont();
+        }
         c.igDummy(v2(0, S(4)));
         // volume da voz dessa pessoa, só pra mim (0–200%)
         textColored(col.faint, "Volume da voz");
         var pct: i32 = @intFromFloat(@round(cl.voiceVolume(a.menu_target) * 100));
         const before = pct;
-        sliderStyled("##vvol", &pct, 0, 200, "%d%%", S(200));
+        sliderStyled("##vvol", &pct, 0, 200, "%d%%", S(220));
         // salva no arquivo quando solta o slider (não a cada quadro do arrasto)
         var save = c.igIsItemDeactivatedAfterEdit();
         var new_pct: ?i32 = if (pct != before) pct else null;
         const muted = pct == 0;
         c.igDummy(v2(0, S(4)));
-        if (c.igSelectable_Bool(if (muted) "Voltar a ouvir" else "Silenciar pra mim", false, 0, v2(S(200), 0))) {
+        if (c.igSelectable_Bool(if (muted) "Voltar a ouvir" else "Silenciar pra mim", false, 0, v2(S(220), 0))) {
             new_pct = if (muted) 100 else 0;
             save = true;
         }
@@ -1601,17 +1879,35 @@ pub const App = struct {
             a.volumes.set(name, v);
             a.volumes.save();
         }
+        // ações de admin: dono pode tudo; admin promovido não mexe em admin
         cl.mutex.lock();
         const i_am_admin = cl.is_admin;
+        const my_id = cl.my_id;
         cl.mutex.unlock();
-        if (i_am_admin) {
-            c.igDummy(v2(0, S(4)));
-            c.igSeparator();
-            c.igDummy(v2(0, S(4)));
-            c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);
-            if (c.igSelectable_Bool(fmtZ("{s}  Expulsar da sala", .{ic.ban}), false, 0, v2(S(200), 0))) cl.kick(a.menu_target);
-            c.igPopStyleColor(1);
-        }
+        const me = for (members) |*m| {
+            if (m.id == my_id) break m;
+        } else null;
+        const i_am_owner = me != null and me.?.owner;
+        if (!i_am_admin or target.owner or (target.admin and !i_am_owner)) return;
+        c.igDummy(v2(0, S(4)));
+        c.igSeparator();
+        c.igDummy(v2(0, S(2)));
+        pushFont(font_bold, 11);
+        textColored(col.muted, "ADMIN");
+        popFont();
+        const w = S(220);
+        if (c.igSelectable_Bool(if (target.muted()) fmtZ("{s}  Liberar o microfone", .{ic.mic}) else fmtZ("{s}  Silenciar o microfone (pra todos)", .{ic.mic_slash}), false, 0, v2(w, 0)))
+            cl.admin(proto.admin_mute, target.id, @intFromBool(!target.muted()));
+        if (target.streaming and c.igSelectable_Bool(fmtZ("{s}  Parar a transmissão", .{ic.stop}), false, 0, v2(w, 0)))
+            cl.admin(proto.admin_stop_stream, target.id, proto.kind_screen);
+        if (target.camera() and c.igSelectable_Bool(fmtZ("{s}  Desligar a câmera", .{ic.video_slash}), false, 0, v2(w, 0)))
+            cl.admin(proto.admin_stop_stream, target.id, proto.kind_camera);
+        if (i_am_owner and c.igSelectable_Bool(if (target.admin) fmtZ("{s}  Tirar o admin", .{ic.shield}) else fmtZ("{s}  Dar admin", .{ic.shield}), false, 0, v2(w, 0)))
+            cl.admin(proto.admin_set_admin, target.id, @intFromBool(!target.admin));
+        c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);
+        if (c.igSelectable_Bool(fmtZ("{s}  Expulsar da sala", .{ic.ban}), false, 0, v2(w, 0))) cl.admin(proto.admin_kick, target.id, 0);
+        if (c.igSelectable_Bool(fmtZ("{s}  Banir (não volta mais)", .{ic.gavel}), false, 0, v2(w, 0))) cl.admin(proto.admin_ban, target.id, 0);
+        c.igPopStyleColor(1);
     }
 
     fn drawUpnpState(a: *App, m: *upnp.Mapper, d: *c.ImDrawList, x: f32, yy: f32, w: f32, pad: f32) void {
@@ -1707,7 +2003,8 @@ pub const App = struct {
         const by = p.y + (size.y - bs) / 2;
         c.igSetCursorScreenPos(v2(bx, by));
         const mic_on = a.mic != null;
-        if (iconButton("##mic", if (mic_on) ic.mic else ic.mic_slash, bs, if (mic_on) col.text else col.red, col.hover, if (mic_on) "Desligar o microfone" else "Ligar o microfone")) a.toggleMic();
+        const mic_tip: [:0]const u8 = if (a.admin_muted) "O admin silenciou seu microfone" else if (mic_on) "Desligar o microfone" else "Ligar o microfone";
+        if (iconButton("##mic", if (mic_on) ic.mic else ic.mic_slash, bs, if (mic_on) col.text else col.red, col.hover, mic_tip)) a.toggleMic();
         c.igSameLine(0, 0);
         if (iconButton("##deaf", ic.headphones, bs, if (a.deaf) col.red else col.text, col.hover, if (a.deaf) "Voltar a ouvir a sala" else "Parar de ouvir a sala (surdo)")) a.toggleDeaf();
         if (a.deaf) slash(d, v2(bx + bs, by), bs);
@@ -1729,7 +2026,7 @@ pub const App = struct {
     // ------------------------------------------------------------ transmissões
 
     const Tile = struct {
-        owner: u32, // 0 = minha prévia
+        stream: u32, // minhas prévias: proto.streamId(0, tipo)
         tex: u32,
         tw: u32,
         th: u32,
@@ -1757,10 +2054,10 @@ pub const App = struct {
         var name_bufs: [33][48]u8 = undefined;
         cl.mutex.lock();
         for (a.views.items) |v| {
-            if (n >= tiles.len - 1) break; // o último é da minha prévia
+            if (n >= tiles.len - 2) break; // os dois últimos são das minhas prévias (tela e câmera)
             // cópia: a thread de rede troca a lista de membros a qualquer hora
             const name = for (cl.members.items) |*m| {
-                if (m.id == v.owner) {
+                if (m.id == v.member()) {
                     const nm = m.nameSlice();
                     const k = @min(nm.len, name_bufs[n].len);
                     @memcpy(name_bufs[n][0..k], nm[0..k]);
@@ -1768,14 +2065,21 @@ pub const App = struct {
                 }
             } else "?";
             const st = std.fmt.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d:.0} KB/s · {s}", .{ v.tex_w, v.tex_h, v.fps, v.kbps, latencyText(&lat_bufs[n], v) }) catch "";
-            tiles[n] = .{ .owner = v.owner, .tex = v.tex, .tw = v.tex_w, .th = v.tex_h, .name = name, .stats = st, .loading = v.tex == 0, .ring = if (v.audio_registered) &v.audio_ring else null };
+            tiles[n] = .{ .stream = v.stream, .tex = v.tex, .tw = v.tex_w, .th = v.tex_h, .name = name, .stats = st, .loading = v.tex == 0, .ring = if (v.audio_registered) &v.audio_ring else null };
             n += 1;
         }
         cl.mutex.unlock();
         if (a.sharer) |s| {
             s.mutex.lock();
             const st = std.fmt.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d} kbit/s{s} · {s} {d:.1} ms · {s}", .{ s.w, s.h, s.fps, s.bitrate_kbps, if (s.congested) " (rede lenta)" else if (s.slow_viewer) " (espectador lento)" else "", s.encoder_name, s.encode_ms, s.backendSlice() }) catch "";
-            tiles[n] = .{ .owner = 0, .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = "Você", .stats = st, .loading = s.preview_tex == 0 };
+            tiles[n] = .{ .stream = proto.streamId(0, proto.kind_screen), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = "Você", .stats = st, .loading = s.preview_tex == 0 };
+            s.mutex.unlock();
+            n += 1;
+        }
+        if (a.camera) |s| {
+            s.mutex.lock();
+            const st = std.fmt.bufPrintZ(&stat_bufs[n], "câmera · {d}x{d} · {d:.0} fps · {d} kbit/s · {s} · {s}", .{ s.w, s.h, s.fps, s.bitrate_kbps, s.encoder_name, s.backendSlice() }) catch "";
+            tiles[n] = .{ .stream = proto.streamId(0, proto.kind_camera), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = "Você (câmera)", .stats = st, .loading = s.preview_tex == 0 };
             s.mutex.unlock();
             n += 1;
         }
@@ -1829,7 +2133,7 @@ pub const App = struct {
         // destaque: um grande + tira de miniaturas
         if (a.focused) |fo| {
             const fi = for (tiles[0..n], 0..) |t, i| {
-                if (t.owner == fo) break i;
+                if (t.stream == fo) break i;
             } else null;
             if (fi) |idx| {
                 const strip_h = if (n > 1 and !a.theater) S(130) else 0;
@@ -1896,10 +2200,10 @@ pub const App = struct {
         const x = cell_x + (cell_w - w) / 2;
         const y = cell_y + (cell_h - h) / 2;
         const round = if (a.theater and big) 0 else S(8);
-        c.igPushID_Int(@intCast(t.owner));
+        c.igPushID_Int(@bitCast(t.stream));
         defer c.igPopID();
         if (a.n_tile_rects < a.tile_rects.len) {
-            a.tile_rects[a.n_tile_rects] = .{ .owner = t.owner, .x0 = x, .y0 = y, .x1 = x + w, .y1 = y + h };
+            a.tile_rects[a.n_tile_rects] = .{ .stream = t.stream, .x0 = x, .y0 = y, .x1 = x + w, .y1 = y + h };
             a.n_tile_rects += 1;
         }
         c.igSetCursorScreenPos(v2(x, y));
@@ -1915,9 +2219,9 @@ pub const App = struct {
         const dbl = on_tile and c.igIsMouseDoubleClicked_Nil(0);
         // arrastando o volume pra fora do quadro: os controles continuam
         if (a.tile_controls) |o| {
-            if (o == t.owner and !c.igIsMouseDown_Nil(0)) a.tile_controls = null;
+            if (o == t.stream and !c.igIsMouseDown_Nil(0)) a.tile_controls = null;
         }
-        const hovered = over or (a.tile_controls != null and a.tile_controls.? == t.owner);
+        const hovered = over or (a.tile_controls != null and a.tile_controls.? == t.stream);
 
         c.ImDrawList_PushClipRect(d, v2(x, y), v2(x + w, y + h), true);
         defer c.ImDrawList_PopClipRect(d);
@@ -1959,26 +2263,26 @@ pub const App = struct {
             var bx = x + w - bs - S(8);
             const by = y + S(8);
             const save = c.igGetCursorScreenPos();
-            if (t.owner != 0) {
+            if (proto.memberOf(t.stream) != 0) {
                 c.igSetCursorScreenPos(v2(bx, by));
                 rectFill(d, bx, by, bx + bs, by + bs, col.overlay, S(6));
                 if (iconButton("##close", ic.xmark, bs, col.white, rgba(0xED4245, 200), "Parar de assistir")) {
-                    a.unwatch(t.owner);
+                    a.unwatch(t.stream);
                     return;
                 }
                 bx -= bs + S(6);
             }
             c.igSetCursorScreenPos(v2(bx, by));
             rectFill(d, bx, by, bx + bs, by + bs, col.overlay, S(6));
-            const focused = a.focused != null and a.focused.? == t.owner;
+            const focused = a.focused != null and a.focused.? == t.stream;
             if (iconButton("##focus", if (focused) ic.compress else ic.expand, bs, col.white, rgba(0x5865F2, 200), if (focused) "Voltar pra grade" else "Destacar (duplo clique: tela cheia)")) {
-                a.focused = if (focused) null else t.owner;
+                a.focused = if (focused) null else t.stream;
             } else if (dbl) {
-                a.focused = t.owner;
+                a.focused = t.stream;
                 a.theater = !a.theater;
                 if (a.theater != a.fullscreen) a.toggleFullscreen();
             } else if (clicked and !big) {
-                a.focused = t.owner;
+                a.focused = t.stream;
             }
             // volume dessa transmissão (canto de baixo)
             if (t.ring) |rg| {
@@ -1999,7 +2303,7 @@ pub const App = struct {
                 c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(4), S(2)));
                 var vol_pct: f32 = rg.getVolume() * 100;
                 if (c.igSliderFloat("##vol", &vol_pct, 0, 200, "%.0f%%", c.ImGuiSliderFlags_AlwaysClamp)) rg.setVolume(vol_pct / 100);
-                if (c.igIsItemActive()) a.tile_controls = t.owner;
+                if (c.igIsItemActive()) a.tile_controls = t.stream;
                 c.igPopStyleVar(1);
                 c.igPopStyleColor(3);
             }
@@ -2009,9 +2313,9 @@ pub const App = struct {
         }
         // contorno verde: quem transmite está falando (voz), ou a transmissão
         // está tocando som (mais fraco)
-        const talking = if (t.owner == 0)
+        const talking = if (proto.memberOf(t.stream) == 0)
             (if (a.mic) |m| m.speaking.load(.monotonic) else false)
-        else if (a.client) |cl| cl.speaking(t.owner) else false;
+        else if (a.client) |cl| cl.speaking(proto.memberOf(t.stream)) else false;
         const ring_level = if (t.ring) |rg| rg.takeLevel() else 0; // decai um pouco a cada quadro
         if (talking) {
             c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), col.green, round, S(3), 0);
@@ -2594,7 +2898,12 @@ pub const App = struct {
         try w.print(",\"mic\":{},\"deaf\":{},\"share_modal\":{},\"settings_modal\":{},\"theater\":{},\"fullscreen\":{}", .{ a.mic != null, a.deaf, a.share_modal, a.settings_modal, a.theater, a.fullscreen });
         if (a.focused) |f| try w.print(",\"focused\":{d}", .{f}) else try w.writeAll(",\"focused\":null");
         try w.print(",\"reconnect\":{{\"attempt\":{d},\"waiting\":{}}}", .{ a.reconnect.attempt, a.reconnect.waiting });
-        try w.print(",\"hosting\":{}", .{a.server != null});
+        try w.print(",\"hosting\":{},\"leave_confirm\":{},\"admin_muted\":{}", .{ a.server != null, a.leave_confirm, a.admin_muted });
+        if (a.camera) |cam| {
+            cam.mutex.lock();
+            defer cam.mutex.unlock();
+            try w.print(",\"camera\":{{\"state\":{f},\"w\":{d},\"h\":{d},\"fps\":{d:.1},\"err\":{f}}}", .{ s(@tagName(cam.state)), cam.w, cam.h, cam.fps, s(cam.errSlice()) });
+        } else try w.writeAll(",\"camera\":null");
         if (a.server) |srv| try w.print(",\"server_members\":{d}", .{srv.memberCount()});
         // link público e porta no roteador
         if (a.tunnel) |t| {
@@ -2624,7 +2933,13 @@ pub const App = struct {
         try w.writeAll(",\"tiles\":[");
         for (a.tile_rects[0..a.n_tile_rects], 0..) |r, i| {
             if (i > 0) try w.writeByte(',');
-            try w.print("{{\"owner\":{d},\"x0\":{d:.0},\"y0\":{d:.0},\"x1\":{d:.0},\"y1\":{d:.0}}}", .{ r.owner, r.x0, r.y0, r.x1, r.y1 });
+            try w.print("{{\"stream\":{d},\"x0\":{d:.0},\"y0\":{d:.0},\"x1\":{d:.0},\"y1\":{d:.0}}}", .{ r.stream, r.x0, r.y0, r.x1, r.y1 });
+        }
+        try w.writeAll("]");
+        try w.writeAll(",\"member_rows\":[");
+        for (a.member_rects[0..a.n_member_rects], 0..) |r, i| {
+            if (i > 0) try w.writeByte(',');
+            try w.print("{{\"id\":{d},\"x0\":{d:.0},\"y0\":{d:.0},\"x1\":{d:.0},\"y1\":{d:.0}}}", .{ r.id, r.x0, r.y0, r.x1, r.y1 });
         }
         try w.writeAll("]");
         // transmissões assistidas
@@ -2632,8 +2947,8 @@ pub const App = struct {
         for (a.views.items, 0..) |v, i| {
             if (i > 0) try w.writeByte(',');
             const has_audio = v.audio_registered;
-            try w.print("{{\"owner\":{d},\"fps\":{d:.1},\"w\":{d},\"h\":{d},\"shown\":{},\"audio\":{},\"volume\":{d:.2},\"muted\":{}}}", .{
-                v.owner, v.fps, v.tex_w, v.tex_h, v.tex != 0, has_audio, v.audio_ring.getVolume(), v.audio_ring.isMuted(),
+            try w.print("{{\"stream\":{d},\"fps\":{d:.1},\"w\":{d},\"h\":{d},\"shown\":{},\"audio\":{},\"volume\":{d:.2},\"muted\":{}}}", .{
+                v.stream, v.fps, v.tex_w, v.tex_h, v.tex != 0, has_audio, v.audio_ring.getVolume(), v.audio_ring.isMuted(),
             });
         }
         try w.writeAll("]");
@@ -2641,14 +2956,14 @@ pub const App = struct {
         if (a.client) |cl| {
             cl.mutex.lock();
             defer cl.mutex.unlock();
-            try w.print(",\"status\":{f},\"error\":{f},\"final\":{},\"my_id\":{d},\"admin\":{},\"room\":{f},\"ping\":{d}", .{
-                s(@tagName(cl.status)), s(cl.err[0..cl.err_len]), cl.final, cl.my_id, cl.is_admin, s(cl.room_name[0..cl.room_name_len]), cl.ping_ms,
+            try w.print(",\"status\":{f},\"error\":{f},\"final\":{},\"deny\":{d},\"my_id\":{d},\"admin\":{},\"route\":{d},\"locked\":{},\"room\":{f},\"ping\":{d}", .{
+                s(@tagName(cl.status)), s(cl.err[0..cl.err_len]), cl.final, cl.deny_code, cl.my_id, cl.is_admin, cl.route, cl.room_locked, s(cl.room_name[0..cl.room_name_len]), cl.ping_ms,
             });
             try w.writeAll(",\"members\":[");
             for (cl.members.items, 0..) |*m, i| {
                 if (i > 0) try w.writeByte(',');
-                try w.print("{{\"id\":{d},\"name\":{f},\"flags\":{d},\"streaming\":{},\"admin\":{},\"audio\":{},\"w\":{d},\"h\":{d},\"watching\":[", .{
-                    m.id, s(m.nameSlice()), m.flags, m.streaming, m.admin, m.audio, m.w, m.h,
+                try w.print("{{\"id\":{d},\"name\":{f},\"flags\":{d},\"streaming\":{},\"camera\":{},\"admin\":{},\"owner\":{},\"muted\":{},\"route\":{d},\"audio\":{},\"w\":{d},\"h\":{d},\"watching\":[", .{
+                    m.id, s(m.nameSlice()), m.flags, m.streaming, m.camera(), m.admin, m.owner, m.muted(), m.route, m.audio, m.w, m.h,
                 });
                 for (m.watching[0..m.n_watching], 0..) |id, k| {
                     if (k > 0) try w.writeByte(',');
@@ -2660,7 +2975,7 @@ pub const App = struct {
             const first = cl.chat.items.len -| 30;
             for (cl.chat.items[first..], 0..) |*l, i| {
                 if (i > 0) try w.writeByte(',');
-                try w.print("{{\"from\":{d},\"name\":{f},\"text\":{f}}}", .{ l.from, s(l.nameSlice()), s(l.text) });
+                try w.print("{{\"id\":{d},\"from\":{d},\"name\":{f},\"text\":{f},\"history\":{}}}", .{ l.id, l.from, s(l.nameSlice()), s(l.text), l.history });
             }
             try w.writeAll("]");
         } else try w.writeAll(",\"status\":null");

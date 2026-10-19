@@ -34,14 +34,19 @@ pub const Member = struct {
     id: u32,
     name: [48]u8,
     name_len: usize,
-    streaming: bool,
+    streaming: bool, // tela
     admin: bool,
+    owner: bool, // criou a sala
     audio: bool,
     flags: u8,
+    route: u8, // por onde chegou (proto.route_*)
     w: u16,
     h: u16,
     fps: u8,
-    watching: [16]u32,
+    cam_w: u16,
+    cam_h: u16,
+    cam_fps: u8,
+    watching: [16]u32, // streams
     n_watching: usize,
 
     pub fn nameSlice(self: *const Member) []const u8 {
@@ -53,22 +58,58 @@ pub const Member = struct {
     pub fn deaf(self: *const Member) bool {
         return self.flags & proto.member_deaf != 0;
     }
-    pub fn isWatching(self: *const Member, id: u32) bool {
-        return std.mem.findScalar(u32, self.watching[0..self.n_watching], id) != null;
+    /// Microfone silenciado pelo admin.
+    pub fn muted(self: *const Member) bool {
+        return self.flags & proto.member_muted != 0;
+    }
+    pub fn camera(self: *const Member) bool {
+        return self.flags & proto.member_camera != 0;
+    }
+    /// Essa transmissão (tela ou câmera) dela está no ar?
+    pub fn live(self: *const Member, kind: u8) bool {
+        return if (kind == proto.kind_camera) self.camera() else self.streaming;
+    }
+    pub fn isWatching(self: *const Member, stream: u32) bool {
+        return std.mem.findScalar(u32, self.watching[0..self.n_watching], stream) != null;
     }
 };
 
 pub const ChatLine = struct {
+    id: u32,
     from: u32,
     name: [48]u8,
     name_len: usize,
     text: []u8,
     hour: u8,
     minute: u8,
+    history: bool, // já estava na sala antes da gente entrar
 
     pub fn nameSlice(self: *const ChatLine) []const u8 {
         return self.name[0..self.name_len];
     }
+};
+
+/// Algo que o admin fez com a gente (a UI mostra e reage).
+pub const Notice = struct {
+    kind: u8,
+    extra: u8,
+    text: [160]u8,
+    len: usize,
+
+    pub fn textSlice(n: *const Notice) []const u8 {
+        return n.text[0..n.len];
+    }
+};
+
+/// Ponteiro "olha aqui" de alguém em cima de uma transmissão.
+pub const Pointer = struct {
+    from: u32,
+    stream: u32,
+    x: u16,
+    y: u16,
+    flags: u8,
+    at_us: u64, // quando chegou (some sozinho depois de um tempo parado)
+    ping_us: u64, // último clique (anel que se expande)
 };
 
 pub const Status = enum { connecting, connected, failed };
@@ -77,7 +118,7 @@ pub const Status = enum { connecting, connected, failed };
 /// H.264 e converte pra RGBA (em paralelo no pool); a interface só sobe o
 /// resultado pra GPU.
 pub const View = struct {
-    owner: u32,
+    stream: u32, // proto.streamId (pessoa + tela/câmera)
     client: *Client,
     refs: std.atomic.Value(u32) = .init(2), // UI + thread de decode
 
@@ -90,6 +131,9 @@ pub const View = struct {
     dirty: bool = false,
     capture_ts: u64 = 0, // hora da captura do último quadro (relógio da sala)
     got_first: bool = false,
+    // onde está o cursor de quem transmite (proto.coord_none = sem cursor)
+    cursor_x: std.atomic.Value(u16) = .init(proto.coord_none),
+    cursor_y: std.atomic.Value(u16) = .init(proto.coord_none),
 
     qmutex: sync.Mutex = .{},
     qcond: sync.Cond = .{},
@@ -119,6 +163,13 @@ pub const View = struct {
     tex: u32 = 0,
     tex_w: u32 = 0,
     tex_h: u32 = 0,
+
+    pub fn member(v: *const View) u32 {
+        return proto.memberOf(v.stream);
+    }
+    pub fn kind(v: *const View) u8 {
+        return proto.kindOf(v.stream);
+    }
 
     fn retain(v: *View) *View {
         _ = v.refs.fetchAdd(1, .monotonic);
@@ -156,7 +207,7 @@ pub const View = struct {
             v.frames.clearRetainingCapacity();
             v.arrivals.clearRetainingCapacity();
             v.waiting_key = true;
-            v.client.sendKeyreq(v.owner);
+            v.client.sendKeyreq(v.stream);
         }
         v.arrivals.append(gpa, now) catch {
             gpa.free(frame);
@@ -244,7 +295,7 @@ pub const View = struct {
                 v.qmutex.lock();
                 v.waiting_key = true;
                 v.qmutex.unlock();
-                v.client.sendKeyreq(v.owner);
+                v.client.sendKeyreq(v.stream);
             };
         }
     }
@@ -261,6 +312,8 @@ pub const View = struct {
         const ts = try r.u64_();
         _ = try r.u16_(); // w (o decoder sabe)
         _ = try r.u16_(); // h
+        v.cursor_x.store(try r.u16_(), .monotonic);
+        v.cursor_y.store(try r.u16_(), .monotonic);
         const bitstream = r.rest();
         const key = flags & proto.frame_key != 0;
 
@@ -357,6 +410,7 @@ pub const Client = struct {
     pass_len: usize = 0,
     admin_token: [64]u8 = undefined,
     admin_token_len: usize = 0,
+    client_key: u64 = 0,
     wake_fn: *const fn () void,
     hw_decode: bool = true,
 
@@ -365,13 +419,14 @@ pub const Client = struct {
     channel: crypto.Channel = undefined,
     queue: proto.SendQueue = .{},
     closing: std.atomic.Value(bool) = .init(false),
-    keyreq: std.atomic.Value(bool) = .init(false),
+    /// Pedido de IDR do servidor, por tipo de transmissão (tela, câmera).
+    keyreq: [2]std.atomic.Value(bool) = .{ .init(false), .init(false) },
     /// Algum espectador não está dando conta da nossa taxa de bits: piso (% do
-    /// alvo) até onde baixar. 0 = nenhum aviso pendente.
-    viewer_slow: std.atomic.Value(u8) = .init(0),
-    /// Nossos frames que o servidor ainda não confirmou (controle de banda).
+    /// alvo) até onde baixar. 0 = nenhum aviso pendente. Por tipo.
+    viewer_slow: [2]std.atomic.Value(u8) = .{ .init(0), .init(0) },
+    /// Nossos frames que o servidor ainda não confirmou (controle de banda), por tipo.
     inflight_mutex: sync.Mutex = .{},
-    inflight: proto.AckWindow = .{},
+    inflight: [2]proto.AckWindow = .{ .{}, .{} },
     /// Relógio da sala = relógio local + offset (µs). Sincronizado pelo ping.
     clock_offset: std.atomic.Value(i64) = .init(0),
     best_rtt_us: u64 = std.math.maxInt(u64),
@@ -381,15 +436,24 @@ pub const Client = struct {
     status: Status = .connecting,
     /// Queda definitiva (expulso, senha errada, versão diferente): não adianta reconectar.
     final: bool = false,
+    deny_code: u8 = proto.deny_generic, // por que a sala recusou/derrubou (quando final)
     err: [256]u8 = undefined,
     err_len: usize = 0,
     my_id: u32 = 0,
     is_admin: bool = false,
+    route: u8 = proto.route_unknown, // por onde a gente chegou (o servidor que diz)
+    room_locked: bool = false,
     room_name: [64]u8 = undefined,
     room_name_len: usize = 0,
     members: std.ArrayList(Member) = .empty,
     chat: std.ArrayList(ChatLine) = .empty,
     chat_count: u64 = 0, // total de mensagens já recebidas (pra rolar o chat)
+    chat_new: u64 = 0, // mensagens novas (não de histórico) — notificação
+    /// Último id de mensagem visto (o histórico que chega depois não repete).
+    chat_last_id: u32 = 0,
+    instance: u64 = 0,
+    notices: std.ArrayList(Notice) = .empty,
+    pointers: std.ArrayList(Pointer) = .empty,
     views: std.ArrayList(*View) = .empty,
     ping_ms: u32 = 0,
     /// Voz de cada pessoa da sala (criada quando chega o primeiro pacote).
@@ -409,13 +473,15 @@ pub const Client = struct {
         name: []const u8,
         password: []const u8,
         admin_token: []const u8 = "",
+        /// Identifica esse app (aleatória, guardada na config): banimento.
+        client_key: u64 = 0,
         hw_decode: bool = true,
         wake: *const fn () void,
     };
 
     pub fn create(o: Options) !*Client {
         const cl = try gpa.create(Client);
-        cl.* = .{ .wake_fn = o.wake, .port = o.port, .hw_decode = o.hw_decode };
+        cl.* = .{ .wake_fn = o.wake, .port = o.port, .hw_decode = o.hw_decode, .client_key = o.client_key };
         copyInto(&cl.host, &cl.host_len, o.host);
         copyInto(cl.name[0..32], &cl.name_len, o.name);
         copyInto(&cl.pass, &cl.pass_len, o.password);
@@ -448,6 +514,8 @@ pub const Client = struct {
             cl.members.deinit(gpa);
             for (cl.chat.items) |l| gpa.free(l.text);
             cl.chat.deinit(gpa);
+            cl.notices.deinit(gpa);
+            cl.pointers.deinit(gpa);
             cl.views.deinit(gpa);
             for (cl.voice_peers.items) |p| {
                 p.deinit();
@@ -547,6 +615,7 @@ pub const Client = struct {
         b.begin(.hello) catch return;
         b.str(cl.name[0..cl.name_len]) catch return;
         b.str(cl.admin_token[0..cl.admin_token_len]) catch return;
+        b.u64_(cl.client_key) catch return;
         cl.queue.pushOwned(b.finish() catch return);
 
         var rb: proto.RecvBuf = .{};
@@ -620,6 +689,8 @@ pub const Client = struct {
                 copyInto(&cl.room_name, &cl.room_name_len, rn);
                 cl.is_admin = (try r.u8_()) != 0;
                 const server_us = try r.u64_();
+                cl.instance = try r.u64_();
+                cl.route = try r.u8_();
                 cl.clock_offset.store(@as(i64, @intCast(server_us)) - @as(i64, @intCast(sync.nowUs())), .monotonic);
                 cl.status = .connected;
                 cl.welcomed.store(true, .release);
@@ -631,11 +702,17 @@ pub const Client = struct {
                 if (vf != 0) cl.pushVoiceState(vf);
             },
             .denied => {
+                const reason = try r.str();
+                const code: u8 = r.u8_() catch proto.deny_generic;
+                cl.mutex.lock();
+                cl.deny_code = code;
+                cl.mutex.unlock();
                 cl.setFinal();
-                cl.setError("{s}", .{try r.str()});
+                cl.setError("{s}", .{reason});
                 return error.Denied;
             },
             .members => {
+                const room_flags = try r.u8_();
                 const n = try r.u16_();
                 var list: std.ArrayList(Member) = .empty;
                 errdefer list.deinit(gpa);
@@ -649,9 +726,15 @@ pub const Client = struct {
                     m.streaming = flags & proto.member_streaming != 0;
                     m.admin = flags & proto.member_admin != 0;
                     m.audio = flags & proto.member_audio != 0;
+                    const route = try r.u8_();
+                    m.owner = route & 0x80 != 0;
+                    m.route = route & 0x7F;
                     m.w = try r.u16_();
                     m.h = try r.u16_();
                     m.fps = try r.u8_();
+                    m.cam_w = try r.u16_();
+                    m.cam_h = try r.u16_();
+                    m.cam_fps = try r.u8_();
                     const k = try r.u16_();
                     m.n_watching = 0;
                     for (0..k) |_| {
@@ -665,8 +748,13 @@ pub const Client = struct {
                 }
                 cl.mutex.lock();
                 defer cl.mutex.unlock();
+                cl.room_locked = room_flags & proto.room_locked != 0;
                 cl.members.deinit(gpa);
                 cl.members = list;
+                // admin muda com a lista (alguém deu ou tirou)
+                for (list.items) |*m| {
+                    if (m.id == cl.my_id) cl.is_admin = m.admin;
+                }
                 // voz de quem saiu da sala
                 var i: usize = cl.voice_peers.items.len;
                 while (i > 0) {
@@ -680,6 +768,16 @@ pub const Client = struct {
                         p.deinit();
                         gpa.destroy(p);
                     }
+                }
+                // ponteiros de quem saiu, ou em transmissão que acabou
+                var j: usize = cl.pointers.items.len;
+                while (j > 0) {
+                    j -= 1;
+                    const pt = cl.pointers.items[j];
+                    const ok = for (list.items) |*m| {
+                        if (m.id == proto.memberOf(pt.stream)) break m.live(proto.kindOf(pt.stream));
+                    } else false;
+                    if (!ok) _ = cl.pointers.swapRemove(j);
                 }
             },
             .voice => {
@@ -722,41 +820,62 @@ pub const Client = struct {
             },
             .chat => {
                 var line: ChatLine = undefined;
+                line.id = try r.u32_();
                 line.from = try r.u32_();
                 copyInto(&line.name, &line.name_len, try r.str());
-                line.text = try gpa.dupe(u8, try r.str());
-                const t = sync.localTime();
-                line.hour = t.h;
-                line.minute = t.m;
+                const text = try r.str();
+                const at_us = try r.u64_();
+                const flags = try r.u8_();
+                line.history = flags & proto.chat_history != 0;
                 cl.mutex.lock();
                 defer cl.mutex.unlock();
+                // histórico que já chegou (não deveria repetir, mas não custa)
+                if (line.history and line.id <= cl.chat_last_id) return;
+                if (line.id > cl.chat_last_id) cl.chat_last_id = line.id;
+                // hora local de quando a mensagem foi mandada (a sala tem outro relógio)
+                const age_s: i64 = @intCast((cl.serverNowUs() -| at_us) / 1_000_000);
+                const t = sync.localTimeAgo(age_s);
+                line.hour = t.h;
+                line.minute = t.m;
+                line.text = try gpa.dupe(u8, text);
                 if (cl.chat.items.len >= 500) {
                     gpa.free(cl.chat.items[0].text);
                     _ = cl.chat.orderedRemove(0);
                 }
-                try cl.chat.append(gpa, line);
+                cl.chat.append(gpa, line) catch |e| {
+                    gpa.free(line.text);
+                    return e;
+                };
                 cl.chat_count += 1;
+                if (!line.history) cl.chat_new += 1;
             },
             .frame => {
-                const from = try r.u32_();
+                const stream = try r.u32_();
                 const frame = r.rest();
                 if (frame.len < proto.frame_header_len) return error.BadMessage;
                 // confirma na hora (o servidor mede o atraso do nosso download com isso)
                 const ack = try proto.Msg.alloc(.ack, 8);
-                std.mem.writeInt(u32, ack.payload()[0..4], from, .little);
+                std.mem.writeInt(u32, ack.payload()[0..4], stream, .little);
                 @memcpy(ack.payload()[4..8], frame[0..4]);
                 cl.queue.pushUrgentOwned(ack);
-                const v = cl.viewRetained(from) orelse return;
+                const v = cl.viewRetained(stream) orelse return;
                 defer v.release();
                 v.enqueue(try gpa.dupe(u8, frame));
             },
             .ack => {
+                const kind = try r.u8_();
                 const seq = try r.u32_();
+                if (kind > proto.kind_camera) return;
                 cl.inflight_mutex.lock();
                 defer cl.inflight_mutex.unlock();
-                cl.inflight.acked(seq, sync.nowUs());
+                cl.inflight[kind].acked(seq, sync.nowUs());
             },
-            .viewer_slow => cl.viewer_slow.store(std.math.clamp(try r.u8_(), 1, 100), .release),
+            .viewer_slow => {
+                const kind = try r.u8_();
+                const floor = try r.u8_();
+                if (kind > proto.kind_camera) return;
+                cl.viewer_slow[kind].store(std.math.clamp(floor, 1, 100), .release);
+            },
             .audio => {
                 const v = cl.viewRetained(try r.u32_()) orelse return;
                 defer v.release();
@@ -764,14 +883,58 @@ pub const Client = struct {
                 _ = try r.u64_(); // hora da captura
                 v.pushAudio(r.rest());
             },
-            .keyreq => cl.keyreq.store(true, .release),
+            .keyreq => {
+                const kind: u8 = r.u8_() catch proto.kind_screen;
+                if (kind > proto.kind_camera) return;
+                cl.keyreq[kind].store(true, .release);
+            },
             .pong => {
                 const t = try r.u64_();
                 const server_us = try r.u64_();
                 cl.onPong(t, server_us);
             },
+            .notice => {
+                var n: Notice = .{ .kind = try r.u8_(), .extra = 0, .text = undefined, .len = 0 };
+                copyInto(&n.text, &n.len, try r.str());
+                n.extra = r.u8_() catch 0;
+                cl.mutex.lock();
+                defer cl.mutex.unlock();
+                if (cl.notices.items.len < 32) try cl.notices.append(gpa, n);
+            },
+            .pointer => {
+                const from = try r.u32_();
+                const stream = try r.u32_();
+                const x = try r.u16_();
+                const y = try r.u16_();
+                const flags = try r.u8_();
+                const now = sync.nowUs();
+                cl.mutex.lock();
+                defer cl.mutex.unlock();
+                const found = for (cl.pointers.items) |*p| {
+                    if (p.from == from) break p;
+                } else null;
+                const p = found orelse blk: {
+                    if (cl.pointers.items.len >= 64) return;
+                    try cl.pointers.append(gpa, .{ .from = from, .stream = stream, .x = 0, .y = 0, .flags = 0, .at_us = 0, .ping_us = 0 });
+                    break :blk &cl.pointers.items[cl.pointers.items.len - 1];
+                };
+                p.stream = stream;
+                p.x = x;
+                p.y = y;
+                p.flags = flags;
+                p.at_us = now;
+                if (flags & proto.pointer_ping != 0) p.ping_us = now;
+            },
             else => {},
         }
+    }
+
+    /// Próximo aviso do admin pra UI (null = nenhum).
+    pub fn takeNotice(cl: *Client) ?Notice {
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        if (cl.notices.items.len == 0) return null;
+        return cl.notices.orderedRemove(0);
     }
 
     pub fn sendChat(cl: *Client, text: []const u8) void {
@@ -782,10 +945,11 @@ pub const Client = struct {
         cl.queue.pushOwned(b.finish() catch return);
     }
 
-    pub fn sendWatch(cl: *Client, target: u32, on: bool) void {
-        const m = proto.Msg.alloc(.watch, 5) catch return;
-        std.mem.writeInt(u32, m.payload()[0..4], target, .little);
+    pub fn sendWatch(cl: *Client, stream: u32, on: bool, opts: u8) void {
+        const m = proto.Msg.alloc(.watch, 6) catch return;
+        std.mem.writeInt(u32, m.payload()[0..4], stream, .little);
         m.payload()[4] = @intFromBool(on);
+        m.payload()[5] = opts;
         cl.queue.pushOwned(m);
     }
 
@@ -809,6 +973,18 @@ pub const Client = struct {
         const m = proto.Msg.alloc(.voice_state, 1) catch return;
         m.payload()[0] = flags;
         cl.queue.pushOwned(m);
+    }
+
+    /// Ponteiro "olha aqui" sobre uma transmissão (x, y em 0..65534; proto.coord_none esconde).
+    pub fn sendPointer(cl: *Client, stream: u32, x: u16, y: u16, flags: u8) void {
+        if (!cl.welcomed.load(.acquire)) return;
+        const m = proto.Msg.alloc(.pointer, 9) catch return;
+        const pl = m.payload();
+        std.mem.writeInt(u32, pl[0..4], stream, .little);
+        std.mem.writeInt(u16, pl[4..6], x, .little);
+        std.mem.writeInt(u16, pl[6..8], y, .little);
+        pl[8] = flags;
+        cl.queue.pushUrgentOwned(m);
     }
 
     /// Alguém falando agora (pra bolinha verde em volta do avatar).
@@ -835,17 +1011,17 @@ pub const Client = struct {
     }
 
     /// Pede um quadro completo de quem estamos assistindo (perdemos a referência).
-    pub fn sendKeyreq(cl: *Client, target: u32) void {
+    pub fn sendKeyreq(cl: *Client, stream: u32) void {
         const m = proto.Msg.alloc(.keyreq, 4) catch return;
-        std.mem.writeInt(u32, m.payload()[0..4], target, .little);
+        std.mem.writeInt(u32, m.payload()[0..4], stream, .little);
         cl.queue.pushOwned(m);
     }
 
-    /// Transmissor: frame `seq` entrou na fila de envio.
-    pub fn frameSent(cl: *Client, seq: u32, key: bool) void {
+    /// Transmissor: frame `seq` (tela ou câmera) entrou na fila de envio.
+    pub fn frameSent(cl: *Client, kind: u8, seq: u32, key: bool) void {
         cl.inflight_mutex.lock();
         defer cl.inflight_mutex.unlock();
-        cl.inflight.sent(seq, sync.nowUs(), key);
+        cl.inflight[kind].sent(seq, sync.nowUs(), key);
     }
 
     pub const Uplink = struct {
@@ -853,48 +1029,56 @@ pub const Client = struct {
         key_allowance_us: u64, // quanto disso se explica por um IDR recente
     };
 
-    /// Transmissor: atraso que nosso upload está acumulando.
-    pub fn uplink(cl: *Client) Uplink {
+    /// Transmissor: atraso que nosso upload está acumulando (por tipo de transmissão).
+    pub fn uplink(cl: *Client, kind: u8) Uplink {
         cl.inflight_mutex.lock();
         defer cl.inflight_mutex.unlock();
         const now = sync.nowUs();
-        return .{ .excess_us = cl.inflight.excessUs(now, 300_000), .key_allowance_us = cl.inflight.keyAllowanceUs(now) };
+        return .{ .excess_us = cl.inflight[kind].excessUs(now, 300_000), .key_allowance_us = cl.inflight[kind].keyAllowanceUs(now) };
     }
 
     /// Transmissor: começou uma transmissão nova (seq volta pra 0).
-    pub fn resetInflight(cl: *Client) void {
+    pub fn resetInflight(cl: *Client, kind: u8) void {
         cl.inflight_mutex.lock();
         defer cl.inflight_mutex.unlock();
-        cl.inflight.reset();
+        cl.inflight[kind].reset();
     }
 
-    pub fn kick(cl: *Client, target: u32) void {
-        const m = proto.Msg.alloc(.kick, 4) catch return;
-        std.mem.writeInt(u32, m.payload()[0..4], target, .little);
+    /// Ação de admin (proto.admin_*). O servidor confere se a gente pode.
+    pub fn admin(cl: *Client, action: u8, target: u32, value: u8) void {
+        const m = proto.Msg.alloc(.admin, 6) catch return;
+        const pl = m.payload();
+        pl[0] = action;
+        std.mem.writeInt(u32, pl[1..5], target, .little);
+        pl[5] = value;
         cl.queue.pushOwned(m);
     }
 
-    /// Acha a view de um transmissor e segura uma referência (a UI pode parar
-    /// de assistir a qualquer momento).
-    fn viewRetained(cl: *Client, owner: u32) ?*View {
+    pub fn kick(cl: *Client, target: u32) void {
+        cl.admin(proto.admin_kick, target, 0);
+    }
+
+    /// Acha a view de um stream e segura uma referência (a UI pode parar de
+    /// assistir a qualquer momento).
+    fn viewRetained(cl: *Client, stream: u32) ?*View {
         cl.mutex.lock();
         defer cl.mutex.unlock();
-        for (cl.views.items) |v| if (v.owner == owner) return v.retain();
+        for (cl.views.items) |v| if (v.stream == stream) return v.retain();
         return null;
     }
 
-    pub fn findView(cl: *Client, owner: u32) ?*View {
+    pub fn findView(cl: *Client, stream: u32) ?*View {
         cl.mutex.lock();
         defer cl.mutex.unlock();
-        for (cl.views.items) |v| if (v.owner == owner) return v;
+        for (cl.views.items) |v| if (v.stream == stream) return v;
         return null;
     }
 
-    /// Começa a assistir alguém. Retorna a view (a UI fica com uma referência).
-    pub fn watch(cl: *Client, owner: u32) !*View {
-        if (cl.findView(owner)) |v| return v;
+    /// Começa a assistir um stream. Retorna a view (a UI fica com uma referência).
+    pub fn watch(cl: *Client, stream: u32, opts: u8) !*View {
+        if (cl.findView(stream)) |v| return v;
         const v = try gpa.create(View);
-        v.* = .{ .owner = owner, .client = cl.retain() };
+        v.* = .{ .stream = stream, .client = cl.retain() };
         sync.spawn(View.decodeLoop, .{v}) catch {
             cl.release();
             gpa.destroy(v);
@@ -903,7 +1087,7 @@ pub const Client = struct {
         cl.mutex.lock();
         cl.views.append(gpa, v) catch {};
         cl.mutex.unlock();
-        cl.sendWatch(owner, true);
+        cl.sendWatch(stream, true, opts);
         return v;
     }
 
@@ -912,7 +1096,7 @@ pub const Client = struct {
         cl.mutex.lock();
         if (std.mem.findScalar(*View, cl.views.items, v)) |i| _ = cl.views.orderedRemove(i);
         cl.mutex.unlock();
-        cl.sendWatch(v.owner, false);
+        cl.sendWatch(v.stream, false, 0);
         v.shutdown();
         v.release();
     }

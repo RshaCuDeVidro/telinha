@@ -18,7 +18,10 @@ const codec = @import("codec.zig");
 const audio = @import("audio.zig");
 const RateControl = @import("ratectl.zig").RateControl;
 const Client = @import("client.zig").Client;
-const c = @cImport(@cInclude("capture.h"));
+const c = @cImport({
+    @cInclude("capture.h");
+    @cInclude("camera.h");
+});
 const gpa = proto.gpa;
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
@@ -69,6 +72,7 @@ const Timing = struct {
 
 pub const Settings = struct {
     source: i32 = 0,
+    camera_id: [160]u8 = [_]u8{0} ** 160, // câmera (vazio = a primeira)
     fps: u32 = 30,
     quality: u8 = 60, // 20..100
     max_height: u32 = 0, // 0 = resolução original
@@ -76,6 +80,7 @@ pub const Settings = struct {
     mode: codec.Mode = .screen,
     hardware: bool = true, // tenta NVENC antes do encoder em software
     audio: bool = true, // compartilha o som do computador
+    kind: u8 = proto.kind_screen, // tela ou câmera (não muda com a transmissão rolando)
 };
 
 /// Taxa de bits alvo pra uma resolução/fps/qualidade.
@@ -109,6 +114,8 @@ const Slot = struct {
     w: u32 = 0,
     h: u32 = 0,
     ts: u64 = 0, // hora da captura (relógio da sala)
+    cursor_x: u16 = proto.coord_none, // ponta do cursor no quadro (0..65534)
+    cursor_y: u16 = proto.coord_none,
 
     fn ensure(s: *Slot, w: u32, h: u32) !void {
         const n = @as(usize, w) * h;
@@ -147,6 +154,7 @@ const Slot = struct {
 pub const Sharer = struct {
     refs: std.atomic.Value(u32) = .init(2), // UI + thread de captura
     client: *Client,
+    kind: u8, // tela ou câmera (fixo)
     stop_flag: std.atomic.Value(bool) = .init(false),
 
     mutex: sync.Mutex = .{},
@@ -180,7 +188,7 @@ pub const Sharer = struct {
 
     pub fn start(client: *Client, settings: Settings) !*Sharer {
         const s = try gpa.create(Sharer);
-        s.* = .{ .client = client.retain(), .settings = settings };
+        s.* = .{ .client = client.retain(), .settings = settings, .kind = settings.kind };
         sync.spawn(run, .{s}) catch {
             client.release();
             gpa.destroy(s);
@@ -257,16 +265,44 @@ pub const Sharer = struct {
         enc_thread.join();
 
         // avisa a sala que parou
-        if (proto.simple(.stream_stop)) |m| s.client.queue.pushOwned(m) else |_| {}
+        if (proto.Msg.alloc(.stream_stop, 1)) |m| {
+            m.payload()[0] = s.kind;
+            s.client.queue.pushOwned(m);
+        } else |_| {}
         s.mutex.lock();
         if (s.state != .failed) s.state = .stopped;
         s.mutex.unlock();
     }
 };
 
+/// De onde vêm os quadros: a tela ou a câmera (as duas entregam BGRX).
+const Source = union(enum) {
+    screen: *c.cap_ctx,
+    camera: *c.cam_ctx,
+
+    fn next(src: Source, f: *c.cap_frame, timeout_ms: c_int, err: []u8) c_int {
+        return switch (src) {
+            .screen => |x| c.cap_next(x, f, timeout_ms, err.ptr, @intCast(err.len)),
+            .camera => |x| c.cam_next(x, f, timeout_ms, err.ptr, @intCast(err.len)),
+        };
+    }
+    fn backend(src: Source) [*:0]const u8 {
+        return switch (src) {
+            .screen => |x| c.cap_backend(x),
+            .camera => |x| c.cam_backend(x),
+        };
+    }
+    fn close(src: Source) void {
+        switch (src) {
+            .screen => |x| c.cap_close(x),
+            .camera => |x| c.cam_close(x),
+        }
+    }
+};
+
 const Pipeline = struct {
     s: *Sharer,
-    cap: ?*c.cap_ctx = null,
+    cap: ?Source = null,
     event_driven: bool = false, // PipeWire/DXGI só entregam quadro quando algo muda
     err: [256]u8 = [_]u8{0} ** 256,
     settings: Settings = .{},
@@ -281,6 +317,8 @@ const Pipeline = struct {
     w: u32 = 0,
     h: u32 = 0,
     fmt: codec.PixelFormat = .bgrx,
+    cursor_x: u16 = proto.coord_none,
+    cursor_y: u16 = proto.coord_none,
 
     // fila de 3 slots entre captura e encode
     mutex: sync.Mutex = .{},
@@ -307,7 +345,7 @@ const Pipeline = struct {
 
     fn deinit(p: *Pipeline) void {
         if (p.audio_sender) |a| a.destroy();
-        if (p.cap) |cp| c.cap_close(cp);
+        if (p.cap) |cp| cp.close();
         gpa.free(p.cur);
         gpa.free(p.prev);
         gpa.free(p.preview_back);
@@ -318,7 +356,15 @@ const Pipeline = struct {
         const s = p.s;
         p.settings = s.settings;
         p.applySettings();
-        p.cap = c.cap_open(p.settings.source, @intFromBool(p.settings.cursor), @intCast(std.math.clamp(p.settings.fps, 1, 60)), &p.err, p.err.len) orelse return error.Capture;
+        const fps: c_int = @intCast(std.math.clamp(p.settings.fps, 1, 60));
+        if (s.kind == proto.kind_camera) {
+            const want_h: c_int = if (p.settings.max_height > 0) @intCast(p.settings.max_height) else 720;
+            const cam = c.cam_open(@ptrCast(&p.settings.camera_id), @divTrunc(want_h * 16, 9), want_h, fps, &p.err, p.err.len) orelse return error.Capture;
+            p.cap = .{ .camera = cam };
+        } else {
+            const cap = c.cap_open(p.settings.source, @intFromBool(p.settings.cursor), fps, &p.err, p.err.len) orelse return error.Capture;
+            p.cap = .{ .screen = cap };
+        }
         if (p.settings.hardware) {
             var err: [256]u8 = undefined;
             if (codec.HwEncoder.init(.{ .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000 }, &err)) |probe| {
@@ -329,9 +375,10 @@ const Pipeline = struct {
                 if (debugEnabled()) std.debug.print("[telinha] sem encoder em hardware: {s}\n", .{std.mem.sliceTo(&err, 0)});
             }
         }
-        const b = std.mem.span(c.cap_backend(p.cap));
-        p.event_driven = std.mem.eql(u8, b, "PipeWire") or std.mem.eql(u8, b, "DXGI");
-        if (p.settings.audio) {
+        const b = std.mem.span(p.cap.?.backend());
+        // PipeWire/DXGI/câmera só entregam quadro quando tem um novo
+        p.event_driven = s.kind == proto.kind_camera or std.mem.eql(u8, b, "PipeWire") or std.mem.eql(u8, b, "DXGI");
+        if (p.settings.audio and s.kind == proto.kind_screen) {
             var err: [160]u8 = undefined;
             if (audio.Sender.create(p, onAudioPacket, &err)) |a| {
                 p.audio_sender = a;
@@ -387,14 +434,17 @@ const Pipeline = struct {
                 continue;
             }
 
-            var f: c.cap_frame = undefined;
+            var f: c.cap_frame = std.mem.zeroes(c.cap_frame);
             const t_cap = sync.nowUs();
-            const r = c.cap_next(p.cap, &f, 50, &p.err, p.err.len);
+            const r = p.cap.?.next(&f, 50, &p.err);
             if (r < 0) return error.Capture;
             if (r == 0) {
                 // o compositor manda o primeiro quadro na hora, mesmo com a tela parada
                 if (!got_any and sync.nowUs() - started_us > 10_000_000) {
-                    const msg = "A imagem da tela não chegou (o compositor aceitou compartilhar, mas não mandou nenhum quadro). Tenta de novo; se continuar, reinicia o xdg-desktop-portal.";
+                    const msg = if (s.kind == proto.kind_camera)
+                        "A câmera não mandou nenhuma imagem (outro programa está usando ela?)."
+                    else
+                        "A imagem da tela não chegou (o compositor aceitou compartilhar, mas não mandou nenhum quadro). Tenta de novo; se continuar, reinicia o xdg-desktop-portal.";
                     @memcpy(p.err[0..msg.len], msg);
                     p.err[msg.len] = 0;
                     return error.Capture;
@@ -441,6 +491,8 @@ const Pipeline = struct {
         const sl = &p.slots[idx];
         sl.ts = ts;
         sl.fmt = p.fmt;
+        sl.cursor_x = p.cursor_x;
+        sl.cursor_y = p.cursor_y;
         const t0 = sync.nowUs();
         if (p.use_hw.load(.acquire)) {
             // hardware: o encoder recebe BGRX direto
@@ -602,6 +654,13 @@ const Pipeline = struct {
         };
         sync.pool.run(bands, &ctx, scaleBand);
 
+        // ponta do cursor, relativa ao quadro (quem assiste dá zoom seguindo ela)
+        p.cursor_x = proto.coord_none;
+        p.cursor_y = proto.coord_none;
+        if (f.cursor_known != 0 and f.cursor_px >= 0 and f.cursor_py >= 0 and f.cursor_px < f.width and f.cursor_py < f.height) {
+            p.cursor_x = @intCast(@divTrunc(@as(i64, f.cursor_px) * 65534, @max(1, f.width - 1)));
+            p.cursor_y = @intCast(@divTrunc(@as(i64, f.cursor_py) * 65534, @max(1, f.height - 1)));
+        }
         if (f.cursor_draw != 0) {
             const sx = @as(f32, @floatFromInt(ow)) / @as(f32, @floatFromInt(if (exact) ow else sw));
             const sy = @as(f32, @floatFromInt(oh)) / @as(f32, @floatFromInt(if (exact) oh else sh));
@@ -628,7 +687,8 @@ const Pipeline = struct {
         var msg: proto.Builder = .{};
         defer msg.deinit();
         var seq: u32 = 0;
-        s.client.resetInflight();
+        const kind = s.kind;
+        s.client.resetInflight(kind);
         var bw: RateControl = .{};
         var stat_since = sync.nowUs();
         var stat_frames: u32 = 0;
@@ -637,12 +697,12 @@ const Pipeline = struct {
         while (true) {
             // espera um quadro novo (ou um pedido de IDR)
             p.mutex.lock();
-            while (p.ready == null and !p.quit and !s.client.keyreq.load(.acquire)) p.cond.timedWait(&p.mutex, 50);
+            while (p.ready == null and !p.quit and !s.client.keyreq[kind].load(.acquire)) p.cond.timedWait(&p.mutex, 50);
             if (p.quit) {
                 p.mutex.unlock();
                 return;
             }
-            const key = s.client.keyreq.swap(false, .acq_rel);
+            const key = s.client.keyreq[kind].swap(false, .acq_rel);
             const idx: ?usize = if (p.ready) |r| r else if (key) p.last else null;
             p.ready_was_null = p.ready == null;
             if (p.ready != null) p.ready = null;
@@ -666,17 +726,17 @@ const Pipeline = struct {
 
             // controle de banda: atraso de ponta a ponta crescendo = o
             // caminho até o servidor não está dando conta
-            const up = s.client.uplink();
+            const up = s.client.uplink(kind);
             if (enc != null and bw.congested(.{
                 .now_us = sync.nowUs(),
                 .excess_us = up.excess_us,
                 .key_allowance_us = up.key_allowance_us,
                 .queued_bytes = s.client.queue.queuedBytes(),
-                .slow_floor_pct = s.client.viewer_slow.swap(0, .acq_rel),
+                .slow_floor_pct = s.client.viewer_slow[kind].swap(0, .acq_rel),
             })) {
                 if (bw.takeChange()) |b| enc.?.setBitrate(b);
                 _ = p.timing.skipped.fetchAdd(1, .monotonic);
-                if (key) s.client.keyreq.store(true, .release);
+                if (key) s.client.keyreq[kind].store(true, .release);
                 p.doneWith(i, false);
                 continue;
             }
@@ -703,7 +763,7 @@ const Pipeline = struct {
                         if (debugEnabled()) std.debug.print("[telinha] NVENC falhou ({s}), usando software\n", .{std.mem.sliceTo(&err, 0)});
                         p.use_hw.store(false, .release);
                         p.doneWith(i, false);
-                        s.client.keyreq.store(true, .release);
+                        s.client.keyreq[kind].store(true, .release);
                         continue;
                     }
                 } else {
@@ -717,7 +777,7 @@ const Pipeline = struct {
                 s.w = sl.w;
                 s.h = sl.h;
                 s.mutex.unlock();
-                announce(s, sl.w, sl.h, fps, p.audio_sender != null);
+                announce(s, kind, sl.w, sl.h, fps, p.audio_sender != null);
             }
             bw.rampUp(sync.nowUs(), up.excess_us -| up.key_allowance_us);
             if (bw.takeChange()) |b| enc.?.setBitrate(b);
@@ -730,7 +790,7 @@ const Pipeline = struct {
                 enc.?.deinit();
                 enc = null;
                 p.use_hw.store(false, .release);
-                s.client.keyreq.store(true, .release);
+                s.client.keyreq[kind].store(true, .release);
                 break :blk null;
             } orelse {
                 if (enc != null) _ = p.timing.enc_dropped.fetchAdd(1, .monotonic);
@@ -742,16 +802,19 @@ const Pipeline = struct {
             seq +%= 1;
             try msg.begin(.frame);
             try msg.u32_(frame_seq);
-            try msg.u8_(if (is_key) proto.frame_key else if (codec.isDroppable(out.items)) proto.frame_droppable else 0);
+            const cam: u8 = if (kind == proto.kind_camera) proto.frame_camera else 0;
+            try msg.u8_(cam | if (is_key) proto.frame_key else if (codec.isDroppable(out.items)) proto.frame_droppable else 0);
             try msg.u64_(if (resend) s.client.serverNowUs() else sl.ts);
             try msg.u16_(@intCast(sl.w));
             try msg.u16_(@intCast(sl.h));
+            try msg.u16_(sl.cursor_x);
+            try msg.u16_(sl.cursor_y);
             try msg.bytes(out.items);
             const m = try msg.finish();
             stat_bytes += m.data.len;
             stat_frames += 1;
             // registra antes de enfileirar: a confirmação pode voltar muito rápido
-            s.client.frameSent(frame_seq, is_key);
+            s.client.frameSent(kind, frame_seq, is_key);
             s.client.queue.pushOwned(m);
             p.doneWith(i, true);
             const enc_us = sync.nowUs() - t0;
@@ -787,13 +850,14 @@ const Pipeline = struct {
         if (encoded) p.last = idx;
     }
 
-    fn announce(s: *Sharer, w: u32, h: u32, fps: u32, with_audio: bool) void {
-        const m = proto.Msg.alloc(.stream_start, 6) catch return;
+    fn announce(s: *Sharer, kind: u8, w: u32, h: u32, fps: u32, with_audio: bool) void {
+        const m = proto.Msg.alloc(.stream_start, 7) catch return;
         const pl = m.payload();
-        std.mem.writeInt(u16, pl[0..2], @intCast(w), .little);
-        std.mem.writeInt(u16, pl[2..4], @intCast(h), .little);
-        pl[4] = @intCast(fps);
-        pl[5] = if (with_audio) proto.stream_audio else 0;
+        pl[0] = kind;
+        std.mem.writeInt(u16, pl[1..3], @intCast(w), .little);
+        std.mem.writeInt(u16, pl[3..5], @intCast(h), .little);
+        pl[5] = @intCast(fps);
+        pl[6] = if (with_audio) proto.stream_audio else 0;
         s.client.queue.pushOwned(m);
     }
 

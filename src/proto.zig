@@ -1,14 +1,18 @@
-//! Protocolo da sala (versão 5). Ver docs/PROTOCOL.md.
+//! Protocolo da sala (versão 6). Ver docs/PROTOCOL.md.
 //!
 //! No fio: handshake em claro (crypto.zig) e depois mensagens
 //!     u32 tamanho | ChaCha20-Poly1305( u8 tipo | payload ) | tag(16)
 //! Inteiros little-endian, strings = u16 tamanho + bytes UTF-8.
+//!
+//! Cada pessoa pode ter duas transmissões: a tela e a câmera. Uma transmissão
+//! é identificada por um "stream" de 32 bits: o id da pessoa, com o bit de
+//! cima ligado se for a câmera (ver streamId).
 const std = @import("std");
 const sync = @import("sync.zig");
 const net = @import("net.zig");
 const crypto = @import("crypto.zig");
 
-pub const version: u16 = 5;
+pub const version: u16 = 6;
 pub const max_msg = 32 * 1024 * 1024;
 /// Marcador em claro no lugar do tamanho: "senha errada" (o servidor não
 /// conseguiu decifrar a primeira mensagem).
@@ -16,36 +20,102 @@ pub const wrong_password_marker: u32 = 0xFFFF_FFFF;
 pub const gpa = std.heap.c_allocator;
 
 pub const Type = enum(u8) {
-    hello = 1, // C→S str nome, str token_admin
-    welcome = 2, // S→C u32 meu_id, str nome_da_sala, u8 sou_admin, u64 relógio_do_servidor_us
-    denied = 3, // S→C str motivo
-    members = 4, // S→C u16 n, n×{u32 id, str nome, u8 flags, u16 w, u16 h, u8 fps, u16 k, k×u32 assistindo}
-    chat = 5, // C→S str texto | S→C u32 de (0 = sistema), str nome, str texto
-    stream_start = 6, // C→S u16 w, u16 h, u8 fps, u8 flags (1 = com áudio)
-    stream_stop = 7, // C→S
-    frame = 8, // C→S frame | S→C u32 de + frame
-    watch = 9, // C→S u32 alvo, u8 ligado
-    keyreq = 10, // S→C manda um quadro completo (IDR)
+    hello = 1, // C→S str nome, str token_admin, u64 chave_do_cliente (aleatória, guardada na config: banimento)
+    welcome = 2, // S→C u32 meu_id, str nome_da_sala, u8 sou_admin, u64 relógio_us, u64 instância_do_servidor, u8 rota (por onde eu cheguei)
+    denied = 3, // S→C str motivo, u8 código (deny_*): a conexão vai cair e não adianta reconectar
+    members = 4, // S→C u8 sala (room_*), u16 n, n×Member (ver docs/PROTOCOL.md)
+    chat = 5, // C→S str texto | S→C u32 id, u32 de (0 = sistema), str nome, str texto, u64 hora (relógio da sala, µs), u8 flags (chat_*)
+    stream_start = 6, // C→S u8 tipo (kind_*), u16 w, u16 h, u8 fps, u8 flags (1 = com áudio)
+    stream_stop = 7, // C→S u8 tipo
+    frame = 8, // C→S frame | S→C u32 stream + frame
+    watch = 9, // C→S u32 stream, u8 ligado, u8 opções (watch_*)
+    keyreq = 10, // S→C u8 tipo: manda um quadro completo (IDR) | C→S u32 stream: perdi a referência
     ping = 11, // C→S u64 t
     pong = 12, // S→C u64 t, u64 relógio_do_servidor_us
-    kick = 13, // C→S u32 alvo (só admin)
-    audio = 14, // C→S áudio | S→C u32 de + áudio
-    ack = 15, // S→C u32 seq (servidor recebeu seu frame) | C→S u32 de, u32 seq (espectador recebeu)
-    viewer_slow = 16, // S→C u8 piso: espectador não dá conta; baixe a taxa (até piso% do alvo)
+    kick = 13, // C→S u32 alvo (só admin; o mesmo que admin/admin_kick)
+    audio = 14, // C→S áudio | S→C u32 stream + áudio
+    ack = 15, // S→C u8 tipo, u32 seq (servidor recebeu seu frame) | C→S u32 stream, u32 seq (espectador recebeu)
+    viewer_slow = 16, // S→C u8 tipo, u8 piso: espectador não dá conta; baixe a taxa (até piso% do alvo)
     voice = 17, // C→S u32 seq, Opus | S→C u32 de, u32 seq, Opus (voz da sala)
     voice_state = 18, // C→S u8 flags (1 = microfone ligado, 2 = surdo)
+    admin = 19, // C→S u8 ação (admin_*), u32 alvo, u8 valor (só admin)
+    notice = 20, // S→C u8 tipo (notice_*), str texto: algo que o admin fez com você
+    pointer = 21, // C→S u32 stream, u16 x, u16 y, u8 flags | S→C u32 de, u32 stream, u16 x, u16 y, u8 flags
     _,
 };
 
-pub const member_streaming: u8 = 1;
+pub const member_streaming: u8 = 1; // transmitindo a tela
 pub const member_admin: u8 = 2;
-pub const member_audio: u8 = 4;
+pub const member_audio: u8 = 4; // a tela vai com o som do computador
 pub const member_mic: u8 = 8; // microfone ligado
 pub const member_deaf: u8 = 16; // não está ouvindo a sala
+pub const member_muted: u8 = 32; // microfone silenciado pelo admin
+pub const member_camera: u8 = 64; // câmera ligada
+
+/// members: estado da sala
+pub const room_locked: u8 = 1; // ninguém novo entra
 
 /// voice_state
 pub const voice_mic: u8 = 1;
 pub const voice_deaf: u8 = 2;
+
+/// Tipos de transmissão (o bit de cima do stream)
+pub const kind_screen: u8 = 0;
+pub const kind_camera: u8 = 1;
+
+pub fn streamId(member: u32, kind: u8) u32 {
+    return (member & 0x7FFF_FFFF) | (@as(u32, kind & 1) << 31);
+}
+pub fn memberOf(stream: u32) u32 {
+    return stream & 0x7FFF_FFFF;
+}
+pub fn kindOf(stream: u32) u8 {
+    return @intCast(stream >> 31);
+}
+
+/// Por onde a pessoa chegou na sala (o servidor vê pelo endereço dela).
+pub const route_unknown: u8 = 0;
+pub const route_local: u8 = 1; // nessa mesma máquina
+pub const route_lan: u8 = 2; // rede local (ou VPN tipo Tailscale)
+pub const route_internet: u8 = 3; // internet, IPv4 (porta aberta no roteador, servidor dedicado)
+pub const route_internet6: u8 = 4; // internet, IPv6
+pub const route_tunnel: u8 = 5; // link público (túnel)
+
+/// denied: por que a conexão vai cair
+pub const deny_generic: u8 = 0;
+pub const deny_kicked: u8 = 1;
+pub const deny_banned: u8 = 2;
+pub const deny_closed: u8 = 3; // o dono fechou a sala
+pub const deny_link_closed: u8 = 4; // o link público por onde a pessoa entrou foi desligado
+pub const deny_locked: u8 = 5;
+pub const deny_full: u8 = 6;
+
+/// admin: ações
+pub const admin_kick: u8 = 1;
+pub const admin_ban: u8 = 2; // expulsa e não deixa voltar enquanto a sala existir
+pub const admin_mute: u8 = 3; // valor 1 = silencia o microfone, 0 = libera
+pub const admin_stop_stream: u8 = 4; // valor = tipo da transmissão
+pub const admin_set_admin: u8 = 5; // valor 1 = vira admin, 0 = deixa de ser
+pub const admin_lock: u8 = 6; // valor 1 = tranca a sala (alvo ignorado)
+
+/// notice
+pub const notice_muted: u8 = 1;
+pub const notice_unmuted: u8 = 2;
+pub const notice_stream_stopped: u8 = 3; // texto + o tipo vai no primeiro byte depois do texto
+pub const notice_admin_on: u8 = 4;
+pub const notice_admin_off: u8 = 5;
+
+/// chat
+pub const chat_history: u8 = 1; // mensagem antiga (quem acabou de entrar): sem som nem notificação
+
+/// watch: opções
+pub const watch_clips: u8 = 1; // guardando os últimos segundos pra clipe: quer IDR de vez em quando
+
+/// pointer
+pub const pointer_visible: u8 = 1;
+pub const pointer_ping: u8 = 2; // clique: chama atenção pro ponto
+/// Coordenada de ponteiro/cursor: 0..65534 = posição relativa no quadro, 0xFFFF = nenhum.
+pub const coord_none: u16 = 0xFFFF;
 
 /// Payload de áudio: u32 seq, u64 hora_da_captura (relógio da sala, µs),
 /// pacote Opus (48 kHz estéreo, 10 ms) até o fim.
@@ -53,19 +123,22 @@ pub const audio_header_len = 4 + 8;
 pub const stream_audio: u8 = 1;
 
 /// Payload de frame: u32 seq, u8 flags, u64 hora_da_captura (relógio do
-/// servidor, µs), u16 w, u16 h, bitstream H.264 (Annex B) até o fim.
+/// servidor, µs), u16 w, u16 h, u16 cursor_x, u16 cursor_y (coord_none = sem
+/// cursor), bitstream H.264 (Annex B) até o fim.
 pub const frame_key: u8 = 1;
 /// Ninguém usa esse quadro de referência (camada temporal de cima): o servidor
 /// pode pular pra quem não está dando conta (metade dos quadros e da banda).
 pub const frame_droppable: u8 = 2;
-pub const frame_header_len = 4 + 1 + 8 + 2 + 2;
+/// Quadro da câmera (não da tela).
+pub const frame_camera: u8 = 0x80;
+pub const frame_header_len = 4 + 1 + 8 + 2 + 2 + 2 + 2;
 
 /// Mensagem pronta pra enviar (em claro; a escritora cifra por conexão),
 /// com contagem de referências: o mesmo frame vai pra vários espectadores.
 pub const Msg = struct {
     refs: std.atomic.Value(u32),
     typ: Type,
-    from: u32 = 0, // remetente de frames encaminhados
+    from: u32 = 0, // frames encaminhados: stream de origem
     flags: u8 = 0, // frames encaminhados: frame_key / frame_droppable
     data: []u8, // u32 (reservado) + tipo + payload
 
@@ -323,6 +396,7 @@ pub const SendQueue = struct {
     head: usize = 0,
     bytes: usize = 0,
     closed: bool = false,
+    sending: bool = false, // a escritora tirou uma mensagem e ainda está mandando
     sent_bytes: std.atomic.Value(u64) = .init(0),
 
     pub fn push(q: *SendQueue, m: *Msg) void {
@@ -359,7 +433,7 @@ pub const SendQueue = struct {
     }
 
     fn isUrgent(t: Type) bool {
-        return t == .ack or t == .viewer_slow or t == .voice;
+        return t == .ack or t == .viewer_slow or t == .voice or t == .pointer;
     }
 
     pub fn pushUrgentOwned(q: *SendQueue, m: *Msg) void {
@@ -371,6 +445,13 @@ pub const SendQueue = struct {
     pub fn pushOwned(q: *SendQueue, m: *Msg) void {
         q.push(m);
         m.release();
+    }
+
+    /// Tudo o que entrou na fila já foi entregue ao sistema (ou a escritora morreu).
+    pub fn flushed(q: *SendQueue) bool {
+        q.mutex.lock();
+        defer q.mutex.unlock();
+        return q.closed or (q.head == q.items.items.len and !q.sending);
     }
 
     pub fn queuedBytes(q: *SendQueue) usize {
@@ -427,6 +508,7 @@ pub const SendQueue = struct {
         while (q.head == q.items.items.len and !q.closed) q.cond.wait(&q.mutex);
         if (q.closed) return null;
         const m = q.items.items[q.head];
+        q.sending = true;
         q.head += 1;
         if (q.head == q.items.items.len) {
             q.head = 0;
@@ -434,6 +516,12 @@ pub const SendQueue = struct {
         }
         q.bytes -= m.data.len;
         return m;
+    }
+
+    fn doneSending(q: *SendQueue) void {
+        q.mutex.lock();
+        defer q.mutex.unlock();
+        q.sending = false;
     }
 
     pub fn close(q: *SendQueue) void {
@@ -460,15 +548,18 @@ pub const SendQueue = struct {
             defer m.release();
             const plain = m.data[4..];
             out.resize(gpa, 4 + plain.len + crypto.tag_len) catch {
+                q.close();
                 net.shutdown(s);
                 return;
             };
             std.mem.writeInt(u32, out.items[0..4], @intCast(plain.len + crypto.tag_len), .little);
             ch.seal(plain, out.items[4..]);
             net.sendAll(s, out.items) catch {
+                q.close(); // ninguém espera por uma escritora morta
                 net.shutdown(s);
                 return;
             };
+            q.doneSending();
             _ = q.sent_bytes.fetchAdd(out.items.len, .monotonic);
             if (out.capacity > 4 * 1024 * 1024 and out.items.len < 256 * 1024) out.shrinkAndFree(gpa, out.items.len);
         }

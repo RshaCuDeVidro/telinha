@@ -101,9 +101,13 @@ int cap_list_sources(cap_source *out, int max) {
 // Cursor: copia o pedaço da tela pra um DIB pequeno, DrawIconEx por cima e copia de volta.
 // Funciona com qualquer tipo de cursor (colorido, monocromático, animado).
 
-static void draw_cursor(struct cap_ctx *c, uint8_t *buf) {
+static void draw_cursor(struct cap_ctx *c, uint8_t *buf, cap_frame *out) {
     CURSORINFO ci = {.cbSize = sizeof ci};
+    out->cursor_known = 0;
     if (!GetCursorInfo(&ci) || !(ci.flags & CURSOR_SHOWING) || !ci.hCursor) return;
+    out->cursor_known = 1;
+    out->cursor_px = ci.ptScreenPos.x - c->rc.left;
+    out->cursor_py = ci.ptScreenPos.y - c->rc.top;
     ICONINFO ii;
     if (!GetIconInfo(ci.hCursor, &ii)) return;
     int hx = (int)ii.xHotspot, hy = (int)ii.yHotspot;
@@ -278,7 +282,8 @@ static int next_dxgi(struct cap_ctx *c, cap_frame *out, int timeout_ms, char *er
     if (!changed) return 0;
 
     memcpy(c->out, c->clean, (size_t)c->w * c->h * 4);
-    if (c->show_cursor) draw_cursor(c, c->out);
+    out->cursor_known = 0;
+    if (c->show_cursor) draw_cursor(c, c->out, out);
     out->data = c->out;
     out->width = c->w;
     out->height = c->h;
@@ -313,7 +318,8 @@ static int next_gdi(struct cap_ctx *c, cap_frame *out, char *err, int errlen) {
     }
     GdiFlush();
     memcpy(c->out, c->dib_bits, (size_t)c->w * c->h * 4);
-    if (c->show_cursor) draw_cursor(c, c->out);
+    out->cursor_known = 0;
+    if (c->show_cursor) draw_cursor(c, c->out, out);
     out->data = c->out;
     out->width = c->w;
     out->height = c->h;

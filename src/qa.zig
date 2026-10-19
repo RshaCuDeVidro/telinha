@@ -64,6 +64,7 @@ fn writeItems(win: *c.GLFWwindow) !void {
         const it = &items[i];
         const label = std.mem.sliceTo(&it.label, 0);
         const window = std.mem.sliceTo(&it.window, 0);
+        if (it.hidden != 0) continue;
         try w.print("{f}\t{f}\t{d}\t{d:.0}\t{d:.0}\t{d:.0}\t{d:.0}\t{d:.0}\t{d:.0}\t{d:.0}\t{d:.0}\t{d}\n", .{
             clean(label), clean(window), it.id, it.x0, it.y0, it.x1, it.y1, it.cx0, it.cy0, it.cx1, it.cy1, it.status,
         });
