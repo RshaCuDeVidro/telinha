@@ -4,36 +4,47 @@
  transmissor                              servidor da sala                     espectadores
  ───────────                              ────────────────                     ────────────
  thread de captura                        por conexão:                         por transmissão assistida:
-   captura (PipeWire/X11/DXGI/GDI)          thread leitora ──┐                   thread leitora (rede, confirma)
+   tela/câmera (PipeWire/X11/DXGI/WGC)      thread leitora ──┐                   thread leitora (rede, confirma)
      │ acorda quando a tela muda            thread escritora ◄┤ fila própria       │
    escala (pool, por faixas)                                 │ (descarta se     fila (máx. 150 ms)
      │                                    frame recebido ────┘   atrasou)          │
-   NVENC: entrega o BGRX (troca ponteiro)   1 alocação, N referências            thread de decode
+   GPU: entrega o BGRX (troca ponteiro)     1 alocação, N referências            thread de decode
    software: BGRX → I420 (SIMD, pool)       só pra quem assiste                    │ H.264 → I420 (openh264)
      │  ─ 3 slots: o encoder pega sempre o quadro mais novo ─                      │ I420 → RGBA (SIMD, pool)
  thread de encode                                                                  ▼
-   H.264: NVENC (GPU) ou openh264 (CPU, fatias em threads)                      UI: sobe pra GPU, desenha
+   H.264: NVENC/MF (GPU) ou openh264 (CPU, fatias em threads)                   UI: sobe pra GPU, desenha
      │
    fila de envio ── controle de taxa ──► TCP + ChaCha20-Poly1305 ─────────────►
         ▲                                     │                                    │
         └──── ack de cada frame ──────────────┘ ◄──── ack de cada frame ───────────┘
 ```
 
+A tela e a câmera de cada pessoa são duas transmissões independentes (um
+`Sharer` e um stream cada, ver [PROTOCOL.md](PROTOCOL.md)), com o mesmo
+pipeline, o mesmo controle de taxa e confirmações separadas.
+
 ## Módulos
 
 | arquivo | responsabilidade |
 |---|---|
-| `src/main.zig` | janela (GLFW), OpenGL, fontes, loop principal que dorme quando nada acontece |
+| `src/main.zig` | janela (GLFW), OpenGL, loop principal que dorme quando nada acontece; saída com `sync.hardExit` |
 | `src/ui.zig` | toda a interface (Dear ImGui via cimgui) |
+| `src/fonts.zig` | fontes embutidas (Inter + ícones); cada contexto do ImGui carrega as suas |
+| `src/pip.zig` | janela flutuante: segunda janela do GLFW com contexto GL compartilhado e ImGui próprio |
 | `src/client.zig` | conexão com a sala, estado (membros, chat, relógio), `View` = transmissão assistida |
-| `src/sharer.zig` | thread de transmissão: captura → escala → encode → envio |
+| `src/connect.zig` | convite com vários endereços e a corrida entre eles (o primeiro que responder como sala ganha) |
+| `src/sharer.zig` | thread de transmissão (tela ou câmera): captura → escala → encode → envio |
+| `src/clip.zig` | últimos ~30 s de cada transmissão (clipe) e gravação em andamento; pasta dos vídeos |
+| `src/mp4.zig` | escritor de MP4 (H.264 + Opus, sem recodificar): clipe com `moov` no começo, gravação fragmentada |
 | `src/ratectl.zig` | controle de taxa de bits pelo atraso de ponta a ponta |
 | `src/server.zig` | servidor da sala (embutido no app ou no `telinha-server`) |
 | `src/server_main.zig` | executável do servidor dedicado |
 | `src/tunnel.zig` | link público: cliente do protocolo do bore; cada visitante vira uma conexão da sala |
 | `src/upnp.zig` | porta aberta no roteador (UPnP IGD: SSDP + SOAP), com aviso de CGNAT |
-| `src/codec.zig` | wrapper do openh264 e do NVENC + conversões de cor vetorizadas |
+| `src/codec.zig` | wrapper do openh264 e do encoder em hardware + conversões de cor vetorizadas |
+| `src/c/hwenc.c` | escolhe o encoder em hardware: NVENC → Media Foundation (Windows) → nenhum (openh264) |
 | `src/c/hwenc_nvenc.c` | encoder em hardware NVIDIA (API NVENC 11.1, carregada em runtime) |
+| `src/c/hwenc_mf.c` | Windows: encoder H.264 em hardware de qualquer placa (MFT do Media Foundation: Intel, AMD, NVIDIA) |
 | `src/c/hwdec_nvdec.c` | decoder em hardware NVIDIA (NVDEC/nvcuvid, carregado em runtime) |
 | `src/gl.zig` | texturas e conversão YUV→RGB num shader |
 | `src/audio.zig` | áudio: Opus de quem transmite, anel anti-oscilação e mixer de quem assiste |
@@ -43,9 +54,15 @@
 | `src/c/audio.c` | captura do som do computador e saída (miniaudio) |
 | `src/crypto.zig` | handshake X25519 e canal ChaCha20-Poly1305 |
 | `src/proto.zig` | mensagens, filas de envio, framing, janela de confirmações (`AckWindow`) |
-| `src/net.zig` | sockets (POSIX/Winsock) |
-| `src/sync.zig` | mutex/condvar nativos, relógio, pool de threads |
-| `src/c/capture_*.c` | captura de tela por plataforma |
+| `src/net.zig` | sockets (POSIX/Winsock), rota de quem conectou, endereços da máquina (IPv4 da rede, IPv6 globais) |
+| `src/c/netaddr_win.c` | Windows: IPv6 globais da máquina (`GetAdaptersAddresses`) |
+| `src/sync.zig` | mutex/condvar nativos, relógio, pool de threads, `hardExit` |
+| `src/c/capture_linux.c` | Linux: portal + PipeWire (Wayland, DMA-BUF) ou XShm (X11) |
+| `src/c/capture_win.c` | Windows: monitor por DXGI (GDI de reserva); uma janela por Windows.Graphics.Capture (PrintWindow de reserva) |
+| `src/c/camera_linux.c`, `src/c/camera_win.c` | webcam: PipeWire (Linux) / Media Foundation (Windows), entregue em BGRX como a tela |
+| `src/c/notify_linux.c`, `src/c/notify_win.c` | notificação do sistema: D-Bus (Linux) / balão da bandeja + janela piscando (Windows) |
+| `src/qa.zig`, `src/c/qa_hooks.cpp` | modo de testes da interface (`TELINHA_QA`): ganchos do ImGui, `items.tsv` + `state.json` |
+| `tools/qa/` | testes de interface: clica nos botões de verdade (XTest no Xvfb); roteador UPnP e túnel do bore de mentira |
 | `src/tests.zig`, `src/integration_test.zig` | testes |
 | `src/bench.zig` | benchmark do pipeline de vídeo |
 | `src/loadtest.zig` | teste de carga do servidor (espectadores lentos, túnel ruim) |
@@ -53,10 +70,16 @@
 
 ## Decisões de desempenho
 
-**Encoder em hardware primeiro.** Se tiver placa NVIDIA (driver 470+), o
-NVENC codifica 1080p em poucos milissegundos sem usar a CPU, e recebe o BGRX
-direto (a conversão de cor acontece na GPU). Sem NVIDIA, ou se o NVENC falhar
-em qualquer momento, o app cai pro openh264 sem interromper a transmissão.
+**Encoder em hardware primeiro.** O `hwenc.c` tenta, nessa ordem: NVENC
+(placa NVIDIA, driver 470+: codifica 1080p em poucos milissegundos sem usar a
+CPU e recebe o BGRX direto, a conversão de cor acontece na GPU); no Windows, o
+encoder em hardware do Media Foundation (MFT de Intel Quick Sync, AMD ou
+NVIDIA; baixa latência, CBR, sem B-frames, uma camada temporal só, entrada em
+NV12); e, sem nenhum, openh264. Se o encoder em hardware falhar em qualquer
+momento, o app cai pro openh264 sem interromper a transmissão. Encoder que
+ignora pedido de IDR (o do wine, algum driver por aí) é descoberto na segunda
+vez seguida e passa a ser **recriado a cada pedido** — encoder novo sempre
+começa com IDR —, senão quem entra depois nunca veria nada (`sharer.zig`).
 
 **Pipeline em duas threads.** Captura+conversão e encode rodam em paralelo,
 com 3 slots entre elas: o encoder sempre pega o quadro mais novo e um quadro
@@ -139,10 +162,34 @@ trocar pro cursor em software durante a captura (o mouse fica preso à
 renderização). O telinha captura sem cursor, pega a posição pelo IPC do
 Hyprland e desenha a seta no quadro.
 
-**Reconexão.** Queda de rede depois de entrar (e não expulsão/senha errada)
-dispara tentativas automáticas com espera crescente; ao voltar, a transmissão
-recomeça e quem você assistia volta pra tela (procurado pelo nome, já que os
-ids mudam se o servidor reiniciou).
+**Compartilhar uma janela no Windows.** Além do monitor inteiro (DXGI),
+dá pra mandar só uma janela: Windows.Graphics.Capture (Windows 10 1903+; a
+janela pode estar coberta por outras). Não existe header de C pra WinRT no
+MinGW, então as interfaces vão declaradas à mão no `capture_win.c` (vtables na
+ordem do SDK, GUIDs conferidos com os IDLs), com `combase.dll`/`d3d11.dll`
+carregadas em tempo de execução. Sem isso (Windows antigo, wine), cai pro
+`PrintWindow`.
+
+**Câmera.** Cada pessoa pode mandar a webcam junto com a tela (outra
+transmissão, mesmo pipeline). No Linux pelo PipeWire (as webcams são nós
+Video/Source do WirePlumber; YUYV, NV12, I420, RGB, e MJPEG decodificado com a
+libturbojpeg carregada em tempo de execução); no Windows pelo Media
+Foundation (`IMFSourceReader` convertendo pra RGB32, DLLs carregadas em tempo
+de execução: o .exe abre até no Windows N, só sem câmera). Trocar de câmera
+ou de resolução (480p/720p/1080p) não derruba quem assiste.
+
+**Vários caminhos pra mesma sala.** O convite junta todos os endereços que a
+sala tem (rede local, porta aberta no roteador, IPv6 globais, túnel digitado,
+link público) e o `connect.zig` tenta todos quase juntos: o primeiro da lista
+sai na frente e os outros 250 ms depois um do outro; ganha o primeiro que
+responder o handshake como sala do telinha na mesma versão. Quem tem IPv6
+entra direto; quem não tem cai no link público sozinho. Detalhes no
+[PROTOCOL.md](PROTOCOL.md#convite-e-vários-caminhos).
+
+**Reconexão.** Queda de rede depois de entrar (e não expulsão/senha errada/
+sala fechada — qualquer `denied`) dispara tentativas automáticas com espera
+crescente; ao voltar, a transmissão recomeça e quem você assistia volta pra
+tela (procurado pelo nome, já que os ids mudam se o servidor reiniciou).
 
 **Áudio.** Quem transmite captura o som do computador **sem o que o próprio
 telinha toca**: no Windows, loopback do WASAPI excluindo o processo; no Linux,
@@ -215,11 +262,57 @@ pacotes; com ele, o detector acha ~215 ms, e vazam 139 nos primeiros 5 s
 acordam a UI com `glfwPostEmptyEvent` quando há quadro novo. Sem transmissão,
 o app praticamente não gasta CPU.
 
+**Clipes e gravação, sem recodificar.** Quem assiste guarda o H.264 e o Opus
+como chegam; quem transmite, o que codifica (`clip.zig`). Um clipe só pode
+começar num IDR, então o buffer guarda a partir do IDR mais novo que ainda
+cobre 30 s (teto de 160 MiB por transmissão); com os clipes ligados o `watch`
+leva a opção de clipes e o servidor pede um IDR a cada 20 s, então ficam uns
+30–50 s na memória. Salvar roda numa thread à parte e escreve um MP4 normal
+com o índice (`moov`) no começo — toca em qualquer lugar. A gravação começa
+na hora do clique: o app pede um IDR (`keyreq` com motivo "gravação", que não
+mexe no controle de atraso) e o `mp4.Recorder` abre no primeiro que chegar,
+escrevendo MP4 fragmentado (`moov` sem amostras + `moof`/`mdat` a cada ~2 s):
+se o app cair no meio, o que já foi gravado toca. Vídeo em avc1 com duração
+por quadro (a tela só manda quando muda), Opus em `dOps`, buracos de silêncio
+viram pacotes vazios. Mudou a resolução, a gravação fecha. Os arquivos vão em
+Vídeos/telinha (`XDG_VIDEOS_DIR`; no Windows a pasta do usuário em UTF-16,
+aceita acento), ou em `TELINHA_PASTA_CLIPES`.
+
+**Janela flutuante.** Uma transmissão pode ir pra uma janelinha por cima das
+outras (`pip.zig`): segunda janela do GLFW com o contexto OpenGL
+compartilhado com a principal (desenha a mesma textura do vídeo, sem cópia) e
+um contexto próprio do ImGui (o backend do GLFW manda os eventos de cada
+janela pro contexto dela; cada contexto carrega as próprias fontes). Fecha
+sozinha quando a transmissão acaba.
+
+**Notificações.** Com o telinha em segundo plano (chat, alguém ao vivo, alguém
+entrou; no máximo uma a cada 2 s): no Linux, `Notify` do
+`org.freedesktop.Notifications` pelo GDBus, sem esperar resposta (a UI não
+trava nem sem serviço de notificação); no Windows, balão do ícone da bandeja
+e a janela piscando na barra de tarefas.
+
+**Sair sem travar.** Fechar a janela esconde ela na hora; depois o app avisa
+a sala e salva a configuração, e termina com `sync.hardExit` (`_exit` /
+`TerminateProcess`), sem os destrutores das bibliotecas: o do NVDEC
+(libnvcuvid) e o do PipeWire travavam esperando threads internas e o
+processo ficava vivo. Se a limpeza travar, um prazo de 4 s sai mesmo assim.
+
+**Modo de testes da interface.** Com `TELINHA_QA=pasta`, os ganchos de teste
+do ImGui (`IMGUI_ENABLE_TEST_ENGINE`, em `qa_hooks.cpp`) guardam o retângulo,
+o rótulo e o estado de cada item, e a cada ~80 ms o app escreve `items.tsv`
+(onde está cada botão) e `state.json` (o estado do app) nessa pasta. O
+`tools/qa/` roda o app num Xvfb, clica nos botões de verdade com XTest e
+confere o estado — sem tela, caixa de som ou microfone de verdade (PipeWire e
+D-Bus privados), com roteador UPnP e túnel do bore de mentira; também roda o
+`.exe` no wine. Fora desse modo os ganchos nem são chamados.
+
 ## Threads de uma sala típica (3 pessoas, 1 transmitindo)
 
-- Transmissor: UI, captura/encode, threads do openh264, leitora, escritora, ping, pool.
+- Transmissor: UI, captura/encode (de novo pra câmera, se ligada), threads do openh264, leitora, escritora, ping, pool.
 - Servidor (no app do anfitrião ou dedicado): accept + leitora/escritora por pessoa.
 - Cada espectador: UI, leitora, escritora, ping, decode por transmissão, pool.
+- Ao entrar: uma thread por caminho do convite, só durante a corrida.
+- Salvar um clipe: uma thread enquanto escreve o arquivo.
 
 ## Ciclo de vida e memória
 

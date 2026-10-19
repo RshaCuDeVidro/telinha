@@ -15,19 +15,22 @@
 
 ## O que tem
 
-- **Salas** — alguém cria (ou sobe um [servidor dedicado](docs/DEPLOY.md)), a galera entra com endereço + senha ou com um **convite** `telinha://…`.
+- **Salas** — alguém cria (ou sobe um [servidor dedicado](docs/DEPLOY.md)), a galera entra com endereço + senha ou com um **convite** `telinha://…` (copiou o convite e abriu o telinha? já vem colado). O convite leva **vários caminhos** de uma vez (rede local, porta no roteador, IPv6, link público): cada pessoa entra pelo mais rápido que funcionar pra ela.
 - **Galera de fora sem configurar nada**: *Abrir porta no roteador* (UPnP) dá conexão direta, com o menor atraso; se a operadora usa CGNAT, o telinha avisa e o *link público* (túnel pelo bore.pub, embutido) resolve em qualquer rede.
-- **Várias transmissões ao mesmo tempo**, em grade que se ajusta pra deixar os vídeos o maior possível; destaque, tela cheia e modo cinema.
+- **Várias transmissões ao mesmo tempo**, em grade que se ajusta pra deixar os vídeos o maior possível; destaque, tela cheia, modo cinema e **janela flutuante** (picture-in-picture, por cima dos outros programas).
+- **Câmera (webcam)** junto ou no lugar da tela.
+- **Zoom na transmissão** (roda do mouse, arrastar, *seguir o cursor* de quem transmite, minimapa) e **ponteiro "olha aqui"**: clica no vídeo e todo mundo que está vendo vê um círculo com seu nome ali.
+- **Clipe dos últimos 30 s** num clique e **gravação em MP4**, sem recodificar (o vídeo é guardado do jeito que chegou), com o som.
 - **Voz, tipo Discord**: microfone com cancelamento de eco (dá pra usar caixa de som em vez de fone), supressão de ruído (RNNoise: tira ventilador, teclado, chiado) e ativação por voz, em Opus. Bolinha verde em quem está falando, botão de microfone e de "surdo", volume da voz de cada pessoa (clique direito). A voz fura a fila: não espera atrás do vídeo.
 - **Áudio do computador junto** (vídeo, jogo, música), em Opus com pouca latência, com volume e mudo por transmissão. O som que o próprio telinha toca nunca entra na captura (Windows: loopback excluindo o processo; Linux: cada aplicativo ligado direto na captura pelo grafo do PipeWire, menos o telinha) — sem eco, e você continua ouvindo o que assiste enquanto compartilha.
-- **Chat**, lista de membros, quem está ao vivo, quem está assistindo quem, ping.
-- **H.264 com pouca latência**: encode e decode na **placa de vídeo (NVIDIA NVENC/NVDEC)** quando tem, senão **openh264** com SIMD em várias threads. Só manda quadro quando a tela muda; a conversão de cor de quem assiste roda num shader na GPU.
+- **Chat** com histórico (quem chega vê as últimas mensagens), lista de membros com o caminho de cada um (rede local, internet, IPv6, link público), quem está ao vivo, quem está assistindo quem, ping. **Notificações do sistema** com o telinha em segundo plano.
+- **H.264 com pouca latência**: encode e decode na **placa de vídeo (NVIDIA NVENC/NVDEC; no Windows também Intel e AMD pelo Media Foundation)** quando tem, senão **openh264** com SIMD em várias threads. Só manda quadro quando a tela muda; a conversão de cor de quem assiste roda num shader na GPU.
 - **Atraso controlado de ponta a ponta, até atrás de túnel**: cada quadro é confirmado, então o telinha mede o atraso real do caminho inteiro — inclusive dentro de ngrok/bore, que escondem o congestionamento. Se o upload não aguenta, a taxa cai e quadros são pulados em vez de acumular atraso; se um espectador não aguenta, ele passa a receber só metade dos quadros (a transmissão sai em duas camadas: um quadro sim, um não, ninguém depende dele) sem tocar na qualidade dos outros, e a qualidade só cai pra todo mundo se a maioria estiver sofrendo.
 - **Criptografia de ponta a ponta** entre cada pessoa e a sala (X25519 + ChaCha20-Poly1305); a senha da sala entra na derivação das chaves.
 - **Reconexão automática**: se a internet oscilar ou o servidor reiniciar, o app volta sozinho, retoma a transmissão e volta a assistir quem estava assistindo.
-- **Admin**: quem cria a sala ganha a coroa e pode expulsar gente.
+- **Admin**: quem cria a sala ganha a coroa e pode expulsar, banir, silenciar, parar a transmissão de alguém, passar admin pra outra pessoa e trancar a sala. Fechar a sala derruba todo mundo na hora, com aviso — inclusive quem veio pelo link público.
 - **Estatísticas ao vivo**: resolução, fps, banda e **atraso de ponta a ponta medido** (captura no transmissor → tela de quem assiste).
-- **Captura nativa**: PipeWire + xdg-desktop-portal no Wayland (Hyprland, GNOME, KDE, Sway…) com **DMA-BUF** (o compositor copia a tela GPU→GPU, sem travar a própria renderização), X11, e DXGI Desktop Duplication no Windows. O compositor só copia a tela no fps que você escolheu, e no Hyprland o cursor é desenhado pelo telinha — o mouse não fica com lag enquanto você compartilha.
+- **Captura nativa**: PipeWire + xdg-desktop-portal no Wayland (Hyprland, GNOME, KDE, Sway…) com **DMA-BUF** (o compositor copia a tela GPU→GPU, sem travar a própria renderização), X11, e no Windows DXGI Desktop Duplication (monitor) ou Windows.Graphics.Capture (uma janela só). O compositor só copia a tela no fps que você escolheu, e no Hyprland o cursor é desenhado pelo telinha — o mouse não fica com lag enquanto você compartilha.
 - **Windows**: um `.exe` só, sem instalar nada.
 
 | | |
@@ -41,8 +44,9 @@
    Prefere outro túnel (ngrok, serveo, playit…)? Abre *Prefere seu próprio túnel?* no mesmo card. Na mesma rede (ou Tailscale/ZeroTier/Radmin) é só usar o IP. Tem VPS? Use o [servidor dedicado](docs/DEPLOY.md).
 3. **Entrar**: *Entrar numa sala* → cola o convite (ou endereço + senha).
 4. **Transmitir**: botão de tela no canto de baixo da barra lateral → escolhe resolução, fps, qualidade e tipo de conteúdo → *Ao vivo*. Dá pra mudar tudo com a transmissão rolando.
-5. **Assistir**: clica em quem está ao vivo. **F11** tela cheia · **duplo clique** modo cinema · **Esc** sai.
-6. **Falar**: botão de microfone no painel de baixo (ou **Ctrl+M**; **Ctrl+D** pra ficar surdo). Clique direito em alguém pra mudar o volume da voz dessa pessoa. Com caixa de som funciona (tem cancelamento de eco), mas fone de ouvido ainda é o melhor.
+5. **Assistir**: clica em quem está ao vivo. **F11** tela cheia · **duplo clique** modo cinema · **Esc** sai. Com o mouse em cima do vídeo aparecem volume, zoom, ponteiro, janela flutuante, clipe e gravar (clipes e gravações vão pra *Vídeos/telinha*).
+6. **Câmera**: botão de câmera no painel de baixo; qual câmera e resolução nas configurações.
+7. **Falar**: botão de microfone no painel de baixo (ou **Ctrl+M**; **Ctrl+D** pra ficar surdo). Clique direito em alguém pra mudar o volume da voz dessa pessoa. Com caixa de som funciona (tem cancelamento de eco), mas fone de ouvido ainda é o melhor.
 
 No Wayland o sistema pergunta qual tela/janela compartilhar na primeira vez e depois lembra.
 No Windows, como o `.exe` não é assinado, o SmartScreen avisa: *Mais informações → Executar assim mesmo*.
@@ -103,7 +107,7 @@ Pra binários que rodam em qualquer CPU x86-64 (como no CI): `zig build -Dcpu=x8
 --fps N --qualidade N --modo tela|jogo --software
 --estatisticas        estatísticas sempre visíveis
 ```
-`TELINHA_DEBUG=1` imprime o tempo de cada etapa do pipeline. `TELINHA_SEM_SHADER=1` força a conversão de cor na CPU; `TELINHA_CURSOR_EMBUTIDO=1` deixa o compositor desenhar o cursor (Hyprland); `TELINHA_SEM_DMABUF=1` captura por memória compartilhada em vez de DMA-BUF; `TELINHA_SEM_SOM=1` não toca o áudio recebido.
+`TELINHA_DEBUG=1` imprime o tempo de cada etapa do pipeline. `TELINHA_SEM_SHADER=1` força a conversão de cor na CPU; `TELINHA_CURSOR_EMBUTIDO=1` deixa o compositor desenhar o cursor (Hyprland); `TELINHA_SEM_DMABUF=1` captura por memória compartilhada em vez de DMA-BUF; `TELINHA_SEM_SOM=1` não toca o áudio recebido. `TELINHA_PASTA_CONFIG` e `TELINHA_PASTA_CLIPES` trocam as pastas de configuração e de clipes (telinha "portátil"). No Windows: `TELINHA_SEM_NVENC=1`/`TELINHA_SEM_MF=1` pulam esses encoders; `TELINHA_SEM_WGC=1` captura janela por PrintWindow.
 
 Se a captura não funcionar ou estiver lenta, `zig build captest` (ou `zig-out/tools/captest 10 30 quadro.ppm`) mostra o método, o formato, o fps real e salva um quadro.
 </details>

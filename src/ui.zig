@@ -22,7 +22,7 @@ const mp4 = @import("mp4.zig");
 const pip = @import("pip.zig");
 const connect_mod = @import("connect.zig");
 const net = @import("net.zig");
-pub const version_string = "2.1.0";
+pub const version_string = "3.0.0";
 const Sharer = sharer_mod.Sharer;
 
 // ---------------------------------------------------------------------------
@@ -3641,7 +3641,7 @@ pub const App = struct {
 
         c.igPushTextWrapPos(c.igGetCursorPosX() + w);
         pushFont(font_regular, 12.5);
-        textColored(col.faint, fmtZ("telinha {s} · protocolo v{d} · vídeo H.264 (NVENC/NVDEC ou openh264) · voz Opus + RNNoise + SpeexDSP · criptografia X25519 + ChaCha20-Poly1305", .{ version_string, proto.version }));
+        textColored(col.faint, fmtZ("telinha {s} · protocolo v{d} · vídeo H.264 (NVENC/NVDEC, Media Foundation ou openh264) · voz Opus + RNNoise + SpeexDSP · criptografia X25519 + ChaCha20-Poly1305", .{ version_string, proto.version }));
         textColored(col.faint, "Atalhos: Ctrl+M microfone · Ctrl+D surdo · F11 tela cheia · duplo clique = modo cinema · Esc sai");
         popFont();
         c.igPopTextWrapPos();

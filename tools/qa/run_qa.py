@@ -241,9 +241,12 @@ def sala_controles():
         b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}", "--senha", "pw1"])
         bid = b.wait(lambda st: st["status"] == "connected", 10, "o Bruno entrar")["my_id"]
         aid = b.member_id("Ana")
-        # convite: quem hospeda sem link público é avisado; quem entrou copia o endereço que usou
+        # convite: quem hospeda copia todos os caminhos que tem (rede local, IPv6 se tiver);
+        # sem nenhum que chegue de fora, é avisado do link público
         a.click("##invite")
-        a.toasted("link público")
+        st = a.wait(lambda st: st["clipboard"].startswith("telinha://") and st["clipboard"].endswith("#pw1") and st["toasts"], 3, "o convite de quem hospeda")
+        expect(any("link público" in t or "caminhos" in t for t in st["toasts"]), f"aviso inesperado: {st['toasts']}")
+        expect(f":{p}" in st["clipboard"], f"convite sem a porta da sala: {st['clipboard']}")
         b.click("##invite")
         b.wait(lambda st: st["clipboard"] == f"telinha://127.0.0.1:{p}#pw1", 3, "o convite na área de transferência")
         # chat: Enter e o botão de enviar
@@ -352,7 +355,8 @@ def upnp_e_tunel_proprio():
         st = a.wait(lambda st: st["upnp"] and st["upnp"]["state"] == "ready", 10, "o roteador abrir a porta")
         expect(st["upnp"]["addr"] == f"203.0.113.7:{p}", f"endereço errado: {st['upnp']}")
         a.click(contains="Copiar convite##upnp")
-        a.wait(lambda st: st["clipboard"] == f"telinha://203.0.113.7:{p}#pw2", 3, "o convite com o IP de fora")
+        # o convite leva o IP de fora entre os caminhos (rede local primeiro: na mesma casa é o mais rápido)
+        a.wait(lambda st: st["clipboard"].endswith("#pw2") and f"203.0.113.7:{p}" in st["clipboard"][len("telinha://"):-len("#pw2")].split(","), 3, "o convite com o IP de fora")
         a.click(contains="Fechar porta")
         a.wait(lambda st: st["upnp"] is None, 3, "fechar a porta")
         time.sleep(1)
@@ -372,7 +376,7 @@ def upnp_e_tunel_proprio():
         a.wait(lambda st: st["clipboard"].startswith("ngrok tcp ") or st["clipboard"].startswith("bore ") or st["clipboard"].startswith("ssh "), 3, "copiar um comando")
         a.fill("##pub", "0.tcp.sa.ngrok.io:12345")
         a.click(contains="Copiar convite##proprio")
-        a.wait(lambda st: st["clipboard"] == "telinha://0.tcp.sa.ngrok.io:12345#pw2", 3, "o convite do túnel próprio")
+        a.wait(lambda st: st["clipboard"].endswith("#pw2") and "0.tcp.sa.ngrok.io:12345" in st["clipboard"][len("telinha://"):-len("#pw2")].split(","), 3, "o convite do túnel próprio")
 
 
 @test
