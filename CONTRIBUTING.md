@@ -60,6 +60,14 @@ de mentira) e `ffprobe` (clipes). Os testes do `.exe` usam
 microfone/câmera, mexe no seu roteador (UPnP e bore são de mentira) ou grava na
 sua pasta de vídeos.
 
+Variáveis úteis pra testar: `TELINHA_SEM_UDP=1` (só TCP), `TELINHA_UDP_PERDA=5`
+(joga fora 5% dos datagramas que manda), `TELINHA_SEM_HEVC=1`,
+`TELINHA_SEM_NVENC/NVDEC/MF/VAAPI=1`, `TELINHA_SEM_HWDEC_ALT=1` (sem decoder de
+placa que não seja NVIDIA), `TELINHA_ATUALIZACAO_URL=http://…` (GitHub de
+mentira), `TELINHA_VERSAO_TESTE=9.9.9` (finge outra versão na sala),
+`TELINHA_PASTA_CONFIG`/`TELINHA_PASTA_CLIPES`. O build aceita `-Drepo=dono/nome`
+(o CI passa) pra checar versão nova no GitHub.
+
 ## Testando na mão sem bagunçar sua tela
 
 Dá pra subir várias instâncias em telas virtuais (Xvfb), cada uma com sua pasta de configuração:

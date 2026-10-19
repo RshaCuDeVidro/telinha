@@ -48,7 +48,7 @@ const TestClient = struct {
         try b.str(name);
         try b.str(token);
         try b.u64_(key);
-        try b.str("3.0.0");
+        try b.str(proto.app_version);
         try b.u8_(codecs);
         try c.send(try b.finish());
         return c;

@@ -80,8 +80,8 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 
 | tipo | nome | direção | payload |
 |---|---|---|---|
-| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app` |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda) |
+| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (o que decodifica, bits `1<<codec`) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (servidor fecha em seguida) |
 | 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo), n × `str versão_do_app` (mesma ordem) |
 | 5 | chat | C→S | `str texto`, imagem (opcional, abaixo) |
@@ -110,6 +110,7 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 21 | pointer | S→C | `u32 de`, `u32 stream`, `u16 x`, `u16 y`, `u8 flags` |
 | 22 | react | C→S | `u32 id_da_mensagem`, `u8 reação` (0–5), `u8 ligado` |
 | 22 | react | S→C | `u32 id_da_mensagem`, `u32 de`, `u8 reação`, `u8 ligado` |
+| 23 | codec | S→C | `u8 tipo` (tela/câmera), `u8 codecs`: o que todo mundo que assiste essa transmissão decodifica |
 
 `versão_do_app` ("3.0.0") serve só pra avisar quem está desatualizado (a
 interface mostra "fulano está no telinha X: tem versão nova"); vazia = não
@@ -169,18 +170,27 @@ ligado, 16 = surdo, 32 = silenciado pelo admin, 64 = câmera ligada.
 | campo | tamanho | |
 |---|---|---|
 | seq | u32 | por transmissão; volta pra 0 quando ela recomeça |
-| flags | u8 | 1 = IDR, 2 = pulável, `0x80` = câmera |
+| flags | u8 | 1 = IDR, 2 = pulável, bits 2–3 = codec (0 H.264, 1 HEVC, 2 AV1), `0x80` = câmera |
 | hora_da_captura | u64 | relógio da sala, µs |
 | w, h | u16, u16 | |
 | cursor_x, cursor_y | u16, u16 | ponta do cursor de quem transmite, relativa ao quadro (0..65534); `0xFFFF` = sem cursor |
 
-e o bitstream H.264 Annex B até o fim. Todo IDR leva SPS/PPS. O servidor
+e o bitstream Annex B (H.264 ou HEVC, ver flags) até o fim. Todo IDR leva
+SPS/PPS (no HEVC também o VPS). O servidor
 descobre o stream pelo bit de câmera. "Pulável" = ninguém usa esse quadro de
 referência (todas as fatias com `nal_ref_idc = 0`; o transmissor codifica com
 duas camadas temporais, um quadro sim, um não): o servidor pode deixar de
 mandar pra quem não dá conta sem quebrar a decodificação dos seguintes. Quem
 não conhece o bit ignora. Um quadro reenviado com a tela parada leva a hora do
 reenvio (ele é o estado atual da tela).
+
+**Codec:** H.264 todo mundo decodifica (openh264 em software, se preciso);
+HEVC só quem tem decoder na placa (hoje NVDEC). No `hello` cada um diz o que
+decodifica; o servidor manda pro transmissor, a cada mudança de quem assiste,
+a interseção (`codec`), e ele escolhe o melhor que o encoder dele faz — HEVC
+se puder, senão H.264. Entrou alguém que só tem H.264: a transmissão volta pro
+H.264 na hora (encoder novo, começando num IDR); quem já assistia troca de
+decoder ao ver o codec mudar nas flags.
 
 **Áudio:** `u32 seq`, `u64 hora_da_captura`, pacote Opus até o fim
 (48 kHz, estéreo, 10 ms por pacote, ~96 kbit/s). Só a tela tem áudio.
@@ -202,6 +212,49 @@ reenvio (ele é o estado atual da tela).
 **notice** — tipos: 1 = microfone silenciado, 2 = microfone liberado, 3 =
 transmissão parada (`extra` = tipo dela), 4 = virou admin, 5 = deixou de ser
 admin. O `texto` já vem pronto ("Ana silenciou seu microfone.").
+
+## 2b. Vídeo, som e voz por UDP
+
+Se o servidor tem a porta UDP (a mesma do TCP) e a conexão não veio pelo link
+público, o `welcome` oferece UDP com um token. O cliente manda `hello` por UDP
+pro mesmo endereço e porta (de 250 em 250 ms, depois de 3 em 3 s) até
+receber `hello_ok`; daí em diante **quadro, áudio e voz** vão por UDP nos dois
+sentidos — todo o resto (e o que não couber) continua no TCP. Sem resposta, ou
+5–6 s sem nada chegar, volta pro TCP sozinho; o `hello` continua tentando.
+
+Datagrama:
+
+| campo | tamanho | |
+|---|---|---|
+| marca | u8 | `0xA7` |
+| token | u32 | de que conexão é (o servidor acha a conexão por ele) |
+| número | u64 | por sentido, nunca repete; é o nonce |
+| cifrado | resto | ChaCha20-Poly1305 de `u8 tipo` + corpo; o cabeçalho entra como dado associado |
+
+Chave de cada sentido = SHA-256("telinha udp v1" ‖ chave do TCP nesse
+sentido). Pacote que não decifra, repetido, ou mais de 128 números atrás do
+maior já visto é ignorado. O servidor passa a responder pro endereço de onde
+veio o último pacote que decifrou (NAT que muda de porta).
+
+| tipo | corpo |
+|---|---|
+| 1 hello / 2 hello_ok | — |
+| 3 ping / 4 pong | `u64 t` (eco): mantém o NAT aberto, mede o RTT |
+| 5 dados | `u32 canal`, `u32 id`, `u16 pedaço`, `u16 total`, bytes (até 1150) |
+| 6 nack | `u32 canal`, `u32 id`, `u16 n`, n × `u16 pedaço` (`n = 0xFFFF` = a mensagem inteira) |
+
+Uma mensagem (`u8 tipo` + payload, igual ao TCP) vai em pedaços de 1150
+bytes. **Canal:** quadros andam em ordem por transmissão (canal = stream; do
+cliente pro servidor, `0x80000000` tela / `0x80000001` câmera), com ids
+1, 2, 3... por canal; som e voz usam o canal `0xFFFFFFFF`, sem ordem (cada um
+tem a própria sequência e buffer). Quem recebe remonta; pedaço faltando (fora
+de ordem por mais de ~RTT/4) vira NACK, repetido a cada ~1,25 × RTT; mensagem
+de que nada chegou é descoberta pela seguinte (buraco nos ids) e pedida
+inteira. Quem manda guarda o que mandou por 1,5 s pra reenviar. Desiste de
+uma mensagem quando os pedaços param de chegar por `4 × RTT` (150–400 ms) ou
+depois de 1 s: os quadros seguintes são entregues e o decoder pede um IDR
+(`keyreq`) se precisar. O envio é cadenciado (rajada de até 128 KB, depois no
+máximo 4× a taxa média), pra um IDR grande não estourar o buffer do roteador.
 
 ## 3. Regras do servidor
 

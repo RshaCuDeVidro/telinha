@@ -1,5 +1,40 @@
 # Changelog
 
+## 3.1.0
+
+Conversa com a 3.0 (os campos novos são opcionais).
+
+- **Vídeo, som e voz por UDP**: um pacote perdido não segura mais tudo que vem
+  atrás (no TCP, a voz ficava presa atrás de um quadro de vídeo, e perda no
+  fim de uma rajada custava ~200 ms). Quem recebe pede de volta só o pedaço
+  que faltou; som e voz não esperam ninguém. Com 5% de perda simulada nos dois
+  sentidos, nada se perdeu de vez e o atraso ficou em ~50 ms. Se o UDP não
+  passa (link público, firewall), fica no TCP sozinho; a porta no roteador
+  (UPnP) abre o UDP também.
+- **HEVC na placa de vídeo** (NVIDIA): mesma qualidade com bem menos banda
+  (+4 dB num teste de texto rolando a 2 Mbit/s). A sala negocia: só vai em
+  HEVC se todo mundo que assiste decodifica; entrou alguém que não, volta pro
+  H.264 na hora, sem ninguém perder a imagem. Clipes e gravações em HEVC
+  também.
+- **Placa de vídeo pra assistir no Windows** com qualquer placa (Media
+  Foundation/DXVA: Intel, AMD, NVIDIA), não só NVIDIA.
+- **Placa de vídeo no Linux com Intel/AMD** (VA-API): decodificação bit a bit
+  igual à do openh264/ffmpeg; codificação com um autoteste ao abrir (se o
+  driver gerar lixo, o telinha percebe e fica no openh264).
+- **Som de um programa só**: na janela de compartilhar, escolha entre todo o
+  som do computador, só o da janela que está sendo compartilhada, um programa
+  que está tocando agora (Spotify, navegador, jogo...) ou nenhum — dá pra
+  trocar com a transmissão rolando.
+- **Chat**: imagens (cole com Ctrl+V ou arraste o arquivo pra janela; abre em
+  tela cheia com um clique), reações (curti, amei, haha, fogo, uau, triste) e
+  @menções com Tab pra completar, destaque e notificação. A imagem vai como um
+  quadro de vídeo: nada de leitor de PNG/JPEG exposto à rede.
+- **Aviso de versão nova**: se alguém na sala estiver numa versão mais nova,
+  você fica sabendo; e o app pode perguntar ao GitHub ao abrir (desligável).
+  A mensagem de "versão diferente" agora diz quem precisa atualizar.
+- Configurações e janela de compartilhar rolam em tela baixa (os botões do fim
+  não somem mais).
+
 ## 3.0.0
 
 Protocolo v6 (não conversa com a 2.x: todo mundo precisa atualizar).

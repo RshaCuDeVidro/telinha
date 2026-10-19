@@ -35,7 +35,13 @@ pipeline, o mesmo controle de taxa e confirmações separadas.
 | `src/connect.zig` | convite com vários endereços e a corrida entre eles (o primeiro que responder como sala ganha) |
 | `src/sharer.zig` | thread de transmissão (tela ou câmera): captura → escala → encode → envio |
 | `src/clip.zig` | últimos ~30 s de cada transmissão (clipe) e gravação em andamento; pasta dos vídeos |
-| `src/mp4.zig` | escritor de MP4 (H.264 + Opus, sem recodificar): clipe com `moov` no começo, gravação fragmentada |
+| `src/mp4.zig` | escritor de MP4 (H.264 em avc1 ou HEVC em hvc1, + Opus, sem recodificar): clipe com `moov` no começo, gravação fragmentada |
+| `src/udp.zig` | vídeo/som/voz por UDP: datagramas cifrados, pedaços, remontagem, NACK, ordem por transmissão, cadência |
+| `src/update.zig` | versão nova: comparação de versões e checagem da última release no GitHub (curl / WinHTTP) |
+| `src/chatimg.zig`, `src/chatsend.zig` | imagem no chat: reduz e vira um quadro H.264 (e volta); lê arquivo/área de transferência numa thread |
+| `src/c/image.c` | stb_image (só arquivos/área de transferência locais) e a imagem copiada no Windows (PNG/DIB) |
+| `src/c/audio_apps_win.c` | Windows: programas tocando som (sessões de áudio) |
+| `src/c/httpget_win.c` | Windows: GET por WinHTTP (checagem de versão) |
 | `src/ratectl.zig` | controle de taxa de bits pelo atraso de ponta a ponta |
 | `src/server.zig` | servidor da sala (embutido no app ou no `telinha-server`) |
 | `src/server_main.zig` | executável do servidor dedicado |
@@ -43,15 +49,17 @@ pipeline, o mesmo controle de taxa e confirmações separadas.
 | `src/upnp.zig` | porta aberta no roteador (UPnP IGD: SSDP + SOAP), com aviso de CGNAT |
 | `src/codec.zig` | wrapper do openh264 e do encoder em hardware + conversões de cor vetorizadas |
 | `src/c/hwenc.c` | escolhe o encoder em hardware: NVENC → Media Foundation (Windows) ou VA-API (Linux) → nenhum (openh264) |
-| `src/c/hwenc_nvenc.c` | encoder em hardware NVIDIA (API NVENC 11.1, carregada em runtime) |
+| `src/c/hwenc_nvenc.c` | encoder em hardware NVIDIA, H.264 e HEVC (API NVENC 11.1, carregada em runtime) |
 | `src/c/hwenc_mf.c` | Windows: encoder H.264 em hardware de qualquer placa (MFT do Media Foundation: Intel, AMD, NVIDIA) |
-| `src/c/hwdec_nvdec.c` | decoder em hardware NVIDIA (NVDEC/nvcuvid, carregado em runtime) |
+| `src/c/hwdec.c` | escolhe o decoder em hardware: NVDEC → Media Foundation (Windows) ou VA-API (Linux) |
+| `src/c/hwdec_nvdec.c` | decoder em hardware NVIDIA, H.264 e HEVC (NVDEC/nvcuvid, carregado em runtime) |
+| `src/c/hwdec_mf.c` | Windows: decoder H.264 do Media Foundation com DXVA (qualquer placa), textura copiada pra memória |
 | `src/c/hwva.c` | Linux: encoder e decoder H.264 pelo VA-API (Intel/AMD; libva carregada em runtime). O decoder faz a parte "de software" do H.264 (SPS/PPS, POC, referências, MMCO); o encoder se testa ao abrir (3 quadros decodificados pelo openh264) |
 | `src/gl.zig` | texturas e conversão YUV→RGB num shader |
 | `src/audio.zig` | áudio: Opus de quem transmite, anel anti-oscilação e mixer de quem assiste |
 | `src/voice.zig` | voz da sala: microfone → cancelamento de eco → RNNoise → portão → Opus; voz de cada pessoa do outro lado |
 | `src/aec.zig` | cancelamento de eco (SpeexDSP) com a saída do mixer como referência, compensando a deriva entre os relógios |
-| `src/c/audio_pw.c` | Linux: som dos aplicativos pelo grafo do PipeWire, sem o próprio telinha |
+| `src/c/audio_pw.c` | Linux: som dos aplicativos pelo grafo do PipeWire, sem o próprio telinha (ou só de um programa: nome ou árvore de processos) |
 | `src/c/audio.c` | captura do som do computador e saída (miniaudio) |
 | `src/crypto.zig` | handshake X25519 e canal ChaCha20-Poly1305 |
 | `src/proto.zig` | mensagens, filas de envio, framing, janela de confirmações (`AckWindow`) |
@@ -68,6 +76,33 @@ pipeline, o mesmo controle de taxa e confirmações separadas.
 | `src/bench.zig` | benchmark do pipeline de vídeo |
 | `src/loadtest.zig` | teste de carga do servidor (espectadores lentos, túnel ruim) |
 | `src/captest.zig` | diagnóstico da captura de tela |
+
+## Transporte: TCP pra tudo, UDP pro que tem pressa
+
+A conexão é sempre TCP (handshake, chat, membros, confirmações, pedidos de
+IDR). Se o caminho UDP abrir (ver `docs/PROTOCOL.md` §2b), a escritora de
+cada conexão (`proto.SendQueue.writerLoop`) manda quadro, áudio e voz por ele:
+a mensagem é a mesma, só muda o caminho, e quem recebe entrega no mesmo
+`handle` do TCP. Isso tira o bloqueio em fila do TCP (um pacote perdido
+segurava a voz atrás de um quadro de vídeo, e perda no fim de uma rajada
+custava ~200 ms de retransmissão por tempo) sem reescrever o resto: a fila,
+o controle de taxa pelas confirmações e o afinamento de espectador lento
+continuam iguais (a escritora cadencia o envio, então o que não saiu fica na
+fila e conta como atraso, como antes). Perdeu pedaço: NACK e reenvio só dele;
+perdeu de vez: o decoder pede IDR, como no TCP quando um quadro chega
+estragado. Teste com 5% de perda nos dois sentidos (`TELINHA_UDP_PERDA=5`,
+`run_qa.py udp_com_perda`): nenhuma mensagem perdida de vez, ~50 ms de atraso.
+
+## Codec: H.264 sempre, HEVC quando todo mundo pode
+
+O openh264 garante que qualquer um decodifica H.264. HEVC rende bem mais por
+bit em texto (no teste com NVENC/NVDEC, 720p a 2 Mbit/s: +4 dB), mas só sai
+em placa de vídeo e nem todo mundo decodifica. Então a sala negocia por
+transmissão: cada um diz no `hello` o que decodifica (testado uma vez por
+processo), o servidor manda pro transmissor a interseção de quem assiste, e
+o encoder é recriado no codec novo quando ela muda (começa num IDR). O codec
+vai nas flags de cada quadro; quem assiste troca de decoder ao ver mudar.
+Clipes e gravações ficam no codec que chegou (hvc1/hvcC no MP4).
 
 ## Decisões de desempenho
 
@@ -314,9 +349,10 @@ D-Bus privados), com roteador UPnP e túnel do bore de mentira; também roda o
 
 ## Threads de uma sala típica (3 pessoas, 1 transmitindo)
 
-- Transmissor: UI, captura/encode (de novo pra câmera, se ligada), threads do openh264, leitora, escritora, ping, pool.
-- Servidor (no app do anfitrião ou dedicado): accept + leitora/escritora por pessoa.
-- Cada espectador: UI, leitora, escritora, ping, decode por transmissão, pool.
+- Transmissor: UI, captura/encode (de novo pra câmera, se ligada), threads do openh264, leitora, escritora, UDP, ping, pool.
+- Servidor (no app do anfitrião ou dedicado): accept + leitora/escritora por pessoa, uma thread do UDP pra todos, relógio.
+- Cada espectador: UI, leitora, escritora, UDP, ping, decode por transmissão, pool.
+- Mandar imagem no chat: uma thread enquanto lê e codifica. Checagem de versão: uma thread ao abrir.
 - Ao entrar: uma thread por caminho do convite, só durante a corrida.
 - Salvar um clipe: uma thread enquanto escreve o arquivo.
 
