@@ -401,15 +401,15 @@ pub const DelayEstimator = struct {
             return null;
         }
         const lag = @as(i32, @intCast(best)) - neg;
-        last_measured = lag;
+        last_measured.store(lag, .monotonic);
         if (de.candidate) |c| if (@abs(c - lag) <= 4) return lag;
         de.candidate = lag;
         return null;
     }
 };
 
-/// Diagnóstico: última medida (confirmada ou não) de qualquer detector.
-pub var last_measured: i32 = std.math.minInt(i32);
+/// Diagnóstico: última medida de atraso do eco (ms, confirmada ou não).
+pub var last_measured: std.atomic.Value(i32) = .init(std.math.minInt(i32));
 
 /// Onde o eco deve ficar pro filtro (ms depois da referência) quando precisar
 /// mexer: um pouco depois do começo da cauda, com margem se a medida errou.
@@ -424,8 +424,6 @@ pub const Canceller = struct {
     echo: *sp.SpeexEchoState,
     pre: *sp.SpeexPreprocessState,
     est: DelayEstimator = .{},
-    /// Último atraso do eco medido (ms; diagnóstico, lido por outra thread).
-    last_lag: std.atomic.Value(i32) = .init(std.math.minInt(i32)),
 
     pub fn init() !Canceller {
         const echo = sp.speex_echo_state_init(frame, tail) orelse return error.AecInit;
