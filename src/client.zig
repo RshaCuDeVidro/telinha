@@ -6,7 +6,14 @@ const net = @import("net.zig");
 const proto = @import("proto.zig");
 const crypto = @import("crypto.zig");
 const codec = @import("codec.zig");
+const gl = @import("gl.zig");
 const gpa = proto.gpa;
+
+/// A UI liga isso quando o shader de YUV→RGB compilou: aí a thread de decode
+/// entrega os planos YUV (1,5 byte/pixel) e a GPU converte a cor.
+pub var gpu_yuv = std.atomic.Value(bool).init(false);
+
+pub const Layout = enum { rgba, i420, nv12 };
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 fn debugEnabled() bool {
@@ -65,7 +72,8 @@ pub const View = struct {
     refs: std.atomic.Value(u32) = .init(2), // UI + thread de decode
 
     mutex: sync.Mutex = .{},
-    pixels: []u8 = &.{},
+    pixels: []u8 = &.{}, // RGBA, ou planos YUV compactos (ver `layout`)
+    layout: Layout = .rgba,
     w: u32 = 0,
     h: u32 = 0,
     resized: bool = false,
@@ -90,6 +98,7 @@ pub const View = struct {
     stat_since: u64 = 0,
 
     // GPU (só a thread da UI mexe)
+    yuv: gl.YuvRenderer.Target = .{},
     tex: u32 = 0,
     tex_w: u32 = 0,
     tex_h: u32 = 0,
@@ -219,19 +228,39 @@ pub const View = struct {
             .nv12 => |f| f.h,
         };
         {
+            const gpu = gpu_yuv.load(.acquire);
+            const layout: Layout = if (!gpu) .rgba else switch (pic) {
+                .i420 => .i420,
+                .nv12 => .nv12,
+            };
+            const n = @as(usize, pw) * ph;
+            const need = if (layout == .rgba) n * 4 else n + n / 2;
             v.mutex.lock();
             defer v.mutex.unlock();
-            if (pw != v.w or ph != v.h) {
-                const px = try gpa.alloc(u8, @as(usize, pw) * ph * 4);
+            if (pw != v.w or ph != v.h or layout != v.layout or v.pixels.len != need) {
+                const px = try gpa.alloc(u8, need);
                 gpa.free(v.pixels);
                 v.pixels = px;
                 v.w = pw;
                 v.h = ph;
+                v.layout = layout;
                 v.resized = true;
             }
             switch (pic) {
-                .i420 => |p| codec.toRgba(p.y, p.u, p.v, p.ys, p.uvs, p.w, p.h, v.pixels),
-                .nv12 => |f| codec.nv12ToRgba(f.y, f.uv, f.w, f.h, v.pixels),
+                .i420 => |p| if (gpu) {
+                    // planos compactos (o decoder usa stride maior que a largura)
+                    for (0..ph) |row| @memcpy(v.pixels[row * pw ..][0..pw], p.y[row * p.ys ..][0..pw]);
+                    const cw = pw / 2;
+                    const chh = ph / 2;
+                    for (0..chh) |row| {
+                        @memcpy(v.pixels[n + row * cw ..][0..cw], p.u[row * p.uvs ..][0..cw]);
+                        @memcpy(v.pixels[n + n / 4 + row * cw ..][0..cw], p.v[row * p.uvs ..][0..cw]);
+                    }
+                } else codec.toRgba(p.y, p.u, p.v, p.ys, p.uvs, p.w, p.h, v.pixels),
+                .nv12 => |f| if (gpu) {
+                    @memcpy(v.pixels[0..n], f.y[0..n]);
+                    @memcpy(v.pixels[n..][0 .. n / 2], f.uv[0 .. n / 2]);
+                } else codec.nv12ToRgba(f.y, f.uv, f.w, f.h, v.pixels),
             }
             v.dirty = true;
             v.capture_ts = ts;

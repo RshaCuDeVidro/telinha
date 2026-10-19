@@ -4,6 +4,14 @@ const c = @import("c.zig").c;
 const sync = @import("sync.zig");
 const net = @import("net.zig");
 const ui = @import("ui.zig");
+const gl = @import("gl.zig");
+const client_mod = @import("client.zig");
+
+extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+/// TELINHA_SEM_SHADER=1 força a conversão de cor na CPU (diagnóstico).
+fn noGpuYuv() bool {
+    return getenv("TELINHA_SEM_SHADER") != null;
+}
 
 const inter_regular = @embedFile("assets/Inter-400.ttf");
 const inter_semibold = @embedFile("assets/Inter-600.ttf");
@@ -72,6 +80,10 @@ pub fn main(init: std.process.Init) !void {
 
     _ = c.ImGui_ImplGlfw_InitForOpenGL(win, true);
     _ = c.ImGui_ImplOpenGL3_Init("#version 130");
+
+    // conversão de cor das transmissões na GPU (se o OpenGL der conta)
+    ui.yuv_renderer = gl.YuvRenderer.init(@ptrCast(&c.glfwGetProcAddress));
+    client_mod.gpu_yuv.store(ui.yuv_renderer != null and !noGpuYuv(), .release);
 
     // --janela x,y,w,h (posiciona a janela; útil pra testar várias instâncias)
     for (args, 0..) |arg, i| {

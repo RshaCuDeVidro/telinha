@@ -57,6 +57,8 @@ pub const col = struct {
 const avatar_colors = [_]u32{ rgb(0x5865F2), rgb(0x3BA55C), rgb(0xFAA61A), rgb(0xED4245), rgb(0xEB459E), rgb(0x9B59B6), rgb(0x1ABC9C), rgb(0xE67E22) };
 
 pub var font_regular: *c.ImFont = undefined;
+/// Conversão YUV→RGB na GPU (null = CPU converte).
+pub var yuv_renderer: ?gl.YuvRenderer = null;
 pub var font_semibold: *c.ImFont = undefined;
 pub var font_bold: *c.ImFont = undefined;
 pub var scale: f32 = 1.0;
@@ -477,7 +479,7 @@ pub const App = struct {
     fn leaveRoom(a: *App) void {
         a.stopSharing();
         for (a.views.items) |v| {
-            gl.delete(&v.tex);
+            freeViewGpu(v);
             if (a.client) |cl| cl.unwatch(v);
         }
         a.views.clearRetainingCapacity();
@@ -544,7 +546,7 @@ pub const App = struct {
         const cl = a.client orelse return;
         for (a.views.items, 0..) |v, i| {
             if (v.owner != owner) continue;
-            gl.delete(&v.tex);
+            freeViewGpu(v);
             cl.unwatch(v);
             _ = a.views.orderedRemove(i);
             break;
@@ -569,6 +571,15 @@ pub const App = struct {
 
     // ------------------------------------------------------------- por frame
 
+    /// Libera as texturas de uma transmissão (thread da UI).
+    fn freeViewGpu(v: *View) void {
+        if (yuv_renderer) |*r| {
+            if (v.yuv.out != 0 and v.tex == v.yuv.out) v.tex = 0;
+            v.yuv.deinit(r);
+        }
+        gl.delete(&v.tex);
+    }
+
     /// Sobe pra GPU o que mudou nas transmissões (antes de desenhar).
     fn uploadTextures(a: *App) void {
         for (a.views.items) |v| {
@@ -576,7 +587,18 @@ pub const App = struct {
             defer v.mutex.unlock();
             if (v.w == 0) continue;
             if (!v.dirty and !v.resized and v.tex != 0) continue;
-            if (v.resized or v.tex == 0) {
+            if (v.layout != .rgba) {
+                // planos YUV: a GPU converte
+                const r = &(yuv_renderer orelse continue);
+                if (v.tex != 0 and v.tex != v.yuv.out) gl.delete(&v.tex);
+                if (r.render(&v.yuv, v.pixels, v.w, v.h, v.layout == .nv12)) {
+                    v.tex = v.yuv.out;
+                    v.tex_w = v.w;
+                    v.tex_h = v.h;
+                }
+                v.resized = false;
+            } else if (v.resized or v.tex == 0 or v.tex == v.yuv.out) {
+                if (v.tex == v.yuv.out) v.tex = 0;
                 gl.upload(&v.tex, v.pixels, v.w, v.h, gl.RGBA);
                 v.tex_w = v.w;
                 v.tex_h = v.h;
