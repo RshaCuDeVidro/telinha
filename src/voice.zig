@@ -53,6 +53,12 @@ pub const Mic = struct {
     /// Pra interface: falando agora (portão aberto) e nível do microfone (0..1).
     speaking: std.atomic.Value(bool) = .init(false),
     level_bits: std.atomic.Value(u32) = .init(0),
+    // diagnóstico do eco: energia antes/depois do cancelador, a cada 1 s
+    e_in: f64 = 0,
+    e_out: f64 = 0,
+    e_ref: f64 = 0,
+    e_blocks: u32 = 0,
+    stats_bits: [3]std.atomic.Value(u32) = .{ .init(0), .init(0), .init(0) },
 
     pub fn open(opts: Options, ctx: *anyopaque, on_packet: PacketFn, err: []u8) !*Mic {
         return create(opts, ctx, on_packet, err, true);
@@ -141,9 +147,44 @@ pub const Mic = struct {
         }
     }
 
+    /// Último segundo: { nível antes do cancelador, depois, da referência } em dBFS.
+    pub fn echoStats(m: *const Mic) [3]f32 {
+        var out: [3]f32 = undefined;
+        for (&out, &m.stats_bits) |*o, *b| o.* = @bitCast(b.load(.monotonic));
+        return out;
+    }
+
     fn processBlock(m: *Mic) void {
         var in = m.in_buf;
-        if (m.echo) |*e| e.processLive(&m.in_buf, &in);
+        var ref: [block]f32 = @splat(0);
+        if (m.echo) |*e| e.processLiveRef(&m.in_buf, &in, &ref);
+        var b_in: f32 = 0;
+        var b_out: f32 = 0;
+        var b_ref: f32 = 0;
+        for (m.in_buf, in, ref) |a, b, r| {
+            b_in += a * a;
+            b_out += b * b;
+            b_ref += r * r;
+        }
+        // a caixa está tocando e o cancelador tirou quase tudo (> 10 dB): o que
+        // sobrou é resto de eco, não a sua voz. O RNNoise ainda acharia que é
+        // voz (ele não liga pro volume), e o portão abriria no eco.
+        const echo_only = m.echo != null and b_ref > block * 1e-7 and b_out < b_in * 0.1;
+        m.e_in += b_in;
+        m.e_out += b_out;
+        m.e_ref += b_ref;
+        m.e_blocks += 1;
+        if (m.e_blocks == 100) {
+            const n: f64 = 100 * block;
+            for (&m.stats_bits, [3]f64{ m.e_in, m.e_out, m.e_ref }) |*bits, e| {
+                const db: f32 = @floatCast(10 * std.math.log10(@max(e / n, 1e-12)));
+                bits.store(@bitCast(db), .monotonic);
+            }
+            m.e_in = 0;
+            m.e_out = 0;
+            m.e_ref = 0;
+            m.e_blocks = 0;
+        }
         var out: [block]f32 = undefined;
         var peak: f32 = 0;
         var vad: f32 = 0;
@@ -164,7 +205,7 @@ pub const Mic = struct {
         const old: f32 = @bitCast(m.level_bits.load(.monotonic));
         m.level_bits.store(@bitCast(@max(peak, old * 0.85)), .monotonic);
 
-        if (vad >= @as(f32, @bitCast(m.threshold_bits.load(.monotonic)))) {
+        if (!echo_only and vad >= @as(f32, @bitCast(m.threshold_bits.load(.monotonic)))) {
             m.hang = hangover_blocks;
         } else if (m.hang > 0) {
             m.hang -= 1;

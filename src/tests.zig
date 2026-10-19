@@ -584,7 +584,7 @@ test "eco: o cancelador tira a voz que voltou da caixa e deixa a sua passar" {
         }
     }
     const erle = 10 * std.math.log10(e_in / @max(e_out, 1e-12));
-    try testing.expect(erle > 15); // medido: ~30 dB
+    try testing.expect(erle > 15); // medido: ~24 dB
 
     // agora o outro lado fica quieto e você fala: sua voz tem que passar
     @memset(&ref, 0);
@@ -690,7 +690,7 @@ test "eco: referência alinhada com blocos diferentes e relógios desencontrados
     // medido: ~35 dB com o mesmo relógio (com ou sem atraso nos callbacks)
     try testing.expect(try liveEchoErle(0, 0) > 30);
     try testing.expect(try liveEchoErle(0, 192) > 30);
-    // relógios diferentes, antes da deriva ser medida: o filtro corre atrás (~20 dB)
+    // relógios diferentes, antes da deriva ser medida: o filtro corre atrás (~26 dB)
     try testing.expect(try liveEchoErle(50, 96) > 15);
     try testing.expect(try liveEchoErle(-50, 96) > 15);
     // e o anel não guarda atraso à toa
@@ -699,7 +699,7 @@ test "eco: referência alinhada com blocos diferentes e relógios desencontrados
 
 test "eco: deriva entre os relógios medida e compensada" {
     // microfone 120 ppm mais rápido: depois de ~25 s a deriva é medida e a
-    // referência reamostrada (medido: ~32 dB; sem compensar, ~14 dB)
+    // referência reamostrada (medido: ~33 dB; sem compensar, ~19 dB)
     const erle = try liveEcho(120, 96, 40, false);
     const ppm = aec.reference.driftPpm();
     try testing.expect(ppm < -105 and ppm > -135);

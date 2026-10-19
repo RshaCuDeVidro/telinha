@@ -26,12 +26,16 @@ Mexeu no pipeline de vídeo? Rode `zig build bench` antes e depois e coloque os 
 | `zig build captest -- 10 30 quadro.ppm` | captura de tela (método, formato, fps real, salva um quadro) |
 | `zig build audiotest` | captura do som do computador (o som do próprio app não pode entrar) |
 | `zig build voicebot -- host:porta nome` | um robô entra na sala e "fala" sílabas sintéticas (voz sem microfone) |
+| `zig build voicebot -- host:porta Ouvinte 20 --ouvinte "Monitor of X"` | cancelamento de eco de ponta a ponta: o monitor da saída vira "microfone" (o som tocado volta inteiro); conta o eco que vazou pra sala, segundo a segundo |
 
 A captura no Wayland (portal + PipeWire) dá pra testar inteira sem mexer na sua
 sessão: um sway headless (`WLR_BACKENDS=headless`) + `xdg-desktop-portal-hyprland`
 com `custom_picker_binary` que imprime `[SELECTION]r/screen:HEADLESS-1`, e D-Bus,
 PipeWire e WirePlumber próprios (com os monitores de áudio/bluetooth/câmera
-desligados) num `XDG_RUNTIME_DIR` separado.
+desligados) num `XDG_RUNTIME_DIR` separado. O mesmo PipeWire isolado, com uma
+saída nula (`support.null-audio-sink`), serve pro teste de eco: nada toca na
+sua caixa nem abre o seu microfone (o robô que fala roda com `TELINHA_SEM_SOM=1`,
+senão o som dele também volta pro "microfone" do ouvinte).
 
 ## Testando na mão sem bagunçar sua tela
 

@@ -9,7 +9,7 @@
 //! uns 5 ms de folga, medidos pelo menor nível dos últimos 4 s (que não
 //! depende do tamanho dos blocos de cada lado). O atraso de verdade — buffer
 //! de saída + ar + buffer de entrada, uns 20–80 ms — o filtro (cauda de
-//! 200 ms) descobre sozinho.
+//! 100 ms) descobre sozinho.
 //!
 //! Os dois dispositivos andam em relógios próprios (USB e placa onboard
 //! chegam a ~100 ppm de diferença). Deixado solto, o eco "escorrega" devagar
@@ -28,7 +28,10 @@ const sp = @cImport({
 pub const rate = 48000;
 /// 10 ms: o mesmo bloco do RNNoise.
 pub const frame = 480;
-const tail = rate / 5; // 200 ms de eco no máximo
+/// Cauda do filtro: 100 ms. Mais longa cobre mais atraso, mas o filtro demora
+/// muito mais pra aprender (medido com voz de verdade passando pelo Opus:
+/// 200 ms chegava a 5 dB em 2 s de fala; 100 ms, a 17 dB).
+const tail = rate / 10;
 const ring_cap = rate / 2;
 /// Folga depois de um ajuste.
 const ring_target = rate * 5 / 1000;
@@ -37,6 +40,7 @@ const ring_high = rate * 10 / 1000;
 /// Uma janela = 50 leituras de 10 ms; o mínimo vale sobre as 8 últimas (4 s).
 const window_pops = 50;
 const windows = 8;
+
 /// Pontos (um por janela) da regressão da deriva: 64 s; usa a partir de 20 s.
 const drift_points = 128;
 const drift_min_points = 40;
@@ -54,6 +58,9 @@ pub const RefRing = struct {
     n_lows: usize = 0,
     cur_low: usize = std.math.maxInt(usize),
     pops: u32 = 0,
+    win_pushes: u32 = 0, // escritas da saída na janela atual
+    settle: u32 = 0, // janelas desde que a saída começou a tocar
+    centered: bool = false, // já centrou depois que a saída começou
     pending: isize = 0, // ajuste a fazer na próxima leitura: > 0 tira amostras, < 0 põe silêncio
     // deriva entre os relógios
     pushed: u64 = 0, // amostras que a saída produziu
@@ -64,6 +71,27 @@ pub const RefRing = struct {
     n_pts: usize = 0,
     step: f64 = 1, // amostras do anel por amostra entregue (1 + deriva)
     frac: f64 = 0, // posição fracionária entre buf[r] e buf[r + 1]
+    // diagnóstico
+    stat: Stats = .{},
+
+    pub const Stats = struct {
+        pushes: u32 = 0,
+        max_push: usize = 0,
+        pops: u32 = 0,
+        dry: usize = 0, // amostras de silêncio porque o anel secou
+        inserted: usize = 0,
+        dropped: usize = 0,
+        max_level: usize = 0,
+    };
+
+    /// Diagnóstico desde a última chamada.
+    pub fn takeStats(rg: *RefRing) Stats {
+        rg.mutex.lock();
+        defer rg.mutex.unlock();
+        const st = rg.stat;
+        rg.stat = .{};
+        return st;
+    }
 
     /// Thread de saída: amostras estéreo intercaladas que acabaram de ser mixadas.
     pub fn pushStereo(rg: *RefRing, samples: []const f32) void {
@@ -80,6 +108,10 @@ pub const RefRing = struct {
             rg.len += 1;
         }
         rg.pushed += samples.len / 2;
+        rg.win_pushes += 1;
+        rg.stat.pushes += 1;
+        rg.stat.max_push = @max(rg.stat.max_push, samples.len / 2);
+        rg.stat.max_level = @max(rg.stat.max_level, rg.len);
     }
 
     /// Thread do microfone: as próximas `out.len` amostras (zeros se faltar).
@@ -89,12 +121,14 @@ pub const RefRing = struct {
         var dst = out;
         if (rg.pending > 0) {
             const d = @min(@as(usize, @intCast(rg.pending)), rg.len);
+            rg.stat.dropped += d;
             rg.skip(d);
             rg.shiftLows(-@as(isize, @intCast(d)));
             rg.pending = 0;
         } else if (rg.pending < 0) {
             // silêncio no lugar de amostras que o anel tinha: ele fica mais cheio
             const k = @min(@as(usize, @intCast(-rg.pending)), dst.len, rg.len);
+            rg.stat.inserted += k;
             @memset(dst[0..k], 0);
             dst = dst[k..];
             rg.shiftLows(@intCast(k));
@@ -113,6 +147,8 @@ pub const RefRing = struct {
             rg.skip(@min(@as(usize, @intFromFloat(adv)), rg.len));
         }
         @memset(dst[i..], 0); // secou
+        rg.stat.dry += dst.len - i;
+        rg.stat.pops += 1;
         rg.delivered += out.len;
         rg.cur_gap = @min(rg.cur_gap, @as(i64, @intCast(rg.pushed)) - @as(i64, @intCast(rg.delivered)));
         rg.cur_low = @min(rg.cur_low, rg.len);
@@ -121,17 +157,40 @@ pub const RefRing = struct {
     }
 
     fn endWindow(rg: *RefRing) void {
-        rg.updateDrift();
-        rg.lows[rg.n_lows % windows] = rg.cur_low;
-        rg.n_lows += 1;
-        rg.cur_low = std.math.maxInt(usize);
+        const playing = rg.win_pushes > 0;
+        const cur_low = rg.cur_low;
         rg.pops = 0;
+        rg.win_pushes = 0;
+        rg.cur_low = std.math.maxInt(usize);
+        if (!playing) {
+            // a saída não está tocando (ainda não abriu, ou parou): quando
+            // voltar, as medidas recomeçam do zero
+            rg.n_lows = 0;
+            rg.n_pts = 0;
+            rg.pending = 0;
+            rg.settle = 0;
+            rg.centered = false;
+            return;
+        }
+        rg.updateDrift();
+        if (!rg.centered) {
+            // a primeira janela com a saída tocando quase sempre pega o meio
+            // da abertura; a segunda (0,5–1 s depois) já mostra o ritmo dos
+            // dois lados. Centra nela, enquanto o filtro ainda não aprendeu nada
+            rg.settle += 1;
+            if (rg.settle < 2) return;
+            rg.centered = true;
+            rg.lows[0] = cur_low;
+            rg.n_lows = 1;
+            rg.pending = @as(isize, @intCast(cur_low)) - ring_target;
+            return;
+        }
+        rg.lows[rg.n_lows % windows] = cur_low;
+        rg.n_lows += 1;
         var low: usize = std.math.maxInt(usize);
         for (rg.lows[0..@min(rg.n_lows, windows)]) |l| low = @min(low, l);
-        // no começo, ou quando secou ou encheu demais: volta pro alvo de uma vez
-        if (rg.n_lows == 1 or low == 0 or low > ring_high) {
-            rg.pending = @as(isize, @intCast(low)) - ring_target;
-        }
+        // depois, só quando secou ou encheu demais: volta pro alvo de uma vez
+        if (low == 0 or low > ring_high) rg.pending = @as(isize, @intCast(low)) - ring_target;
     }
 
     /// Reta de (produzido - entregue) contra o entregue: a inclinação é a
@@ -214,6 +273,9 @@ pub const RefRing = struct {
         rg.n_pts = 0;
         rg.step = 1;
         rg.frac = 0;
+        rg.win_pushes = 0;
+        rg.settle = 0;
+        rg.centered = false;
     }
 
     fn skip(rg: *RefRing, n: usize) void {
@@ -241,10 +303,12 @@ pub const Canceller = struct {
         var r: c_int = rate;
         _ = sp.speex_echo_ctl(echo, sp.SPEEX_ECHO_SET_SAMPLING_RATE, &r);
         const pre = sp.speex_preprocess_state_init(frame, rate) orelse return error.AecInit;
-        // só a supressão do eco que sobra: ruído é com o RNNoise (o VAD já
-        // vem desligado; mexer nele imprime um aviso)
+        // só a supressão do eco que sobra: ruído é com o RNNoise. O "denoise"
+        // tem que ficar ligado (sem ele o preprocess não aplica ganho nenhum,
+        // nem o do eco), mas com 0 dB de supressão de ruído. O VAD já vem
+        // desligado (mexer nele imprime um aviso).
         var off: c_int = 0;
-        _ = sp.speex_preprocess_ctl(pre, sp.SPEEX_PREPROCESS_SET_DENOISE, &off);
+        _ = sp.speex_preprocess_ctl(pre, sp.SPEEX_PREPROCESS_SET_NOISE_SUPPRESS, &off);
         _ = sp.speex_preprocess_ctl(pre, sp.SPEEX_PREPROCESS_SET_AGC, &off);
         _ = sp.speex_preprocess_ctl(pre, sp.SPEEX_PREPROCESS_SET_DEREVERB, &off);
         _ = sp.speex_preprocess_ctl(pre, sp.SPEEX_PREPROCESS_SET_ECHO_STATE, echo);
@@ -271,8 +335,13 @@ pub const Canceller = struct {
     /// Bloco do microfone com a referência do que acabou de tocar.
     pub fn processLive(cn: *Canceller, mic: *const [frame]f32, out: *[frame]f32) void {
         var ref: [frame]f32 = undefined;
-        reference.pop(&ref);
-        cn.process(mic, &ref, out);
+        cn.processLiveRef(mic, out, &ref);
+    }
+
+    /// Igual, devolvendo também a referência usada.
+    pub fn processLiveRef(cn: *Canceller, mic: *const [frame]f32, out: *[frame]f32, ref: *[frame]f32) void {
+        reference.pop(ref);
+        cn.process(mic, ref, out);
     }
 };
 

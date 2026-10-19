@@ -154,19 +154,24 @@ indicador de microfone do sistema apaga quando desliga).
 **Cancelamento de eco.** Com caixa de som em vez de fone, o microfone pega de
 volta a voz dos outros (e o som das transmissões que você assiste). O mixer
 guarda o que acabou de tocar num anel de referência, e o filtro adaptativo do
-SpeexDSP (MDF, cauda de 200 ms) mais a supressão do eco que sobra tiram isso do
-microfone antes do RNNoise. Dois cuidados: (1) a referência tem que chegar ao
+SpeexDSP (MDF, cauda de 100 ms) mais a supressão do eco que sobra tiram isso do
+microfone antes do RNNoise. Cuidados: (1) a referência tem que chegar ao
 filtro *antes* do eco aparecer no microfone, então o anel guarda só ~5 ms de
 folga (medida pelo menor nível dos últimos 4 s, que não depende do tamanho dos
-blocos de cada lado), e só mexe nela se secar ou passar de 10 ms — todo ajuste
-obriga o filtro a reaprender; (2) caixa e microfone muitas vezes andam em
+blocos de cada lado): centra uma vez logo que a saída começa a tocar e depois só
+mexe se secar ou passar de 10 ms — todo ajuste obriga o filtro a reaprender;
+(2) caixa e microfone muitas vezes andam em
 relógios diferentes (USB × placa onboard, até ~100 ppm): deixado solto, o eco
 "escorrega" em relação à referência e o filtro, correndo atrás, perde uns
 15 dB. A deriva é medida por regressão (quanto a saída produziu × quanto o
 microfone consumiu, último minuto; só vale quando passa de 3σ) e a referência é
-reamostrada nessa proporção. Nos testes (simulando blocos de 1024 × 441
-amostras, atraso nos callbacks e deriva): ~35 dB de eco a menos com o mesmo
-relógio, ~32 dB com 120 ppm de deriva (sem a compensação, ~14 dB).
+reamostrada nessa proporção; (3) o que sobra de eco é baixinho mas continua
+parecendo voz, e o RNNoise não liga pro volume: com a caixa tocando, bloco em
+que o cancelador tirou mais de 10 dB não abre o portão. Nos testes (simulando
+blocos de 1024 × 441 amostras, atraso nos callbacks e deriva): ~35 dB de eco a
+menos com o mesmo relógio, ~33 dB com 120 ppm de deriva (sem a compensação,
+~19 dB). De ponta a ponta (PipeWire de verdade, a saída voltando inteira pro
+microfone): o portão fica fechado depois de uns 5 s de fala do outro lado.
 
 **UI que dorme.** O loop usa `glfwWaitEventsTimeout`; threads de rede e decode
 acordam a UI com `glfwPostEmptyEvent` quando há quadro novo. Sem transmissão,
