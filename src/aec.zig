@@ -323,6 +323,7 @@ pub var reference: RefRing = .{};
 /// cobre o resto.
 pub const DelayEstimator = struct {
     const sub = rate / 1000; // amostras por ponto do envelope (1 ms)
+    const window = 50; // avalia a cada 50 blocos (0,5 s)
     const max_lag = 500;
     const neg = 30; // atrasos negativos medidos (até -30 ms): corr[neg + atraso]
     const n_lags = max_lag + neg + 1;
@@ -383,7 +384,7 @@ pub const DelayEstimator = struct {
         de.e_r *= 0.995;
         if (far > frame * 1e-6) de.active += 1; // caixa tocando (> -60 dBFS)
         de.blocks += 1;
-        if (de.blocks < 50) return null;
+        if (de.blocks < window) return null;
         const active = de.active;
         de.blocks = 0;
         de.active = 0;
@@ -435,6 +436,9 @@ pub const Canceller = struct {
     est: DelayEstimator = .{},
     quiet_evals: u32 = 0, // avaliações seguidas, com o outro lado falando, sem eco nenhum
     bypass: bool = false,
+    // energia antes/depois do cancelador desde a última avaliação do detector
+    win_in: f64 = 0,
+    win_out: f64 = 0,
 
     pub fn init() !Canceller {
         const echo = sp.speex_echo_state_init(frame, tail) orelse return error.AecInit;
@@ -481,31 +485,50 @@ pub const Canceller = struct {
     pub fn processLiveRef(cn: *Canceller, mic: *const [frame]f32, out: *[frame]f32, ref: *[frame]f32) void {
         reference.pop(ref);
         const evals = cn.est.evals;
+        const window_end = cn.est.blocks + 1 >= DelayEstimator.window; // esta chamada fecha uma janela do detector
         const lag = cn.est.feed(mic, ref);
-        if (cn.est.evals != evals) cn.checkBypass(cn.est.last_rho);
+        if (window_end) {
+            // só as janelas com o outro lado falando contam (evals mudou)
+            if (cn.est.evals != evals) {
+                const removed_db: f32 = @floatCast(10 * std.math.log10(@max(cn.win_in, 1e-12) / @max(cn.win_out, 1e-12)));
+                cn.checkBypass(cn.est.last_rho, removed_db);
+            }
+            cn.win_in = 0;
+            cn.win_out = 0;
+        }
         if (lag) |l| cn.realign(l);
         if (cn.bypass) {
             out.* = mic.*;
         } else {
             cn.process(mic, ref, out);
         }
+        for (mic, out) |a, b| {
+            cn.win_in += a * a;
+            cn.win_out += b * b;
+        }
     }
 
     /// Fone de ouvido (o microfone nunca ouve a caixa): depois de 1 min com o
-    /// outro lado falando e nenhum eco achado, o cancelador sai do caminho (ele
-    /// e a supressão do eco residual comiam ~1 dB da sua voz quando os dois
-    /// falam juntos, à toa). O detector continua medindo: apareceu eco (tirou
-    /// o fone), volta na hora, com o filtro do zero.
-    pub fn checkBypass(cn: *Canceller, rho: f32) void {
+    /// outro lado falando sem eco nenhum, o cancelador sai do caminho (ele e a
+    /// supressão do eco residual comiam ~1 dB da sua voz quando os dois falam
+    /// juntos, à toa). "Sem eco" = o detector não acha correlação E o
+    /// cancelador não está tirando nada (< 2 dB): falando junto o tempo todo,
+    /// a correlação cai mesmo com caixa de som, mas nos momentos em que só o
+    /// outro lado fala o cancelador tira o eco e a contagem recomeça. O
+    /// detector continua medindo: apareceu eco (tirou o fone), volta na hora,
+    /// com o filtro do zero. `removed_db`: quanto o cancelador tirou na janela.
+    pub fn checkBypass(cn: *Canceller, rho: f32, removed_db: f32) void {
         if (rho >= 0.4) {
             cn.quiet_evals = 0;
             if (cn.bypass) {
                 cn.bypass = false;
                 sp.speex_echo_state_reset(cn.echo);
             }
-        } else if (rho < 0.25) {
+        } else if (rho < 0.25 and (cn.bypass or removed_db < 2)) {
             cn.quiet_evals +|= 1;
             if (cn.quiet_evals >= bypass_evals) cn.bypass = true;
+        } else if (!cn.bypass and removed_db >= 2) {
+            cn.quiet_evals = 0; // está tirando eco: tem caixa de som
         }
     }
 

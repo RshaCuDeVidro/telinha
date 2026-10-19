@@ -800,14 +800,21 @@ test "eco: com fone, o cancelador sai do caminho; tirou o fone, volta" {
     // 1 min sem eco (120 avaliações) → sai do caminho; eco → volta
     var cn = try aec.Canceller.init();
     defer cn.deinit();
-    for (0..119) |_| cn.checkBypass(0.1);
+    for (0..119) |_| cn.checkBypass(0.1, 0.3);
     try testing.expect(!cn.bypassed());
-    cn.checkBypass(0.1);
+    cn.checkBypass(0.1, 0.3);
     try testing.expect(cn.bypassed());
-    cn.checkBypass(0.3); // dúvida: não muda nada
+    cn.checkBypass(0.3, 0); // dúvida: não muda nada
     try testing.expect(cn.bypassed());
-    cn.checkBypass(0.6);
+    cn.checkBypass(0.6, 0);
     try testing.expect(!cn.bypassed());
+
+    // caixa de som, falando junto quase o tempo todo: a correlação fica baixa,
+    // mas quando só o outro lado fala o cancelador tira eco — não sai do caminho
+    var cn2 = try aec.Canceller.init();
+    defer cn2.deinit();
+    for (0..400) |k| cn2.checkBypass(0.15, if (k % 20 == 0) 12 else 0.5);
+    try testing.expect(!cn2.bypassed());
 }
 
 /// Quadrado andando sobre um fundo fixo (conteúdo de tela realista: o resto parado).
