@@ -810,6 +810,80 @@ def windows_encoder():
         log(f"o Linux vê {next(v for v in sv['views'] if v['stream'] == wid)}")
 
 
+def imagem_do_quadro(app, owner, path):
+    """Foto da transmissão de `owner` na tela do app: (fração verde pura, cores diferentes), ou None sem PIL.
+    NV12 zerado vira verde puro: é o sinal de um decoder que "entregou" uma imagem vazia."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    r = app.tile(owner)
+    win, _ = app.items()
+    app.screenshot(path)
+    im = Image.open(path).convert("RGB")
+    # o meio do quadro (sem os botões e etiquetas por cima)
+    w, h = r[2] - r[0], r[3] - r[1]
+    box = (int(win[0] + r[0] + w * 0.15), int(win[1] + r[1] + h * 0.15), int(win[0] + r[2] - w * 0.15), int(win[1] + r[3] - h * 0.15))
+    raw = im.crop(box).tobytes()
+    px = [tuple(raw[i:i + 3]) for i in range(0, len(raw) - 2, 3)]
+    verde = sum(1 for (cr, cg, cb) in px if cg > 100 and cr < 40 and cb < 40) / max(len(px), 1)
+    return verde, len(set(px))
+
+
+@test
+def windows_decoder():
+    """O .exe (wine) assistindo com 'usar a placa de vídeo': sem NVIDIA, Media Foundation (QA_MF_SOFTWARE=1) ou openh264; a imagem certa, inclusive quando a resolução muda."""
+    with Session("winedec") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Linux", "--criar", str(p), "--transmitir", "--software"])
+        a.wait(lambda st: st["status"] == "connected" and st["sharer"] and st["sharer"]["state"] == "live", 15, "a sala abrir transmitindo")
+        # no wine o decoder aceita o Direct3D, mas a imagem sairia zerada (o
+        # wined3d não lê textura NV12): o app recusa e fica no openh264.
+        # QA_MF_SOFTWARE=1 faz o Media Foundation decodificar em software
+        mf_sw = os.environ.get("QA_MF_SOFTWARE")
+        esperado = "Media Foundation" if mf_sw else "openh264"
+        env = {"TELINHA_DEBUG": "1", "TELINHA_SEM_NVDEC": "1"} | ({"TELINHA_MF_SOFTWARE": "1"} if mf_sw else {})
+        if os.environ.get("QA_WINEDEBUG"):
+            env["WINEDEBUG"] = os.environ["QA_WINEDEBUG"]  # canais de log do wine (diagnóstico)
+        w = s.wine_app("w", 96, ["--nome", "Windows", "--entrar", f"127.0.0.1:{p}", "--assistir"], extra_env=env)
+        lid = w.member_id("Linux")
+
+        def vista(st):
+            return next((v for v in st["views"] if v["stream"] == lid), None)
+
+        def vendo(st, h=None):
+            v = vista(st)
+            return v and v["shown"] and v["fps"] > 0 and v["decoder"] and (h is None or v["h"] == h)
+
+        v = vista(w.wait(vendo, 60, "o .exe ver a tela do Linux"))
+        log(f"o .exe vê {v['w']}x{v['h']} a {v['fps']} fps com {v['decoder']}")
+        expect(v["decoder"] == esperado, f"o decoder devia ser {esperado}, foi {v['decoder']}")
+        if mf_sw:
+            expect("[telinha] decoder: Media Foundation" in w.log_tail(400), "o log do .exe não diz que usou o Media Foundation")
+
+        def confere(nome):
+            img = imagem_do_quadro(w, lid, os.path.join(s.base, nome))
+            if img is not None:
+                log(f"imagem ({nome}): {img[0] * 100:.0f}% verde puro, {img[1]} cores")
+                expect(img[0] < 0.5 and img[1] > 8, "a imagem decodificada está vazia (verde) ou lisa demais")
+
+        confere("mf_antes.png")
+        h0 = v["h"]
+        # quem transmite muda a resolução: SPS novo no meio, o decoder renegocia
+        a.click(contains="Ao vivo (configurar)##share")
+        a.wait(lambda st: st["share_modal"], 3, "abrir as configurações da transmissão")
+        a.click("480p")
+        a.click("Aplicar")
+        a.toasted("Configurações aplicadas")
+        v = vista(w.wait(lambda st: vendo(st, 480), 30, "o .exe ver a tela em 480p"))
+        log(f"depois de mudar: {v['w']}x{v['h']} (antes {h0}) a {v['fps']} fps com {v['decoder']}")
+        expect(h0 != 480, "a resolução não mudou")
+        time.sleep(2)
+        v = vista(w.wait(vendo, 10, "o .exe continuar vendo"))
+        expect(v["decoder"] == esperado, f"o decoder virou {v['decoder']} depois de mudar a resolução")
+        confere("mf_depois.png")
+
+
 # ---------------------------------------------------------------------------
 
 
