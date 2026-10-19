@@ -17,6 +17,7 @@ extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 var dir_buf: [512]u8 = undefined;
 var dir_len: usize = 0;
 var last_ms: u64 = 0;
+var state_err_shown = false;
 
 pub fn enabled() bool {
     return dir_len > 0;
@@ -41,7 +42,12 @@ pub fn endFrame(app: anytype, win: *c.GLFWwindow) void {
     writeItems(win) catch {};
     var aw: std.Io.Writer.Allocating = .init(gpa);
     defer aw.deinit();
-    app.qaState(&aw.writer) catch return;
+    app.qaState(&aw.writer) catch |e| {
+        // estado pela metade não vale: avisa (uma vez) e mantém o anterior
+        if (!state_err_shown) std.debug.print("[telinha] modo de testes: estado falhou: {s}\n", .{@errorName(e)});
+        state_err_shown = true;
+        return;
+    };
     writeFile("state.json", aw.written()) catch {};
 }
 

@@ -13,6 +13,8 @@ enum { CAP_BGRX = 0, CAP_RGBX = 1 };
 typedef struct cap_source {
     int id;
     char name[160];
+    uint32_t pid;  // janela: processo dono (pro som só dele); monitor: 0
+    char app[64];  // janela: nome do programa ("chrome"); monitor: ""
 } cap_source;
 
 typedef struct cap_frame {

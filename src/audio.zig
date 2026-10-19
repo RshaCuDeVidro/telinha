@@ -241,6 +241,11 @@ pub const Decoder = struct {
 };
 
 /// Captura o som do computador e entrega pacotes Opus de 10 ms.
+/// Programas tocando som agora (pra escolher de quem compartilhar o áudio).
+pub fn listApps(out: []c.audio_app) usize {
+    return @intCast(@max(0, c.audio_list_apps(out.ptr, @intCast(out.len))));
+}
+
 pub const Sender = struct {
     dev: ?*c.audio_dev = null,
     enc: *c.OpusEncoder,
@@ -250,7 +255,13 @@ pub const Sender = struct {
     on_packet: *const fn (ctx: *anyopaque, packet: []const u8) void,
     ctx: *anyopaque,
 
-    pub fn create(ctx: *anyopaque, on_packet: *const fn (ctx: *anyopaque, packet: []const u8) void, err: []u8) !*Sender {
+    /// De quem é o som: tudo (menos o telinha) ou um programa só.
+    pub const Only = struct {
+        app: []const u8 = "", // nome, como em listApps
+        pid: u32 = 0, // esse processo e os filhos (janela compartilhada no Windows)
+    };
+
+    pub fn create(ctx: *anyopaque, on_packet: *const fn (ctx: *anyopaque, packet: []const u8) void, only: Only, err: []u8) !*Sender {
         @memset(err, 0);
         var e: c_int = 0;
         const enc = c.opus_encoder_create(rate, channels, c.OPUS_APPLICATION_RESTRICTED_LOWDELAY, &e) orelse return error.OpusInit;
@@ -260,7 +271,9 @@ pub const Sender = struct {
         _ = c.opus_encoder_ctl(enc, c.OPUS_SET_DTX_REQUEST, @as(c_int, 1)); // silêncio quase não gasta banda
         const s = try gpa.create(Sender);
         s.* = .{ .enc = enc, .on_packet = on_packet, .ctx = ctx };
-        s.dev = c.audio_capture_open(onCapture, s, err.ptr, @intCast(err.len)) orelse {
+        var app_z: [64]u8 = [_]u8{0} ** 64;
+        @memcpy(app_z[0..@min(only.app.len, 63)], only.app[0..@min(only.app.len, 63)]);
+        s.dev = c.audio_capture_open(onCapture, s, &app_z, only.pid, err.ptr, @intCast(err.len)) orelse {
             gpa.destroy(s);
             return error.AudioCapture;
         };

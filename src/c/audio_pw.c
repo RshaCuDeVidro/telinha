@@ -16,6 +16,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <time.h>
 #include <unistd.h>
 
 // portas de todo o grafo (dispositivos com muitos canais somam rápido)
@@ -41,6 +43,9 @@ struct pwcap {
     struct spa_hook stream_listener;
     uint32_t my_node; // nó da nossa captura (SPA_ID_INVALID até aparecer)
     long self_pid;
+    // só um programa (vazio/0 = todos): pelo nome ou pela árvore de processos
+    char only_app[64];
+    long only_pid;
 
     // nós de aplicativos tocando áudio (fora o nosso processo)
     uint32_t apps[MAX_PORTS];
@@ -120,6 +125,41 @@ static void relink(struct pwcap *c) {
     }
 }
 
+// `pid` é `root` ou descende dele? (sobe pelos pais em /proc)
+static int descends_from(long pid, long root) {
+    for (int depth = 0; pid > 1 && depth < 32; depth++) {
+        if (pid == root) return 1;
+        char path[64], buf[512];
+        snprintf(path, sizeof path, "/proc/%ld/stat", pid);
+        FILE *f = fopen(path, "r");
+        if (!f) return 0;
+        size_t n = fread(buf, 1, sizeof buf - 1, f);
+        fclose(f);
+        buf[n] = 0;
+        // "pid (nome) estado ppid ...": o nome pode ter espaço e parêntese
+        char *close = strrchr(buf, ')');
+        if (!close) return 0;
+        char state;
+        long ppid;
+        if (sscanf(close + 1, " %c %ld", &state, &ppid) != 2) return 0;
+        pid = ppid;
+    }
+    return 0;
+}
+
+// Esse nó de saída de áudio é do programa escolhido?
+static int wanted(struct pwcap *c, const struct spa_dict *props, long pid) {
+    if (!c->only_app[0] && !c->only_pid) return 1;
+    if (c->only_pid && pid > 0 && descends_from(pid, c->only_pid)) return 1;
+    if (c->only_app[0]) {
+        const char *name = spa_dict_lookup(props, PW_KEY_APP_NAME);
+        const char *bin = spa_dict_lookup(props, PW_KEY_APP_PROCESS_BINARY);
+        if (name && !strcasecmp(name, c->only_app)) return 1;
+        if (bin && !strcasecmp(bin, c->only_app)) return 1;
+    }
+    return 0;
+}
+
 static void on_node_info(void *data, const struct pw_node_info *info);
 
 static const struct pw_node_events node_events = {
@@ -149,6 +189,7 @@ static void on_node_info(void *data, const struct pw_node_info *info) {
     const uint32_t id = pn->id;
     forget_pending(c, (int)(pn - c->pending));
     if (pid && atol(pid) == c->self_pid) return; // o próprio telinha: nunca
+    if (!wanted(c, info->props, pid ? atol(pid) : 0)) return;
     if (c->n_apps < MAX_PORTS) c->apps[c->n_apps++] = id;
     relink(c);
 }
@@ -258,7 +299,7 @@ void pwcap_close(pwcap *c) {
     free(c);
 }
 
-pwcap *pwcap_open(pwcap_fn fn, void *user, char *err, int errlen) {
+pwcap *pwcap_open(pwcap_fn fn, void *user, const char *app, uint32_t pid, char *err, int errlen) {
     if (getenv("TELINHA_AUDIO_MONITOR")) return NULL; // força o jeito antigo (monitor)
     pw_init(NULL, NULL);
     struct pwcap *c = calloc(1, sizeof *c);
@@ -267,6 +308,8 @@ pwcap *pwcap_open(pwcap_fn fn, void *user, char *err, int errlen) {
     c->user = user;
     c->my_node = SPA_ID_INVALID;
     c->self_pid = (long)getpid();
+    if (app) snprintf(c->only_app, sizeof c->only_app, "%s", app);
+    c->only_pid = (long)pid;
     c->loop = pw_thread_loop_new("telinha-audio", NULL);
     if (!c->loop) goto fail;
     c->ctx = pw_context_new(pw_thread_loop_get_loop(c->loop), NULL, 0);
@@ -310,5 +353,136 @@ int pwcap_links(pwcap *c) {
     pw_thread_loop_lock(c->loop);
     int n = c->n_links;
     pw_thread_loop_unlock(c->loop);
+    return n;
+}
+
+// ---------------------------------------------------------------------------
+// Lista de quem está tocando som
+
+struct lister {
+    struct pw_thread_loop *loop;
+    struct pw_core *core;
+    struct pw_registry *registry;
+    long self_pid;
+    struct lnode {
+        struct lister *l;
+        struct pw_proxy *proxy;
+        struct spa_hook listener;
+    } nodes[MAX_PENDING];
+    int n_nodes;
+    audio_app *out;
+    int max, n;
+    int seq, done;
+};
+
+static void list_node_info(void *data, const struct pw_node_info *info) {
+    struct lnode *ln = data;
+    struct lister *l = ln->l;
+    if (!info->props || l->n >= l->max) return;
+    const char *pid = spa_dict_lookup(info->props, PW_KEY_APP_PROCESS_ID);
+    if (pid && atol(pid) == l->self_pid) return;
+    const char *name = spa_dict_lookup(info->props, PW_KEY_APP_NAME);
+    if (!name || !*name) name = spa_dict_lookup(info->props, PW_KEY_APP_PROCESS_BINARY);
+    if (!name || !*name) return;
+    for (int i = 0; i < l->n; i++)
+        if (!strcasecmp(l->out[i].name, name)) return;
+    snprintf(l->out[l->n].name, sizeof l->out[l->n].name, "%s", name);
+    l->out[l->n].pid = pid ? (uint32_t)atol(pid) : 0;
+    l->n++;
+}
+
+static const struct pw_node_events list_node_events = {
+    PW_VERSION_NODE_EVENTS,
+    .info = list_node_info,
+};
+
+static void list_global(void *data, uint32_t id, uint32_t permissions, const char *type, uint32_t version,
+                        const struct spa_dict *props) {
+    (void)permissions;
+    (void)version;
+    struct lister *l = data;
+    if (!props || strcmp(type, PW_TYPE_INTERFACE_Node) != 0 || l->n_nodes == MAX_PENDING) return;
+    const char *cls = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
+    if (!cls || strcmp(cls, "Stream/Output/Audio") != 0) return;
+    struct lnode *ln = &l->nodes[l->n_nodes];
+    ln->proxy = pw_registry_bind(l->registry, id, PW_TYPE_INTERFACE_Node, PW_VERSION_NODE, 0);
+    if (!ln->proxy) return;
+    ln->l = l;
+    l->n_nodes++;
+    pw_proxy_add_object_listener(ln->proxy, &ln->listener, &list_node_events, ln);
+}
+
+static const struct pw_registry_events list_registry_events = {
+    PW_VERSION_REGISTRY_EVENTS,
+    .global = list_global,
+};
+
+static void list_core_done(void *data, uint32_t id, int seq) {
+    struct lister *l = data;
+    if (id == PW_ID_CORE && seq == l->seq) {
+        l->done++;
+        pw_thread_loop_signal(l->loop, false);
+    }
+}
+
+static const struct pw_core_events list_core_events = {
+    PW_VERSION_CORE_EVENTS,
+    .done = list_core_done,
+};
+
+int pwcap_list_apps(audio_app *out, int max) {
+    if (max <= 0) return 0;
+    pw_init(NULL, NULL);
+    struct lister *l = calloc(1, sizeof *l);
+    if (!l) return 0;
+    l->out = out;
+    l->max = max;
+    l->self_pid = (long)getpid();
+    l->loop = pw_thread_loop_new("telinha-apps", NULL);
+    if (!l->loop) {
+        free(l);
+        return 0;
+    }
+    struct pw_context *ctx = pw_context_new(pw_thread_loop_get_loop(l->loop), NULL, 0);
+    if (!ctx || pw_thread_loop_start(l->loop) < 0) {
+        if (ctx) pw_context_destroy(ctx);
+        pw_thread_loop_destroy(l->loop);
+        free(l);
+        return 0;
+    }
+    pw_thread_loop_lock(l->loop);
+    l->core = pw_context_connect(ctx, NULL, 0);
+    if (l->core) {
+        struct spa_hook reg_listener, core_listener;
+        spa_zero(reg_listener);
+        spa_zero(core_listener);
+        l->registry = pw_core_get_registry(l->core, PW_VERSION_REGISTRY, 0);
+        pw_registry_add_listener(l->registry, &reg_listener, &list_registry_events, l);
+        pw_core_add_listener(l->core, &core_listener, &list_core_events, l);
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += 2;
+        // 1ª volta: a lista de nós; 2ª: as propriedades de cada um (pedidas na 1ª)
+        for (int round = 1; round <= 2; round++) {
+            l->seq = pw_core_sync(l->core, PW_ID_CORE, 0);
+            while (l->done < round)
+                if (pw_thread_loop_timed_wait_full(l->loop, &ts) < 0) break;
+            if (l->done < round) break;
+        }
+        for (int i = 0; i < l->n_nodes; i++) {
+            spa_hook_remove(&l->nodes[i].listener);
+            pw_proxy_destroy(l->nodes[i].proxy);
+        }
+        spa_hook_remove(&reg_listener);
+        spa_hook_remove(&core_listener);
+        pw_proxy_destroy((struct pw_proxy *)l->registry);
+        pw_core_disconnect(l->core);
+    }
+    pw_thread_loop_unlock(l->loop);
+    pw_thread_loop_stop(l->loop);
+    pw_context_destroy(ctx);
+    pw_thread_loop_destroy(l->loop);
+    const int n = l->n;
+    free(l);
     return n;
 }

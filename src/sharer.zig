@@ -81,6 +81,8 @@ pub const Settings = struct {
     mode: codec.Mode = .screen,
     hardware: bool = true, // tenta NVENC antes do encoder em software
     audio: bool = true, // compartilha o som do computador
+    audio_app: [64]u8 = [_]u8{0} ** 64, // só o som desse programa (vazio = tudo menos o telinha)
+    audio_pid: u32 = 0, // ou desse processo e filhos (a janela compartilhada)
     clips: bool = true, // guarda os últimos 30 s (clipe da própria transmissão)
     kind: u8 = proto.kind_screen, // tela ou câmera (não muda com a transmissão rolando)
 };
@@ -340,6 +342,8 @@ const Pipeline = struct {
     /// Encoder em hardware em uso? Decidido no início; vira false se o NVENC falhar.
     use_hw: std.atomic.Value(bool) = .init(false),
     audio_sender: ?*audio.Sender = null,
+    audio_live: std.atomic.Value(bool) = .init(false), // tem som saindo (vai no anúncio)
+    reannounce: std.atomic.Value(bool) = .init(false), // o som mudou: anunciar de novo
     audio_seq: u32 = 0,
     fps_gen: u32 = 0, // muda quando fps/modo/qualidade mudam (encoder recria)
     fps: u32 = 30,
@@ -383,20 +387,7 @@ const Pipeline = struct {
         const b = std.mem.span(p.cap.?.backend());
         // PipeWire/DXGI/câmera só entregam quadro quando tem um novo
         p.event_driven = s.kind == proto.kind_camera or std.mem.eql(u8, b, "PipeWire") or std.mem.eql(u8, b, "DXGI") or std.mem.eql(u8, b, "WGC");
-        if (p.settings.audio and s.kind == proto.kind_screen) {
-            var err: [160]u8 = undefined;
-            if (audio.Sender.create(p, onAudioPacket, &err)) |a| {
-                p.audio_sender = a;
-            } else |_| {
-                s.mutex.lock();
-                @memcpy(&s.audio_err, &err);
-                s.mutex.unlock();
-            }
-            s.mutex.lock();
-            s.audio_on = p.audio_sender != null;
-            s.audio_hears_self = if (p.audio_sender) |a| a.hearsSelf() else false;
-            s.mutex.unlock();
-        }
+        p.openAudio();
         s.mutex.lock();
         s.backend_len = @min(b.len, s.backend.len);
         @memcpy(s.backend[0..s.backend_len], b[0..s.backend_len]);
@@ -408,6 +399,32 @@ const Pipeline = struct {
         const want_h: c_int = if (p.settings.max_height > 0) @intCast(p.settings.max_height) else 720;
         const cam = c.cam_open(@ptrCast(&p.settings.camera_id), @divTrunc(want_h * 16, 9), want_h, fps, &p.err, p.err.len) orelse return error.Capture;
         p.cap = .{ .camera = cam };
+    }
+
+    /// Liga o som (de tudo ou de um programa só), conforme as configurações.
+    fn openAudio(p: *Pipeline) void {
+        const s = p.s;
+        if (!p.settings.audio or s.kind != proto.kind_screen) return;
+        var err: [160]u8 = [_]u8{0} ** 160;
+        if (audio.Sender.create(p, onAudioPacket, .{ .app = std.mem.sliceTo(&p.settings.audio_app, 0), .pid = p.settings.audio_pid }, &err)) |a| {
+            p.audio_sender = a;
+        } else |_| {}
+        p.audio_live.store(p.audio_sender != null, .release);
+        s.mutex.lock();
+        @memcpy(&s.audio_err, &err);
+        s.audio_on = p.audio_sender != null;
+        s.audio_hears_self = if (p.audio_sender) |a| a.hearsSelf() else false;
+        s.mutex.unlock();
+    }
+
+    fn closeAudio(p: *Pipeline) void {
+        if (p.audio_sender) |a| a.destroy();
+        p.audio_sender = null;
+        p.audio_live.store(false, .release);
+        const s = p.s;
+        s.mutex.lock();
+        s.audio_on = false;
+        s.mutex.unlock();
     }
 
     fn applySettings(p: *Pipeline) void {
@@ -433,6 +450,9 @@ const Pipeline = struct {
             const gen = s.settings_gen;
             const old_h = p.settings.max_height;
             const old_cam = p.settings.camera_id;
+            const old_audio = p.settings.audio;
+            const old_app = p.settings.audio_app;
+            const old_pid = p.settings.audio_pid;
             if (gen != p.gen) p.settings = s.settings;
             s.mutex.unlock();
             if (gen != p.gen) {
@@ -444,6 +464,12 @@ const Pipeline = struct {
                     if (p.cap) |src| src.close();
                     p.cap = null;
                     try p.openCamera();
+                }
+                // trocou de quem é o som (ou ligou/desligou) com a transmissão rolando
+                if (old_audio != p.settings.audio or old_pid != p.settings.audio_pid or !std.mem.eql(u8, &old_app, &p.settings.audio_app)) {
+                    p.closeAudio();
+                    p.openAudio();
+                    p.reannounce.store(true, .release);
                 }
             }
 
@@ -810,7 +836,9 @@ const Pipeline = struct {
                 s.w = sl.w;
                 s.h = sl.h;
                 s.mutex.unlock();
-                announce(s, kind, sl.w, sl.h, fps, p.audio_sender != null);
+                announce(s, kind, sl.w, sl.h, fps, p.audio_live.load(.acquire));
+            } else if (p.reannounce.swap(false, .acq_rel)) {
+                announce(s, kind, sl.w, sl.h, fps, p.audio_live.load(.acquire));
             }
             bw.rampUp(sync.nowUs(), up.excess_us -| up.key_allowance_us);
             if (bw.takeChange()) |b| enc.?.setBitrate(b);

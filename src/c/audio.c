@@ -89,8 +89,22 @@ static int start(struct audio_dev *d, ma_device_config *cfg, char *err, int errl
     return 0;
 }
 
-audio_dev *audio_capture_open(audio_capture_fn fn, void *user, char *err, int errlen) {
 #ifdef _WIN32
+// audio_apps_win.c
+uint32_t audio_app_pid_by_name(const char *name);
+#endif
+
+audio_dev *audio_capture_open(audio_capture_fn fn, void *user, const char *app, uint32_t pid, char *err, int errlen) {
+    if (!app) app = "";
+#ifdef _WIN32
+    // um programa só: pelo nome, acha o processo que está tocando agora
+    if (pid == 0 && app[0]) {
+        pid = audio_app_pid_by_name(app);
+        if (pid == 0) {
+            if (err && errlen > 0) snprintf(err, errlen, "\"%s\" não está tocando som agora", app);
+            return NULL;
+        }
+    }
     const ma_backend backends[] = {ma_backend_wasapi};
     audio_dev *d = open_dev(ma_device_type_loopback, backends, 1, err, errlen);
     if (!d) return NULL;
@@ -99,10 +113,16 @@ audio_dev *audio_capture_open(audio_capture_fn fn, void *user, char *err, int er
     ma_device_config cfg = ma_device_config_init(ma_device_type_loopback);
     cfg.capture.format = ma_format_f32;
     cfg.capture.channels = AUDIO_CHANNELS;
-    // tudo menos o próprio telinha (o som das transmissões assistidas não volta em eco)
-    cfg.wasapi.loopbackProcessID = (ma_uint32)GetCurrentProcessId();
-    cfg.wasapi.loopbackProcessExclude = MA_TRUE;
+    // tudo menos o próprio telinha (o som das transmissões assistidas não volta em eco),
+    // ou só o programa escolhido (e os processos filhos dele)
+    cfg.wasapi.loopbackProcessID = pid ? (ma_uint32)pid : (ma_uint32)GetCurrentProcessId();
+    cfg.wasapi.loopbackProcessExclude = pid ? MA_FALSE : MA_TRUE;
     if (start(d, &cfg, err, errlen) < 0) {
+        if (pid) {
+            // sem loopback por processo não dá pra separar um programa
+            audio_close(d);
+            return NULL;
+        }
         // Windows antigo (sem loopback por processo): captura tudo
         if (d->dev_ok) ma_device_uninit(&d->dev);
         d->dev_ok = 0;
@@ -120,7 +140,7 @@ audio_dev *audio_capture_open(audio_capture_fn fn, void *user, char *err, int er
     {
         audio_dev *d = calloc(1, sizeof *d);
         if (!d) return NULL;
-        d->pw = pwcap_open(fn, user, NULL, 0);
+        d->pw = pwcap_open(fn, user, app, pid, NULL, 0);
         if (d->pw) return d;
         free(d);
     }
@@ -213,6 +233,12 @@ int audio_list_mics(char names[][128], int max) {
     ma_context_uninit(&ctx);
     return out;
 }
+
+#ifndef _WIN32
+int audio_list_apps(audio_app *out, int max) {
+    return pwcap_list_apps(out, max);
+}
+#endif
 
 int audio_capture_hears_self(audio_dev *d) {
     return d ? d->hears_self : 0;

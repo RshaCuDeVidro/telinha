@@ -180,7 +180,7 @@ class Session:
         env.update(extra)
         return env
 
-    def play_tone(self, name="tom", seconds=120, freq=440.0):
+    def play_tone(self, name="tom", seconds=120, freq=440.0, app=None):
         """Um aplicativo tocando som no áudio privado (vai pra saída muda)."""
         if not self.runtime:
             raise QAError("play_tone precisa de Session(audio=True)")
@@ -194,7 +194,8 @@ class Session:
                 v = int(9000 * math.sin(2 * math.pi * freq * i / 48000))
                 frames += struct.pack("<hh", v, v)
             w.writeframes(bytes(frames))
-        return self.spawn(name, ["pw-play", path], self.audio_env({}))
+        props = ["-P", f"{{ application.name=\"{app}\" node.name=\"{name}\" }}"] if app else []
+        return self.spawn(name, ["pw-play"] + props + [path], self.audio_env({}))
 
     def fake_mic(self, name="mic-mudo"):
         """Um microfone de mentira (fonte virtual silenciosa) no áudio privado."""

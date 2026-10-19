@@ -449,6 +449,8 @@ pub const App = struct {
     mic_names: [16][128]u8 = undefined, // microfones (tela de configurações)
     n_mic_names: usize = 0,
     cams: [8]c.cam_device = undefined, // câmeras (tela de configurações)
+    audio_apps: [24]audio.c.audio_app = undefined, // programas tocando som (janela de compartilhar)
+    n_audio_apps: usize = 0,
     newer_seen: [16]u8 = undefined, // versão mais nova vista na sala (já avisada)
     newer_seen_len: usize = 0,
     n_cams: usize = 0,
@@ -1047,9 +1049,66 @@ pub const App = struct {
         for (want[0..n_want]) |id| a.watch(id);
     }
 
+    /// Fonte escolhida na janela de compartilhar.
+    fn chosenSource(a: *App) ?*const c.cap_source {
+        if (a.n_sources == 0) return null;
+        return &a.sources[@intCast(std.math.clamp(a.source_idx, 0, @as(i32, @intCast(a.n_sources)) - 1))];
+    }
+
+    /// De quem é o som: nada, tudo, o programa da janela compartilhada ou um
+    /// programa escolhido. cfg.audio_app: "" = tudo; "*janela" = o da janela.
+    fn drawAudioChoice(a: *App, w: f32) void {
+        const src = a.chosenSource();
+        const win_app: []const u8 = if (src) |x| std.mem.sliceTo(&x.app, 0) else "";
+        const has_win = src != null and src.?.pid != 0;
+        const cur = config.getStr(&a.cfg.audio_app);
+        const window_mode = std.mem.eql(u8, cur, "*janela");
+        var preview_buf: [96]u8 = undefined;
+        const preview: []const u8 = if (!a.cfg.audio)
+            "Sem som"
+        else if (window_mode and has_win)
+            std.fmt.bufPrint(&preview_buf, "Só o som da janela ({s})", .{win_app}) catch "Só o som da janela"
+        else if (cur.len == 0 or window_mode)
+            "Todo o som do computador (menos o telinha)"
+        else
+            std.fmt.bufPrint(&preview_buf, "Só o som do {s}", .{cur}) catch cur;
+        fieldLabel("SOM");
+        c.igSetNextItemWidth(w);
+        c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(10), S(9)));
+        if (beginCombo("##audio", fmtZ("{s}", .{preview}).ptr, 0)) {
+            if (c.igSelectable_Bool("Todo o som do computador (menos o telinha)", a.cfg.audio and cur.len == 0, 0, v2(0, 0))) {
+                a.cfg.audio = true;
+                config.setStr(&a.cfg.audio_app, "");
+            }
+            if (has_win and c.igSelectable_Bool(fmtZ("Só o som da janela ({s})##audiowin", .{win_app}).ptr, a.cfg.audio and window_mode, 0, v2(0, 0))) {
+                a.cfg.audio = true;
+                config.setStr(&a.cfg.audio_app, "*janela");
+            }
+            for (a.audio_apps[0..a.n_audio_apps], 0..) |*ap, i| {
+                const name = std.mem.sliceTo(&ap.name, 0);
+                c.igPushID_Int(@intCast(i));
+                if (c.igSelectable_Bool(fmtZ("Só o som do {s}", .{name}).ptr, a.cfg.audio and std.ascii.eqlIgnoreCase(name, cur), 0, v2(0, 0))) {
+                    a.cfg.audio = true;
+                    config.setStr(&a.cfg.audio_app, name);
+                }
+                c.igPopID();
+            }
+            if (c.igSelectable_Bool("Sem som", !a.cfg.audio, 0, v2(0, 0))) a.cfg.audio = false;
+            c.igEndCombo();
+        }
+        c.igPopStyleVar(1);
+        c.igPopStyleColor(1);
+        if (a.n_audio_apps == 0 and !sync.is_windows) {
+            pushFont(font_regular, 12);
+            textColored(col.faint, "Programa tocando som aparece na lista (abra de novo esta janela se não aparecer).");
+            popFont();
+        }
+    }
+
     fn shareSettings(a: *App) sharer_mod.Settings {
         const heights = [_]u32{ 0, 1080, 720, 480 };
-        return .{
+        var st: sharer_mod.Settings = .{
             .source = if (a.n_sources > 0) a.sources[@intCast(std.math.clamp(a.source_idx, 0, @as(i32, @intCast(a.n_sources)) - 1))].id else 0,
             .fps = @intCast(std.math.clamp(a.cfg.fps, 1, 60)),
             .quality = @intCast(std.math.clamp(a.cfg.quality, 20, 100)),
@@ -1060,6 +1119,12 @@ pub const App = struct {
             .audio = a.cfg.audio,
             .clips = a.cfg.clips,
         };
+        const cur = config.getStr(&a.cfg.audio_app);
+        if (std.mem.eql(u8, cur, "*janela")) {
+            // o programa dono da janela compartilhada (e os processos filhos dele)
+            if (a.chosenSource()) |src| st.audio_pid = src.pid;
+        } else config.setStr(&st.audio_app, cur);
+        return st;
     }
 
     fn startSharing(a: *App) void {
@@ -2286,6 +2351,7 @@ pub const App = struct {
     fn openShareModal(a: *App) void {
         a.n_sources = @intCast(c.cap_list_sources(&a.sources, a.sources.len));
         if (a.source_idx >= @as(i32, @intCast(a.n_sources))) a.source_idx = 0;
+        a.n_audio_apps = audio.listApps(&a.audio_apps);
         a.share_modal = true;
     }
 
@@ -3399,6 +3465,8 @@ pub const App = struct {
         const vp = c.igGetMainViewport();
         c.igSetNextWindowPos(v2(vp.*.Pos.x + vp.*.Size.x / 2, vp.*.Pos.y + vp.*.Size.y / 2), c.ImGuiCond_Always, v2(0.5, 0.5));
         c.igSetNextWindowSize(v2(S(480), 0), c.ImGuiCond_Always);
+        // janela baixa: rola em vez de cortar o botão de ir ao vivo
+        c.igSetNextWindowSizeConstraints(v2(S(480), 0), v2(S(480), @max(S(200), vp.*.Size.y - S(24))), null, null);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(24), S(22)));
         c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, S(10));
         c.igPushStyleColor_U32(c.ImGuiCol_PopupBg, col.bg_main);
@@ -3432,15 +3500,18 @@ pub const App = struct {
         }
         c.igPopStyleVar(1);
         c.igPopStyleColor(1);
-        c.igDummy(v2(0, S(12)));
+        c.igDummy(v2(0, S(9)));
+
+        a.drawAudioChoice(w);
+        c.igDummy(v2(0, S(9)));
 
         fieldLabel("TIPO DE CONTEÚDO");
         _ = segmented("mode", &.{ "Tela e texto", "Jogo e vídeo" }, &a.cfg.mode, w);
-        c.igDummy(v2(0, S(12)));
+        c.igDummy(v2(0, S(9)));
 
         fieldLabel("RESOLUÇÃO");
         _ = segmented("res", &.{ "Original", "1080p", "720p", "480p" }, &a.cfg.resolution, w);
-        c.igDummy(v2(0, S(12)));
+        c.igDummy(v2(0, S(9)));
 
         fieldLabel("QUADROS POR SEGUNDO");
         var fps_preset: i32 = switch (a.cfg.fps) {
@@ -3456,7 +3527,7 @@ pub const App = struct {
         };
         c.igDummy(v2(0, S(4)));
         sliderStyled("##fps", &a.cfg.fps, 1, 60, "%d fps", w);
-        c.igDummy(v2(0, S(12)));
+        c.igDummy(v2(0, S(9)));
 
         fieldLabel("QUALIDADE");
         const qname = if (a.cfg.quality < 40) "economia" else if (a.cfg.quality < 65) "equilibrada" else if (a.cfg.quality < 85) "alta" else "máxima";
@@ -3480,7 +3551,6 @@ pub const App = struct {
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         c.igPushStyleColor_U32(c.ImGuiCol_CheckMark, col.white);
         _ = c.igCheckbox("Mostrar o cursor do mouse", &a.cfg.cursor);
-        _ = c.igCheckbox("Compartilhar o áudio do computador", &a.cfg.audio);
         _ = c.igCheckbox("Usar a placa de vídeo (NVIDIA; no Windows também AMD e Intel), se tiver", &a.cfg.hardware);
 
         c.igPopStyleColor(2);
@@ -3742,8 +3812,8 @@ pub const App = struct {
         try w.print(",\"fps\":{d},\"quality\":{d},\"mode\":{d},\"resolution\":{d},\"cursor\":{},\"audio\":{},\"hardware\":{},\"stats_always\":{},\"show_chat\":{}", .{
             cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.stats_always, cf.show_chat,
         });
-        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d}}}", .{
-            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams,
+        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_apps\":{d}}}", .{
+            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), a.n_audio_apps,
         });
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);
         try w.print(",\"clipboard\":{f},\"chat_input\":{f}", .{ s(if (cb_text != null) std.mem.span(cb_text) else ""), s(std.mem.sliceTo(&a.chat_input, 0)) });
@@ -3797,7 +3867,9 @@ pub const App = struct {
         if (a.sharer) |sh| {
             sh.mutex.lock();
             defer sh.mutex.unlock();
-            try w.print(",\"sharer\":{{\"state\":{f},\"w\":{d},\"h\":{d},\"fps\":{d:.1},\"backend\":{f},\"encoder\":{f}}}", .{ s(@tagName(sh.state)), sh.w, sh.h, sh.fps, s(sh.backendSlice()), s(sh.encoder_name) });
+            const audio_on = sh.audio_on;
+            const aerr: [160]u8 = sh.audio_err;
+            try w.print(",\"sharer\":{{\"state\":{f},\"w\":{d},\"h\":{d},\"fps\":{d:.1},\"backend\":{f},\"encoder\":{f},\"audio\":{},\"audio_err\":{f}}}", .{ s(@tagName(sh.state)), sh.w, sh.h, sh.fps, s(sh.backendSlice()), s(sh.encoder_name), audio_on, s(std.mem.sliceTo(&aerr, 0)) });
         } else try w.writeAll(",\"sharer\":null");
         // avisos na tela
         try w.writeAll(",\"toasts\":[");

@@ -148,6 +148,8 @@ static BOOL CALLBACK enum_window(HWND h, LPARAM lp) {
     }
     cap_source *o = &e->out[e->n++];
     o->id = WINDOW_ID0 + g_n_windows;
+    o->pid = pid;
+    snprintf(o->app, sizeof o->app, "%s", exe);
     g_windows[g_n_windows++] = h;
     if (exe[0]) snprintf(o->name, sizeof o->name, "Janela: %s (%s)", t8, exe);
     else snprintf(o->name, sizeof o->name, "Janela: %s", t8);
@@ -160,6 +162,8 @@ int cap_list_sources(cap_source *out, int max) {
     if (n > max) n = max;
     for (int i = 0; i < n; i++) {
         out[i].id = i;
+        out[i].pid = 0;
+        out[i].app[0] = 0;
         snprintf(out[i].name, sizeof out[i].name, "Monitor %d — %ldx%ld%s", i + 1,
                  mons[i].rc.right - mons[i].rc.left, mons[i].rc.bottom - mons[i].rc.top,
                  mons[i].primary ? " (principal)" : "");

@@ -54,7 +54,14 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     const seconds: u32 = if (args.len > 1) try std.fmt.parseInt(u32, args[1], 10) else 3;
     var err: [256]u8 = [_]u8{0} ** 256;
-    const cap = c.audio_capture_open(onCapture, null, &err, err.len) orelse {
+    // 2º argumento: só esse programa (nome, como na lista abaixo)
+    var apps: [32]c.audio_app = undefined;
+    const n_apps: usize = @intCast(@max(0, c.audio_list_apps(&apps, apps.len)));
+    std.debug.print("programas tocando som: {d}\n", .{n_apps});
+    for (apps[0..n_apps]) |*ap| std.debug.print("  {s} (pid {d})\n", .{ std.mem.sliceTo(&ap.name, 0), ap.pid });
+    var only: [64:0]u8 = [_:0]u8{0} ** 64;
+    if (args.len > 2) @memcpy(only[0..@min(args[2].len, 63)], args[2][0..@min(args[2].len, 63)]);
+    const cap = c.audio_capture_open(onCapture, null, &only, 0, &err, err.len) orelse {
         std.debug.print("FALHOU ao abrir a captura: {s}\n", .{std.mem.sliceTo(&err, 0)});
         std.process.exit(1);
     };

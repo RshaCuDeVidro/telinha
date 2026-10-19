@@ -104,6 +104,8 @@ static int is_wayland(void) {
 int cap_list_sources(cap_source *out, int max) {
     if (max < 1) return 0;
     out[0].id = 0;
+    out[0].pid = 0; // o portal não diz de quem é a janela
+    out[0].app[0] = 0;
     if (is_wayland())
         snprintf(out[0].name, sizeof out[0].name, "Escolher tela ou janela (seletor do sistema)");
     else

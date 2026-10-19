@@ -442,6 +442,7 @@ fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: st
         mod.addCSourceFile(.{ .file = b.path("src/c/notify_win.c"), .flags = &.{"-O2"} });
         mod.addCSourceFile(.{ .file = b.path("src/c/netaddr_win.c"), .flags = &.{"-O2"} });
         mod.addCSourceFile(.{ .file = b.path("src/c/httpget_win.c"), .flags = &.{"-O2"} });
+        mod.addCSourceFile(.{ .file = b.path("src/c/audio_apps_win.c"), .flags = &.{"-O2"} });
         mod.addWin32ResourceFile(.{ .file = b.path("assets/telinha.rc") });
         for ([_][]const u8{ "opengl32", "gdi32", "user32", "shell32", "ws2_32", "d3d11", "dxgi", "ole32", "dwmapi", "winmm", "advapi32", "iphlpapi", "winhttp" }) |lib|
             mod.linkSystemLibrary(lib, .{});

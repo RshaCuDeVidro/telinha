@@ -298,7 +298,8 @@ def sala_controles():
         a.wait(lambda st: st["cfg"]["quality"] > 85, 3, "a qualidade subir")
         c0 = a.state()["cfg"]
         a.click(contains="Mostrar o cursor")
-        a.click(contains="Compartilhar o áudio")
+        a.click("##audio")
+        a.click("Sem som", window="##Combo")
         a.click(contains="Usar a placa de vídeo")
         a.wait(lambda st: st["cfg"]["cursor"] != c0["cursor"] and st["cfg"]["audio"] != c0["audio"] and st["cfg"]["hardware"] != c0["hardware"], 3, "as caixas de marcar")
         a.click("Cancelar", window="Compartilhar")
@@ -666,6 +667,60 @@ def convite_varios_caminhos():
         b = s.app("b", 92, ["--nome", "Bruno", "--entrar", inv])
         st = b.wait(lambda st: st["status"] == "connected", 15, "o Bruno entrar pelo convite")
         log(f"Bruno entrou pela rota {st['route']}")
+
+
+def capture_links(s):
+    """Quais nós estão ligados na entrada do telinha (pw-link no áudio privado)."""
+    import subprocess
+    out = subprocess.run(["pw-link", "-l", "-I"], env=s.audio_env({}), capture_output=True, text=True, timeout=10).stdout
+    srcs, cur = set(), None
+    for line in out.splitlines():
+        if "|<-" not in line and "|->" not in line:
+            cur = line.split()[-1] if line.strip() else None
+        elif "|<-" in line and cur and cur.startswith("telinha-captura:"):
+            srcs.add(line.split("|<-")[1].strip().split()[-1].split(":")[0])
+    return srcs
+
+
+@test
+def som_de_um_programa():
+    """Som de um programa só: dois programas tocando, escolhe um na janela de compartilhar (e troca com a transmissão rolando)."""
+    with Session("somapp", audio=True) as s:
+        s.play_tone("tom-a", freq=440, app="Tocador A")
+        s.play_tone("tom-b", freq=880, app="Tocador B")
+        time.sleep(1)
+        p = port()
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p)])
+        bia = s.app("bia", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        ana.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
+        ana.click(contains="Compartilhar tela##share")
+        ana.wait(lambda st: st["share_modal"], 5, "a janela de compartilhar")
+        ana.click("##audio")
+        ana.click(contains="Só o som do Tocador A", window="##Combo")
+        ana.wait(lambda st: st["cfg"]["audio_app"] == "Tocador A", 3, "escolher o Tocador A")
+        ana.click(contains="Ao vivo", window="Compartilhar")
+        st = ana.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live" and st["sharer"]["audio"], 20, "transmitir com som")
+        aid = bia.member_id("Ana")
+        bia.wait(lambda st: any(v["stream"] == aid and v["audio"] for v in st["views"]), 20, "a Bia ouvir o som da Ana")
+        t0 = time.time()
+        while time.time() - t0 < 10 and capture_links(s) != {"tom-a"}:
+            time.sleep(0.3)
+        links = capture_links(s)
+        log(f"ligados na captura: {links}")
+        expect(links == {"tom-a"}, f"só o Tocador A deveria estar ligado, está: {links}")
+        # troca pra tudo com a transmissão rolando
+        ana.click(contains="Ao vivo (configurar)##share")
+        ana.wait(lambda st: st["share_modal"], 5, "abrir as configurações da transmissão")
+        ana.click("##audio")
+        ana.click(contains="Todo o som do computador", window="##Combo")
+        ana.click(contains="Aplicar", window="Compartilhar")
+        t0 = time.time()
+        while time.time() - t0 < 10 and capture_links(s) != {"tom-a", "tom-b"}:
+            time.sleep(0.3)
+        links = capture_links(s)
+        log(f"depois de trocar pra tudo: {links}")
+        expect(links == {"tom-a", "tom-b"}, f"os dois deveriam estar ligados, está: {links}")
+        expect(ana.state()["sharer"]["audio"], "o som parou depois de trocar")
 
 
 @test
