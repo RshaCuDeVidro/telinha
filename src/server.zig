@@ -1,0 +1,466 @@
+//! Servidor da sala (relay). Roda embutido no app de quem cria a sala ou como
+//! servidor dedicado (server_main.zig). Todo mundo conecta nele como cliente.
+//!
+//! Cada conexão tem uma thread leitora e uma escritora com fila própria.
+//! Frames são encaminhados só pra quem está assistindo, sem copiar o buffer.
+//! Se um espectador fica pra trás, os frames pendentes dele são descartados e
+//! o transmissor manda um quadro completo (IDR) — ninguém trava a sala.
+const std = @import("std");
+const sync = @import("sync.zig");
+const net = @import("net.zig");
+const proto = @import("proto.zig");
+const crypto = @import("crypto.zig");
+const gpa = proto.gpa;
+
+/// Mais que isso na fila de um espectador = ele está lento demais.
+pub const max_viewer_backlog = 3 * 1024 * 1024;
+const keyreq_interval_ms = 500;
+const handshake_timeout_ms = 10_000;
+
+const Conn = struct {
+    server: *Server,
+    sock: net.Socket,
+    channel: crypto.Channel = undefined,
+    id: u32 = 0,
+    name: [48]u8 = undefined,
+    name_len: usize = 0,
+    authed: bool = false,
+    admin: bool = false,
+    streaming: bool = false,
+    w: u16 = 0,
+    h: u16 = 0,
+    fps: u8 = 0,
+    queue: proto.SendQueue = .{},
+    watching: std.ArrayList(u32) = .empty, // ids que essa pessoa assiste
+    waiting_key: std.ArrayList(u32) = .empty, // ids cujo próximo frame tem que ser IDR
+    last_keyreq_ms: u64 = 0,
+    refs: std.atomic.Value(u32) = .init(1), // leitora (+ escritora quando existir)
+
+    fn nameSlice(self: *const Conn) []const u8 {
+        return self.name[0..self.name_len];
+    }
+    fn release(self: *Conn) void {
+        if (self.refs.fetchSub(1, .acq_rel) == 1) {
+            self.queue.deinit();
+            self.watching.deinit(gpa);
+            self.waiting_key.deinit(gpa);
+            net.close(self.sock);
+            gpa.destroy(self);
+        }
+    }
+};
+
+fn contains(list: *std.ArrayList(u32), v: u32) bool {
+    return std.mem.findScalar(u32, list.items, v) != null;
+}
+fn remove(list: *std.ArrayList(u32), v: u32) void {
+    if (std.mem.findScalar(u32, list.items, v)) |i| _ = list.swapRemove(i);
+}
+fn addUnique(list: *std.ArrayList(u32), v: u32) void {
+    if (!contains(list, v)) list.append(gpa, v) catch {};
+}
+
+pub const Options = struct {
+    port: u16,
+    password: []const u8 = "",
+    room_name: []const u8 = "telinha",
+    /// Quem mandar esse token no hello vira admin (pode expulsar). Vazio = ninguém.
+    admin_token: []const u8 = "",
+    max_members: u32 = 32,
+    /// Recebe mensagens de log (servidor dedicado imprime no terminal).
+    log: ?*const fn ([]const u8) void = null,
+};
+
+pub const Server = struct {
+    listen_sock: net.Socket,
+    port: u16,
+    password: [128]u8 = undefined,
+    password_len: usize = 0,
+    room_name: [64]u8 = undefined,
+    room_name_len: usize = 0,
+    admin_token: [64]u8 = undefined,
+    admin_token_len: usize = 0,
+    max_members: u32,
+    log_fn: ?*const fn ([]const u8) void,
+    start_us: u64,
+    mutex: sync.Mutex = .{},
+    conns: std.ArrayList(*Conn) = .empty,
+    next_id: u32 = 1,
+    stopped: std.atomic.Value(bool) = .init(false),
+    // estatística
+    relayed_bytes: std.atomic.Value(u64) = .init(0),
+
+    pub fn start(opts: Options) !*Server {
+        const ls = try net.listen(opts.port);
+        const s = try gpa.create(Server);
+        s.* = .{ .listen_sock = ls, .port = opts.port, .max_members = opts.max_members, .log_fn = opts.log, .start_us = sync.nowUs() };
+        copyInto(&s.password, &s.password_len, opts.password);
+        copyInto(&s.room_name, &s.room_name_len, opts.room_name);
+        copyInto(&s.admin_token, &s.admin_token_len, opts.admin_token);
+        try sync.spawn(acceptLoop, .{s});
+        return s;
+    }
+
+    fn copyInto(dst: []u8, len: *usize, src: []const u8) void {
+        len.* = @min(src.len, dst.len);
+        @memcpy(dst[0..len.*], src[0..len.*]);
+    }
+
+    /// Relógio da sala (µs desde que o servidor subiu). Todo mundo sincroniza
+    /// com ele pra medir a latência de ponta a ponta.
+    pub fn nowUs(s: *const Server) u64 {
+        return sync.nowUs() - s.start_us;
+    }
+
+    pub fn memberCount(s: *Server) usize {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        return s.conns.items.len;
+    }
+
+    fn log(s: *Server, comptime fmt: []const u8, args: anytype) void {
+        const f = s.log_fn orelse return;
+        var buf: [512]u8 = undefined;
+        f(std.fmt.bufPrint(&buf, fmt, args) catch return);
+    }
+
+    /// Fecha a sala e derruba todo mundo.
+    pub fn stop(s: *Server) void {
+        s.stopped.store(true, .release);
+        net.shutdown(s.listen_sock);
+        net.close(s.listen_sock);
+        s.mutex.lock();
+        for (s.conns.items) |cn| {
+            net.shutdown(cn.sock);
+            cn.queue.close();
+        }
+        s.mutex.unlock();
+        // o Server continua alocado: threads de conexão podem estar terminando
+    }
+
+    fn acceptLoop(s: *Server) void {
+        while (!s.stopped.load(.acquire)) {
+            const sock = net.accept(s.listen_sock) catch {
+                if (s.stopped.load(.acquire)) return;
+                sync.sleepMs(20);
+                continue;
+            };
+            const cn = gpa.create(Conn) catch {
+                net.close(sock);
+                continue;
+            };
+            cn.* = .{ .server = s, .sock = sock };
+            sync.spawn(readerLoop, .{cn}) catch {
+                net.close(sock);
+                gpa.destroy(cn);
+            };
+        }
+    }
+
+    fn writerLoop(cn: *Conn) void {
+        cn.queue.writerLoop(cn.sock, &cn.channel);
+        cn.release();
+    }
+
+    fn handshake(s: *Server, cn: *Conn, rb: *proto.RecvBuf) !void {
+        net.setRecvTimeout(cn.sock, handshake_timeout_ms);
+        var hello_buf: [crypto.hello_len]u8 = undefined;
+        try net.recvAll(cn.sock, &hello_buf);
+        const peer = try crypto.parseHello(&hello_buf);
+        const hs = try crypto.Handshake.init();
+        try net.sendAll(cn.sock, &hs.helloBytes(proto.version));
+        if (peer.version != proto.version) return error.VersionMismatch; // o cliente vê nossa versão e avisa
+        cn.channel = try crypto.Channel.derive(&hs, peer, false, s.password[0..s.password_len]);
+
+        const typ = proto.recvMsg(cn.sock, &cn.channel, rb) catch |e| {
+            if (e == error.AuthFailed) {
+                var marker: [4]u8 = undefined;
+                std.mem.writeInt(u32, &marker, proto.wrong_password_marker, .little);
+                net.sendAll(cn.sock, &marker) catch {};
+                s.log("conexão recusada: senha errada", .{});
+            }
+            return e;
+        };
+        if (typ != .hello) return error.Protocol;
+        net.setRecvTimeout(cn.sock, 0);
+
+        // a partir daqui tem escritora
+        _ = cn.refs.fetchAdd(1, .monotonic);
+        sync.spawn(writerLoop, .{cn}) catch {
+            _ = cn.refs.fetchSub(1, .monotonic);
+            return error.ThreadFailed;
+        };
+        var r: proto.Reader = .{ .data = proto.payloadOf(rb) };
+        const name = try r.str();
+        const token = try r.str();
+        try s.join(cn, name, token);
+    }
+
+    fn readerLoop(cn: *Conn) void {
+        const s = cn.server;
+        var rb: proto.RecvBuf = .{};
+        defer rb.deinit();
+        if (s.handshake(cn, &rb)) {
+            while (true) {
+                const typ = proto.recvMsg(cn.sock, &cn.channel, &rb) catch break;
+                s.handle(cn, typ, proto.payloadOf(&rb)) catch break;
+            }
+        } else |_| {}
+        s.disconnect(cn);
+        net.shutdown(cn.sock);
+        cn.queue.close();
+        cn.release();
+    }
+
+    fn handle(s: *Server, cn: *Conn, typ: proto.Type, payload: []const u8) !void {
+        var r: proto.Reader = .{ .data = payload };
+        switch (typ) {
+            .chat => {
+                const text = std.mem.trim(u8, try r.str(), " \t\r\n");
+                if (text.len == 0) return;
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                try s.broadcastChat(cn.id, cn.nameSlice(), text);
+            },
+            .stream_start => {
+                const w = try r.u16_();
+                const h = try r.u16_();
+                const fps = try r.u8_();
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                const was = cn.streaming;
+                cn.streaming = true;
+                cn.w = w;
+                cn.h = h;
+                cn.fps = fps;
+                if (!was) {
+                    var tmp: [96]u8 = undefined;
+                    try s.broadcastChat(0, "", std.fmt.bufPrint(&tmp, "{s} começou a transmitir", .{cn.nameSlice()}) catch "");
+                    s.log("{s} começou a transmitir ({d}x{d} @ {d} fps)", .{ cn.nameSlice(), w, h, fps });
+                }
+                // todo mundo que já assistia precisa de um IDR na resolução nova
+                for (s.conns.items) |o| {
+                    if (contains(&o.watching, cn.id)) addUnique(&o.waiting_key, cn.id);
+                }
+                try s.broadcastMembers();
+            },
+            .stream_stop => {
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                if (cn.streaming) {
+                    cn.streaming = false;
+                    for (s.conns.items) |o| o.queue.dropFrames(cn.id);
+                    s.log("{s} parou de transmitir", .{cn.nameSlice()});
+                    try s.broadcastMembers();
+                }
+            },
+            .frame => try s.forwardFrame(cn, payload),
+            .watch => {
+                const target = try r.u32_();
+                const on = (try r.u8_()) != 0;
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                if (on) {
+                    const changed = !contains(&cn.watching, target);
+                    addUnique(&cn.watching, target);
+                    addUnique(&cn.waiting_key, target);
+                    cn.queue.dropFrames(target);
+                    s.requestKey(target, true);
+                    if (changed) try s.broadcastMembers();
+                } else {
+                    remove(&cn.watching, target);
+                    remove(&cn.waiting_key, target);
+                    cn.queue.dropFrames(target);
+                    try s.broadcastMembers();
+                }
+            },
+            .ping => {
+                const t = try r.u64_();
+                const m = try proto.Msg.alloc(.pong, 16);
+                std.mem.writeInt(u64, m.payload()[0..8], t, .little);
+                std.mem.writeInt(u64, m.payload()[8..16], s.nowUs(), .little);
+                cn.queue.pushOwned(m);
+            },
+            .kick => {
+                const target = try r.u32_();
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                if (!cn.admin or target == cn.id) return;
+                for (s.conns.items) |o| {
+                    if (o.id != target) continue;
+                    s.log("{s} expulsou {s}", .{ cn.nameSlice(), o.nameSlice() });
+                    var b: proto.Builder = .{};
+                    defer b.deinit();
+                    try b.begin(.denied);
+                    try b.str("Você foi removido da sala.");
+                    o.queue.pushOwned(try b.finish());
+                    // dá tempo da escritora mandar o aviso antes de derrubar
+                    sync.spawn(delayedShutdown, .{o.sock}) catch net.shutdown(o.sock);
+                    break;
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn delayedShutdown(sock: net.Socket) void {
+        sync.sleepMs(300);
+        net.shutdown(sock);
+    }
+
+    fn sendDenied(cn: *Conn, reason: []const u8) !void {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.denied);
+        try b.str(reason);
+        cn.queue.pushOwned(try b.finish());
+        sync.sleepMs(300); // deixa a escritora mandar antes de fechar
+    }
+
+    fn join(s: *Server, cn: *Conn, raw_name: []const u8, token: []const u8) !void {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        if (s.conns.items.len >= s.max_members) {
+            s.mutex.unlock();
+            defer s.mutex.lock();
+            try sendDenied(cn, "A sala está cheia.");
+            return error.RoomFull;
+        }
+        const trimmed = std.mem.trim(u8, raw_name, " \t\r\n");
+        const base = if (trimmed.len == 0) "anônimo" else trimmed[0..@min(trimmed.len, 32)];
+        // nome repetido ganha um número
+        var name_buf: [48]u8 = undefined;
+        var name: []const u8 = base;
+        var n: u32 = 2;
+        while (s.nameTaken(name)) : (n += 1) name = std.fmt.bufPrint(&name_buf, "{s} ({d})", .{ base, n }) catch base;
+        cn.name_len = name.len;
+        @memcpy(cn.name[0..name.len], name);
+        cn.id = s.next_id;
+        s.next_id += 1;
+        cn.authed = true;
+        cn.admin = s.admin_token_len > 0 and std.mem.eql(u8, token, s.admin_token[0..s.admin_token_len]);
+        try s.conns.append(gpa, cn);
+
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.welcome);
+        try b.u32_(cn.id);
+        try b.str(s.room_name[0..s.room_name_len]);
+        try b.u8_(@intFromBool(cn.admin));
+        try b.u64_(s.nowUs());
+        cn.queue.pushOwned(try b.finish());
+
+        var tmp: [96]u8 = undefined;
+        try s.broadcastChat(0, "", std.fmt.bufPrint(&tmp, "{s} entrou na sala", .{name}) catch "");
+        try s.broadcastMembers();
+        s.log("{s} entrou ({d} na sala)", .{ name, s.conns.items.len });
+    }
+
+    fn nameTaken(s: *Server, name: []const u8) bool {
+        for (s.conns.items) |o| if (std.mem.eql(u8, o.nameSlice(), name)) return true;
+        return false;
+    }
+
+    fn disconnect(s: *Server, cn: *Conn) void {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        const i = std.mem.findScalar(*Conn, s.conns.items, cn) orelse return;
+        _ = s.conns.orderedRemove(i);
+        for (s.conns.items) |o| {
+            remove(&o.watching, cn.id);
+            remove(&o.waiting_key, cn.id);
+            o.queue.dropFrames(cn.id);
+        }
+        s.log("{s} saiu ({d} na sala)", .{ cn.nameSlice(), s.conns.items.len });
+        if (s.stopped.load(.acquire)) return;
+        var tmp: [96]u8 = undefined;
+        s.broadcastChat(0, "", std.fmt.bufPrint(&tmp, "{s} saiu da sala", .{cn.nameSlice()}) catch "") catch {};
+        s.broadcastMembers() catch {};
+    }
+
+    /// Chamado com o mutex travado.
+    fn broadcastChat(s: *Server, from: u32, name: []const u8, text: []const u8) !void {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.chat);
+        try b.u32_(from);
+        try b.str(name);
+        try b.str(text);
+        const m = try b.finish();
+        defer m.release();
+        for (s.conns.items) |o| o.queue.push(m);
+    }
+
+    /// Chamado com o mutex travado.
+    fn broadcastMembers(s: *Server) !void {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.members);
+        try b.u16_(@intCast(s.conns.items.len));
+        for (s.conns.items) |o| {
+            try b.u32_(o.id);
+            try b.str(o.nameSlice());
+            var flags: u8 = 0;
+            if (o.streaming) flags |= proto.member_streaming;
+            if (o.admin) flags |= proto.member_admin;
+            try b.u8_(flags);
+            try b.u16_(o.w);
+            try b.u16_(o.h);
+            try b.u8_(o.fps);
+            const k: u16 = @intCast(@min(o.watching.items.len, 64));
+            try b.u16_(k);
+            for (o.watching.items[0..k]) |id| try b.u32_(id);
+        }
+        const m = try b.finish();
+        defer m.release();
+        for (s.conns.items) |o| o.queue.push(m);
+    }
+
+    /// Pede um IDR pro transmissor. Chamado com o mutex travado.
+    fn requestKey(s: *Server, target: u32, force: bool) void {
+        for (s.conns.items) |o| {
+            if (o.id != target) continue;
+            const now = sync.nowMs();
+            if (!force and now - o.last_keyreq_ms < keyreq_interval_ms) return;
+            o.last_keyreq_ms = now;
+            o.queue.pushOwned(proto.simple(.keyreq) catch return);
+            return;
+        }
+    }
+
+    fn forwardFrame(s: *Server, cn: *Conn, payload: []const u8) !void {
+        if (payload.len < proto.frame_header_len) return error.BadMessage;
+        const is_key = payload[4] & proto.frame_key != 0;
+
+        // mensagem encaminhada montada uma vez só: [u32 de][frame]
+        const m = try proto.Msg.alloc(.frame, 4 + payload.len);
+        defer m.release();
+        m.from = cn.id;
+        std.mem.writeInt(u32, m.payload()[0..4], cn.id, .little);
+        @memcpy(m.payload()[4..], payload);
+
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        var need_key = false;
+        for (s.conns.items) |o| {
+            if (o == cn or !contains(&o.watching, cn.id)) continue;
+            if (contains(&o.waiting_key, cn.id)) {
+                if (!is_key) {
+                    need_key = true;
+                    continue;
+                }
+                remove(&o.waiting_key, cn.id);
+            }
+            if (o.queue.queuedBytes() > max_viewer_backlog) {
+                // espectador lento: descarta o atraso e recomeça de um IDR
+                o.queue.dropFrames(cn.id);
+                addUnique(&o.waiting_key, cn.id);
+                need_key = true;
+                continue;
+            }
+            o.queue.push(m);
+            _ = s.relayed_bytes.fetchAdd(m.data.len, .monotonic);
+        }
+        if (need_key) s.requestKey(cn.id, false);
+    }
+};

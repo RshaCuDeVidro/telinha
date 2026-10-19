@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependências do sistema (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config nasm libglfw3-dev libgl-dev libportal-dev \
+            libpipewire-0.3-dev libx11-dev libxext-dev libxfixes-dev
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Testes
+        run: zig build test --summary all
+
+      - name: Build (Linux, Windows, servidor)
+        # x86_64_v2 = qualquer CPU x86-64 de ~2009 pra cá (o openh264 detecta AVX2 em tempo de execução)
+        run: zig build -Dcpu=x86_64_v2 --summary all
+
+      - name: Benchmark
+        run: zig build bench -Dcpu=x86_64_v2
+
+      - name: Empacota
+        run: |
+          mkdir dist
+          cp zig-out/bin/telinha.exe dist/telinha-windows-x86_64.exe
+          tar -C zig-out/bin -czf dist/telinha-linux-x86_64.tar.gz telinha
+          cp zig-out/bin/telinha-server-x86_64 dist/telinha-server-linux-x86_64
+          cp zig-out/bin/telinha-server-aarch64 dist/telinha-server-linux-aarch64
+          (cd dist && sha256sum * > SHA256SUMS)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: telinha
+          path: dist/*
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "telinha $GITHUB_REF_NAME" --generate-notes
+
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build da imagem do servidor (amd64 + arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false

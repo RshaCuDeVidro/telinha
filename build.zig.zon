@@ -1,0 +1,39 @@
+.{
+    .name = .telinha,
+    .version = "2.0.0",
+    .fingerprint = 0x1246c121a5fafab1,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .nv_codec_headers = .{
+            .url = "https://github.com/FFmpeg/nv-codec-headers/archive/refs/tags/n11.1.5.3.tar.gz",
+            .hash = "N-V-__8AAHnKBQD2coquOXXuAjl2p5EEQ5IH36AWJTOUDbP5",
+            .lazy = true,
+        },
+        .glfw = .{
+            .url = "https://github.com/glfw/glfw/archive/refs/tags/3.5.1.tar.gz",
+            .hash = "N-V-__8AAFAoSgCaIXvRyU85vZ0bKDcZLaUHWrojNKxEio2r",
+            .lazy = true,
+        },
+        .nasm = .{
+            .url = "https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/nasm-2.16.03.tar.xz",
+            .hash = "N-V-__8AAOdiwQAcuTPO3dqgQrt8BtvnkUYJ1Z5tP5qQOphI",
+            .lazy = true,
+        },
+        .openh264 = .{
+            .url = "https://github.com/cisco/openh264/archive/refs/tags/v2.6.0.tar.gz",
+            .hash = "N-V-__8AALjwUwSnHjJzQeIxzk1njqiHAwEjKvC-eCay2HR0",
+            .lazy = true,
+        },
+        .cimgui = .{
+            .url = "https://github.com/cimgui/cimgui/archive/2a6a93fccd10f275ee9206167dc9698f6f00fac1.tar.gz",
+            .hash = "N-V-__8AAA14OwAnjBemy4fwO1a3Zbixy5gSLW2fyME4iPJn",
+            .lazy = true,
+        },
+        .imgui = .{
+            .url = "https://github.com/ocornut/imgui/archive/6d32174508fb8c518e7a832cc1d571fadd5cba76.tar.gz",
+            .hash = "N-V-__8AAGNjfgBD2GOqdPUGkR89I-Ygw93OyAENnPPahX_t",
+            .lazy = true,
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "assets", "tools", "LICENSE", "README.md" },
+}

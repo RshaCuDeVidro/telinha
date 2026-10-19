@@ -1,0 +1,314 @@
+//! Build do telinha.
+//!
+//!   zig build                 app Linux + app Windows + servidor dedicado
+//!   zig build test            testes
+//!   zig build run -- [args]   roda o app nativo
+//!   zig build server          só o servidor dedicado (estático, musl)
+//!   zig build bench           benchmark do pipeline de vídeo
+//!   -Dserver-only=true        não baixa as dependências do app (Docker)
+//!
+//! Dependências C/C++ (Dear ImGui, cimgui, openh264, GLFW, NASM) vêm do
+//! gerenciador de pacotes do Zig (build.zig.zon). O NASM do sistema é usado se
+//! existir; senão é compilado aqui mesmo pra montar o assembly do openh264.
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "modo de otimização (padrão ReleaseFast)") orelse .ReleaseFast;
+    const native_only = b.option(bool, "native-only", "compila só o app pra máquina atual") orelse false;
+    const server_only = b.option(bool, "server-only", "compila só o servidor dedicado (não baixa as dependências do app)") orelse false;
+    // alvo do app nativo: a máquina atual por padrão; releases usam -Dcpu=x86_64_v2
+    const host = b.standardTargetOptions(.{});
+    const windows_cpu: std.Target.Query.CpuModel = if (host.query.cpu_model == .explicit) host.query.cpu_model else .baseline;
+    const windows = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu, .cpu_model = windows_cpu });
+
+    // servidor dedicado: binário estático (musl), sem dependência nenhuma
+    const server_step = b.step("server", "servidor dedicado (Linux x86_64 e aarch64, estático)");
+    for ([_]std.Target.Cpu.Arch{ .x86_64, .aarch64 }) |arch| {
+        const t = b.resolveTargetQuery(.{ .cpu_arch = arch, .os_tag = .linux, .abi = .musl });
+        const exe = serverExe(b, t, optimize);
+        const install = b.addInstallArtifact(exe, .{ .dest_sub_path = b.fmt("telinha-server-{s}", .{@tagName(arch)}) });
+        server_step.dependOn(&install.step);
+        if (!native_only) b.getInstallStep().dependOn(&install.step);
+    }
+    if (server_only) return;
+
+    // dependências do app (lazy: na primeira vez o zig baixa e roda o build de novo)
+    const imgui = b.lazyDependency("imgui", .{});
+    const cimgui = b.lazyDependency("cimgui", .{});
+    const oh264 = b.lazyDependency("openh264", .{});
+    const glfw = b.lazyDependency("glfw", .{});
+    const nvh = b.lazyDependency("nv_codec_headers", .{});
+    const nasm = nasmProgram(b) orelse return;
+    const deps: Deps = .{
+        .imgui = imgui orelse return,
+        .cimgui = cimgui orelse return,
+        .openh264 = oh264 orelse return,
+        .glfw = glfw orelse return,
+        .nv_headers = nvh orelse return,
+        .nasm = nasm,
+    };
+
+    // app
+    const native_app = app(b, deps, host, optimize);
+    b.installArtifact(native_app);
+    if (!native_only and host.result.os.tag != .windows) b.installArtifact(app(b, deps, windows, optimize));
+
+    const run = b.addRunArtifact(native_app);
+    if (b.args) |args| run.addArgs(args);
+    b.step("run", "roda o app").dependOn(&run.step);
+
+    // testes (unitários + integração do servidor + codec)
+    const tests_mod = b.createModule(.{
+        .root_source_file = b.path("src/tests.zig"),
+        .target = host,
+        .optimize = .Debug,
+        .link_libc = true,
+        .link_libcpp = true,
+    });
+    linkOpenh264(b, deps, tests_mod, host, .ReleaseFast);
+    addHwenc(b, deps, tests_mod);
+    const tests = b.addTest(.{ .root_module = tests_mod });
+    const run_tests = b.addRunArtifact(tests);
+    b.step("test", "roda os testes").dependOn(&run_tests.step);
+
+    // benchmark do pipeline de vídeo
+    const bench_mod = b.createModule(.{
+        .root_source_file = b.path("src/bench.zig"),
+        .target = host,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .link_libcpp = true,
+    });
+    linkOpenh264(b, deps, bench_mod, host, .ReleaseFast);
+    addHwenc(b, deps, bench_mod);
+    const run_bench = b.addRunArtifact(b.addExecutable(.{ .name = "bench", .root_module = bench_mod }));
+    if (b.args) |args| run_bench.addArgs(args);
+    b.step("bench", "mede conversão/encode/decode H.264").dependOn(&run_bench.step);
+}
+
+const Deps = struct {
+    imgui: *std.Build.Dependency,
+    cimgui: *std.Build.Dependency,
+    openh264: *std.Build.Dependency,
+    glfw: *std.Build.Dependency,
+    nv_headers: *std.Build.Dependency,
+    nasm: NasmProgram,
+};
+
+/// Encoder em hardware (NVENC). As libs do driver são carregadas em runtime.
+fn addHwenc(b: *std.Build, deps: Deps, mod: *std.Build.Module) void {
+    mod.addIncludePath(deps.nv_headers.path("include"));
+    mod.addIncludePath(b.path("src/c"));
+    mod.addCSourceFile(.{ .file = b.path("src/c/hwenc_nvenc.c"), .flags = &.{ "-O2", "-Wno-everything" } });
+}
+
+const NasmProgram = union(enum) {
+    system: []const u8,
+    built: *std.Build.Step.Compile,
+};
+
+// ---------------------------------------------------------------------------
+// NASM
+
+fn nasmProgram(b: *std.Build) ?NasmProgram {
+    if (b.findProgram(&.{"nasm"}, &.{})) |path| return .{ .system = path } else |_| {}
+    const dep = b.lazyDependency("nasm", .{}) orelse return null;
+    const mod = b.createModule(.{ .target = b.graph.host, .optimize = .ReleaseFast, .link_libc = true });
+    const exe = b.addExecutable(.{ .name = "nasm", .root_module = mod });
+    mod.addIncludePath(b.path("tools/nasm")); // config/config.h (gerado pelo configure do NASM)
+    for ([_][]const u8{ "include", ".", "x86", "asm", "disasm", "output" }) |p| mod.addIncludePath(dep.path(p));
+    mod.addCSourceFiles(.{
+        .root = dep.path("."),
+        .files = &nasm_sources,
+        .flags = &.{ "-DHAVE_CONFIG_H", "-Wno-date-time", "-std=gnu11" },
+    });
+    return .{ .built = exe };
+}
+
+fn assemble(b: *std.Build, deps: Deps, src: std.Build.LazyPath, target: std.Build.ResolvedTarget) std.Build.LazyPath {
+    const run = switch (deps.nasm) {
+        .system => |p| b.addSystemCommand(&.{p}),
+        .built => |exe| b.addRunArtifact(exe),
+    };
+    if (target.result.os.tag == .windows) {
+        run.addArgs(&.{ "-f", "win64", "-DWIN64", "-DHAVE_AVX2" });
+    } else {
+        run.addArgs(&.{ "-f", "elf64", "-DUNIX64", "-DHAVE_AVX2" });
+    }
+    run.addPrefixedDirectoryArg("-I", deps.openh264.path("codec/common/x86"));
+    run.addFileArg(src);
+    run.addArg("-o");
+    return run.addOutputFileArg("out.o");
+}
+
+// ---------------------------------------------------------------------------
+// openh264 (H.264 com assembly SIMD no x86_64). Cada parte vira uma lib
+// separada porque decoder e encoder têm headers com o mesmo nome.
+
+fn linkOpenh264(b: *std.Build, deps: Deps, into: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const dep = deps.openh264;
+    const x86 = target.result.cpu.arch == .x86_64;
+    const flags: []const []const u8 = if (x86)
+        &.{ "-DNDEBUG", "-fno-exceptions", "-fno-rtti", "-DX86_ASM", "-DHAVE_AVX2", "-Wno-everything" }
+    else
+        &.{ "-DNDEBUG", "-fno-exceptions", "-fno-rtti", "-Wno-everything" };
+
+    const Part = struct { name: []const u8, dir: []const u8, cpp: []const []const u8, asm_: []const []const u8, inc: []const []const u8 };
+    const parts = [_]Part{
+        .{ .name = "common", .dir = "codec/common", .cpp = &oh_common_cpp, .asm_ = &oh_common_asm, .inc = &.{} },
+        .{ .name = "decoder", .dir = "codec/decoder", .cpp = &oh_decoder_cpp, .asm_ = &oh_decoder_asm, .inc = &.{ "codec/decoder/core/inc", "codec/decoder/plus/inc" } },
+        .{ .name = "encoder", .dir = "codec/encoder", .cpp = &oh_encoder_cpp, .asm_ = &oh_encoder_asm, .inc = &.{ "codec/encoder/core/inc", "codec/encoder/plus/inc", "codec/processing/interface" } },
+        .{ .name = "processing", .dir = "codec/processing", .cpp = &oh_processing_cpp, .asm_ = &oh_processing_asm, .inc = &oh_processing_inc },
+    };
+    for (parts) |part| {
+        const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true, .link_libcpp = true });
+        const lib = b.addLibrary(.{ .name = b.fmt("openh264_{s}", .{part.name}), .root_module = mod, .linkage = .static });
+        for ([_][]const u8{ "codec/api", "codec/api/wels", "codec/common/inc" }) |inc| mod.addIncludePath(dep.path(inc));
+        for (part.inc) |inc| mod.addIncludePath(dep.path(inc));
+        mod.addCSourceFiles(.{ .root = dep.path(part.dir), .files = part.cpp, .flags = flags });
+        if (x86) for (part.asm_) |a| mod.addObjectFile(assemble(b, deps, dep.path(b.fmt("{s}/{s}", .{ part.dir, a })), target));
+        into.linkLibrary(lib);
+    }
+    into.addIncludePath(dep.path("codec/api"));
+}
+
+// ---------------------------------------------------------------------------
+// Dear ImGui + cimgui
+
+fn addImgui(b: *std.Build, deps: Deps, mod: *std.Build.Module) void {
+    const flags: []const []const u8 = &.{
+        "-fno-exceptions",
+        "-fno-rtti",
+        "-DIMGUI_IMPL_API=extern \"C\"",
+        "-DCIMGUI_USE_GLFW",
+        "-DCIMGUI_USE_OPENGL3",
+    };
+    // o cimgui inclui "./imgui/imgui.h": montamos um diretório com essa cara
+    // (todos os includes apontam pra essa cópia, senão o mesmo header entra
+    // por dois caminhos e o #pragma once não pega)
+    const wf = b.addWriteFiles();
+    const imgui_copy = wf.addCopyDirectory(deps.imgui.path("."), "imgui", .{ .include_extensions = &.{".h"} });
+    mod.addIncludePath(wf.getDirectory());
+    mod.addIncludePath(imgui_copy);
+    mod.addIncludePath(imgui_copy.path(b, "backends"));
+    mod.addIncludePath(deps.cimgui.path("."));
+    mod.addCSourceFiles(.{
+        .root = deps.imgui.path("."),
+        .files = &.{ "imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", "imgui_demo.cpp", "backends/imgui_impl_glfw.cpp", "backends/imgui_impl_opengl3.cpp" },
+        .flags = flags,
+    });
+    mod.addCSourceFiles(.{ .root = deps.cimgui.path("."), .files = &.{ "cimgui.cpp", "cimgui_impl.cpp" }, .flags = flags });
+
+    // cimgui.h que o translate-c do Zig aceita (ver tools/patch_cimgui.zig)
+    const tool = b.addExecutable(.{
+        .name = "patch_cimgui",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/patch_cimgui.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug, // ReleaseSafe liga o FORTIFY da glibc, que o translate-c não traduz
+            .link_libc = true,
+        }),
+    });
+    const run = b.addRunArtifact(tool);
+    run.addFileArg(deps.cimgui.path("cimgui.h"));
+    mod.addIncludePath(run.addOutputFileArg("cimgui_zig.h").dirname());
+}
+
+// ---------------------------------------------------------------------------
+// GLFW (Windows: compilado aqui; Linux: biblioteca do sistema)
+
+fn glfwWindows(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
+    const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    const lib = b.addLibrary(.{ .name = "glfw", .root_module = mod, .linkage = .static });
+    mod.addCSourceFiles(.{
+        .root = deps.glfw.path("src"),
+        .files = &.{
+            "context.c",       "init.c",         "input.c",          "monitor.c",      "platform.c",     "vulkan.c",
+            "window.c",        "egl_context.c",  "osmesa_context.c", "null_init.c",    "null_monitor.c", "null_window.c",
+            "null_joystick.c", "win32_module.c", "win32_time.c",     "win32_thread.c", "win32_init.c",   "win32_joystick.c",
+            "win32_monitor.c", "win32_window.c", "wgl_context.c",
+        },
+        .flags = &.{ "-D_GLFW_WIN32", "-Wno-everything" },
+    });
+    mod.addIncludePath(deps.glfw.path("include"));
+    for ([_][]const u8{ "gdi32", "user32", "shell32" }) |l| mod.linkSystemLibrary(l, .{});
+    return lib;
+}
+
+// ---------------------------------------------------------------------------
+
+fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
+    const is_windows = target.result.os.tag == .windows;
+    const mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .link_libcpp = true,
+        .strip = optimize != .Debug,
+    });
+    mod.addIncludePath(b.path("src/c"));
+    addImgui(b, deps, mod);
+    linkOpenh264(b, deps, mod, target, optimize);
+    addHwenc(b, deps, mod);
+
+    if (is_windows) {
+        mod.addIncludePath(deps.glfw.path("include"));
+        mod.linkLibrary(glfwWindows(b, deps, target, optimize));
+        mod.addCSourceFile(.{ .file = b.path("src/c/capture_win.c"), .flags = &.{"-O2"} });
+        mod.addWin32ResourceFile(.{ .file = b.path("assets/telinha.rc") });
+        for ([_][]const u8{ "opengl32", "gdi32", "user32", "shell32", "ws2_32", "d3d11", "dxgi", "ole32", "dwmapi", "winmm", "advapi32" }) |lib|
+            mod.linkSystemLibrary(lib, .{});
+    } else {
+        mod.addCSourceFile(.{ .file = b.path("src/c/capture_linux.c"), .flags = &.{"-O2"} });
+        for ([_][]const u8{ "glfw3", "gl", "libportal", "libpipewire-0.3", "x11", "xext", "xfixes" }) |lib|
+            mod.linkSystemLibrary(lib, .{});
+    }
+
+    const exe = b.addExecutable(.{ .name = "telinha", .root_module = mod });
+    if (is_windows) exe.subsystem = .windows;
+    return exe;
+}
+
+fn serverExe(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
+    return b.addExecutable(.{ .name = "telinha-server", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/server_main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .strip = optimize != .Debug,
+    }) });
+}
+
+// ---------------------------------------------------------------------------
+// Listas de fontes (tiradas dos meson.build/Makefile.in originais)
+
+const nasm_sources = [_][]const u8{
+    "asm/nasm.c",         "asm/warnings.c",      "stdlib/snprintf.c", "stdlib/vsnprintf.c", "stdlib/strlcpy.c",
+    "stdlib/strnlen.c",   "stdlib/strrchrnul.c", "nasmlib/ver.c",     "nasmlib/alloc.c",    "nasmlib/asprintf.c",
+    "nasmlib/crc32.c",    "nasmlib/crc64.c",     "nasmlib/md5c.c",    "nasmlib/string.c",   "nasmlib/nctype.c",
+    "nasmlib/file.c",     "nasmlib/mmap.c",      "nasmlib/ilog2.c",   "nasmlib/realpath.c", "nasmlib/path.c",
+    "nasmlib/filename.c", "nasmlib/rlimit.c",    "nasmlib/readnum.c", "nasmlib/numstr.c",   "nasmlib/zerobuf.c",
+    "nasmlib/bsi.c",      "nasmlib/rbtree.c",    "nasmlib/hashtbl.c", "nasmlib/raa.c",      "nasmlib/saa.c",
+    "nasmlib/strlist.c",  "nasmlib/perfhash.c",  "nasmlib/badenum.c", "common/common.c",    "x86/insnsa.c",
+    "x86/insnsb.c",       "x86/insnsd.c",        "x86/insnsn.c",      "x86/regs.c",         "x86/regvals.c",
+    "x86/regflags.c",     "x86/regdis.c",        "x86/disp8.c",       "x86/iflag.c",        "asm/error.c",
+    "asm/floats.c",       "asm/directiv.c",      "asm/directbl.c",    "asm/pragma.c",       "asm/assemble.c",
+    "asm/labels.c",       "asm/parser.c",        "asm/preproc.c",     "asm/quote.c",        "asm/pptok.c",
+    "asm/listing.c",      "asm/eval.c",          "asm/exprlib.c",     "asm/exprdump.c",     "asm/stdscan.c",
+    "asm/strfunc.c",      "asm/tokhash.c",       "asm/segalloc.c",    "asm/rdstrnum.c",     "asm/srcfile.c",
+    "macros/macros.c",    "output/outform.c",    "output/outlib.c",   "output/legacy.c",    "output/nulldbg.c",
+    "output/nullout.c",   "output/outbin.c",     "output/outaout.c",  "output/outcoff.c",   "output/outelf.c",
+    "output/outobj.c",    "output/outas86.c",    "output/outdbg.c",   "output/outieee.c",   "output/outmacho.c",
+    "output/codeview.c",  "disasm/disasm.c",     "disasm/sync.c",
+};
+
+const oh_common_cpp = [_][]const u8{ "src/common_tables.cpp", "src/copy_mb.cpp", "src/cpu.cpp", "src/crt_util_safe_x.cpp", "src/deblocking_common.cpp", "src/expand_pic.cpp", "src/intra_pred_common.cpp", "src/mc.cpp", "src/memory_align.cpp", "src/sad_common.cpp", "src/utils.cpp", "src/welsCodecTrace.cpp", "src/WelsTaskThread.cpp", "src/WelsThread.cpp", "src/WelsThreadLib.cpp", "src/WelsThreadPool.cpp" };
+const oh_common_asm = [_][]const u8{ "x86/cpuid.asm", "x86/dct.asm", "x86/deblock.asm", "x86/expand_picture.asm", "x86/intra_pred_com.asm", "x86/mb_copy.asm", "x86/mc_chroma.asm", "x86/mc_luma.asm", "x86/satd_sad.asm", "x86/vaa.asm" };
+const oh_decoder_cpp = [_][]const u8{ "core/src/au_parser.cpp", "core/src/bit_stream.cpp", "core/src/cabac_decoder.cpp", "core/src/deblocking.cpp", "core/src/decode_mb_aux.cpp", "core/src/decode_slice.cpp", "core/src/decoder.cpp", "core/src/decoder_core.cpp", "core/src/decoder_data_tables.cpp", "core/src/error_concealment.cpp", "core/src/fmo.cpp", "core/src/get_intra_predictor.cpp", "core/src/manage_dec_ref.cpp", "core/src/memmgr_nal_unit.cpp", "core/src/mv_pred.cpp", "core/src/parse_mb_syn_cabac.cpp", "core/src/parse_mb_syn_cavlc.cpp", "core/src/pic_queue.cpp", "core/src/rec_mb.cpp", "plus/src/welsDecoderExt.cpp", "core/src/wels_decoder_thread.cpp" };
+const oh_decoder_asm = [_][]const u8{ "core/x86/dct.asm", "core/x86/intra_pred.asm" };
+const oh_encoder_cpp = [_][]const u8{ "core/src/au_set.cpp", "core/src/deblocking.cpp", "core/src/decode_mb_aux.cpp", "core/src/encode_mb_aux.cpp", "core/src/encoder.cpp", "core/src/encoder_data_tables.cpp", "core/src/encoder_ext.cpp", "core/src/get_intra_predictor.cpp", "core/src/md.cpp", "core/src/mv_pred.cpp", "core/src/nal_encap.cpp", "core/src/paraset_strategy.cpp", "core/src/picture_handle.cpp", "core/src/ratectl.cpp", "core/src/ref_list_mgr_svc.cpp", "core/src/sample.cpp", "core/src/set_mb_syn_cabac.cpp", "core/src/set_mb_syn_cavlc.cpp", "core/src/slice_multi_threading.cpp", "core/src/svc_base_layer_md.cpp", "core/src/svc_enc_slice_segment.cpp", "core/src/svc_encode_mb.cpp", "core/src/svc_encode_slice.cpp", "core/src/svc_mode_decision.cpp", "core/src/svc_motion_estimate.cpp", "core/src/svc_set_mb_syn_cabac.cpp", "core/src/svc_set_mb_syn_cavlc.cpp", "core/src/wels_preprocess.cpp", "core/src/wels_task_base.cpp", "core/src/wels_task_encoder.cpp", "core/src/wels_task_management.cpp", "plus/src/welsEncoderExt.cpp" };
+const oh_encoder_asm = [_][]const u8{ "core/x86/coeff.asm", "core/x86/dct.asm", "core/x86/intra_pred.asm", "core/x86/matrix_transpose.asm", "core/x86/memzero.asm", "core/x86/quant.asm", "core/x86/sample_sc.asm", "core/x86/score.asm" };
+const oh_processing_cpp = [_][]const u8{ "src/adaptivequantization/AdaptiveQuantization.cpp", "src/backgrounddetection/BackgroundDetection.cpp", "src/common/memory.cpp", "src/common/WelsFrameWork.cpp", "src/common/WelsFrameWorkEx.cpp", "src/complexityanalysis/ComplexityAnalysis.cpp", "src/denoise/denoise.cpp", "src/denoise/denoise_filter.cpp", "src/downsample/downsample.cpp", "src/downsample/downsamplefuncs.cpp", "src/imagerotate/imagerotate.cpp", "src/imagerotate/imagerotatefuncs.cpp", "src/scenechangedetection/SceneChangeDetection.cpp", "src/scrolldetection/ScrollDetection.cpp", "src/scrolldetection/ScrollDetectionFuncs.cpp", "src/vaacalc/vaacalcfuncs.cpp", "src/vaacalc/vaacalculation.cpp" };
+const oh_processing_asm = [_][]const u8{ "src/x86/denoisefilter.asm", "src/x86/downsample_bilinear.asm", "src/x86/vaa.asm" };
+const oh_processing_inc = [_][]const u8{ "codec/processing/interface", "codec/processing/src/common", "codec/processing/src/adaptivequantization", "codec/processing/src/backgrounddetection", "codec/processing/src/complexityanalysis", "codec/processing/src/denoise", "codec/processing/src/downsample", "codec/processing/src/imagerotate", "codec/processing/src/scenechangedetection", "codec/processing/src/scrolldetection", "codec/processing/src/vaacalc" };

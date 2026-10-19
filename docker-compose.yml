@@ -1,0 +1,11 @@
+services:
+  telinha:
+    build: .
+    image: telinha-server
+    restart: unless-stopped
+    ports:
+      - "7777:7777"
+    environment:
+      TELINHA_NOME: "Sala da galera"
+      TELINHA_SENHA: "troque-esta-senha"
+      TELINHA_ADMIN: "troque-este-token"

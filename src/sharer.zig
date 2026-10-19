@@ -1,0 +1,864 @@
+//! Transmissão da tela, em pipeline de duas threads:
+//!
+//!   thread de captura:  captura → (escala) → BGRX→I420 ─┐  (enquanto isso…)
+//!   thread de encode:                    ┌───────────────┘
+//!                                         H.264 → fila de envio
+//!
+//! Enquanto o encoder trabalha no quadro N, a captura já prepara o N+1, então
+//! o tempo por quadro é o da etapa mais lenta, não a soma das duas. Se o
+//! encoder fica pra trás, o quadro pendente é substituído pelo mais novo
+//! (nunca acumula atraso).
+//!
+//! Controle de banda: se a fila de envio começa a crescer, a taxa de bits cai
+//! na hora e quadros são pulados; quando a rede folga, a taxa volta a subir.
+const std = @import("std");
+const sync = @import("sync.zig");
+const proto = @import("proto.zig");
+const codec = @import("codec.zig");
+const Client = @import("client.zig").Client;
+const c = @cImport(@cInclude("capture.h"));
+const gpa = proto.gpa;
+
+extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+
+/// TELINHA_DEBUG=1 imprime o tempo de cada etapa do pipeline uma vez por segundo.
+fn debugEnabled() bool {
+    const S = struct {
+        var checked = false;
+        var on = false;
+    };
+    if (!S.checked) {
+        S.on = getenv("TELINHA_DEBUG") != null;
+        S.checked = true;
+    }
+    return S.on;
+}
+
+/// Tempos acumulados (µs) pra diagnóstico.
+const Timing = struct {
+    capture: std.atomic.Value(u64) = .init(0),
+    ingest: std.atomic.Value(u64) = .init(0),
+    convert: std.atomic.Value(u64) = .init(0),
+    captured: std.atomic.Value(u32) = .init(0),
+    encode: std.atomic.Value(u64) = .init(0),
+    encoded: std.atomic.Value(u32) = .init(0),
+    skipped: std.atomic.Value(u32) = .init(0),
+
+    fn report(t: *Timing, bps: u32, queued: usize) void {
+        const nc = @max(1, t.captured.swap(0, .monotonic));
+        const ne = @max(1, t.encoded.load(.monotonic));
+        std.debug.print("[telinha] captura {d} q/s: espera {d:.1} ms, cópia/escala {d:.1} ms, I420 {d:.1} ms | encode {d} q/s: {d:.1} ms | pulados {d} | {d} kbit/s | fila {d} KB\n", .{
+            nc,
+            @as(f64, @floatFromInt(t.capture.swap(0, .monotonic))) / @as(f64, @floatFromInt(nc)) / 1000,
+            @as(f64, @floatFromInt(t.ingest.swap(0, .monotonic))) / @as(f64, @floatFromInt(nc)) / 1000,
+            @as(f64, @floatFromInt(t.convert.swap(0, .monotonic))) / @as(f64, @floatFromInt(nc)) / 1000,
+            t.encoded.swap(0, .monotonic),
+            @as(f64, @floatFromInt(t.encode.swap(0, .monotonic))) / @as(f64, @floatFromInt(ne)) / 1000,
+            t.skipped.swap(0, .monotonic),
+            bps / 1000,
+            queued / 1024,
+        });
+    }
+};
+
+pub const Settings = struct {
+    source: i32 = 0,
+    fps: u32 = 30,
+    quality: u8 = 60, // 20..100
+    max_height: u32 = 0, // 0 = resolução original
+    cursor: bool = true,
+    mode: codec.Mode = .screen,
+    hardware: bool = true, // tenta NVENC antes do encoder em software
+};
+
+/// Taxa de bits alvo pra uma resolução/fps/qualidade.
+pub fn targetBitrate(w: u32, h: u32, fps: u32, quality: u8) u32 {
+    const q: f64 = @floatFromInt(std.math.clamp(quality, 20, 100));
+    const bpp = 0.02 + (q - 20.0) / 80.0 * 0.16; // bits por pixel
+    const bps = @as(f64, @floatFromInt(w)) * @as(f64, @floatFromInt(h)) * @as(f64, @floatFromInt(fps)) * bpp;
+    return @intFromFloat(std.math.clamp(bps, 250_000, 30_000_000));
+}
+
+/// Tamanho de saída respeitando o limite de altura (dimensões pares).
+pub fn outputSize(sw: u32, sh: u32, max_height: u32) struct { w: u32, h: u32 } {
+    var ow = sw;
+    var oh = sh;
+    if (max_height > 0 and sh > max_height) {
+        oh = max_height;
+        ow = sw * oh / sh;
+    }
+    return .{ .w = @max(16, @min(ow, 8192) & ~@as(u32, 1)), .h = @max(16, @min(oh, 8192) & ~@as(u32, 1)) };
+}
+
+pub const State = enum { starting, live, failed, stopped };
+
+/// Um quadro já convertido pra I420, esperando o encoder.
+const Slot = struct {
+    y: []u8 = &.{},
+    u: []u8 = &.{},
+    v: []u8 = &.{},
+    bgrx: []u8 = &.{}, // caminho do encoder em hardware (sem conversão na CPU)
+    fmt: codec.PixelFormat = .bgrx,
+    w: u32 = 0,
+    h: u32 = 0,
+    ts: u64 = 0, // hora da captura (relógio da sala)
+
+    fn ensure(s: *Slot, w: u32, h: u32) !void {
+        const n = @as(usize, w) * h;
+        if (s.y.len != n) {
+            gpa.free(s.y);
+            gpa.free(s.u);
+            gpa.free(s.v);
+            s.y = &.{};
+            s.u = &.{};
+            s.v = &.{};
+            s.y = try gpa.alloc(u8, n);
+            s.u = try gpa.alloc(u8, n / 4);
+            s.v = try gpa.alloc(u8, n / 4);
+        }
+        s.w = w;
+        s.h = h;
+    }
+    fn ensureBgrx(s: *Slot, w: u32, h: u32) !void {
+        const n = @as(usize, w) * h * 4;
+        if (s.bgrx.len != n) {
+            gpa.free(s.bgrx);
+            s.bgrx = &.{};
+            s.bgrx = try gpa.alloc(u8, n);
+        }
+        s.w = w;
+        s.h = h;
+    }
+    fn deinit(s: *Slot) void {
+        gpa.free(s.bgrx);
+        gpa.free(s.y);
+        gpa.free(s.u);
+        gpa.free(s.v);
+    }
+};
+
+pub const Sharer = struct {
+    refs: std.atomic.Value(u32) = .init(2), // UI + thread de captura
+    client: *Client,
+    stop_flag: std.atomic.Value(bool) = .init(false),
+
+    mutex: sync.Mutex = .{},
+    settings: Settings,
+    settings_gen: u32 = 0,
+    state: State = .starting,
+    err: [256]u8 = undefined,
+    err_len: usize = 0,
+    backend: [16]u8 = undefined,
+    backend_len: usize = 0,
+    // estatísticas
+    fps: f32 = 0,
+    kbps: f32 = 0,
+    encode_ms: f32 = 0,
+    bitrate_kbps: u32 = 0,
+    congested: bool = false,
+    encoder_name: []const u8 = "",
+    w: u32 = 0,
+    h: u32 = 0,
+    // pré-visualização: buffer de trás preenchido pela captura, trocado com o da frente
+    preview: []u8 = &.{},
+    preview_w: u32 = 0,
+    preview_h: u32 = 0,
+    preview_bgr: bool = true,
+    preview_new: bool = false,
+    preview_tex: u32 = 0, // só a UI mexe
+
+    pub fn start(client: *Client, settings: Settings) !*Sharer {
+        const s = try gpa.create(Sharer);
+        s.* = .{ .client = client.retain(), .settings = settings };
+        sync.spawn(run, .{s}) catch {
+            client.release();
+            gpa.destroy(s);
+            return error.ThreadFailed;
+        };
+        return s;
+    }
+
+    pub fn stop(s: *Sharer) void {
+        s.stop_flag.store(true, .release);
+        s.release();
+    }
+
+    /// Muda fps/qualidade/resolução/modo com a transmissão rolando.
+    pub fn update(s: *Sharer, settings: Settings) void {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        s.settings = settings;
+        s.settings_gen += 1;
+    }
+
+    fn release(s: *Sharer) void {
+        if (s.refs.fetchSub(1, .acq_rel) == 1) {
+            gpa.free(s.preview);
+            s.client.release();
+            gpa.destroy(s);
+        }
+    }
+
+    pub fn errSlice(s: *Sharer) []const u8 {
+        return s.err[0..s.err_len];
+    }
+    pub fn backendSlice(s: *Sharer) []const u8 {
+        return s.backend[0..s.backend_len];
+    }
+
+    fn fail(s: *Sharer, msg: []const u8) void {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        if (s.state == .failed) return;
+        s.state = .failed;
+        s.err_len = @min(msg.len, s.err.len);
+        @memcpy(s.err[0..s.err_len], msg[0..s.err_len]);
+    }
+
+    fn errorText(e: anyerror) []const u8 {
+        return switch (e) {
+            error.OutOfMemory => "Sem memória.",
+            error.EncoderCreate, error.EncoderInit => "Não consegui iniciar o codificador de vídeo.",
+            error.Encode => "Falha ao codificar o vídeo.",
+            else => @errorName(e),
+        };
+    }
+
+    fn run(s: *Sharer) void {
+        defer s.release();
+        defer s.client.wake();
+        var p: Pipeline = .{ .s = s };
+        defer p.deinit();
+        p.start() catch |e| {
+            s.fail(if (e == error.Capture) p.errSlice() else errorText(e));
+            return;
+        };
+        const enc_thread = std.Thread.spawn(.{}, Pipeline.encodeLoop, .{&p}) catch {
+            s.fail("Falha ao criar thread.");
+            return;
+        };
+        p.captureLoop() catch |e| s.fail(if (e == error.Capture) p.errSlice() else errorText(e));
+        // para o encoder e espera
+        p.mutex.lock();
+        p.quit = true;
+        p.cond.broadcast();
+        p.mutex.unlock();
+        enc_thread.join();
+
+        // avisa a sala que parou
+        if (proto.simple(.stream_stop)) |m| s.client.queue.pushOwned(m) else |_| {}
+        s.mutex.lock();
+        if (s.state != .failed) s.state = .stopped;
+        s.mutex.unlock();
+    }
+};
+
+const Pipeline = struct {
+    s: *Sharer,
+    cap: ?*c.cap_ctx = null,
+    event_driven: bool = false, // PipeWire/DXGI só entregam quadro quando algo muda
+    err: [256]u8 = [_]u8{0} ** 256,
+    settings: Settings = .{},
+    gen: u32 = std.math.maxInt(u32),
+
+    // captura
+    cur: []u8 = &.{}, // quadro novo (BGRX na resolução de saída)
+    prev: []u8 = &.{}, // anterior (só pra detectar repetição em captura por polling)
+    have_prev: bool = false,
+    preview_back: []u8 = &.{},
+    last_preview_us: u64 = 0,
+    w: u32 = 0,
+    h: u32 = 0,
+    fmt: codec.PixelFormat = .bgrx,
+
+    // fila de 3 slots entre captura e encode
+    mutex: sync.Mutex = .{},
+    cond: sync.Cond = .{},
+    slots: [3]Slot = .{ .{}, .{}, .{} },
+    ready: ?usize = null, // quadro mais novo esperando o encoder
+    encoding: ?usize = null, // em uso pelo encoder
+    last: ?usize = null, // último codificado (reaproveitado pra IDR sem quadro novo)
+    quit: bool = false,
+    ready_was_null: bool = false,
+    timing: Timing = .{},
+    /// Encoder em hardware em uso? Decidido no início; vira false se o NVENC falhar.
+    use_hw: std.atomic.Value(bool) = .init(false),
+    fps_gen: u32 = 0, // muda quando fps/modo/qualidade mudam (encoder recria)
+    fps: u32 = 30,
+    quality: u8 = 60,
+    mode: codec.Mode = .screen,
+
+    fn errSlice(p: *Pipeline) []const u8 {
+        return std.mem.sliceTo(&p.err, 0);
+    }
+
+    fn deinit(p: *Pipeline) void {
+        if (p.cap) |cp| c.cap_close(cp);
+        gpa.free(p.cur);
+        gpa.free(p.prev);
+        gpa.free(p.preview_back);
+        for (&p.slots) |*sl| sl.deinit();
+    }
+
+    fn start(p: *Pipeline) !void {
+        const s = p.s;
+        p.settings = s.settings;
+        p.applySettings();
+        p.cap = c.cap_open(p.settings.source, @intFromBool(p.settings.cursor), @intCast(std.math.clamp(p.settings.fps, 1, 60)), &p.err, p.err.len) orelse return error.Capture;
+        if (p.settings.hardware) {
+            var err: [256]u8 = undefined;
+            if (codec.HwEncoder.init(.{ .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000 }, &err)) |probe| {
+                var pr = probe;
+                pr.deinit();
+                p.use_hw.store(true, .release);
+            } else |_| {
+                if (debugEnabled()) std.debug.print("[telinha] sem encoder em hardware: {s}\n", .{std.mem.sliceTo(&err, 0)});
+            }
+        }
+        const b = std.mem.span(c.cap_backend(p.cap));
+        p.event_driven = std.mem.eql(u8, b, "PipeWire") or std.mem.eql(u8, b, "DXGI");
+        s.mutex.lock();
+        s.backend_len = @min(b.len, s.backend.len);
+        @memcpy(s.backend[0..s.backend_len], b[0..s.backend_len]);
+        s.mutex.unlock();
+    }
+
+    fn applySettings(p: *Pipeline) void {
+        p.mutex.lock();
+        defer p.mutex.unlock();
+        p.fps = std.math.clamp(p.settings.fps, 1, 60);
+        p.quality = p.settings.quality;
+        p.mode = p.settings.mode;
+        p.fps_gen +%= 1;
+    }
+
+    // ------------------------------------------------------------ captura
+
+    fn captureLoop(p: *Pipeline) !void {
+        const s = p.s;
+        sync.lowerThreadPriority();
+        var next_us: u64 = 0;
+        while (!s.stop_flag.load(.acquire)) {
+            // configurações mudaram?
+            s.mutex.lock();
+            const gen = s.settings_gen;
+            if (gen != p.gen) p.settings = s.settings;
+            s.mutex.unlock();
+            if (gen != p.gen) {
+                p.gen = gen;
+                p.applySettings();
+            }
+
+            // respeita o fps configurado
+            const interval_us: u64 = 1_000_000 / std.math.clamp(p.settings.fps, 1, 60);
+            const now = sync.nowUs();
+            if (now < next_us) {
+                sync.sleepMs(@intCast(@max(1, (next_us - now) / 1000)));
+                continue;
+            }
+
+            var f: c.cap_frame = undefined;
+            const t_cap = sync.nowUs();
+            const r = c.cap_next(p.cap, &f, 50, &p.err, p.err.len);
+            if (r < 0) return error.Capture;
+            if (r == 0) continue;
+            const ts = s.client.serverNowUs();
+            // próximo quadro: no ritmo do fps; se atrasou, não tenta "compensar" em rajada
+            next_us = @max(next_us + interval_us, sync.nowUs() + interval_us / 2);
+
+            const t_ing = sync.nowUs();
+            try p.ingest(&f);
+            _ = p.timing.capture.fetchAdd(t_ing - t_cap, .monotonic);
+            _ = p.timing.ingest.fetchAdd(sync.nowUs() - t_ing, .monotonic);
+            _ = p.timing.captured.fetchAdd(1, .monotonic);
+            if (!p.event_driven) {
+                // captura por polling: pula quadro idêntico ao anterior
+                if (p.have_prev and std.mem.eql(u8, p.cur, p.prev)) continue;
+                std.mem.swap([]u8, &p.cur, &p.prev);
+                p.have_prev = true;
+            }
+            const frame = if (p.event_driven) p.cur else p.prev;
+            // a prévia sai antes de entregar o quadro (no hardware o buffer troca de dono)
+            p.updatePreview(frame);
+            try p.publish(frame, ts);
+        }
+    }
+
+    /// Converte pra I420 num slot livre e entrega pro encoder.
+    fn publish(p: *Pipeline, frame: []const u8, ts: u64) !void {
+        p.mutex.lock();
+        // slot livre: nem o que está sendo codificado, nem o último codificado;
+        // se o "pronto" ainda não foi pego, ele é substituído pelo mais novo
+        var idx: usize = 0;
+        for (0..3) |i| {
+            if (p.encoding == i or p.last == i) continue;
+            idx = i;
+            if (p.ready != i) break;
+        }
+        if (p.ready == idx) p.ready = null;
+        p.mutex.unlock();
+
+        const sl = &p.slots[idx];
+        sl.ts = ts;
+        sl.fmt = p.fmt;
+        const t0 = sync.nowUs();
+        if (p.use_hw.load(.acquire)) {
+            // hardware: o encoder recebe BGRX direto
+            try sl.ensureBgrx(p.w, p.h);
+            if (p.event_driven and frame.ptr == p.cur.ptr) {
+                std.mem.swap([]u8, &p.cur, &sl.bgrx); // sem cópia
+            } else {
+                @memcpy(sl.bgrx, frame);
+            }
+        } else {
+            try sl.ensure(p.w, p.h);
+            codec.toI420(frame.ptr, @as(usize, p.w) * 4, p.w, p.h, p.fmt, sl.y, sl.u, sl.v);
+        }
+        _ = p.timing.convert.fetchAdd(sync.nowUs() - t0, .monotonic);
+
+        p.mutex.lock();
+        p.ready = idx;
+        p.cond.signal();
+        p.mutex.unlock();
+    }
+
+    /// Prévia pra própria tela (até 30x por segundo), sem segurar o lock da UI.
+    /// Acima de 1280 px de largura vai em meia resolução (média 2x2): a prévia
+    /// aparece num card, e a UI copia 4x menos pra GPU.
+    fn updatePreview(p: *Pipeline, frame: []const u8) void {
+        const s = p.s;
+        const now = sync.nowUs();
+        if (now - p.last_preview_us < 33_000) return;
+        p.last_preview_us = now;
+        const half = p.w > 1280;
+        const pw = if (half) p.w / 2 else p.w;
+        const ph = if (half) p.h / 2 else p.h;
+        const need = @as(usize, pw) * ph * 4;
+        if (p.preview_back.len != need) {
+            gpa.free(p.preview_back);
+            p.preview_back = gpa.alloc(u8, need) catch &.{};
+            if (p.preview_back.len != need) return;
+        }
+        if (half) {
+            const src_row = @as(usize, p.w) * 4;
+            for (0..ph) |y| {
+                const r0 = frame[(y * 2) * src_row ..][0..src_row];
+                const r1 = frame[(y * 2 + 1) * src_row ..][0..src_row];
+                const d = p.preview_back[y * pw * 4 ..][0 .. pw * 4];
+                for (0..pw) |x| {
+                    inline for (0..3) |ch| {
+                        const sum: u32 = @as(u32, r0[x * 8 + ch]) + r0[x * 8 + 4 + ch] + r1[x * 8 + ch] + r1[x * 8 + 4 + ch];
+                        d[x * 4 + ch] = @intCast((sum + 2) / 4);
+                    }
+                    d[x * 4 + 3] = 255;
+                }
+            }
+        } else {
+            @memcpy(p.preview_back, frame);
+        }
+        s.mutex.lock();
+        std.mem.swap([]u8, &s.preview, &p.preview_back);
+        s.preview_w = pw;
+        s.preview_h = ph;
+        s.preview_bgr = p.fmt == .bgrx;
+        s.preview_new = true;
+        s.mutex.unlock();
+        s.client.wake();
+    }
+
+    // ---- captura → `cur` (escala opcional, em paralelo)
+
+    const ScaleCtx = struct {
+        dst: []u8,
+        ow: u32,
+        oh: u32,
+        src: [*]const u8,
+        sw: u32,
+        sh: u32,
+        stride: u32,
+        bands: u32,
+    };
+
+    fn scaleBand(ctx: *const ScaleCtx, band: usize) void {
+        const rows_per = (ctx.oh + ctx.bands - 1) / ctx.bands;
+        const y_start: u32 = @intCast(band * rows_per);
+        const y_end = @min(ctx.oh, y_start + rows_per);
+        if (ctx.oh == ctx.sh and ctx.ow <= ctx.sw) {
+            // mesmo tamanho (no máximo cortando 1 coluna/linha ímpar)
+            const row = @as(usize, ctx.ow) * 4;
+            var y = y_start;
+            while (y < y_end) : (y += 1)
+                @memcpy(ctx.dst[@as(usize, y) * row ..][0..row], ctx.src[@as(usize, y) * ctx.stride ..][0..row]);
+            return;
+        }
+        // bilinear em ponto fixo
+        const fx: u64 = (@as(u64, ctx.sw) << 16) / ctx.ow;
+        const fy: u64 = (@as(u64, ctx.sh) << 16) / ctx.oh;
+        var y = y_start;
+        while (y < y_end) : (y += 1) {
+            const syf: u64 = ((2 * @as(u64, y) + 1) * fy / 2) -| (1 << 15);
+            const y0: u32 = @min(@as(u32, @intCast(syf >> 16)), ctx.sh - 1);
+            const wy: u32 = @intCast((syf & 0xffff) >> 8);
+            const y1: u32 = @min(y0 + 1, ctx.sh - 1);
+            const r0 = ctx.src + @as(usize, y0) * ctx.stride;
+            const r1 = ctx.src + @as(usize, y1) * ctx.stride;
+            const d = ctx.dst[@as(usize, y) * ctx.ow * 4 ..];
+            var x: u32 = 0;
+            while (x < ctx.ow) : (x += 1) {
+                const sxf: u64 = ((2 * @as(u64, x) + 1) * fx / 2) -| (1 << 15);
+                const x0: u32 = @min(@as(u32, @intCast(sxf >> 16)), ctx.sw - 1);
+                const wx: u32 = @intCast((sxf & 0xffff) >> 8);
+                const x1: u32 = @min(x0 + 1, ctx.sw - 1);
+                inline for (0..3) |ch| {
+                    const a: u32 = r0[x0 * 4 + ch];
+                    const b: u32 = r0[x1 * 4 + ch];
+                    const cc: u32 = r1[x0 * 4 + ch];
+                    const dd: u32 = r1[x1 * 4 + ch];
+                    const top = a * (256 - wx) + b * wx;
+                    const bot = cc * (256 - wx) + dd * wx;
+                    d[x * 4 + ch] = @intCast((top * (256 - wy) + bot * wy + 32768) >> 16);
+                }
+                d[x * 4 + 3] = 255;
+            }
+        }
+    }
+
+    fn ingest(p: *Pipeline, f: *const c.cap_frame) !void {
+        const sw: u32 = @intCast(f.width);
+        const sh: u32 = @intCast(f.height);
+        const size = outputSize(sw, sh, p.settings.max_height);
+        // sem escala e altura/largura ímpar: corta 1 linha/coluna (o H.264 quer pares)
+        const exact = size.h == (sh & ~@as(u32, 1)) and size.w == (sw & ~@as(u32, 1));
+        const ow = size.w;
+        const oh = size.h;
+        const need = @as(usize, ow) * oh * 4;
+        if (p.cur.len != need) {
+            gpa.free(p.cur);
+            p.cur = &.{};
+            p.cur = try gpa.alloc(u8, need);
+        }
+        if (!p.event_driven and p.prev.len != need) {
+            gpa.free(p.prev);
+            p.prev = &.{};
+            p.prev = try gpa.alloc(u8, need);
+            p.have_prev = false;
+        }
+        const fmt: codec.PixelFormat = if (f.format == c.CAP_RGBX) .rgbx else .bgrx;
+        if (fmt != p.fmt) p.have_prev = false;
+        p.fmt = fmt;
+        p.w = ow;
+        p.h = oh;
+
+        const bands: u32 = @intCast(@max(1, @min(sync.pool.threads + 1, 16)));
+        const ctx: ScaleCtx = .{
+            .dst = p.cur,
+            .ow = ow,
+            .oh = oh,
+            .src = f.data,
+            .sw = if (exact) ow else sw,
+            .sh = if (exact) oh else sh,
+            .stride = @intCast(f.stride),
+            .bands = bands,
+        };
+        sync.pool.run(bands, &ctx, scaleBand);
+
+        if (f.cursor_draw != 0) {
+            const sx = @as(f32, @floatFromInt(ow)) / @as(f32, @floatFromInt(if (exact) ow else sw));
+            const sy = @as(f32, @floatFromInt(oh)) / @as(f32, @floatFromInt(if (exact) oh else sh));
+            drawCursor(p.cur, ow, oh, @intFromFloat(@as(f32, @floatFromInt(f.cursor_x)) * sx), @intFromFloat(@as(f32, @floatFromInt(f.cursor_y)) * sy), f.cursor_scale * sx);
+        }
+    }
+
+    // ------------------------------------------------------------ encode
+
+    fn encodeLoop(p: *Pipeline) void {
+        sync.lowerThreadPriority();
+        p.encodeLoopInner() catch |e| p.s.fail(Sharer.errorText(e));
+        // se o encoder morreu, a captura também tem que parar
+        p.s.stop_flag.store(true, .release);
+    }
+
+    fn encodeLoopInner(p: *Pipeline) !void {
+        const s = p.s;
+        var enc: ?Encoder = null;
+        defer if (enc) |*e| e.deinit();
+        var enc_gen: u32 = std.math.maxInt(u32);
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(gpa);
+        var msg: proto.Builder = .{};
+        defer msg.deinit();
+        var seq: u32 = 0;
+        var bw: Bandwidth = .{};
+        var stat_since = sync.nowUs();
+        var stat_frames: u32 = 0;
+        var stat_bytes: u64 = 0;
+
+        while (true) {
+            // espera um quadro novo (ou um pedido de IDR)
+            p.mutex.lock();
+            while (p.ready == null and !p.quit and !s.client.keyreq.load(.acquire)) p.cond.timedWait(&p.mutex, 50);
+            if (p.quit) {
+                p.mutex.unlock();
+                return;
+            }
+            const key = s.client.keyreq.swap(false, .acq_rel);
+            const idx: ?usize = if (p.ready) |r| r else if (key) p.last else null;
+            p.ready_was_null = p.ready == null;
+            if (p.ready != null) p.ready = null;
+            p.encoding = idx;
+            const fps = p.fps;
+            const quality = p.quality;
+            const mode = p.mode;
+            const gen = p.fps_gen;
+            p.mutex.unlock();
+            const i = idx orelse continue;
+            const sl = &p.slots[i];
+            // reenviando o último quadro (tela parada): ele continua sendo o
+            // estado atual da tela, então a "hora da captura" é agora
+            const resend = p.ready_was_null;
+            const want_hw = p.use_hw.load(.acquire);
+            // o slot pode ter sido preenchido no formato antigo (logo após trocar de encoder)
+            if (want_hw and sl.bgrx.len != @as(usize, sl.w) * sl.h * 4 or !want_hw and sl.y.len != @as(usize, sl.w) * sl.h) {
+                p.doneWith(i, false);
+                continue;
+            }
+
+            // controle de banda: fila crescendo = rede não está dando conta
+            if (enc != null and bw.congested(s, &enc.?)) {
+                _ = p.timing.skipped.fetchAdd(1, .monotonic);
+                if (key) s.client.keyreq.store(true, .release);
+                p.doneWith(i, false);
+                continue;
+            }
+
+            // (re)cria o encoder se mudou resolução ou configuração
+            if (enc == null or enc.?.width() != sl.w or enc.?.height() != sl.h or gen != enc_gen or enc.?.isHw() != want_hw) {
+                if (enc) |*e| e.deinit();
+                enc = null;
+                bw.target = targetBitrate(sl.w, sl.h, fps, quality);
+                if (bw.bps == 0 or bw.bps > bw.target or gen != enc_gen) bw.bps = bw.target;
+                const opts: codec.EncoderOptions = .{ .width = sl.w, .height = sl.h, .fps = fps, .bitrate = bw.bps, .mode = mode };
+                if (want_hw) {
+                    var err: [256]u8 = undefined;
+                    if (codec.HwEncoder.init(opts, &err)) |h| {
+                        enc = .{ .hw = h };
+                    } else |_| {
+                        // NVENC falhou nessa resolução: segue em software daqui pra frente
+                        if (debugEnabled()) std.debug.print("[telinha] NVENC falhou ({s}), usando software\n", .{std.mem.sliceTo(&err, 0)});
+                        p.use_hw.store(false, .release);
+                        p.doneWith(i, false);
+                        s.client.keyreq.store(true, .release);
+                        continue;
+                    }
+                } else {
+                    enc = .{ .sw = try codec.Encoder.init(opts) };
+                }
+                enc_gen = gen;
+                s.mutex.lock();
+                s.encoder_name = if (enc.? == .hw) "NVENC" else "openh264";
+                s.mutex.unlock();
+                s.mutex.lock();
+                s.w = sl.w;
+                s.h = sl.h;
+                s.mutex.unlock();
+                announce(s, sl.w, sl.h, fps);
+            }
+            bw.rampUp(&enc.?);
+
+            const t0 = sync.nowUs();
+            out.clearRetainingCapacity();
+            const is_key = enc.?.encode(sl, key, &out) catch |e| blk: {
+                if (enc.? != .hw) return e;
+                // erro no NVENC no meio da transmissão: cai pro software
+                enc.?.deinit();
+                enc = null;
+                p.use_hw.store(false, .release);
+                s.client.keyreq.store(true, .release);
+                break :blk null;
+            } orelse {
+                p.doneWith(i, enc != null);
+                continue;
+            };
+            if (key and debugEnabled()) std.debug.print("[telinha] IDR pedido: codificado como {s} ({d} bytes)\n", .{ if (is_key) "IDR" else "P (!)", out.items.len });
+            try msg.begin(.frame);
+            try msg.u32_(seq);
+            seq +%= 1;
+            try msg.u8_(if (is_key) proto.frame_key else 0);
+            try msg.u64_(if (resend) s.client.serverNowUs() else sl.ts);
+            try msg.u16_(@intCast(sl.w));
+            try msg.u16_(@intCast(sl.h));
+            try msg.bytes(out.items);
+            const m = try msg.finish();
+            stat_bytes += m.data.len;
+            stat_frames += 1;
+            s.client.queue.pushOwned(m);
+            p.doneWith(i, true);
+            const enc_us = sync.nowUs() - t0;
+            const enc_ms = @as(f32, @floatFromInt(enc_us)) / 1000.0;
+            _ = p.timing.encode.fetchAdd(enc_us, .monotonic);
+            _ = p.timing.encoded.fetchAdd(1, .monotonic);
+
+            s.mutex.lock();
+            s.state = .live;
+            s.encode_ms = s.encode_ms * 0.9 + enc_ms * 0.1;
+            s.bitrate_kbps = bw.bps / 1000;
+            const tnow = sync.nowUs();
+            if (tnow - stat_since >= 1_000_000) {
+                const secs = @as(f32, @floatFromInt(tnow - stat_since)) / 1e6;
+                s.fps = @as(f32, @floatFromInt(stat_frames)) / secs;
+                s.kbps = @as(f32, @floatFromInt(stat_bytes)) / 1024.0 / secs;
+                s.congested = tnow - bw.last_congestion_us < 2_000_000;
+                if (debugEnabled()) p.timing.report(bw.bps, s.client.queue.queuedBytes());
+                stat_frames = 0;
+                stat_bytes = 0;
+                stat_since = tnow;
+            }
+            s.mutex.unlock();
+        }
+    }
+
+    /// Libera o slot que o encoder usou (e guarda como "último" se foi codificado).
+    fn doneWith(p: *Pipeline, idx: usize, encoded: bool) void {
+        p.mutex.lock();
+        defer p.mutex.unlock();
+        p.encoding = null;
+        if (encoded) p.last = idx;
+    }
+
+    fn announce(s: *Sharer, w: u32, h: u32, fps: u32) void {
+        const m = proto.Msg.alloc(.stream_start, 5) catch return;
+        const pl = m.payload();
+        std.mem.writeInt(u16, pl[0..2], @intCast(w), .little);
+        std.mem.writeInt(u16, pl[2..4], @intCast(h), .little);
+        pl[4] = @intCast(fps);
+        s.client.queue.pushOwned(m);
+    }
+};
+
+/// Seta do mouse (contorno preto, miolo branco), desenhada quando o sistema
+/// não embute o cursor no quadro. 'X' = preto, '.' = branco.
+const arrow = [_][]const u8{
+    "X",
+    "XX",
+    "X.X",
+    "X..X",
+    "X...X",
+    "X....X",
+    "X.....X",
+    "X......X",
+    "X.......X",
+    "X........X",
+    "X.........X",
+    "X..........X",
+    "X......XXXXX",
+    "X...X..X",
+    "X..XX..X",
+    "X.X  X..X",
+    "XX   X..X",
+    "X     X..X",
+    "      X..X",
+    "       XX",
+};
+
+fn drawCursor(buf: []u8, w: u32, h: u32, x0: i32, y0: i32, logical_scale: f32) void {
+    // o cursor real tem ~24 px lógicos de altura; a seta tem 20 linhas
+    const k = @max(1.0, logical_scale * 1.2);
+    const rows: i32 = @intFromFloat(@as(f32, arrow.len) * k);
+    var py: i32 = 0;
+    while (py < rows) : (py += 1) {
+        const y = y0 + py;
+        if (y < 0 or y >= h) continue;
+        const ay: usize = @intFromFloat(@as(f32, @floatFromInt(py)) / k);
+        if (ay >= arrow.len) continue;
+        const line = arrow[ay];
+        const cols: i32 = @intFromFloat(@as(f32, @floatFromInt(line.len)) * k);
+        var px: i32 = 0;
+        while (px < cols) : (px += 1) {
+            const x = x0 + px;
+            if (x < 0 or x >= w) continue;
+            const ax: usize = @intFromFloat(@as(f32, @floatFromInt(px)) / k);
+            if (ax >= line.len) continue;
+            const v: u8 = switch (line[ax]) {
+                'X' => 0,
+                '.' => 255,
+                else => continue,
+            };
+            const o = (@as(usize, @intCast(y)) * w + @as(usize, @intCast(x))) * 4;
+            buf[o] = v;
+            buf[o + 1] = v;
+            buf[o + 2] = v;
+        }
+    }
+}
+
+/// Encoder em uso: hardware (NVENC, recebe BGRX) ou software (openh264, recebe I420).
+const Encoder = union(enum) {
+    hw: codec.HwEncoder,
+    sw: codec.Encoder,
+
+    fn deinit(e: *Encoder) void {
+        switch (e.*) {
+            inline else => |*x| x.deinit(),
+        }
+    }
+    fn width(e: *const Encoder) u32 {
+        return switch (e.*) {
+            inline else => |x| x.opts.width,
+        };
+    }
+    fn height(e: *const Encoder) u32 {
+        return switch (e.*) {
+            inline else => |x| x.opts.height,
+        };
+    }
+    fn isHw(e: *const Encoder) bool {
+        return e.* == .hw;
+    }
+    fn setBitrate(e: *Encoder, bps: u32) void {
+        switch (e.*) {
+            inline else => |*x| x.setBitrate(bps),
+        }
+    }
+    fn encode(e: *Encoder, sl: *const Slot, key: bool, out: *std.ArrayList(u8)) !?bool {
+        switch (e.*) {
+            .hw => |*h| return try h.encode(sl.bgrx.ptr, @as(usize, sl.w) * 4, sl.fmt, key, out),
+            .sw => |*x| {
+                if (key) x.forceKey();
+                return x.encodeI420(sl.y.ptr, sl.u.ptr, sl.v.ptr, out);
+            },
+        }
+    }
+};
+
+/// Controle de taxa de bits pela fila de envio.
+const Bandwidth = struct {
+    target: u32 = 0,
+    bps: u32 = 0,
+    last_congestion_us: u64 = 0,
+    last_adjust_us: u64 = 0,
+
+    /// Fila passou de ~250 ms de vídeo: baixa a taxa e pula o quadro.
+    fn congested(b: *Bandwidth, s: *Sharer, enc: *Encoder) bool {
+        const queued = s.client.queue.queuedBytes();
+        const limit = @max(96 * 1024, b.bps / 8 / 4);
+        if (queued <= limit) return false;
+        const now = sync.nowUs();
+        b.last_congestion_us = now;
+        if (now - b.last_adjust_us > 400_000) {
+            b.last_adjust_us = now;
+            b.bps = @max(200_000, b.bps / 100 * 75);
+            enc.setBitrate(b.bps);
+        }
+        return true;
+    }
+
+    /// Sem congestionamento por 2 s: sobe a taxa aos poucos até o alvo.
+    fn rampUp(b: *Bandwidth, enc: *Encoder) void {
+        if (b.bps >= b.target) return;
+        const now = sync.nowUs();
+        if (now - b.last_congestion_us < 2_000_000 or now - b.last_adjust_us < 1_000_000) return;
+        b.last_adjust_us = now;
+        b.bps = @min(b.target, b.bps / 100 * 112 + 50_000);
+        enc.setBitrate(b.bps);
+    }
+};
