@@ -824,6 +824,49 @@ def hevc():
 
 
 @test
+def udp_com_perda():
+    """Vídeo por UDP com 5% de perda simulada nos dois sentidos: quem assiste continua vendo (reenvio do que falta), sem travar."""
+    with Session("udp", audio=True) as s:
+        s.play_tone()
+        perda = {"TELINHA_UDP_PERDA": "5"}
+        p = port()
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--fps", "30"], extra_env=perda)
+        bia = s.app("bia", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"], extra_env=perda)
+        aid = bia.member_id("Ana")
+        bia.wait(lambda st: st["udp"] and st["udp"]["active"], 10, "a Bia abrir o UDP")
+        bia.wait(lambda st: any(v["stream"] == aid and v["shown"] and v["audio"] for v in st["views"]), 20, "a Bia ver e ouvir a Ana")
+        # tela mexendo (a Ana abre e fecha o chat): quadros de verdade passando
+        samples = []
+        t0 = time.time()
+        while time.time() - t0 < 12:
+            ana.click("##hidechat") if ana.find("##hidechat", timeout=0.3, need=False) else ana.click("##showchat")
+            time.sleep(0.4)
+            v = next((v for v in bia.state()["views"] if v["stream"] == aid), None)
+            if v:
+                samples.append((v["fps"], v["latency"]))
+        st_a, st_b = ana.state()["udp"], bia.state()["udp"]
+        log(f"Bia: fps/atraso {samples[-8:]}")
+        log(f"UDP Ana {st_a} · Bia {st_b}")
+        expect(st_a["active"] and st_b["active"], "o UDP caiu")
+        expect(st_a["resent"] + st_b["resent"] > 0 and st_a["nacks"] + st_b["nacks"] > 0, "nenhum reenvio com 5% de perda?")
+        expect(min(f for f, _ in samples[-10:]) > 0, f"a imagem travou: {samples}")
+
+
+@test
+def udp_bloqueado():
+    """UDP bloqueado (firewall): fica no TCP e funciona igual."""
+    with Session("udpblq") as s:
+        p = port()
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir"])
+        bia = s.app("bia", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"], extra_env={"TELINHA_UDP_PERDA": "100"})
+        aid = bia.member_id("Ana")
+        bia.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "a Bia ver a Ana pelo TCP")
+        time.sleep(2)
+        st = bia.state()
+        expect(st["udp"] is not None and not st["udp"]["active"], f"o UDP não devia ter aberto: {st['udp']}")
+
+
+@test
 def versao_nova():
     """Aviso de versão nova: pelo GitHub (de mentira, local) na tela inicial, e por alguém da sala que está numa versão mais nova."""
     with Session("versao") as s:

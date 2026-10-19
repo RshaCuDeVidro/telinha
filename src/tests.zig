@@ -11,6 +11,7 @@ test {
     _ = @import("integration_test.zig");
     _ = @import("update.zig");
     _ = @import("chatimg.zig");
+    _ = @import("udp.zig");
 }
 
 fn initPool() void {

@@ -4255,8 +4255,8 @@ pub const App = struct {
             if (i > 0) try w.writeByte(',');
             const has_audio = v.audio_registered;
             const rs: clip.Buffer.RecState = if (v.clip) |cb| cb.recState() else .{ .active = false, .waiting = false, .ms = 0, .failed = false };
-            try w.print("{{\"stream\":{d},\"fps\":{d:.1},\"w\":{d},\"h\":{d},\"shown\":{},\"audio\":{},\"volume\":{d:.2},\"muted\":{},\"clip_secs\":{d:.1},\"recording\":{},\"rec_ms\":{d},\"decoder\":{f},\"codec\":{f}}}", .{
-                v.stream, v.fps, v.tex_w, v.tex_h, v.tex != 0, has_audio, v.audio_ring.getVolume(), v.audio_ring.isMuted(), if (v.clip) |cb| cb.seconds() else -1, rs.active, rs.ms, s(v.decoder_name), s(v.codec.name()),
+            try w.print("{{\"stream\":{d},\"fps\":{d:.1},\"w\":{d},\"h\":{d},\"shown\":{},\"audio\":{},\"volume\":{d:.2},\"muted\":{},\"clip_secs\":{d:.1},\"recording\":{},\"rec_ms\":{d},\"decoder\":{f},\"codec\":{f},\"latency\":{d:.0}}}", .{
+                v.stream, v.fps, v.tex_w, v.tex_h, v.tex != 0, has_audio, v.audio_ring.getVolume(), v.audio_ring.isMuted(), if (v.clip) |cb| cb.seconds() else -1, rs.active, rs.ms, s(v.decoder_name), s(v.codec.name()), v.latency_ms,
             });
         }
         try w.writeAll("]");
@@ -4267,6 +4267,10 @@ pub const App = struct {
             try w.print(",\"status\":{f},\"error\":{f},\"final\":{},\"deny\":{d},\"my_id\":{d},\"admin\":{},\"route\":{d},\"locked\":{},\"room\":{f},\"ping\":{d}", .{
                 s(@tagName(cl.status)), s(cl.err[0..cl.err_len]), cl.final, cl.deny_code, cl.my_id, cl.is_admin, cl.route, cl.room_locked, s(cl.room_name[0..cl.room_name_len]), cl.ping_ms,
             });
+            if (cl.udp.load(.acquire)) |l| {
+                const st = l.ep.stats;
+                try w.print(",\"udp\":{{\"active\":{},\"rtt\":{d},\"sent\":{d},\"resent\":{d},\"nacks\":{d},\"lost\":{d}}}", .{ l.isActive(), l.ep.rttMs(), st.sent_pkts, st.resent_pkts, st.nacks_sent, st.lost_msgs });
+            } else try w.writeAll(",\"udp\":null");
             try w.writeAll(",\"members\":[");
             for (cl.members.items, 0..) |*m, i| {
                 if (i > 0) try w.writeByte(',');

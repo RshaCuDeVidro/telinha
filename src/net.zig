@@ -269,6 +269,100 @@ pub fn localIp4(s: Socket) ?[4]u8 {
     return null;
 }
 
+// ------------------------------------------------------------ UDP (vídeo e som)
+
+/// Endereço de quem mandou um datagrama (sockaddr cru, IPv4 ou IPv6).
+pub const UdpAddr = struct {
+    st: [28]u8 align(8) = [_]u8{0} ** 28,
+    len: u32 = 0,
+
+    pub fn eql(a: *const UdpAddr, b: *const UdpAddr) bool {
+        return a.len == b.len and std.mem.eql(u8, a.st[0..a.len], b.st[0..b.len]);
+    }
+};
+
+fn bigBuffers(s: Socket) void {
+    // rajada de um IDR grande não pode transbordar o buffer do sistema
+    setOpt(s, c.SOL_SOCKET, c.SO_RCVBUF, 4 * 1024 * 1024);
+    setOpt(s, c.SOL_SOCKET, c.SO_SNDBUF, 2 * 1024 * 1024);
+}
+
+/// Servidor: UDP na mesma porta do TCP (IPv6 + IPv4 quando der).
+pub fn udpListen(port: u16) Error!Socket {
+    const s6 = c.socket(c.AF_INET6, c.SOCK_DGRAM, c.IPPROTO_UDP);
+    if (s6 != invalid) {
+        setOpt(s6, c.IPPROTO_IPV6, c.IPV6_V6ONLY, 0);
+        var a6: SockAddrIn6 = .{ .family = c.AF_INET6, .port = std.mem.nativeToBig(u16, port) };
+        if (c.bind(s6, @ptrCast(&a6), @sizeOf(SockAddrIn6)) == 0) {
+            bigBuffers(s6);
+            return s6;
+        }
+        close(s6);
+    }
+    const s4 = c.socket(c.AF_INET, c.SOCK_DGRAM, c.IPPROTO_UDP);
+    if (s4 == invalid) return error.ListenFailed;
+    const a4 = sockaddr4(.{ 0, 0, 0, 0 }, port);
+    if (c.bind(s4, @ptrCast(&a4), @sizeOf(c.struct_sockaddr_in)) != 0) {
+        close(s4);
+        return error.ListenFailed;
+    }
+    bigBuffers(s4);
+    return s4;
+}
+
+/// Cliente: socket UDP "conectado" no mesmo endereço e porta da conexão TCP.
+pub fn udpConnectLike(tcp: Socket) Error!Socket {
+    var st: [128]u8 align(8) = undefined;
+    var len: if (is_windows) c_int else c.socklen_t = st.len;
+    if (c.getpeername(tcp, @ptrCast(&st), &len) != 0) return error.ConnectFailed;
+    const family = std.mem.readInt(u16, st[0..2], .little);
+    const s = c.socket(@intCast(family), c.SOCK_DGRAM, c.IPPROTO_UDP);
+    if (s == invalid) return error.ConnectFailed;
+    if (c.connect(s, @ptrCast(&st), len) != 0) {
+        close(s);
+        return error.ConnectFailed;
+    }
+    bigBuffers(s);
+    return s;
+}
+
+/// Recebe um datagrama (até o tempo de setRecvTimeout); `from` = quem mandou.
+pub fn udpRecvFrom(s: Socket, buf: []u8, from: ?*UdpAddr) ?usize {
+    var st: [128]u8 align(8) = undefined;
+    var len: if (is_windows) c_int else c.socklen_t = st.len;
+    const n = if (is_windows)
+        c.recvfrom(s, buf.ptr, @intCast(buf.len), 0, @ptrCast(&st), &len)
+    else
+        c.recvfrom(s, buf.ptr, buf.len, 0, @ptrCast(&st), &len);
+    if (n <= 0) return null;
+    if (from) |f| {
+        const l: u32 = @intCast(@min(@as(usize, @intCast(len)), f.st.len));
+        @memcpy(f.st[0..l], st[0..l]);
+        f.len = l;
+    }
+    return @intCast(n);
+}
+
+/// Porta local de um socket (testes).
+pub fn localPortOf(s: Socket) u16 {
+    var st: [128]u8 align(8) = undefined;
+    var len: if (is_windows) c_int else c.socklen_t = st.len;
+    if (c.getsockname(s, @ptrCast(&st), &len) != 0) return 0;
+    return std.mem.readInt(u16, st[2..4], .big);
+}
+
+/// Manda um datagrama (pro endereço, ou pelo socket conectado se null).
+pub fn udpSend(s: Socket, to: ?*const UdpAddr, data: []const u8) bool {
+    const n = if (to) |a|
+        (if (is_windows)
+            c.sendto(s, data.ptr, @intCast(data.len), 0, @ptrCast(&a.st), @intCast(a.len))
+        else
+            c.sendto(s, data.ptr, data.len, 0, @ptrCast(&a.st), a.len))
+    else
+        (if (is_windows) c.send(s, data.ptr, @intCast(data.len), 0) else c.send(s, data.ptr, data.len, 0));
+    return n == @as(@TypeOf(n), @intCast(data.len));
+}
+
 // ------------------------------------------------------------ rota
 
 pub const Route = enum { unknown, local, lan, internet4, internet6 };

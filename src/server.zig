@@ -16,6 +16,7 @@ const std = @import("std");
 const sync = @import("sync.zig");
 const net = @import("net.zig");
 const proto = @import("proto.zig");
+const udp = @import("udp.zig");
 const crypto = @import("crypto.zig");
 const gpa = proto.gpa;
 
@@ -74,6 +75,7 @@ const Conn = struct {
     client_key: u64 = 0, // aleatória, do app de quem conectou (banimento)
     app_version: [16]u8 = [_]u8{0} ** 16, // "3.0.0" (vazio = app que não conta)
     decode_codecs: u8 = proto.codecs_h264, // o que essa pessoa decodifica (H.264 sempre)
+    udp: std.atomic.Value(?*udp.Link) = .init(null), // vídeo/som por UDP (quando o cliente abre o caminho)
     route: u8 = proto.route_unknown,
     via_tunnel: bool = false,
     ip: [16]u8 = undefined,
@@ -128,6 +130,7 @@ const Conn = struct {
             self.watching.deinit(gpa);
             self.waiting_key.deinit(gpa);
             self.flows.deinit(gpa);
+            if (self.udp.load(.acquire)) |l| l.destroy();
             net.close(self.sock);
             gpa.destroy(self);
         }
@@ -285,6 +288,7 @@ pub const Options = struct {
 
 pub const Server = struct {
     listen_sock: net.Socket,
+    udp_sock: ?net.Socket = null, // vídeo/som por UDP, na mesma porta (null = só TCP)
     port: u16,
     password: [128]u8 = undefined,
     password_len: usize = 0,
@@ -324,7 +328,97 @@ pub const Server = struct {
         copyInto(&s.admin_token, &s.admin_token_len, opts.admin_token);
         try sync.spawn(acceptLoop, .{s});
         try sync.spawn(tickLoop, .{s});
+        if (std.c.getenv("TELINHA_SEM_UDP") == null) {
+            if (net.udpListen(opts.port)) |us| {
+                s.udp_sock = us;
+                sync.spawn(udpLoop, .{s}) catch {
+                    net.close(us);
+                    s.udp_sock = null;
+                };
+            } else |_| {}
+        }
         return s;
+    }
+
+    /// Thread do UDP: recebe os datagramas de todo mundo (o token diz de quem
+    /// é), e a cada ~10 ms cuida dos reenvios e de quem parou de falar.
+    fn udpLoop(s: *Server) void {
+        const sock = s.udp_sock.?;
+        net.setRecvTimeout(sock, 10);
+        var buf: [2048]u8 = undefined;
+        var from: net.UdpAddr = .{};
+        var last_tick: u64 = 0;
+        while (!s.stopped.load(.acquire)) {
+            if (net.udpRecvFrom(sock, &buf, &from)) |n| {
+                if (udp.peekToken(buf[0..n])) |token| if (s.connByToken(token)) |cn| {
+                    defer cn.release();
+                    const l = cn.udp.load(.acquire).?;
+                    const before = l.ep.last_rx_ms.load(.monotonic);
+                    const ev = l.ep.handle(.{ .sock = sock, .to = &from }, buf[0..n], deliverUdp, cn);
+                    // decifrou: é ele mesmo. Endereço novo (NAT mudou)? passa a usar esse
+                    if (ev == .hello or l.ep.last_rx_ms.load(.monotonic) != before) {
+                        var cur: net.UdpAddr = .{};
+                        _ = l.wire(&cur);
+                        if (ev == .hello or !cur.eql(&from)) l.setAddr(&from);
+                        if (ev == .hello and !l.isActive()) {
+                            l.active.store(true, .release);
+                            s.log("{s}: vídeo e som por UDP", .{cn.nameSlice()});
+                        }
+                    }
+                };
+            }
+            const now = sync.nowMs();
+            if (now - last_tick < 10) continue;
+            last_tick = now;
+            // reenvios, desistências e quem sumiu do UDP (volta pro TCP)
+            var conns: [64]*Conn = undefined;
+            var n_conns: usize = 0;
+            s.mutex.lock();
+            for (s.conns.items) |o| {
+                if (n_conns == conns.len) break;
+                const l = o.udp.load(.acquire) orelse continue;
+                if (!l.isActive()) continue;
+                o.retain();
+                conns[n_conns] = o;
+                n_conns += 1;
+            }
+            s.mutex.unlock();
+            for (conns[0..n_conns]) |o| {
+                defer o.release();
+                const l = o.udp.load(.acquire).?;
+                var a: net.UdpAddr = .{};
+                l.ep.tick(l.wire(&a), deliverUdp, o);
+                if (now -| l.ep.last_rx_ms.load(.monotonic) > 6000) {
+                    l.active.store(false, .release);
+                    s.log("{s}: UDP parou de responder, voltando pro TCP", .{o.nameSlice()});
+                }
+            }
+        }
+        net.close(sock);
+    }
+
+    /// Conexão dona de um token UDP (com referência: chame release).
+    fn connByToken(s: *Server, token: u32) ?*Conn {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        for (s.conns.items) |o| {
+            const l = o.udp.load(.acquire) orelse continue;
+            if (l.ep.token == token) {
+                o.retain();
+                return o;
+            }
+        }
+        return null;
+    }
+
+    /// Mensagem que chegou inteira pelo UDP: o mesmo tratamento do TCP
+    /// (só quadro/som/voz vêm por aqui; erro não derruba a conexão).
+    fn deliverUdp(ctx: *anyopaque, typ: proto.Type, payload: []const u8) void {
+        const cn: *Conn = @ptrCast(@alignCast(ctx));
+        switch (typ) {
+            .frame, .audio, .voice => cn.server.handle(cn, typ, payload) catch {},
+            else => {},
+        }
     }
 
     /// A cada 250 ms: espectador esperando IDR de alguém com a tela parada,
@@ -543,7 +637,7 @@ pub const Server = struct {
     }
 
     fn writerLoop(cn: *Conn) void {
-        cn.queue.writerLoop(cn.sock, &cn.channel);
+        cn.queue.writerLoop(cn.sock, &cn.channel, &cn.udp);
         cn.release();
     }
 
@@ -561,6 +655,14 @@ pub const Server = struct {
         @memcpy(pw[0..pw_len], s.password[0..pw_len]);
         s.mutex.unlock();
         cn.channel = try crypto.Channel.derive(&hs, peer, false, pw[0..pw_len]);
+        // caminho UDP (o cliente abre mandando um hello pro mesmo endereço);
+        // pelo túnel público não tem UDP
+        if (s.udp_sock) |us| if (!cn.via_tunnel) {
+            var tk: [4]u8 = undefined;
+            sync.osRandom(&tk);
+            const token = std.mem.readInt(u32, &tk, .little) | 1;
+            if (udp.Link.create(token, cn.channel.send_key, cn.channel.recv_key, us, true)) |l| cn.udp.store(l, .release) else |_| {}
+        };
 
         const typ = proto.recvMsg(cn.sock, &cn.channel, rb) catch |e| {
             if (e == error.AuthFailed) {
@@ -983,6 +1085,10 @@ pub const Server = struct {
         try b.u64_(s.instance);
         try b.u8_(cn.route);
         try b.str(proto.app_version);
+        if (cn.udp.load(.acquire)) |l| {
+            try b.u8_(1);
+            try b.u32_(l.ep.token);
+        } else try b.u8_(0);
         cn.queue.pushOwned(try b.finish());
 
         // o que já foi dito na sala

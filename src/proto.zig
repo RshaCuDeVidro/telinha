@@ -11,6 +11,7 @@ const std = @import("std");
 const sync = @import("sync.zig");
 const net = @import("net.zig");
 const crypto = @import("crypto.zig");
+const udp = @import("udp.zig");
 
 pub const version: u16 = 6;
 /// Versão do app (vai no hello/welcome/members pra avisar quem está desatualizado).
@@ -566,11 +567,17 @@ pub const SendQueue = struct {
     }
 
     /// Loop da thread escritora: cifra e envia. Sai quando a fila fecha ou o envio falha.
-    pub fn writerLoop(q: *SendQueue, s: net.Socket, ch: *crypto.Channel) void {
+    /// `link`: caminho UDP (quadro/som/voz vão por ele quando está de pé).
+    pub fn writerLoop(q: *SendQueue, s: net.Socket, ch: *crypto.Channel, link: ?*const std.atomic.Value(?*udp.Link)) void {
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(gpa);
         while (q.pop()) |m| {
             defer m.release();
+            if (link) |lk| if (lk.load(.acquire)) |l| if (l.trySend(m)) {
+                q.doneSending();
+                _ = q.sent_bytes.fetchAdd(m.data.len, .monotonic);
+                continue;
+            };
             const plain = m.data[4..];
             out.resize(gpa, 4 + plain.len + crypto.tag_len) catch {
                 q.close();

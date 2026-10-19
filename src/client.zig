@@ -4,6 +4,7 @@ const std = @import("std");
 const sync = @import("sync.zig");
 const net = @import("net.zig");
 const proto = @import("proto.zig");
+const udp = @import("udp.zig");
 const crypto = @import("crypto.zig");
 const codec = @import("codec.zig");
 const gl = @import("gl.zig");
@@ -543,6 +544,8 @@ pub const Client = struct {
     /// Codecs que a sala libera pra cada transmissão nossa (tela, câmera):
     /// o que todo mundo que assiste decodifica (mensagem `codec`).
     codecs_allowed: [2]std.atomic.Value(u8) = .{ .init(proto.codecs_h264), .init(proto.codecs_h264) },
+    /// Vídeo/som por UDP (a sala ofereceu e o caminho abriu); null = só TCP.
+    udp: std.atomic.Value(?*udp.Link) = .init(null),
     /// Algum espectador não está dando conta da nossa taxa de bits: piso (% do
     /// alvo) até onde baixar. 0 = nenhum aviso pendente. Por tipo.
     viewer_slow: [2]std.atomic.Value(u8) = .{ .init(0), .init(0) },
@@ -652,6 +655,10 @@ pub const Client = struct {
             }
             cl.voice_peers.deinit(gpa);
             cl.voice_volumes.deinit(gpa);
+            if (cl.udp.load(.acquire)) |l| {
+                net.close(l.sock);
+                l.destroy();
+            }
             gpa.destroy(cl);
         }
     }
@@ -786,9 +793,83 @@ pub const Client = struct {
 
     fn writerLoop(cl: *Client) void {
         defer cl.release();
-        cl.queue.writerLoop(cl.sock, &cl.channel);
+        cl.queue.writerLoop(cl.sock, &cl.channel, &cl.udp);
         // a escritora sai por último: fecha o socket
         net.close(cl.sock);
+    }
+
+    fn startUdp(cl: *Client, token: u32) void {
+        const sock = net.udpConnectLike(cl.sock) catch return;
+        const l = udp.Link.create(token, cl.channel.send_key, cl.channel.recv_key, sock, false) catch {
+            net.close(sock);
+            return;
+        };
+        cl.udp.store(l, .release);
+        _ = cl.refs.fetchAdd(1, .monotonic);
+        sync.spawn(udpLoop, .{ cl, l }) catch {
+            _ = cl.refs.fetchSub(1, .monotonic);
+        };
+    }
+
+    /// Thread do UDP: abre o caminho (hello até a sala responder), recebe
+    /// quadro/som/voz, pede reenvio do que falta e mantém o NAT aberto. Se a
+    /// sala para de responder, volta pro TCP e continua tentando.
+    fn udpLoop(cl: *Client, l: *udp.Link) void {
+        defer cl.release();
+        net.setRecvTimeout(l.sock, 10);
+        const wire: udp.Wire = .{ .sock = l.sock };
+        var buf: [2048]u8 = undefined;
+        var last_hello: u64 = 0;
+        var last_ping: u64 = 0;
+        var last_tick: u64 = 0;
+        var hellos: u32 = 0;
+        while (!cl.closing.load(.acquire)) {
+            const now = sync.nowMs();
+            if (!l.isActive()) {
+                // no começo, rápido; depois de desistir, de vez em quando
+                const every: u64 = if (hellos < 12) 250 else 3000;
+                if (now - last_hello >= every) {
+                    l.ep.sendHello(wire);
+                    last_hello = now;
+                    hellos += 1;
+                }
+            } else if (now - last_ping >= 1000) {
+                l.ep.sendPing(wire);
+                last_ping = now;
+                if (now -| l.ep.last_rx_ms.load(.monotonic) > 5000) {
+                    l.active.store(false, .release); // a escritora volta pro TCP
+                    hellos = 0;
+                    if (debugEnabled()) std.debug.print("[telinha] UDP parou de responder: voltando pro TCP\n", .{});
+                }
+            }
+            if (net.udpRecvFrom(l.sock, &buf, null)) |n| {
+                if (l.ep.handle(wire, buf[0..n], deliverUdp, cl) == .hello_ok and !l.isActive()) {
+                    l.active.store(true, .release);
+                    if (debugEnabled()) std.debug.print("[telinha] vídeo e som por UDP (RTT {d} ms)\n", .{l.ep.rttMs()});
+                }
+            }
+            if (now - last_tick >= 10) {
+                last_tick = now;
+                l.ep.tick(wire, deliverUdp, cl);
+            }
+        }
+    }
+
+    fn deliverUdp(ctx: *anyopaque, typ: proto.Type, payload: []const u8) void {
+        const cl: *Client = @ptrCast(@alignCast(ctx));
+        switch (typ) {
+            .frame, .audio, .voice => {
+                cl.handle(typ, payload) catch {};
+                cl.wake();
+            },
+            else => {},
+        }
+    }
+
+    /// Vídeo/som estão indo por UDP agora?
+    pub fn udpActive(cl: *Client) bool {
+        const l = cl.udp.load(.acquire) orelse return false;
+        return l.isActive();
     }
 
     fn pingLoop(cl: *Client) void {
@@ -839,6 +920,11 @@ pub const Client = struct {
                 const sv = r.str() catch "";
                 cl.server_version_len = @min(sv.len, cl.server_version.len);
                 @memcpy(cl.server_version[0..cl.server_version_len], sv[0..cl.server_version_len]);
+                // a sala oferece UDP pro vídeo/som: abre o caminho (se não der, fica no TCP)
+                if ((r.u8_() catch 0) == 1) {
+                    const token = r.u32_() catch 0;
+                    if (token != 0 and getenv("TELINHA_SEM_UDP") == null and cl.udp.load(.acquire) == null) cl.startUdp(token);
+                }
                 cl.clock_offset.store(@as(i64, @intCast(server_us)) - @as(i64, @intCast(sync.nowUs())), .monotonic);
                 cl.status = .connected;
                 cl.welcomed.store(true, .release);

@@ -51,6 +51,7 @@ pub const Mapping = struct {
     ext_port: u16,
     int_port: u16,
     lease: u32, // 0 = permanente (roteador que só aceita assim)
+    udp: bool = false, // a mesma porta em UDP também abriu (vídeo/som)
 };
 
 // ------------------------------------------------------------ descoberta (SSDP)
@@ -286,9 +287,9 @@ pub fn unreachableIp(ip: [4]u8) bool {
         (ip[0] == 169 and ip[1] == 254);
 }
 
-fn addMapping(r: *Router, ext_port: u16, int_port: u16, lease: u32) Error!u32 {
+fn addMapping(r: *Router, ext_port: u16, int_port: u16, lease: u32, comptime protocol: []const u8) Error!u32 {
     var args: [600]u8 = undefined;
-    const a = std.fmt.bufPrint(&args, "<NewRemoteHost></NewRemoteHost><NewExternalPort>{d}</NewExternalPort><NewProtocol>TCP</NewProtocol><NewInternalPort>{d}</NewInternalPort><NewInternalClient>{d}.{d}.{d}.{d}</NewInternalClient><NewEnabled>1</NewEnabled><NewPortMappingDescription>telinha</NewPortMappingDescription><NewLeaseDuration>{d}</NewLeaseDuration>", .{ ext_port, int_port, r.local_ip[0], r.local_ip[1], r.local_ip[2], r.local_ip[3], lease }) catch return error.Network;
+    const a = std.fmt.bufPrint(&args, "<NewRemoteHost></NewRemoteHost><NewExternalPort>{d}</NewExternalPort><NewProtocol>" ++ protocol ++ "</NewProtocol><NewInternalPort>{d}</NewInternalPort><NewInternalClient>{d}.{d}.{d}.{d}</NewInternalClient><NewEnabled>1</NewEnabled><NewPortMappingDescription>telinha</NewPortMappingDescription><NewLeaseDuration>{d}</NewLeaseDuration>", .{ ext_port, int_port, r.local_ip[0], r.local_ip[1], r.local_ip[2], r.local_ip[3], lease }) catch return error.Network;
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(gpa);
     return soap(r, "AddPortMapping", a, &out);
@@ -304,13 +305,17 @@ pub fn open(router: Router, port: u16) Error!Mapping {
     var tries: u32 = 0;
     while (tries < 10) : (tries += 1) {
         var lease: u32 = lease_s;
-        var code = try addMapping(&r, ext_port, port, lease);
+        var code = try addMapping(&r, ext_port, port, lease, "TCP");
         if (code == 725) { // OnlyPermanentLeasesSupported
             lease = 0;
-            code = try addMapping(&r, ext_port, port, lease);
+            code = try addMapping(&r, ext_port, port, lease, "TCP");
         }
         switch (code) {
-            0 => return .{ .router = r, .ext_ip = ext_ip, .ext_port = ext_port, .int_port = port, .lease = lease },
+            0 => {
+                // a mesma porta em UDP (vídeo/som); se o roteador não deixar, fica no TCP
+                const udp_ok = (addMapping(&r, ext_port, port, lease, "UDP") catch 1) == 0;
+                return .{ .router = r, .ext_ip = ext_ip, .ext_port = ext_port, .int_port = port, .lease = lease, .udp = udp_ok };
+            },
             718 => ext_port +%= 1, // ConflictInMappingEntry: outra máquina usa essa porta
             else => return error.Refused,
         }
@@ -320,15 +325,20 @@ pub fn open(router: Router, port: u16) Error!Mapping {
 
 /// Renova (mesmo pedido de novo, antes do prazo acabar).
 pub fn renew(m: *Mapping) bool {
-    return (addMapping(&m.router, m.ext_port, m.int_port, m.lease) catch return false) == 0;
+    if (m.udp) _ = addMapping(&m.router, m.ext_port, m.int_port, m.lease, "UDP") catch {};
+    return (addMapping(&m.router, m.ext_port, m.int_port, m.lease, "TCP") catch return false) == 0;
 }
 
 pub fn close(m: *Mapping) void {
-    var args: [256]u8 = undefined;
-    const a = std.fmt.bufPrint(&args, "<NewRemoteHost></NewRemoteHost><NewExternalPort>{d}</NewExternalPort><NewProtocol>TCP</NewProtocol>", .{m.ext_port}) catch return;
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(gpa);
-    _ = soap(&m.router, "DeletePortMapping", a, &out) catch {};
+    inline for (.{ "TCP", "UDP" }) |protocol| {
+        if ((comptime std.mem.eql(u8, protocol, "TCP")) or m.udp) {
+            var args: [256]u8 = undefined;
+            const a = std.fmt.bufPrint(&args, "<NewRemoteHost></NewRemoteHost><NewExternalPort>{d}</NewExternalPort><NewProtocol>" ++ protocol ++ "</NewProtocol>", .{m.ext_port}) catch return;
+            var out: std.ArrayList(u8) = .empty;
+            defer out.deinit(gpa);
+            _ = soap(&m.router, "DeletePortMapping", a, &out) catch {};
+        }
+    }
 }
 
 /// Pra onde mandar a descoberta: o multicast do SSDP, ou o que estiver em
