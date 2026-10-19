@@ -1343,7 +1343,7 @@ pub const App = struct {
         cl.mutex.unlock();
         if (a.sharer) |s| {
             s.mutex.lock();
-            const st = std.fmt.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d} kbit/s{s} · {s} {d:.1} ms · {s}", .{ s.w, s.h, s.fps, s.bitrate_kbps, if (s.congested) " (rede lenta)" else "", s.encoder_name, s.encode_ms, s.backendSlice() }) catch "";
+            const st = std.fmt.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d} kbit/s{s} · {s} {d:.1} ms · {s}", .{ s.w, s.h, s.fps, s.bitrate_kbps, if (s.congested) " (rede lenta)" else if (s.slow_viewer) " (espectador lento)" else "", s.encoder_name, s.encode_ms, s.backendSlice() }) catch "";
             tiles[n] = .{ .owner = 0, .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = "Você", .stats = st, .loading = s.preview_tex == 0 };
             s.mutex.unlock();
             n += 1;

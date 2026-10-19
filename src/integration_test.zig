@@ -20,6 +20,8 @@ const TestClient = struct {
     ch: crypto.Channel,
     rb: proto.RecvBuf = .{},
     id: u32 = 0,
+    seen: [32]bool = [_]bool{false} ** 32, // tipos de mensagem já recebidos
+    last_slow_floor: u8 = 0,
 
     fn connect(port: u16, name: []const u8, password: []const u8, token: []const u8) !TestClient {
         const s = try net.connect("127.0.0.1", port);
@@ -51,11 +53,20 @@ const TestClient = struct {
 
     /// Lê mensagens até achar uma do tipo pedido.
     fn expect(c: *TestClient, typ: proto.Type) ![]const u8 {
-        for (0..50) |_| {
+        for (0..2000) |_| {
             const t = try proto.recvMsg(c.sock, &c.ch, &c.rb);
+            if (@intFromEnum(t) < c.seen.len) c.seen[@intFromEnum(t)] = true;
+            if (t == .viewer_slow) c.last_slow_floor = proto.payloadOf(&c.rb)[0];
             if (t == typ) return proto.payloadOf(&c.rb);
         }
         return error.NotFound;
+    }
+
+    /// Espectador: confirma um frame recebido (payload S→C de `frame`).
+    fn ackFrame(c: *TestClient, payload: []const u8) !void {
+        const m = try proto.Msg.alloc(.ack, 8);
+        @memcpy(m.payload()[0..8], payload[0..8]); // u32 de, u32 seq
+        try c.send(m);
     }
 
     fn welcome(c: *TestClient) !void {
@@ -70,10 +81,14 @@ const TestClient = struct {
 };
 
 fn frameMsg(key: bool, payload_len: usize) !*proto.Msg {
+    return frameSeq(key, payload_len, 1);
+}
+
+fn frameSeq(key: bool, payload_len: usize, seq: u32) !*proto.Msg {
     const m = try proto.Msg.alloc(.frame, proto.frame_header_len + payload_len);
     const p = m.payload();
     @memset(p, 0xAB);
-    std.mem.writeInt(u32, p[0..4], 1, .little);
+    std.mem.writeInt(u32, p[0..4], seq, .little);
     p[4] = if (key) proto.frame_key else 0;
     std.mem.writeInt(u64, p[5..13], 0, .little);
     std.mem.writeInt(u16, p[13..15], 64, .little);
@@ -149,8 +164,15 @@ test "sala: frames só vão pra quem assiste, começando por IDR" {
     // o servidor pede um IDR pro transmissor
     _ = try streamer.expect(.keyreq);
     // um P-frame antes do IDR não pode chegar no espectador
-    try streamer.send(try frameMsg(false, 100));
-    try streamer.send(try frameMsg(true, 200));
+    try streamer.send(try frameSeq(false, 100, 7));
+    try streamer.send(try frameSeq(true, 200, 8));
+    // o servidor confirma cada frame pro transmissor (controle de banda dele)
+    {
+        var a: proto.Reader = .{ .data = try streamer.expect(.ack) };
+        try testing.expectEqual(@as(u32, 7), try a.u32_());
+        a = .{ .data = try streamer.expect(.ack) };
+        try testing.expectEqual(@as(u32, 8), try a.u32_());
+    }
     var r: proto.Reader = .{ .data = try viewer.expect(.frame) };
     try testing.expectEqual(streamer.id, try r.u32_());
     _ = try r.u32_(); // seq
@@ -188,7 +210,31 @@ test "sala: admin expulsa, membro comum não" {
     try testing.expectEqual(@as(usize, 1), srv.memberCount());
 }
 
-test "sala: espectador lento perde o atraso e recebe IDR de novo" {
+/// Espectador para de ler (sem confirmar) enquanto o transmissor manda 1 s de
+/// vídeo; depois lê e confirma tudo o que chegou. Retorna quantos P-frames
+/// recebeu (o servidor tem que ter cortado o envio quando o atraso passou do
+/// limite).
+fn congestAndDrain(streamer: *TestClient, viewer: *TestClient, seq: *u32) !usize {
+    for (0..50) |_| {
+        try streamer.send(try frameSeq(false, 64 * 1024, seq.*));
+        seq.* += 1;
+        sync.sleepMs(20);
+    }
+    net.setRecvTimeout(viewer.sock, 400);
+    defer net.setRecvTimeout(viewer.sock, 5000);
+    var got: usize = 0;
+    while (true) {
+        const t = proto.recvMsg(viewer.sock, &viewer.ch, &viewer.rb) catch break;
+        if (t != .frame) continue;
+        const p = proto.payloadOf(&viewer.rb);
+        try testing.expect(p[8] & proto.frame_key == 0);
+        try viewer.ackFrame(p);
+        got += 1;
+    }
+    return got;
+}
+
+test "sala: espectador que atrasa perde o atraso, escoa e recomeça de um IDR" {
     net.init();
     const port = freshPort();
     const srv = try Server.start(.{ .port = port });
@@ -213,12 +259,72 @@ test "sala: espectador lento perde o atraso e recebe IDR de novo" {
     try b.u8_(1);
     try viewer.send(try b.finish());
     _ = try streamer.expect(.keyreq);
-    try streamer.send(try frameMsg(true, 1000));
+    var seq: u32 = 0;
+    try streamer.send(try frameSeq(true, 1000, seq));
+    seq += 1;
+    try viewer.ackFrame(try viewer.expect(.frame));
 
-    // o espectador para de ler; o transmissor manda bem mais que a fila aguenta
-    for (0..120) |_| try streamer.send(try frameMsg(false, 256 * 1024));
-    // o servidor tem que pedir outro IDR
+    for (0..2) |round| {
+        const got = try congestAndDrain(&streamer, &viewer, &seq);
+        // passou de 500 ms de atraso no meio do segundo: o resto não foi enviado
+        try testing.expect(got < 50);
+        // escoou: o próximo frame do transmissor faz o servidor pedir um IDR...
+        sync.sleepMs(if (round == 0) 200 else 700); // espera da 2ª vez é maior (1 s)
+        try streamer.send(try frameSeq(false, 100, seq));
+        seq += 1;
+        _ = try streamer.expect(.keyreq);
+        // ...e o espectador recomeça exatamente nele
+        try streamer.send(try frameSeq(true, 1000, seq));
+        seq += 1;
+        const p = try viewer.expect(.frame);
+        try testing.expect(p[8] & proto.frame_key != 0);
+        try viewer.ackFrame(p);
+    }
+    // atrasou duas vezes em menos de 10 s: o transmissor é avisado pra baixar a
+    // taxa — o quanto precisar, porque o único espectador é "a maioria"
+    try testing.expect(streamer.seen[@intFromEnum(proto.Type.viewer_slow)]);
+    try testing.expectEqual(@as(u8, 10), streamer.last_slow_floor);
+}
+
+test "sala: espectador pede IDR (keyreq) quando perde a referência" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+
+    var streamer = try TestClient.connect(port, "T", "", "");
+    defer streamer.close();
+    try streamer.welcome();
+    var viewer = try TestClient.connect(port, "E", "", "");
+    defer viewer.close();
+    try viewer.welcome();
+
+    var b: proto.Builder = .{};
+    defer b.deinit();
+    try b.begin(.stream_start);
+    try b.u16_(64);
+    try b.u16_(64);
+    try b.u8_(30);
+    try streamer.send(try b.finish());
+    try b.begin(.watch);
+    try b.u32_(streamer.id);
+    try b.u8_(1);
+    try viewer.send(try b.finish());
     _ = try streamer.expect(.keyreq);
+    try streamer.send(try frameSeq(true, 100, 0));
+    try viewer.ackFrame(try viewer.expect(.frame));
+
+    sync.sleepMs(600); // passa o limite de 1 pedido a cada 500 ms
+    try b.begin(.keyreq);
+    try b.u32_(streamer.id);
+    try viewer.send(try b.finish());
+    _ = try streamer.expect(.keyreq);
+    // P-frames até o IDR não vão pro espectador
+    try streamer.send(try frameSeq(false, 100, 1));
+    try streamer.send(try frameSeq(true, 100, 2));
+    var r: proto.Reader = .{ .data = try viewer.expect(.frame) };
+    _ = try r.u32_();
+    try testing.expectEqual(@as(u32, 2), try r.u32_());
 }
 
 test "sala: áudio chega em quem assiste, com o remetente certo" {

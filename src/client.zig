@@ -86,6 +86,7 @@ pub const View = struct {
     qmutex: sync.Mutex = .{},
     qcond: sync.Cond = .{},
     frames: std.ArrayList([]u8) = .empty,
+    arrivals: std.ArrayList(u64) = .empty, // hora (µs) em que cada quadro da fila chegou
     stop: bool = false,
     waiting_key: bool = true,
 
@@ -121,11 +122,16 @@ pub const View = struct {
             v.audio_ring.deinit();
             for (v.frames.items) |f| gpa.free(f);
             v.frames.deinit(gpa);
+            v.arrivals.deinit(gpa);
             gpa.free(v.pixels);
             v.client.release();
             gpa.destroy(v);
         }
     }
+
+    /// Atraso máximo esperando o decoder antes de desistir e pedir um IDR.
+    /// Folga pra um soluço (um IDR grande demora mais), sem deixar acumular.
+    const max_decode_backlog_us = 150_000;
 
     fn enqueue(v: *View, frame: []u8) void {
         v.qmutex.lock();
@@ -134,26 +140,36 @@ pub const View = struct {
             gpa.free(frame);
             return;
         }
+        const now = sync.nowUs();
         // decode não está dando conta: descarta tudo e pede um IDR
-        if (v.frames.items.len >= 3) {
+        if (v.frames.items.len >= 30 or (v.arrivals.items.len > 0 and now - v.arrivals.items[0] > max_decode_backlog_us)) {
             for (v.frames.items) |f| gpa.free(f);
             v.frames.clearRetainingCapacity();
+            v.arrivals.clearRetainingCapacity();
             v.waiting_key = true;
-            v.client.sendWatch(v.owner, true);
+            v.client.sendKeyreq(v.owner);
         }
+        v.arrivals.append(gpa, now) catch {
+            gpa.free(frame);
+            return;
+        };
         v.frames.append(gpa, frame) catch {
+            v.arrivals.items.len -= 1;
             gpa.free(frame);
             return;
         };
         v.qcond.signal();
     }
 
-    fn pop(v: *View) ?[]u8 {
+    /// Próximo quadro e se já tem outro esperando atrás dele.
+    fn pop(v: *View) ?struct { []u8, bool } {
         v.qmutex.lock();
         defer v.qmutex.unlock();
         while (v.frames.items.len == 0 and !v.stop) v.qcond.wait(&v.qmutex);
         if (v.stop) return null;
-        return v.frames.orderedRemove(0);
+        _ = v.arrivals.orderedRemove(0);
+        const f = v.frames.orderedRemove(0);
+        return .{ f, v.frames.items.len > 0 };
     }
 
     fn shutdown(v: *View) void {
@@ -203,9 +219,10 @@ pub const View = struct {
         defer dec.deinit();
         v.decoder_name = if (dec == .hw) "NVDEC" else "openh264";
         v.stat_since = sync.nowMs();
-        while (v.pop()) |frame| {
+        while (v.pop()) |item| {
+            const frame, const behind = item;
             defer gpa.free(frame);
-            v.decodeFrame(&dec, frame) catch {
+            v.decodeFrame(&dec, frame, behind) catch {
                 // perdeu referência ou veio lixo: recomeça do próximo IDR
                 if (dec == .hw) {
                     // erro no NVDEC: segue com o openh264 daqui pra frente
@@ -218,12 +235,15 @@ pub const View = struct {
                 v.qmutex.lock();
                 v.waiting_key = true;
                 v.qmutex.unlock();
-                v.client.sendWatch(v.owner, true);
+                v.client.sendKeyreq(v.owner);
             };
         }
     }
 
-    fn decodeFrame(v: *View, dec: *Decoder, frame: []const u8) !void {
+    /// `behind`: já tem quadro mais novo esperando — decodifica (precisa pra
+    /// referência) mas não gasta tempo entregando uma imagem que vai ser
+    /// substituída em seguida.
+    fn decodeFrame(v: *View, dec: *Decoder, frame: []const u8, behind: bool) !void {
         const t0 = sync.nowUs();
         var r: proto.Reader = .{ .data = frame };
         _ = try r.u32_(); // seq
@@ -249,6 +269,9 @@ pub const View = struct {
             if (debugEnabled()) std.debug.print("[telinha] decoder não devolveu imagem (quadro {s}, {d} bytes)\n", .{ if (key) "IDR" else "P", bitstream.len });
             return;
         };
+        v.stat_bytes += frame.len;
+        if (behind) return;
+        v.stat_frames += 1; // fps = quadros que foram pra tela
         const pw: u32 = switch (pic) {
             .i420 => |p| p.w,
             .nv12 => |f| f.w,
@@ -298,8 +321,6 @@ pub const View = struct {
         }
         v.client.wake();
 
-        v.stat_frames += 1;
-        v.stat_bytes += frame.len;
         const dt = @as(f32, @floatFromInt(sync.nowUs() - t0)) / 1000.0;
         v.decode_ms = v.decode_ms * 0.9 + dt * 0.1;
         const now = sync.nowMs();
@@ -334,6 +355,12 @@ pub const Client = struct {
     queue: proto.SendQueue = .{},
     closing: std.atomic.Value(bool) = .init(false),
     keyreq: std.atomic.Value(bool) = .init(false),
+    /// Algum espectador não está dando conta da nossa taxa de bits: piso (% do
+    /// alvo) até onde baixar. 0 = nenhum aviso pendente.
+    viewer_slow: std.atomic.Value(u8) = .init(0),
+    /// Nossos frames que o servidor ainda não confirmou (controle de banda).
+    inflight_mutex: sync.Mutex = .{},
+    inflight: proto.AckWindow = .{},
     /// Relógio da sala = relógio local + offset (µs). Sincronizado pelo ping.
     clock_offset: std.atomic.Value(i64) = .init(0),
     best_rtt_us: u64 = std.math.maxInt(u64),
@@ -628,10 +655,25 @@ pub const Client = struct {
                 cl.chat_count += 1;
             },
             .frame => {
-                const v = cl.viewRetained(try r.u32_()) orelse return;
+                const from = try r.u32_();
+                const frame = r.rest();
+                if (frame.len < proto.frame_header_len) return error.BadMessage;
+                // confirma na hora (o servidor mede o atraso do nosso download com isso)
+                const ack = try proto.Msg.alloc(.ack, 8);
+                std.mem.writeInt(u32, ack.payload()[0..4], from, .little);
+                @memcpy(ack.payload()[4..8], frame[0..4]);
+                cl.queue.pushUrgentOwned(ack);
+                const v = cl.viewRetained(from) orelse return;
                 defer v.release();
-                v.enqueue(try gpa.dupe(u8, r.rest()));
+                v.enqueue(try gpa.dupe(u8, frame));
             },
+            .ack => {
+                const seq = try r.u32_();
+                cl.inflight_mutex.lock();
+                defer cl.inflight_mutex.unlock();
+                cl.inflight.acked(seq, sync.nowUs());
+            },
+            .viewer_slow => cl.viewer_slow.store(std.math.clamp(try r.u8_(), 1, 100), .release),
             .audio => {
                 const v = cl.viewRetained(try r.u32_()) orelse return;
                 defer v.release();
@@ -662,6 +704,40 @@ pub const Client = struct {
         std.mem.writeInt(u32, m.payload()[0..4], target, .little);
         m.payload()[4] = @intFromBool(on);
         cl.queue.pushOwned(m);
+    }
+
+    /// Pede um quadro completo de quem estamos assistindo (perdemos a referência).
+    pub fn sendKeyreq(cl: *Client, target: u32) void {
+        const m = proto.Msg.alloc(.keyreq, 4) catch return;
+        std.mem.writeInt(u32, m.payload()[0..4], target, .little);
+        cl.queue.pushOwned(m);
+    }
+
+    /// Transmissor: frame `seq` entrou na fila de envio.
+    pub fn frameSent(cl: *Client, seq: u32, key: bool) void {
+        cl.inflight_mutex.lock();
+        defer cl.inflight_mutex.unlock();
+        cl.inflight.sent(seq, sync.nowUs(), key);
+    }
+
+    pub const Uplink = struct {
+        excess_us: u64, // atraso acumulado acima do normal
+        key_allowance_us: u64, // quanto disso se explica por um IDR recente
+    };
+
+    /// Transmissor: atraso que nosso upload está acumulando.
+    pub fn uplink(cl: *Client) Uplink {
+        cl.inflight_mutex.lock();
+        defer cl.inflight_mutex.unlock();
+        const now = sync.nowUs();
+        return .{ .excess_us = cl.inflight.excessUs(now, 300_000), .key_allowance_us = cl.inflight.keyAllowanceUs(now) };
+    }
+
+    /// Transmissor: começou uma transmissão nova (seq volta pra 0).
+    pub fn resetInflight(cl: *Client) void {
+        cl.inflight_mutex.lock();
+        defer cl.inflight_mutex.unlock();
+        cl.inflight.reset();
     }
 
     pub fn kick(cl: *Client, target: u32) void {

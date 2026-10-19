@@ -3,8 +3,13 @@
 //!
 //! Cada conexão tem uma thread leitora e uma escritora com fila própria.
 //! Frames são encaminhados só pra quem está assistindo, sem copiar o buffer.
-//! Se um espectador fica pra trás, os frames pendentes dele são descartados e
-//! o transmissor manda um quadro completo (IDR) — ninguém trava a sala.
+//!
+//! Controle de atraso de ponta a ponta: o servidor confirma (ack) cada frame
+//! pro transmissor, e cada espectador confirma pro servidor. Assim os dois
+//! sabem quanto atraso está acumulado no caminho, até dentro de túneis
+//! (ngrok, bore...) cujos buffers ninguém enxerga. Um espectador que acumula
+//! atraso perde os frames pendentes, espera o que já saiu chegar e recomeça
+//! de um quadro completo (IDR) — ninguém trava a sala.
 const std = @import("std");
 const sync = @import("sync.zig");
 const net = @import("net.zig");
@@ -14,6 +19,14 @@ const gpa = proto.gpa;
 
 /// Mais que isso na fila de um espectador = ele está lento demais.
 pub const max_viewer_backlog = 3 * 1024 * 1024;
+/// ...ou se acumulou esse atraso (µs) acima do normal da conexão dele.
+pub const max_viewer_excess_us = 500_000;
+/// Atrasado pelo menos isso e sem escoar (a fila não diminuiu 50 ms em 1 s):
+/// a taxa de bits está no limite do link dele, já pede taxa menor pro
+/// transmissor antes de chegar no ponto de ter que recomeçar.
+const soft_viewer_excess_us = 150_000;
+/// Referência de RTT enquanto o espectador ainda não confirmou nenhum frame.
+const default_base_us = 300_000;
 const keyreq_interval_ms = 500;
 const handshake_timeout_ms = 10_000;
 
@@ -34,20 +47,92 @@ const Conn = struct {
     queue: proto.SendQueue = .{},
     watching: std.ArrayList(u32) = .empty, // ids que essa pessoa assiste
     waiting_key: std.ArrayList(u32) = .empty, // ids cujo próximo frame tem que ser IDR
+    flows: std.ArrayList(Flow) = .empty, // frames a caminho, por transmissor assistido
     last_keyreq_ms: u64 = 0,
+    last_slow_ms: u64 = 0,
     refs: std.atomic.Value(u32) = .init(1), // leitora (+ escritora quando existir)
 
     fn nameSlice(self: *const Conn) []const u8 {
         return self.name[0..self.name_len];
+    }
+    /// Estado do que esse espectador recebe de `from` (cria se precisar).
+    fn flow(self: *Conn, from: u32) ?*Flow {
+        for (self.flows.items) |*f| if (f.from == from) return f;
+        self.flows.append(gpa, .{ .from = from }) catch return null;
+        return &self.flows.items[self.flows.items.len - 1];
+    }
+    fn dropFlow(self: *Conn, from: u32) void {
+        for (self.flows.items, 0..) |f, i| if (f.from == from) {
+            _ = self.flows.swapRemove(i);
+            return;
+        };
     }
     fn release(self: *Conn) void {
         if (self.refs.fetchSub(1, .acq_rel) == 1) {
             self.queue.deinit();
             self.watching.deinit(gpa);
             self.waiting_key.deinit(gpa);
+            self.flows.deinit(gpa);
             net.close(self.sock);
             gpa.destroy(self);
         }
+    }
+};
+
+/// O que um espectador está recebendo de um transmissor.
+const Flow = struct {
+    from: u32,
+    win: proto.AckWindow = .{}, // frames enviados e ainda não confirmados
+    draining: bool = false, // atrasou: esperando o que já saiu chegar antes do IDR
+    // quem vive atrasando espera cada vez mais pelo próximo IDR
+    // (0,5 → 1 → 2 → 4 → 8 s), pra não fazer o transmissor mandar IDR (caro)
+    // o tempo todo pra sala inteira
+    resync_level: u5 = 0,
+    resync_after_ms: u64 = 0,
+    last_resync_ms: u64 = 0,
+    // tendência do atraso, medida a cada 1 s
+    trend_at_us: u64 = 0,
+    trend_excess_us: u64 = 0,
+    late: bool = false, // atrasado e sem escoar na última medida
+
+    /// Atrasado sem escoar, ou recomeçou há menos de 10 s.
+    fn struggling(f: *const Flow, now_ms: u64) bool {
+        return f.late or (f.last_resync_ms != 0 and now_ms - f.last_resync_ms < 10_000);
+    }
+
+    fn updateTrend(f: *Flow, excess: u64, now_us: u64) void {
+        if (f.win.key_pending) {
+            // IDR a caminho: a fila cresce atrás dele de qualquer jeito
+            f.trend_at_us = 0;
+            f.late = false;
+        } else if (f.trend_at_us == 0) {
+            f.trend_at_us = now_us;
+            f.trend_excess_us = excess;
+        } else if (now_us - f.trend_at_us >= 1_000_000) {
+            f.late = excess > soft_viewer_excess_us and excess + 50_000 > f.trend_excess_us;
+            f.trend_at_us = now_us;
+            f.trend_excess_us = excess;
+        }
+    }
+
+    /// Marca um recomeço. Retorna true se é repetido (menos de 10 s do anterior).
+    fn backoff(f: *Flow, now_ms: u64) bool {
+        if (now_ms - f.last_resync_ms > 10_000) f.resync_level = 0;
+        const repeated = f.resync_level > 0;
+        f.resync_after_ms = now_ms + (@as(u64, 500) << @min(f.resync_level, 4));
+        f.resync_level +|= 1;
+        f.last_resync_ms = now_ms;
+        return repeated;
+    }
+
+    /// O atraso antigo já escoou? (desiste de esperar depois de 3 s)
+    fn drained(f: *Flow, now_us: u64) bool {
+        if (f.win.len == 0) return true;
+        if (f.win.oldestAgeUs(now_us) > 3_000_000) {
+            f.win.reset();
+            return true;
+        }
+        return false;
     }
 };
 
@@ -243,7 +328,9 @@ pub const Server = struct {
                 }
                 // todo mundo que já assistia precisa de um IDR na resolução nova
                 for (s.conns.items) |o| {
-                    if (contains(&o.watching, cn.id)) addUnique(&o.waiting_key, cn.id);
+                    if (!contains(&o.watching, cn.id)) continue;
+                    addUnique(&o.waiting_key, cn.id);
+                    if (o.flow(cn.id)) |f| f.win.reset();
                 }
                 try s.broadcastMembers();
             },
@@ -253,7 +340,10 @@ pub const Server = struct {
                 if (cn.streaming) {
                     cn.streaming = false;
                     cn.audio = false;
-                    for (s.conns.items) |o| o.queue.dropFrames(cn.id);
+                    for (s.conns.items) |o| {
+                        _ = o.queue.dropFrames(cn.id);
+                        o.dropFlow(cn.id);
+                    }
                     s.log("{s} parou de transmitir", .{cn.nameSlice()});
                     try s.broadcastMembers();
                 }
@@ -269,15 +359,38 @@ pub const Server = struct {
                     const changed = !contains(&cn.watching, target);
                     addUnique(&cn.watching, target);
                     addUnique(&cn.waiting_key, target);
-                    cn.queue.dropFrames(target);
-                    s.requestKey(target, true);
+                    _ = cn.queue.dropFrames(target);
+                    cn.dropFlow(target);
+                    _ = cn.flow(target);
+                    s.requestKey(target, changed);
                     if (changed) try s.broadcastMembers();
                 } else {
                     remove(&cn.watching, target);
                     remove(&cn.waiting_key, target);
-                    cn.queue.dropFrames(target);
+                    _ = cn.queue.dropFrames(target);
+                    cn.dropFlow(target);
                     try s.broadcastMembers();
                 }
+            },
+            .ack => {
+                const from = try r.u32_();
+                const seq = try r.u32_();
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                for (cn.flows.items) |*f| if (f.from == from) f.win.acked(seq, sync.nowUs());
+            },
+            .keyreq => {
+                // o espectador perdeu a referência (decoder atrasou ou deu erro)
+                const target = try r.u32_();
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                if (!contains(&cn.watching, target)) return;
+                const f = cn.flow(target) orelse return;
+                f.win.dropNewest(cn.queue.dropFrames(target));
+                addUnique(&cn.waiting_key, target);
+                const now = sync.nowMs();
+                if (now >= f.resync_after_ms) s.requestKey(target, false);
+                _ = f.backoff(now);
             },
             .ping => {
                 const t = try r.u64_();
@@ -374,7 +487,8 @@ pub const Server = struct {
         for (s.conns.items) |o| {
             remove(&o.watching, cn.id);
             remove(&o.waiting_key, cn.id);
-            o.queue.dropFrames(cn.id);
+            _ = o.queue.dropFrames(cn.id);
+            o.dropFlow(cn.id);
         }
         s.log("{s} saiu ({d} na sala)", .{ cn.nameSlice(), s.conns.items.len });
         if (s.stopped.load(.acquire)) return;
@@ -455,7 +569,13 @@ pub const Server = struct {
 
     fn forwardFrame(s: *Server, cn: *Conn, payload: []const u8) !void {
         if (payload.len < proto.frame_header_len) return error.BadMessage;
+        const seq = std.mem.readInt(u32, payload[0..4], .little);
         const is_key = payload[4] & proto.frame_key != 0;
+
+        // confirma na hora: o transmissor mede o próprio upload com isso
+        const ack = try proto.Msg.alloc(.ack, 4);
+        std.mem.writeInt(u32, ack.payload()[0..4], seq, .little);
+        cn.queue.pushUrgentOwned(ack);
 
         // mensagem encaminhada montada uma vez só: [u32 de][frame]
         const m = try proto.Msg.alloc(.frame, 4 + payload.len);
@@ -466,26 +586,70 @@ pub const Server = struct {
 
         s.mutex.lock();
         defer s.mutex.unlock();
+        const now_ms = sync.nowMs();
+        const now_us = sync.nowUs();
         var need_key = false;
+        var resynced = false; // algum espectador recomeçou agora
+        var late = false; // algum espectador acumulando atraso há mais de 1 s
         for (s.conns.items) |o| {
             if (o == cn or !contains(&o.watching, cn.id)) continue;
+            const f = o.flow(cn.id) orelse continue;
             if (contains(&o.waiting_key, cn.id)) {
+                // depois de atrasar, o IDR só sai quando o que já foi enviado
+                // chegar (senão ele fica na fila atrás do atraso)
+                if (f.draining) {
+                    if (!f.drained(now_us)) continue;
+                    f.draining = false;
+                }
                 if (!is_key) {
-                    need_key = true;
+                    // só pede IDR quando o tempo de espera desse espectador passou
+                    if (now_ms >= f.resync_after_ms) need_key = true;
                     continue;
                 }
                 remove(&o.waiting_key, cn.id);
             }
-            if (o.queue.queuedBytes() > max_viewer_backlog) {
-                // espectador lento: descarta o atraso e recomeça de um IDR
-                o.queue.dropFrames(cn.id);
+            const allowance = f.win.keyAllowanceUs(now_us);
+            const excess = f.win.excessUs(now_us, default_base_us);
+            f.updateTrend(excess, now_us);
+            if (f.late) late = true;
+            if (excess > max_viewer_excess_us + allowance or o.queue.queuedBytes() > max_viewer_backlog) {
+                // espectador acumulando atraso: descarta o que nem saiu da
+                // fila, espera o resto chegar e recomeça de um IDR
+                f.win.dropNewest(o.queue.dropFrames(cn.id));
                 addUnique(&o.waiting_key, cn.id);
-                need_key = true;
+                f.draining = true;
+                f.late = false;
+                f.trend_at_us = 0;
+                resynced = true;
+                _ = f.backoff(now_ms);
+                s.log("{s} atrasou {d} ms assistindo {s}: recomeçando de um IDR (próximo em {d} ms)", .{ o.nameSlice(), excess / 1000, cn.nameSlice(), f.resync_after_ms - now_ms });
                 continue;
             }
             o.queue.push(m);
+            f.win.sent(seq, now_us, is_key);
             _ = s.relayed_bytes.fetchAdd(m.data.len, .monotonic);
         }
         if (need_key) s.requestKey(cn.id, false);
+        if ((resynced or late) and now_ms - cn.last_slow_ms > 2000) {
+            // se a maioria está sofrendo, o gargalo é comum (o upload de quem
+            // hospeda a sala, ou só tem um espectador): a taxa desce o quanto
+            // precisar. Se é a minoria, desce no máximo até a metade: quem não
+            // dá conta nem assim fica recomeçando de IDR de vez em quando, sem
+            // estragar a qualidade pros outros.
+            cn.last_slow_ms = now_ms;
+            var viewers: u32 = 0;
+            var struggling: u32 = 0;
+            for (s.conns.items) |o| {
+                if (o == cn or !contains(&o.watching, cn.id)) continue;
+                viewers += 1;
+                const f = o.flow(cn.id) orelse continue;
+                if (f.struggling(now_ms)) struggling += 1;
+            }
+            const majority = struggling * 2 > viewers;
+            const hint = try proto.Msg.alloc(.viewer_slow, 1);
+            hint.payload()[0] = if (majority) 10 else 50;
+            cn.queue.pushUrgentOwned(hint);
+            s.log("pedindo taxa menor pra {s} ({d} de {d} espectadores com dificuldade{s})", .{ cn.nameSlice(), struggling, viewers, if (resynced) "" else ", atrasando sem escoar" });
+        }
     }
 };

@@ -9,13 +9,14 @@
 //! encoder fica pra trás, o quadro pendente é substituído pelo mais novo
 //! (nunca acumula atraso).
 //!
-//! Controle de banda: se a fila de envio começa a crescer, a taxa de bits cai
-//! na hora e quadros são pulados; quando a rede folga, a taxa volta a subir.
+//! Controle de banda: ratectl.zig (pelo atraso de ponta a ponta medido com as
+//! confirmações do servidor, e pelos avisos de espectador lento).
 const std = @import("std");
 const sync = @import("sync.zig");
 const proto = @import("proto.zig");
 const codec = @import("codec.zig");
 const audio = @import("audio.zig");
+const RateControl = @import("ratectl.zig").RateControl;
 const Client = @import("client.zig").Client;
 const c = @cImport(@cInclude("capture.h"));
 const gpa = proto.gpa;
@@ -158,6 +159,7 @@ pub const Sharer = struct {
     encode_ms: f32 = 0,
     bitrate_kbps: u32 = 0,
     congested: bool = false,
+    slow_viewer: bool = false, // algum espectador pediu menos nos últimos segundos
     encoder_name: []const u8 = "",
     audio_on: bool = false, // capturando o som do computador
     audio_err: [160]u8 = [_]u8{0} ** 160, // por que o áudio não deu (vazio = deu certo ou não pediu)
@@ -608,7 +610,8 @@ const Pipeline = struct {
         var msg: proto.Builder = .{};
         defer msg.deinit();
         var seq: u32 = 0;
-        var bw: Bandwidth = .{};
+        s.client.resetInflight();
+        var bw: RateControl = .{};
         var stat_since = sync.nowUs();
         var stat_frames: u32 = 0;
         var stat_bytes: u64 = 0;
@@ -643,8 +646,17 @@ const Pipeline = struct {
                 continue;
             }
 
-            // controle de banda: fila crescendo = rede não está dando conta
-            if (enc != null and bw.congested(s, &enc.?)) {
+            // controle de banda: atraso de ponta a ponta crescendo = o
+            // caminho até o servidor não está dando conta
+            const up = s.client.uplink();
+            if (enc != null and bw.congested(.{
+                .now_us = sync.nowUs(),
+                .excess_us = up.excess_us,
+                .key_allowance_us = up.key_allowance_us,
+                .queued_bytes = s.client.queue.queuedBytes(),
+                .slow_floor_pct = s.client.viewer_slow.swap(0, .acq_rel),
+            })) {
+                if (bw.takeChange()) |b| enc.?.setBitrate(b);
                 _ = p.timing.skipped.fetchAdd(1, .monotonic);
                 if (key) s.client.keyreq.store(true, .release);
                 p.doneWith(i, false);
@@ -655,8 +667,9 @@ const Pipeline = struct {
             if (enc == null or enc.?.width() != sl.w or enc.?.height() != sl.h or gen != enc_gen or enc.?.isHw() != want_hw) {
                 if (enc) |*e| e.deinit();
                 enc = null;
-                bw.target = targetBitrate(sl.w, sl.h, fps, quality);
-                if (bw.bps == 0 or bw.bps > bw.target or gen != enc_gen) bw.bps = bw.target;
+                const target = targetBitrate(sl.w, sl.h, fps, quality);
+                if (gen != enc_gen) bw.reset(target) else bw.retarget(target);
+                _ = bw.takeChange(); // o encoder novo já nasce com a taxa certa
                 const opts: codec.EncoderOptions = .{ .width = sl.w, .height = sl.h, .fps = fps, .bitrate = bw.bps, .mode = mode };
                 if (want_hw) {
                     var err: [256]u8 = undefined;
@@ -683,7 +696,8 @@ const Pipeline = struct {
                 s.mutex.unlock();
                 announce(s, sl.w, sl.h, fps, p.audio_sender != null);
             }
-            bw.rampUp(&enc.?);
+            bw.rampUp(sync.nowUs(), up.excess_us -| up.key_allowance_us);
+            if (bw.takeChange()) |b| enc.?.setBitrate(b);
 
             const t0 = sync.nowUs();
             out.clearRetainingCapacity();
@@ -700,9 +714,10 @@ const Pipeline = struct {
                 continue;
             };
             if (key and debugEnabled()) std.debug.print("[telinha] IDR pedido: codificado como {s} ({d} bytes)\n", .{ if (is_key) "IDR" else "P (!)", out.items.len });
-            try msg.begin(.frame);
-            try msg.u32_(seq);
+            const frame_seq = seq;
             seq +%= 1;
+            try msg.begin(.frame);
+            try msg.u32_(frame_seq);
             try msg.u8_(if (is_key) proto.frame_key else 0);
             try msg.u64_(if (resend) s.client.serverNowUs() else sl.ts);
             try msg.u16_(@intCast(sl.w));
@@ -711,6 +726,8 @@ const Pipeline = struct {
             const m = try msg.finish();
             stat_bytes += m.data.len;
             stat_frames += 1;
+            // registra antes de enfileirar: a confirmação pode voltar muito rápido
+            s.client.frameSent(frame_seq, is_key);
             s.client.queue.pushOwned(m);
             p.doneWith(i, true);
             const enc_us = sync.nowUs() - t0;
@@ -728,6 +745,7 @@ const Pipeline = struct {
                 s.fps = @as(f32, @floatFromInt(stat_frames)) / secs;
                 s.kbps = @as(f32, @floatFromInt(stat_bytes)) / 1024.0 / secs;
                 s.congested = tnow - bw.last_congestion_us < 2_000_000;
+                s.slow_viewer = bw.last_slow_us != 0 and tnow - bw.last_slow_us < 10_000_000;
                 if (debugEnabled()) p.timing.report(bw.bps, s.client.queue.queuedBytes());
                 stat_frames = 0;
                 stat_bytes = 0;
@@ -862,38 +880,5 @@ const Encoder = union(enum) {
                 return x.encodeI420(sl.y.ptr, sl.u.ptr, sl.v.ptr, out);
             },
         }
-    }
-};
-
-/// Controle de taxa de bits pela fila de envio.
-const Bandwidth = struct {
-    target: u32 = 0,
-    bps: u32 = 0,
-    last_congestion_us: u64 = 0,
-    last_adjust_us: u64 = 0,
-
-    /// Fila passou de ~250 ms de vídeo: baixa a taxa e pula o quadro.
-    fn congested(b: *Bandwidth, s: *Sharer, enc: *Encoder) bool {
-        const queued = s.client.queue.queuedBytes();
-        const limit = @max(96 * 1024, b.bps / 8 / 4);
-        if (queued <= limit) return false;
-        const now = sync.nowUs();
-        b.last_congestion_us = now;
-        if (now - b.last_adjust_us > 400_000) {
-            b.last_adjust_us = now;
-            b.bps = @max(200_000, b.bps / 100 * 75);
-            enc.setBitrate(b.bps);
-        }
-        return true;
-    }
-
-    /// Sem congestionamento por 2 s: sobe a taxa aos poucos até o alvo.
-    fn rampUp(b: *Bandwidth, enc: *Encoder) void {
-        if (b.bps >= b.target) return;
-        const now = sync.nowUs();
-        if (now - b.last_congestion_us < 2_000_000 or now - b.last_adjust_us < 1_000_000) return;
-        b.last_adjust_us = now;
-        b.bps = @min(b.target, b.bps / 100 * 112 + 50_000);
-        enc.setBitrate(b.bps);
     }
 };

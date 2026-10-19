@@ -47,8 +47,12 @@ fn setOpt(s: Socket, level: c_int, name: c_int, value: c_int) void {
 fn tune(s: Socket) void {
     setOpt(s, c.IPPROTO_TCP, c.TCP_NODELAY, 1);
     setOpt(s, c.SOL_SOCKET, c.SO_KEEPALIVE, 1);
-    setOpt(s, c.SOL_SOCKET, c.SO_SNDBUF, 4 * 1024 * 1024);
-    setOpt(s, c.SOL_SOCKET, c.SO_RCVBUF, 4 * 1024 * 1024);
+    // Linux: o kernel segura no máximo 32 KB ainda não enviados; o resto
+    // espera na nossa fila, onde dá pra descartar quadro velho em vez de ficar
+    // escondido no kernel. O que já está na rede (janela do TCP) continua com
+    // ajuste automático, então a vazão em link longo não cai. No Windows o
+    // buffer de envio dinâmico (sem SO_SNDBUF fixo) já segue o RTT da conexão.
+    if (!is_windows) setOpt(s, c.IPPROTO_TCP, c.TCP_NOTSENT_LOWAT, 32 * 1024);
 }
 
 /// Escuta em todas as interfaces (IPv6 + IPv4 quando der).
@@ -137,6 +141,19 @@ pub fn recvAll(s: Socket, buf: []u8) Error!void {
         if (n <= 0) return error.ConnectionLost;
         off += @intCast(n);
     }
+}
+
+/// Lê o que já tiver chegado (pelo menos 1 byte).
+pub fn recvSome(s: Socket, buf: []u8) Error!usize {
+    const chunk: c_int = @intCast(@min(buf.len, 1 << 20));
+    const n = if (is_windows) c.recv(s, buf.ptr, chunk, 0) else c.recv(s, buf.ptr, @intCast(chunk), 0);
+    if (n <= 0) return error.ConnectionLost;
+    return @intCast(n);
+}
+
+/// Limita o buffer de recebimento (usado pra simular link lento nos testes).
+pub fn setRecvBuffer(s: Socket, bytes: u32) void {
+    setOpt(s, c.SOL_SOCKET, c.SO_RCVBUF, @intCast(bytes));
 }
 
 /// Tempo máximo esperando dados (0 = sem limite).

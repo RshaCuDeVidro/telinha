@@ -1,4 +1,4 @@
-//! Protocolo da sala (versão 3). Ver docs/PROTOCOL.md.
+//! Protocolo da sala (versão 5). Ver docs/PROTOCOL.md.
 //!
 //! No fio: handshake em claro (crypto.zig) e depois mensagens
 //!     u32 tamanho | ChaCha20-Poly1305( u8 tipo | payload ) | tag(16)
@@ -8,7 +8,7 @@ const sync = @import("sync.zig");
 const net = @import("net.zig");
 const crypto = @import("crypto.zig");
 
-pub const version: u16 = 4;
+pub const version: u16 = 5;
 pub const max_msg = 32 * 1024 * 1024;
 /// Marcador em claro no lugar do tamanho: "senha errada" (o servidor não
 /// conseguiu decifrar a primeira mensagem).
@@ -30,6 +30,8 @@ pub const Type = enum(u8) {
     pong = 12, // S→C u64 t, u64 relógio_do_servidor_us
     kick = 13, // C→S u32 alvo (só admin)
     audio = 14, // C→S áudio | S→C u32 de + áudio
+    ack = 15, // S→C u32 seq (servidor recebeu seu frame) | C→S u32 de, u32 seq (espectador recebeu)
+    viewer_slow = 16, // S→C u8 piso: espectador não dá conta; baixe a taxa (até piso% do alvo)
     _,
 };
 
@@ -191,6 +193,117 @@ pub fn payloadOf(rb: *RecvBuf) []const u8 {
     return rb.plain.items[1..];
 }
 
+/// Quadros enviados e ainda não confirmados (ack). Mede há quanto tempo o mais
+/// velho está "no caminho" — nossa fila, kernel, túnel, rede, o outro lado — e
+/// o menor atraso de confirmação visto (≈ RTT). A diferença é o atraso que a
+/// conexão está acumulando, em qualquer ponto do caminho (o túnel do ngrok
+/// tem buffers que o servidor nunca enxergaria só olhando a própria fila).
+pub const AckWindow = struct {
+    const cap = 128;
+    seqs: [cap]u32 = undefined,
+    times: [cap]u64 = undefined, // µs em que cada quadro foi enviado
+    keys: [cap]bool = undefined,
+    head: usize = 0,
+    len: usize = 0,
+    // menor atraso de confirmação (≈ RTT) em janelas de 10 s: a atual e a
+    // anterior. 0 = sem medida.
+    min_cur: u64 = 0,
+    min_prev: u64 = 0,
+    epoch_at: u64 = 0,
+    // IDR: é grande, então ele e os frames que vêm atrás chegam mais tarde
+    key_pending: bool = false, // tem IDR a caminho
+    key_delay_us: u64 = 0, // quanto o último IDR levou pra ser confirmado
+    key_acked_at: u64 = 0,
+
+    pub fn reset(w: *AckWindow) void {
+        w.head = 0;
+        w.len = 0;
+        w.key_pending = false;
+    }
+
+    pub fn sent(w: *AckWindow, seq: u32, now: u64, key: bool) void {
+        if (w.len == cap) { // cheia: esquece o mais velho
+            w.head = (w.head + 1) % cap;
+            w.len -= 1;
+        }
+        const i = (w.head + w.len) % cap;
+        w.seqs[i] = seq;
+        w.times[i] = now;
+        w.keys[i] = key;
+        w.len += 1;
+        if (key) w.key_pending = true;
+    }
+
+    /// Confirmação cumulativa: tudo até `seq` chegou.
+    pub fn acked(w: *AckWindow, seq: u32, now: u64) void {
+        while (w.len > 0) {
+            const s = w.seqs[w.head];
+            if (@as(i32, @bitCast(s -% seq)) > 0) break; // ainda não chegou nesse
+            // IDR não serve de referência: o atraso dele inclui a transferência
+            if (s == seq and !w.keys[w.head]) w.sample(now -| w.times[w.head], now);
+            if (w.keys[w.head]) {
+                w.key_pending = false;
+                w.key_delay_us = now -| w.times[w.head];
+                w.key_acked_at = now;
+            }
+            w.head = (w.head + 1) % cap;
+            w.len -= 1;
+        }
+    }
+
+    fn sample(w: *AckWindow, d: u64, now: u64) void {
+        const v = @max(d, 1);
+        // a cada 10 s começa uma janela nova: se a rota piorou, a referência
+        // acompanha em 10-20 s (mas uma fila parada não vira "o normal")
+        if (w.epoch_at == 0 or now - w.epoch_at > 10_000_000) {
+            w.min_prev = w.min_cur;
+            w.min_cur = v;
+            w.epoch_at = now;
+        } else if (v < w.min_cur) w.min_cur = v;
+    }
+
+    /// RTT de referência (o menor atraso recente), limitado a 400 ms: se não
+    /// teve nenhum quadro rápido (conexão congestionada desde o começo), as
+    /// medidas estão todas infladas e não servem de "normal".
+    pub fn baseUs(w: *const AckWindow, default_base: u64) u64 {
+        var b: u64 = w.min_cur;
+        if (w.min_prev != 0 and (b == 0 or w.min_prev < b)) b = w.min_prev;
+        if (b == 0) return default_base;
+        return @min(b, 400_000);
+    }
+
+    /// Esquece os `n` mais novos (descartados antes de saírem da fila).
+    pub fn dropNewest(w: *AckWindow, n: usize) void {
+        w.len -= @min(n, w.len);
+        w.key_pending = false;
+        for (0..w.len) |i| {
+            if (w.keys[(w.head + i) % cap]) w.key_pending = true;
+        }
+    }
+
+    /// Folga extra de atraso por causa de IDR: enquanto ele está a caminho,
+    /// muita; depois que chegou, o tempo que ele levou (os frames que vieram
+    /// atrás dele ainda estão escoando), diminuindo até zero em 4 s.
+    pub fn keyAllowanceUs(w: *const AckWindow, now: u64) u64 {
+        if (w.key_pending) return 4_000_000;
+        const since = now -| w.key_acked_at;
+        if (w.key_acked_at == 0 or since >= 4_000_000) return 0;
+        return w.key_delay_us * (4_000_000 - since) / 4_000_000;
+    }
+
+    pub fn oldestAgeUs(w: *const AckWindow, now: u64) u64 {
+        if (w.len == 0) return 0;
+        return now -| w.times[w.head];
+    }
+
+    /// Atraso acumulado no caminho, acima do normal da conexão.
+    /// `default_base` vale enquanto não há medida.
+    pub fn excessUs(w: *const AckWindow, now: u64, default_base: u64) u64 {
+        if (w.len == cap) return std.math.maxInt(u32); // nada confirmado há um tempão
+        return w.oldestAgeUs(now) -| w.baseUs(default_base);
+    }
+};
+
 /// Fila de envio com uma thread escritora por conexão.
 pub const SendQueue = struct {
     mutex: sync.Mutex = .{},
@@ -213,6 +326,29 @@ pub const SendQueue = struct {
         q.cond.signal();
     }
 
+    /// Fura a fila (confirmações: não podem esperar atrás de quadros).
+    pub fn pushUrgent(q: *SendQueue, m: *Msg) void {
+        q.mutex.lock();
+        defer q.mutex.unlock();
+        if (q.closed) return;
+        if (q.head > 0) {
+            q.head -= 1;
+            q.items.items[q.head] = m.retain();
+        } else {
+            q.items.insert(gpa, 0, m.retain()) catch {
+                m.release();
+                return;
+            };
+        }
+        q.bytes += m.data.len;
+        q.cond.signal();
+    }
+
+    pub fn pushUrgentOwned(q: *SendQueue, m: *Msg) void {
+        q.pushUrgent(m);
+        m.release();
+    }
+
     /// Enfileira e solta a referência do chamador.
     pub fn pushOwned(q: *SendQueue, m: *Msg) void {
         q.push(m);
@@ -225,21 +361,25 @@ pub const SendQueue = struct {
         return q.bytes;
     }
 
-    /// Joga fora frames ainda não enviados (de um remetente, ou todos se from == null).
-    pub fn dropFrames(q: *SendQueue, from: ?u32) void {
+    /// Joga fora frames ainda não enviados (de um remetente, ou todos se
+    /// from == null). Retorna quantos descartou.
+    pub fn dropFrames(q: *SendQueue, from: ?u32) usize {
         q.mutex.lock();
         defer q.mutex.unlock();
         var w: usize = q.head;
+        var dropped: usize = 0;
         for (q.items.items[q.head..]) |m| {
             if (m.typ == .frame and (from == null or m.from == from.?)) {
                 q.bytes -= m.data.len;
                 m.release();
+                dropped += 1;
             } else {
                 q.items.items[w] = m;
                 w += 1;
             }
         }
         q.items.shrinkRetainingCapacity(w);
+        return dropped;
     }
 
     fn pop(q: *SendQueue) ?*Msg {

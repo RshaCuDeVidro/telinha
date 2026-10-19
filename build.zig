@@ -5,6 +5,7 @@
 //!   zig build run -- [args]   roda o app nativo
 //!   zig build server          só o servidor dedicado (estático, musl)
 //!   zig build bench           benchmark do pipeline de vídeo
+//!   zig build loadtest        teste de carga do servidor
 //!   -Dserver-only=true        não baixa as dependências do app (Docker)
 //!
 //! Dependências C/C++ (Dear ImGui, cimgui, openh264, GLFW, NASM) vêm do
@@ -75,6 +76,20 @@ pub fn build(b: *std.Build) void {
     const tests = b.addTest(.{ .root_module = tests_mod });
     const run_tests = b.addRunArtifact(tests);
     b.step("test", "roda os testes").dependOn(&run_tests.step);
+
+    // teste de carga do servidor
+    const load_mod = b.createModule(.{
+        .root_source_file = b.path("src/loadtest.zig"),
+        .target = host,
+        .optimize = .ReleaseSafe,
+        .link_libc = true,
+        .link_libcpp = true,
+    });
+    linkOpenh264(b, deps, load_mod, host, .ReleaseFast);
+    addHwenc(b, deps, load_mod);
+    const run_load = b.addRunArtifact(b.addExecutable(.{ .name = "loadtest", .root_module = load_mod }));
+    if (b.args) |args| run_load.addArgs(args);
+    b.step("loadtest", "teste de carga do servidor (espectadores simulados)").dependOn(&run_load.step);
 
     // benchmark do pipeline de vídeo
     const bench_mod = b.createModule(.{

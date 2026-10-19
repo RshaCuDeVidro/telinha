@@ -276,8 +276,141 @@ test "SendQueue: dropFrames só remove frames do remetente" {
     q.pushOwned(chat);
     q.pushOwned(f2);
     const before = q.queuedBytes();
-    q.dropFrames(1);
+    try testing.expectEqual(@as(usize, 1), q.dropFrames(1));
     try testing.expectEqual(before - 15, q.queuedBytes());
-    q.dropFrames(null);
+    try testing.expectEqual(@as(usize, 1), q.dropFrames(null));
     try testing.expectEqual(@as(usize, 8), q.queuedBytes());
+}
+
+test "SendQueue: pushUrgent fura a fila" {
+    var q: proto.SendQueue = .{};
+    defer q.deinit();
+    q.pushOwned(try proto.Msg.alloc(.frame, 10));
+    q.pushOwned(try proto.Msg.alloc(.frame, 10));
+    q.pushUrgentOwned(try proto.Msg.alloc(.ack, 4));
+    try testing.expectEqual(proto.Type.ack, q.items.items[q.head].typ);
+    try testing.expectEqual(@as(usize, 3 * 5 + 24), q.queuedBytes());
+}
+
+test "AckWindow: atraso acumulado e confirmação cumulativa" {
+    var w: proto.AckWindow = .{};
+    // sem medida ainda: usa a referência padrão
+    w.sent(10, 1_000_000, false);
+    try testing.expectEqual(@as(u64, 0), w.excessUs(1_100_000, 300_000));
+    try testing.expectEqual(@as(u64, 200_000), w.excessUs(1_500_000, 300_000));
+    // confirmado em 50 ms: vira a referência
+    w.acked(10, 1_050_000);
+    try testing.expectEqual(@as(u64, 50_000), w.baseUs(300_000));
+    try testing.expectEqual(@as(usize, 0), w.len);
+    // vários a caminho; a confirmação do 13 libera 11, 12 e 13
+    for (11..15) |i| w.sent(@intCast(i), 2_000_000 + (i - 11) * 33_000, false);
+    w.acked(13, 2_150_000);
+    try testing.expectEqual(@as(usize, 1), w.len);
+    // a referência continua 50 ms (menor da janela); o 14 saiu em 2,099 s:
+    // em 2,5 s está há 401 ms no caminho = 351 ms acima do normal
+    try testing.expectEqual(@as(u64, 50_000), w.baseUs(300_000));
+    try testing.expectEqual(@as(u64, 351_000), w.excessUs(2_500_000, 300_000));
+    // descartado antes de sair da fila: não espera confirmação
+    w.dropNewest(1);
+    try testing.expectEqual(@as(u64, 0), w.excessUs(2_500_000, 300_000));
+    // seq dando a volta no u32
+    w.sent(0xFFFF_FFFF, 3_000_000, false);
+    w.sent(0, 3_010_000, false);
+    w.acked(0xFFFF_FFFF, 3_020_000);
+    try testing.expectEqual(@as(usize, 1), w.len);
+    w.acked(0, 3_030_000);
+    try testing.expectEqual(@as(usize, 0), w.len);
+
+    // IDR a caminho: folga grande; confirmado depois de 800 ms: folga de 800 ms
+    // que some em 4 s
+    w.sent(1, 4_000_000, true);
+    try testing.expectEqual(@as(u64, 4_000_000), w.keyAllowanceUs(4_100_000));
+    w.acked(1, 4_800_000);
+    try testing.expectEqual(@as(u64, 800_000), w.keyAllowanceUs(4_800_000));
+    try testing.expectEqual(@as(u64, 400_000), w.keyAllowanceUs(6_800_000));
+    try testing.expectEqual(@as(u64, 0), w.keyAllowanceUs(8_800_000));
+    // IDR descartado antes de sair: não conta
+    w.sent(2, 9_000_000, true);
+    w.dropNewest(1);
+    try testing.expect(!w.key_pending);
+
+    // o atraso do IDR (800 ms) não virou referência (a menor é a de 20 ms
+    // do teste da volta do u32)
+    try testing.expectEqual(@as(u64, 20_000), w.baseUs(300_000));
+    // janelas de 10 s: a referência antiga sai depois de duas janelas sem
+    // nada tão rápido (rota piorou: 20 → 120 ms)
+    w.sent(3, 12_000_000, false);
+    w.acked(3, 12_120_000);
+    try testing.expectEqual(@as(u64, 20_000), w.baseUs(300_000));
+    w.sent(4, 23_000_000, false);
+    w.acked(4, 23_120_000);
+    try testing.expectEqual(@as(u64, 120_000), w.baseUs(300_000));
+    // conexão congestionada desde o começo: medidas infladas não passam de 400 ms
+    var c: proto.AckWindow = .{};
+    c.sent(0, 0, false);
+    c.acked(0, 1_700_000);
+    try testing.expectEqual(@as(u64, 400_000), c.baseUs(300_000));
+}
+
+const RateControl = @import("ratectl.zig").RateControl;
+
+test "RateControl: congestionamento persistente baixa a taxa; IDR não" {
+    var rc: RateControl = .{};
+    rc.reset(4_000_000);
+    _ = rc.takeChange();
+    // atrasado só por causa de um IDR: pula o quadro, mas não baixa a taxa
+    try testing.expect(rc.congested(.{ .now_us = 1_000_000, .excess_us = 700_000, .key_allowance_us = 800_000 }));
+    try testing.expectEqual(@as(?u32, null), rc.takeChange());
+    // atrasado de verdade: pula; continua atrasado 300 ms depois: -25%
+    try testing.expect(rc.congested(.{ .now_us = 2_000_000, .excess_us = 400_000 }));
+    try testing.expect(rc.congested(.{ .now_us = 2_350_000, .excess_us = 400_000 }));
+    try testing.expectEqual(@as(?u32, 3_000_000), rc.takeChange());
+    try testing.expectEqual(@as(u32, 4_000_000), rc.ceiling);
+    // atraso começando a crescer: -7% sem pular quadro
+    try testing.expect(!rc.congested(.{ .now_us = 3_000_000, .excess_us = 150_000 }));
+    try testing.expectEqual(@as(?u32, 2_790_000), rc.takeChange());
+}
+
+test "RateControl: sobe rápido até 90% do teto, segura, e depois só sonda" {
+    var rc: RateControl = .{};
+    rc.reset(4_000_000);
+    rc.bps = 1_000_000;
+    rc.ceiling = 2_000_000;
+    rc.last_congestion_us = 1;
+    rc.last_adjust_us = 1;
+    // atraso não zerado: segura
+    rc.rampUp(10_000_000, 80_000);
+    try testing.expectEqual(@as(u32, 1_000_000), rc.bps);
+    // longe do teto: +12% +50 kbit/s
+    rc.rampUp(10_000_000, 0);
+    try testing.expectEqual(@as(u32, 1_170_000), rc.bps);
+    // não passa de 90% do teto rápido
+    rc.bps = 1_700_000;
+    rc.rampUp(11_100_000, 0);
+    try testing.expectEqual(@as(u32, 1_800_000), rc.bps);
+    // em 90%: segura até 15 s sem problema...
+    rc.rampUp(12_200_000, 0);
+    try testing.expectEqual(@as(u32, 1_800_000), rc.bps);
+    // ...depois sonda devagar (+2%)
+    rc.rampUp(16_000_000, 0);
+    try testing.expectEqual(@as(u32, 1_836_000), rc.bps);
+    // 30 s sem problema: esquece o teto e volta a subir rápido
+    rc.rampUp(31_000_000, 0);
+    try testing.expectEqual(@as(u32, 0), rc.ceiling);
+    try testing.expectEqual(@as(u32, 2_106_320), rc.bps);
+}
+
+test "RateControl: aviso de espectador lento respeita o piso" {
+    var rc: RateControl = .{};
+    rc.reset(4_000_000);
+    _ = rc.takeChange();
+    var t: u64 = 10_000_000;
+    for (0..10) |_| {
+        _ = rc.congested(.{ .now_us = t, .excess_us = 0, .slow_floor_pct = 50 });
+        t += 2_100_000;
+    }
+    try testing.expectEqual(@as(u32, 2_000_000), rc.bps); // metade do alvo, não menos
+    // enquanto tiver aviso recente, não sobe
+    rc.rampUp(t, 0);
+    try testing.expectEqual(@as(u32, 2_000_000), rc.bps);
 }
