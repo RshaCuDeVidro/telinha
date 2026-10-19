@@ -480,3 +480,72 @@ test "link público: mensagens do protocolo do bore" {
     try testing.expect(tunnel.field("\"Heartbeat\"", "Connection") == null);
     try testing.expect(tunnel.field("{\"Hello\":1}", "Error") == null);
 }
+
+test "voz: chega em todo mundo menos quem fala e quem está surdo; estado aparece nos membros" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+    var a = try TestClient.connect(port, "A", "", "");
+    defer a.close();
+    try a.welcome();
+    var b = try TestClient.connect(port, "B", "", "");
+    defer b.close();
+    try b.welcome();
+    var c = try TestClient.connect(port, "C", "", "");
+    defer c.close();
+    try c.welcome();
+
+    var bb: proto.Builder = .{};
+    defer bb.deinit();
+    // A liga o microfone; C fica surdo
+    try bb.begin(.voice_state);
+    try bb.u8_(proto.voice_mic);
+    try a.send(try bb.finish());
+    try bb.begin(.voice_state);
+    try bb.u8_(proto.voice_deaf);
+    try c.send(try bb.finish());
+    // B vê os dois estados na lista de membros
+    var seen_mic = false;
+    var seen_deaf = false;
+    while (!(seen_mic and seen_deaf)) {
+        var r: proto.Reader = .{ .data = try b.expect(.members) };
+        const n = try r.u16_();
+        seen_mic = false;
+        seen_deaf = false;
+        for (0..n) |_| {
+            const id = try r.u32_();
+            _ = try r.str();
+            const flags = try r.u8_();
+            _ = try r.take(2 + 2 + 1);
+            const k = try r.u16_();
+            _ = try r.take(@as(usize, k) * 4);
+            if (id == a.id and flags & proto.member_mic != 0) seen_mic = true;
+            if (id == c.id and flags & proto.member_deaf != 0) seen_deaf = true;
+        }
+    }
+
+    // A fala
+    const pacote = [_]u8{ 0x78, 1, 2, 3, 4, 5 };
+    const m = try proto.Msg.alloc(.voice, 4 + pacote.len);
+    std.mem.writeInt(u32, m.payload()[0..4], 42, .little);
+    @memcpy(m.payload()[4..], &pacote);
+    try a.send(m);
+    // B recebe, com o remetente certo
+    var r: proto.Reader = .{ .data = try b.expect(.voice) };
+    try testing.expectEqual(a.id, try r.u32_());
+    try testing.expectEqual(@as(u32, 42), try r.u32_());
+    try testing.expectEqualSlices(u8, &pacote, r.rest());
+    // C (surdo) não recebe: um chat depois da voz chega antes de qualquer voz
+    try bb.begin(.chat);
+    try bb.str("depois da voz");
+    try a.send(try bb.finish());
+    while (true) {
+        const t = try proto.recvMsg(c.sock, &c.ch, &c.rb);
+        try testing.expect(t != .voice);
+        if (t == .chat) {
+            var cr: proto.Reader = .{ .data = proto.payloadOf(&c.rb) };
+            if (try cr.u32_() == a.id) break;
+        }
+    }
+}

@@ -41,6 +41,8 @@ const Conn = struct {
     admin: bool = false,
     streaming: bool = false,
     audio: bool = false,
+    mic: bool = false, // microfone ligado
+    deaf: bool = false, // não quer ouvir a sala (não recebe voz)
     w: u16 = 0,
     h: u16 = 0,
     fps: u8 = 0,
@@ -384,6 +386,18 @@ pub const Server = struct {
             },
             .frame => try s.forwardFrame(cn, payload),
             .audio => try s.forwardAudio(cn, payload),
+            .voice => try s.forwardVoice(cn, payload),
+            .voice_state => {
+                const flags = try r.u8_();
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                const mic = flags & proto.voice_mic != 0;
+                const deaf = flags & proto.voice_deaf != 0;
+                if (mic == cn.mic and deaf == cn.deaf) return;
+                cn.mic = mic;
+                cn.deaf = deaf;
+                try s.broadcastMembers();
+            },
             .watch => {
                 const target = try r.u32_();
                 const on = (try r.u8_()) != 0;
@@ -558,6 +572,8 @@ pub const Server = struct {
             if (o.streaming) flags |= proto.member_streaming;
             if (o.admin) flags |= proto.member_admin;
             if (o.streaming and o.audio) flags |= proto.member_audio;
+            if (o.mic) flags |= proto.member_mic;
+            if (o.deaf) flags |= proto.member_deaf;
             try b.u8_(flags);
             try b.u16_(o.w);
             try b.u16_(o.h);
@@ -598,6 +614,25 @@ pub const Server = struct {
             if (o == cn or !contains(&o.watching, cn.id)) continue;
             if (o.queue.queuedBytes() > max_viewer_backlog * 2) continue;
             o.queue.push(m);
+            _ = s.relayed_bytes.fetchAdd(m.data.len, .monotonic);
+        }
+    }
+
+    /// Voz vai pra todo mundo da sala (menos quem fala e quem está surdo),
+    /// furando a fila: conversa não pode esperar atrás de quadros de vídeo.
+    fn forwardVoice(s: *Server, cn: *Conn, payload: []const u8) !void {
+        if (payload.len < 4) return error.BadMessage;
+        const m = try proto.Msg.alloc(.voice, 4 + payload.len);
+        defer m.release();
+        m.from = cn.id;
+        std.mem.writeInt(u32, m.payload()[0..4], cn.id, .little);
+        @memcpy(m.payload()[4..], payload);
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        for (s.conns.items) |o| {
+            if (o == cn or o.deaf or !o.authed) continue;
+            if (o.queue.queuedBytes() > max_viewer_backlog * 2) continue;
+            o.queue.pushUrgent(m);
             _ = s.relayed_bytes.fetchAdd(m.data.len, .monotonic);
         }
     }

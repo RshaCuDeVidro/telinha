@@ -14,6 +14,7 @@ const Tunnel = tunnel_mod.Tunnel;
 const sharer_mod = @import("sharer.zig");
 const proto = @import("proto.zig");
 const audio = @import("audio.zig");
+const voice = @import("voice.zig");
 pub const version_string = "2.1.0";
 const Sharer = sharer_mod.Sharer;
 
@@ -105,6 +106,9 @@ const ic = struct {
     const volume_off = &iconArr(0xF6A9);
     const warn = &iconArr(0xF071);
     const globe = &iconArr(0xF0AC);
+    const mic = &iconArr(0xF130);
+    const mic_slash = &iconArr(0xF131);
+    const headphones = &iconArr(0xF025);
     const power = &iconArr(0xF011);
     const rotate = &iconArr(0xF2F9);
 };
@@ -173,6 +177,12 @@ fn initial(name: []const u8, out: *[5]u8) []const u8 {
 }
 
 fn drawAvatar(d: *c.ImDrawList, center: c.ImVec2_c, radius: f32, id: u32, name: []const u8, live: bool) void {
+    drawAvatarSpeaking(d, center, radius, id, name, live, false);
+}
+
+/// Avatar com o anel verde de "falando" (como no Discord).
+fn drawAvatarSpeaking(d: *c.ImDrawList, center: c.ImVec2_c, radius: f32, id: u32, name: []const u8, live: bool, speaking: bool) void {
+    if (speaking) c.ImDrawList_AddCircle(d, center, radius + S(2.5), col.green, 0, S(2.5), 0);
     c.ImDrawList_AddCircleFilled(d, center, radius, avatarColor(id), 0);
     var buf: [5]u8 = undefined;
     const ini = initial(name, &buf);
@@ -185,6 +195,14 @@ fn drawAvatar(d: *c.ImDrawList, center: c.ImVec2_c, radius: f32, id: u32, name: 
         c.ImDrawList_AddCircleFilled(d, p, radius * 0.36, col.bg_side, 0);
         c.ImDrawList_AddCircleFilled(d, p, radius * 0.24, col.red, 0);
     }
+}
+
+/// Risco vermelho em diagonal sobre um ícone (fone "surdo").
+fn slash(d: *c.ImDrawList, top_left: c.ImVec2_c, size: f32) void {
+    const a = v2(top_left.x + size * 0.22, top_left.y + size * 0.22);
+    const b = v2(top_left.x + size * 0.78, top_left.y + size * 0.78);
+    c.ImDrawList_AddLine(d, a, b, col.bg_user, S(4), 0);
+    c.ImDrawList_AddLine(d, a, b, col.red, S(2), 0);
 }
 
 fn liveBadge(d: *c.ImDrawList, pos: c.ImVec2_c) f32 {
@@ -352,6 +370,14 @@ pub const App = struct {
 
     audio_err_shown: bool = false,
 
+    // voz
+    mic: ?*voice.Mic = null,
+    mic_client: ?*Client = null, // quem recebe os pacotes do microfone (com referência)
+    mic_wanted: bool = false, // quer o microfone ligado (lembra durante o "surdo")
+    deaf: bool = false,
+    mic_names: [16][128]u8 = undefined, // microfones (tela de configurações)
+    n_mic_names: usize = 0,
+
     // opções de linha de comando
     auto_share: bool = false,
     auto_watch: bool = false,
@@ -496,6 +522,70 @@ pub const App = struct {
         a.connect("127.0.0.1", port, pass, token);
     }
 
+    // ------------------------------------------------------------------ voz
+
+    fn onMicPacket(ctx: *anyopaque, packet: []const u8) void {
+        const cl: *Client = @ptrCast(@alignCast(ctx));
+        cl.sendVoice(cl.voice_seq.fetchAdd(1, .monotonic), packet);
+    }
+
+    fn startMic(a: *App) void {
+        if (a.mic != null) return;
+        const cl = a.client orelse return;
+        var err: [256]u8 = undefined;
+        const opts: voice.Options = .{
+            .device = config.getStr(&a.cfg.mic_device),
+            .noise_suppression = a.cfg.noise_suppression,
+            // sensibilidade 0..100 → probabilidade de voz mínima 0,9..0,1
+            .sensitivity = 0.9 - @as(f32, @floatFromInt(a.cfg.voice_sensitivity)) / 100 * 0.8,
+        };
+        a.mic = voice.Mic.open(opts, cl.retain(), onMicPacket, &err) catch {
+            cl.release();
+            a.mic_wanted = false;
+            a.toast("Não consegui abrir o microfone: {s}", .{std.mem.sliceTo(&err, 0)}, true);
+            return;
+        };
+        a.mic_client = cl;
+    }
+
+    fn stopMic(a: *App) void {
+        if (a.mic) |m| m.close();
+        a.mic = null;
+        if (a.mic_client) |cl| cl.release();
+        a.mic_client = null;
+    }
+
+    fn setDeaf(a: *App, deaf: bool) void {
+        a.deaf = deaf;
+        audio.mixer.deaf.store(deaf, .monotonic);
+    }
+
+    /// Liga/desliga o microfone conforme o que a pessoa quer e avisa a sala.
+    fn applyVoice(a: *App) void {
+        if (a.mic_wanted and !a.deaf) a.startMic() else a.stopMic();
+        if (a.client) |cl| {
+            var flags: u8 = 0;
+            if (a.mic != null) flags |= proto.voice_mic;
+            if (a.deaf) flags |= proto.voice_deaf;
+            cl.sendVoiceState(flags);
+        }
+    }
+
+    fn toggleMic(a: *App) void {
+        if (a.deaf) {
+            // como no Discord: ligar o microfone tira o "surdo"
+            a.setDeaf(false);
+            a.mic_wanted = true;
+        } else a.mic_wanted = !a.mic_wanted;
+        a.applyVoice();
+        if (a.mic != null) a.toast("Microfone ligado. Sem fone de ouvido, quem fala pode ouvir eco da sua caixa de som.", .{}, false);
+    }
+
+    fn toggleDeaf(a: *App) void {
+        a.setDeaf(!a.deaf); // surdo também desliga o microfone (mic_wanted fica guardado)
+        a.applyVoice();
+    }
+
     /// Sala sem senha ganha uma (link público: qualquer um que achasse a
     /// porta entraria). Retorna true se criou.
     fn ensureRoomPassword(a: *App) bool {
@@ -557,6 +647,9 @@ pub const App = struct {
     }
 
     fn leaveRoom(a: *App) void {
+        a.stopMic();
+        a.mic_wanted = false;
+        a.setDeaf(false);
         a.stopSharing();
         for (a.views.items) |v| {
             freeViewGpu(v);
@@ -606,6 +699,7 @@ pub const App = struct {
     fn doReconnect(a: *App) void {
         a.reconnect.waiting = false;
         // derruba o que sobrou da conexão antiga, mas continua na tela da sala
+        a.stopMic(); // volta sozinho em finishReconnect (mic_wanted continua)
         a.stopSharing();
         for (a.views.items) |v| {
             freeViewGpu(v);
@@ -625,6 +719,7 @@ pub const App = struct {
         const r = a.reconnect;
         a.reconnect = .{};
         if (r.share) a.startSharing();
+        a.applyVoice();
         a.rewatch = r;
         a.rewatch_until = c.igGetTime() + 20;
         a.toast("Reconectado!", .{}, false);
@@ -802,6 +897,10 @@ pub const App = struct {
         cl.mutex.unlock();
         if (st == .connected and !a.was_connected) {
             a.was_connected = true;
+            if (a.reconnect.attempt == 0) {
+                a.mic_wanted = a.cfg.mic_on_join;
+                a.applyVoice();
+            }
             if (a.reconnect.attempt > 0) {
                 a.finishReconnect();
             } else if (a.auto_share and a.sharer == null) {
@@ -1169,7 +1268,7 @@ pub const App = struct {
         c.igDummy(v2(size.x, hh));
 
         // listas
-        const list_h = size.y - hh - S(56);
+        const list_h = size.y - hh - S(56) - S(50);
         _ = c.igBeginChild_Str("lists", v2(size.x, list_h), 0, 0);
         var n_live: usize = 0;
         for (members[0..n_members]) |m| {
@@ -1190,10 +1289,34 @@ pub const App = struct {
         a.memberMenu(cl, members[0..n_members]);
         c.igEndChild();
 
+        a.drawRoomStrip(v2(size.x, S(50)));
         a.drawUserPanel(cl, v2(size.x, S(56)));
         c.igEndChild();
         c.igPopStyleVar(2);
         c.igPopStyleColor(1);
+    }
+
+    /// Faixa acima do painel do usuário (como a de voz do Discord):
+    /// compartilhar tela e sair.
+    fn drawRoomStrip(a: *App, size: c.ImVec2_c) void {
+        const d = drawList();
+        const p = c.igGetCursorScreenPos();
+        rectFill(d, p.x, p.y, p.x + size.x, p.y + size.y, col.bg_user, 0);
+        rectFill(d, p.x + S(8), p.y + size.y - 1, p.x + size.x - S(8), p.y + size.y, rgba(0x000000, 60), 0);
+        const live = a.sharer != null;
+        const bh = S(34);
+        const leave_w = S(40);
+        const share_w = size.x - S(16) - leave_w - S(8);
+        c.igSetCursorScreenPos(v2(p.x + S(8), p.y + (size.y - bh) / 2));
+        const lbl = if (live) fmtZ("{s}  Ao vivo (configurar)##share", .{ic.desktop}) else fmtZ("{s}  Compartilhar tela##share", .{ic.desktop});
+        if (if (live)
+            primaryButton(lbl, v2(share_w, bh), col.red, rgb(0xC03537), rgb(0xA12828))
+        else
+            secondaryButton(lbl, v2(share_w, bh))) a.openShareModal();
+        c.igSameLine(0, S(8));
+        if (primaryButton(fmtZ("{s}##leave", .{ic.leave}), v2(leave_w, bh), rgb(0x3F2A2F), col.red, rgb(0xA12828))) a.leaveRoom();
+        if (c.igIsItemHovered(0)) tooltipText(if (a.server != null) "Fechar a sala" else "Sair da sala");
+        c.igSetCursorScreenPos(v2(p.x, p.y + size.y));
     }
 
     fn liveRow(a: *App, m: *const Member, my_id: u32, width: f32, all: []const Member) void {
@@ -1258,14 +1381,17 @@ pub const App = struct {
         _ = c.igInvisibleButton("m", v2(row_w, h), c.ImGuiButtonFlags_MouseButtonLeft | c.ImGuiButtonFlags_MouseButtonRight);
         const hovered = c.igIsItemHovered(0);
         if (hovered) rectFill(d, p.x, p.y, p.x + row_w, p.y + h, col.hover, S(6));
-        if (hovered and i_am_admin and m.id != my_id) {
-            tooltipText("Clique direito: opções de admin");
+        if (hovered and m.id != my_id) {
+            tooltipText(if (i_am_admin) "Clique direito: volume da voz, expulsar" else "Clique direito: volume da voz");
             if (c.igIsItemClicked(1)) {
                 a.menu_target = m.id;
                 a.open_member_menu = true; // abre fora do PushID do membro
             }
         }
-        drawAvatar(d, v2(p.x + S(22), p.y + h / 2), S(15), m.id, m.nameSlice(), m.streaming);
+        const speaking = if (m.id == my_id)
+            (if (a.mic) |mc| mc.speaking.load(.monotonic) else false)
+        else if (a.client) |cl| cl.speaking(m.id) else false;
+        drawAvatarSpeaking(d, v2(p.x + S(22), p.y + h / 2), S(15), m.id, m.nameSlice(), m.streaming, speaking);
         const name_col = if (m.id == my_id) col.header else col.text;
         drawTextF(d, font_semibold, 14.5, v2(p.x + S(46), p.y + (h - S(18)) / 2), name_col, m.nameSlice());
         const ns = textSizeF(font_semibold, 14.5, m.nameSlice());
@@ -1275,7 +1401,22 @@ pub const App = struct {
             tx += S(18);
         }
         if (m.id == my_id) drawTextF(d, font_regular, 12, v2(tx, p.y + (h - S(15)) / 2), col.faint, "(você)");
-        if (m.streaming) _ = liveBadge(d, v2(p.x + row_w - S(58), p.y + (h - S(15)) / 2));
+        var rx = p.x + row_w - S(10);
+        if (m.streaming) rx -= liveBadge(d, v2(p.x + row_w - S(58), p.y + (h - S(15)) / 2)) + S(14);
+        // microfone desligado / surdo
+        const iy = p.y + (h - S(14)) / 2;
+        if (m.deaf()) {
+            const gs = textSizeF(font_regular, 13, ic.headphones);
+            rx -= gs.x;
+            drawTextF(d, font_regular, 13, v2(rx, iy), col.red, ic.headphones);
+            slash(d, v2(rx - S(2), iy - S(2)), gs.x + S(4));
+            rx -= S(8);
+        }
+        if (!m.micOn()) {
+            const gs = textSizeF(font_regular, 13, ic.mic_slash);
+            rx -= gs.x;
+            drawTextF(d, font_regular, 13, v2(rx, iy), col.faint, ic.mic_slash);
+        }
     }
 
     fn memberMenu(a: *App, cl: *Client, members: []const Member) void {
@@ -1297,9 +1438,28 @@ pub const App = struct {
         pushFont(font_semibold, 13);
         textColored(col.muted, name);
         popFont();
-        c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);
-        if (c.igSelectable_Bool(fmtZ("{s}  Expulsar da sala", .{ic.ban}), false, 0, v2(S(180), 0))) cl.kick(a.menu_target);
-        c.igPopStyleColor(1);
+        c.igDummy(v2(0, S(4)));
+        // volume da voz dessa pessoa, só pra mim (0–200%)
+        textColored(col.faint, "Volume da voz");
+        var pct: i32 = @intFromFloat(@round(cl.voiceVolume(a.menu_target) * 100));
+        const before = pct;
+        sliderStyled("##vvol", &pct, 0, 200, "%d%%", S(200));
+        if (pct != before) cl.setVoiceVolume(a.menu_target, @as(f32, @floatFromInt(pct)) / 100);
+        const muted = pct == 0;
+        c.igDummy(v2(0, S(4)));
+        if (c.igSelectable_Bool(if (muted) "Voltar a ouvir" else "Silenciar pra mim", false, 0, v2(S(200), 0)))
+            cl.setVoiceVolume(a.menu_target, if (muted) 1.0 else 0.0);
+        cl.mutex.lock();
+        const i_am_admin = cl.is_admin;
+        cl.mutex.unlock();
+        if (i_am_admin) {
+            c.igDummy(v2(0, S(4)));
+            c.igSeparator();
+            c.igDummy(v2(0, S(4)));
+            c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);
+            if (c.igSelectable_Bool(fmtZ("{s}  Expulsar da sala", .{ic.ban}), false, 0, v2(S(200), 0))) cl.kick(a.menu_target);
+            c.igPopStyleColor(1);
+        }
     }
 
     fn copyInvite(a: *App) void {
@@ -1333,7 +1493,8 @@ pub const App = struct {
         const my_id = cl.my_id;
         cl.mutex.unlock();
         const live = a.sharer != null;
-        drawAvatar(d, v2(p.x + S(26), p.y + size.y / 2), S(16), my_id, a.myName(), live);
+        const me_speaking = if (a.mic) |m| m.speaking.load(.monotonic) else false;
+        drawAvatarSpeaking(d, v2(p.x + S(26), p.y + size.y / 2), S(16), my_id, a.myName(), live, me_speaking);
         var name_buf: [32]u8 = undefined;
         const nm = a.myName();
         const shown = if (nm.len > 14) std.fmt.bufPrint(&name_buf, "{s}…", .{nm[0..12]}) catch nm else nm;
@@ -1350,17 +1511,21 @@ pub const App = struct {
         drawTextF(d, font_regular, 12, v2(p.x + S(50), p.y + S(29)), status_col, status_text);
 
         const bs = S(34);
-        c.igSetCursorScreenPos(v2(p.x + size.x - bs * 4 - S(8), p.y + (size.y - bs) / 2));
-        if (iconButton("##share", ic.desktop, bs, if (live) col.red else col.text, col.hover, if (live) "Transmissão (configurar / parar)" else "Compartilhar tela")) a.openShareModal();
+        const bx = p.x + size.x - bs * 3 - S(8);
+        const by = p.y + (size.y - bs) / 2;
+        c.igSetCursorScreenPos(v2(bx, by));
+        const mic_on = a.mic != null;
+        if (iconButton("##mic", if (mic_on) ic.mic else ic.mic_slash, bs, if (mic_on) col.text else col.red, col.hover, if (mic_on) "Desligar o microfone" else "Ligar o microfone")) a.toggleMic();
         c.igSameLine(0, 0);
-        if (iconButton("##chat", ic.comments, bs, if (a.cfg.show_chat) col.text else col.muted, col.hover, if (a.cfg.show_chat) "Esconder chat" else "Mostrar chat")) {
-            a.cfg.show_chat = !a.cfg.show_chat;
-            config.save(&a.cfg);
-        }
+        if (iconButton("##deaf", ic.headphones, bs, if (a.deaf) col.red else col.text, col.hover, if (a.deaf) "Voltar a ouvir a sala" else "Parar de ouvir a sala (surdo)")) a.toggleDeaf();
+        if (a.deaf) slash(d, v2(bx + bs, by), bs);
         c.igSameLine(0, 0);
-        if (iconButton("##gear", ic.gear, bs, col.text, col.hover, "Configurações")) a.settings_modal = true;
-        c.igSameLine(0, 0);
-        if (iconButton("##leave", ic.leave, bs, col.red, col.hover, if (a.server != null) "Fechar a sala" else "Sair da sala")) a.leaveRoom();
+        if (iconButton("##gear", ic.gear, bs, col.text, col.hover, "Configurações")) a.openSettings();
+    }
+
+    fn openSettings(a: *App) void {
+        a.n_mic_names = @intCast(audio.c.audio_list_mics(&a.mic_names, a.mic_names.len));
+        a.settings_modal = true;
     }
 
     fn openShareModal(a: *App) void {
@@ -2081,9 +2246,74 @@ pub const App = struct {
         c.igPopStyleColor(1);
         c.igDummy(v2(0, S(16)));
 
+        // ---- voz
+        pushFont(font_bold, 15);
+        textColored(col.header, fmtZ("{s}  Voz", .{ic.mic}));
+        popFont();
+        c.igDummy(v2(0, S(6)));
+        fieldLabel("MICROFONE");
+        {
+            const cur = config.getStr(&a.cfg.mic_device);
+            const preview = if (cur.len == 0) "Padrão do sistema" else cur;
+            c.igSetNextItemWidth(w);
+            c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
+            c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(10), S(8)));
+            var changed = false;
+            if (c.igBeginCombo("##mic", fmtZ("{s}", .{preview}).ptr, 0)) {
+                if (c.igSelectable_Bool("Padrão do sistema", cur.len == 0, 0, v2(0, 0))) {
+                    config.setStr(&a.cfg.mic_device, "");
+                    changed = true;
+                }
+                for (a.mic_names[0..a.n_mic_names], 0..) |*nm, i| {
+                    const name = std.mem.sliceTo(nm, 0);
+                    c.igPushID_Int(@intCast(i));
+                    if (c.igSelectable_Bool(fmtZ("{s}", .{name}).ptr, std.mem.eql(u8, name, cur), 0, v2(0, 0))) {
+                        config.setStr(&a.cfg.mic_device, name);
+                        changed = true;
+                    }
+                    c.igPopID();
+                }
+                c.igEndCombo();
+            }
+            c.igPopStyleVar(1);
+            c.igPopStyleColor(1);
+            if (changed and a.mic != null) {
+                a.stopMic();
+                a.applyVoice();
+            }
+        }
+        c.igDummy(v2(0, S(8)));
+        fieldLabel("SENSIBILIDADE (quanto maior, mais fácil o microfone abrir)");
+        const sens_before = a.cfg.voice_sensitivity;
+        sliderStyled("##sens", &a.cfg.voice_sensitivity, 0, 100, "%d", w);
+        if (a.mic) |m| {
+            // medidor: a barra fica verde quando o portão abre (sua voz está indo)
+            const d = c.igGetWindowDrawList();
+            const mp = c.igGetCursorScreenPos();
+            const lvl = std.math.clamp(m.level() * 1.6, 0, 1);
+            rectFill(d, mp.x, mp.y + S(4), mp.x + w, mp.y + S(10), col.input, S(3));
+            rectFill(d, mp.x, mp.y + S(4), mp.x + w * lvl, mp.y + S(10), if (m.speaking.load(.monotonic)) col.green else col.faint, S(3));
+            c.igDummy(v2(w, S(14)));
+        } else {
+            pushFont(font_regular, 12);
+            textColored(col.faint, "Liga o microfone pra ver o medidor.");
+            popFont();
+        }
+        c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
+        const ns_before = a.cfg.noise_suppression;
+        _ = c.igCheckbox("Supressão de ruído (tira ventilador, teclado, chiado)", &a.cfg.noise_suppression);
+        _ = c.igCheckbox("Entrar na sala com o microfone ligado", &a.cfg.mic_on_join);
+        c.igPopStyleColor(1);
+        // sensibilidade/supressão novas: reabre o microfone (ao soltar o slider)
+        if (a.mic != null and (ns_before != a.cfg.noise_suppression or (sens_before != a.cfg.voice_sensitivity and !c.igIsMouseDown_Nil(0)))) {
+            a.stopMic();
+            a.applyVoice();
+        }
+        c.igDummy(v2(0, S(16)));
+
         c.igPushTextWrapPos(c.igGetCursorPosX() + w);
         pushFont(font_regular, 12.5);
-        textColored(col.faint, fmtZ("telinha {s} · protocolo v{d} · vídeo H.264 (openh264) · criptografia X25519 + ChaCha20-Poly1305", .{ version_string, proto.version }));
+        textColored(col.faint, fmtZ("telinha {s} · protocolo v{d} · vídeo H.264 (NVENC/NVDEC ou openh264) · voz Opus + RNNoise · criptografia X25519 + ChaCha20-Poly1305", .{ version_string, proto.version }));
         textColored(col.faint, "Atalhos: F11 tela cheia · duplo clique = modo cinema · Esc sai");
         popFont();
         c.igPopTextWrapPos();

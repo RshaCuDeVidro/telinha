@@ -8,6 +8,7 @@ const crypto = @import("crypto.zig");
 const codec = @import("codec.zig");
 const gl = @import("gl.zig");
 const audio = @import("audio.zig");
+const voice = @import("voice.zig");
 const gpa = proto.gpa;
 
 /// A UI liga isso quando o shader de YUV→RGB compilou: aí a thread de decode
@@ -36,6 +37,7 @@ pub const Member = struct {
     streaming: bool,
     admin: bool,
     audio: bool,
+    flags: u8,
     w: u16,
     h: u16,
     fps: u8,
@@ -44,6 +46,12 @@ pub const Member = struct {
 
     pub fn nameSlice(self: *const Member) []const u8 {
         return self.name[0..self.name_len];
+    }
+    pub fn micOn(self: *const Member) bool {
+        return self.flags & proto.member_mic != 0;
+    }
+    pub fn deaf(self: *const Member) bool {
+        return self.flags & proto.member_deaf != 0;
     }
     pub fn isWatching(self: *const Member, id: u32) bool {
         return std.mem.findScalar(u32, self.watching[0..self.n_watching], id) != null;
@@ -384,6 +392,13 @@ pub const Client = struct {
     chat_count: u64 = 0, // total de mensagens já recebidas (pra rolar o chat)
     views: std.ArrayList(*View) = .empty,
     ping_ms: u32 = 0,
+    /// Voz de cada pessoa da sala (criada quando chega o primeiro pacote).
+    voice_peers: std.ArrayList(*voice.Peer) = .empty,
+    /// Volume da voz escolhido por pessoa (vale também pra quem ainda não falou).
+    voice_volumes: std.AutoHashMapUnmanaged(u32, f32) = .empty,
+    /// Estado de voz que mandamos (reenviado ao reconectar).
+    voice_flags: std.atomic.Value(u8) = .init(0),
+    voice_seq: std.atomic.Value(u32) = .init(0),
 
     pub const Options = struct {
         host: []const u8,
@@ -431,6 +446,12 @@ pub const Client = struct {
             for (cl.chat.items) |l| gpa.free(l.text);
             cl.chat.deinit(gpa);
             cl.views.deinit(gpa);
+            for (cl.voice_peers.items) |p| {
+                p.deinit();
+                gpa.destroy(p);
+            }
+            cl.voice_peers.deinit(gpa);
+            cl.voice_volumes.deinit(gpa);
             gpa.destroy(cl);
         }
     }
@@ -602,6 +623,8 @@ pub const Client = struct {
                 sync.spawn(pingLoop, .{cl}) catch {
                     _ = cl.refs.fetchSub(1, .monotonic);
                 };
+                const vf = cl.voice_flags.load(.monotonic);
+                if (vf != 0) cl.pushVoiceState(vf);
             },
             .denied => {
                 cl.setFinal();
@@ -618,6 +641,7 @@ pub const Client = struct {
                     const nm = try r.str();
                     copyInto(&m.name, &m.name_len, nm);
                     const flags = try r.u8_();
+                    m.flags = flags;
                     m.streaming = flags & proto.member_streaming != 0;
                     m.admin = flags & proto.member_admin != 0;
                     m.audio = flags & proto.member_audio != 0;
@@ -639,6 +663,45 @@ pub const Client = struct {
                 defer cl.mutex.unlock();
                 cl.members.deinit(gpa);
                 cl.members = list;
+                // voz de quem saiu da sala
+                var i: usize = cl.voice_peers.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    const p = cl.voice_peers.items[i];
+                    const still = for (list.items) |m| {
+                        if (m.id == p.id) break true;
+                    } else false;
+                    if (!still) {
+                        _ = cl.voice_peers.swapRemove(i);
+                        p.deinit();
+                        gpa.destroy(p);
+                    }
+                }
+            },
+            .voice => {
+                const from = try r.u32_();
+                _ = try r.u32_(); // seq
+                const packet = r.rest();
+                cl.mutex.lock();
+                var peer: ?*voice.Peer = null;
+                for (cl.voice_peers.items) |p| if (p.id == from) {
+                    peer = p;
+                    break;
+                };
+                if (peer == null) {
+                    const p = try gpa.create(voice.Peer);
+                    p.* = .{ .id = from };
+                    if (cl.voice_volumes.get(from)) |vol| p.ring.volume = vol;
+                    cl.voice_peers.append(gpa, p) catch {
+                        gpa.destroy(p);
+                        cl.mutex.unlock();
+                        return;
+                    };
+                    peer = p;
+                }
+                cl.mutex.unlock();
+                // só a thread de rede mexe na lista fora do lock (e ela está aqui)
+                peer.?.push(packet);
             },
             .chat => {
                 var line: ChatLine = undefined;
@@ -707,6 +770,53 @@ pub const Client = struct {
         std.mem.writeInt(u32, m.payload()[0..4], target, .little);
         m.payload()[4] = @intFromBool(on);
         cl.queue.pushOwned(m);
+    }
+
+    /// Pacote de voz nosso (thread de áudio): fura a fila, conversa não espera vídeo.
+    pub fn sendVoice(cl: *Client, seq: u32, packet: []const u8) void {
+        const m = proto.Msg.alloc(.voice, 4 + packet.len) catch return;
+        std.mem.writeInt(u32, m.payload()[0..4], seq, .little);
+        @memcpy(m.payload()[4..], packet);
+        cl.queue.pushUrgentOwned(m);
+    }
+
+    /// Microfone ligado / surdo (proto.voice_*). Vale também depois de reconectar.
+    pub fn sendVoiceState(cl: *Client, flags: u8) void {
+        cl.voice_flags.store(flags, .monotonic);
+        cl.pushVoiceState(flags);
+    }
+
+    fn pushVoiceState(cl: *Client, flags: u8) void {
+        const m = proto.Msg.alloc(.voice_state, 1) catch return;
+        m.payload()[0] = flags;
+        cl.queue.pushOwned(m);
+    }
+
+    /// Alguém falando agora (pra bolinha verde em volta do avatar).
+    pub fn speaking(cl: *Client, id: u32) bool {
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        const now = sync.nowUs();
+        for (cl.voice_peers.items) |p| if (p.id == id) return p.speaking(now);
+        return false;
+    }
+
+    /// Volume da voz de alguém, só pra mim (0 = mudo, 1 = normal, até 2).
+    pub fn setVoiceVolume(cl: *Client, id: u32, vol: f32) void {
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        cl.voice_volumes.put(gpa, id, vol) catch {};
+        for (cl.voice_peers.items) |p| if (p.id == id) {
+            p.ring.mutex.lock();
+            p.ring.volume = vol;
+            p.ring.mutex.unlock();
+        };
+    }
+
+    pub fn voiceVolume(cl: *Client, id: u32) f32 {
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        return cl.voice_volumes.get(id) orelse 1.0;
     }
 
     /// Pede um quadro completo de quem estamos assistindo (perdemos a referência).

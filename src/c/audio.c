@@ -165,6 +165,55 @@ audio_dev *audio_output_open(audio_play_fn fn, void *user, char *err, int errlen
     return d;
 }
 
+// Acha o id de um dispositivo de captura pelo nome.
+static int find_capture(ma_context *ctx, const char *name, ma_device_id *out) {
+    if (!name || !*name) return 0;
+    ma_device_info *infos;
+    ma_uint32 n;
+    if (ma_context_get_devices(ctx, NULL, NULL, &infos, &n) != MA_SUCCESS) return 0;
+    for (ma_uint32 i = 0; i < n; i++) {
+        if (strcmp(infos[i].name, name) == 0) {
+            *out = infos[i].id;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+audio_dev *audio_mic_open(audio_capture_fn fn, void *user, const char *name, char *err, int errlen) {
+    audio_dev *d = open_dev(ma_device_type_capture, NULL, 0, err, errlen);
+    if (!d) return NULL;
+    d->capture = fn;
+    d->user = user;
+    ma_device_id id;
+    ma_device_config cfg = ma_device_config_init(ma_device_type_capture);
+    if (find_capture(&d->ctx, name, &id)) cfg.capture.pDeviceID = &id; // senão, o padrão
+    cfg.capture.format = ma_format_f32;
+    cfg.capture.channels = 1;
+    if (start(d, &cfg, err, errlen) < 0) {
+        audio_close(d);
+        return NULL;
+    }
+    return d;
+}
+
+int audio_list_mics(char names[][128], int max) {
+    ma_context ctx;
+    if (ma_context_init(NULL, 0, NULL, &ctx) != MA_SUCCESS) return 0;
+    ma_device_info *infos;
+    ma_uint32 n = 0;
+    int out = 0;
+    if (ma_context_get_devices(&ctx, NULL, NULL, &infos, &n) == MA_SUCCESS) {
+        for (ma_uint32 i = 0; i < n && out < max; i++) {
+            // monitores de saída do PulseAudio/PipeWire não são microfone
+            if (strstr(infos[i].name, "Monitor of") || strstr(infos[i].name, "Monitor de")) continue;
+            snprintf(names[out++], 128, "%s", infos[i].name);
+        }
+    }
+    ma_context_uninit(&ctx);
+    return out;
+}
+
 int audio_capture_hears_self(audio_dev *d) {
     return d ? d->hears_self : 0;
 }

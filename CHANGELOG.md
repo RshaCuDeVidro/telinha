@@ -2,6 +2,15 @@
 
 ## 2.1.0
 
+- **Voz na sala, tipo Discord**: microfone com supressão de ruído (RNNoise) e
+  ativação por voz, Opus 40 kbit/s. Anel verde em quem fala, ícones de
+  microfone desligado e "surdo" na lista, botões de microfone/surdo no painel,
+  volume da voz por pessoa (clique direito), escolha de microfone e
+  sensibilidade com medidor nas configurações. O microfone começa desligado
+  (opção pra entrar com ele ligado). A voz fura a fila do vídeo.
+- Painel de baixo no estilo do Discord: faixa com "Compartilhar tela" e sair;
+  microfone, fone e configurações no painel do usuário.
+
 - Controle de atraso de ponta a ponta (protocolo v5): confirmação de cada frame
   nos dois trechos (transmissor → servidor → espectador). O atraso fica
   limitado mesmo atrás de túneis com buffer enorme (ngrok, bore…).

@@ -8,6 +8,7 @@
 //!   zig build loadtest        teste de carga do servidor
 //!   zig build captest         diagnóstico da captura de tela (Linux)
 //!   zig build audiotest       diagnóstico da captura do som (Linux)
+//!   zig build voicebot        robô que entra numa sala e fala (teste da voz)
 //!   -Dserver-only=true        não baixa as dependências do app (Docker)
 //!
 //! Dependências C/C++ (Dear ImGui, cimgui, openh264, GLFW, NASM) vêm do
@@ -43,6 +44,7 @@ pub fn build(b: *std.Build) void {
     const nvh = b.lazyDependency("nv_codec_headers", .{});
     const opus = b.lazyDependency("opus", .{});
     const miniaudio = b.lazyDependency("miniaudio", .{});
+    const rnnoise = b.lazyDependency("rnnoise", .{});
     const nasm = nasmProgram(b) orelse return;
     const deps: Deps = .{
         .imgui = imgui orelse return,
@@ -52,6 +54,7 @@ pub fn build(b: *std.Build) void {
         .nv_headers = nvh orelse return,
         .opus = opus orelse return,
         .miniaudio = miniaudio orelse return,
+        .rnnoise = rnnoise orelse return,
         .nasm = nasm,
     };
 
@@ -92,6 +95,23 @@ pub fn build(b: *std.Build) void {
     const run_load = b.addRunArtifact(b.addExecutable(.{ .name = "loadtest", .root_module = load_mod }));
     if (b.args) |args| run_load.addArgs(args);
     b.step("loadtest", "teste de carga do servidor (espectadores simulados)").dependOn(&run_load.step);
+
+    // robô de voz (testa a voz da sala sem microfone)
+    const vb_mod = b.createModule(.{
+        .root_source_file = b.path("src/voicebot.zig"),
+        .target = host,
+        .optimize = .ReleaseSafe,
+        .link_libc = true,
+        .link_libcpp = true,
+    });
+    linkOpenh264(b, deps, vb_mod, host, .ReleaseFast);
+    addHwenc(b, deps, vb_mod);
+    addAudio(b, deps, vb_mod, host, .ReleaseFast);
+    const vb_exe = b.addExecutable(.{ .name = "voicebot", .root_module = vb_mod });
+    const run_vb = b.addRunArtifact(vb_exe);
+    if (b.args) |args| run_vb.addArgs(args);
+    b.step("voicebot", "robô que entra numa sala e fala (teste da voz)").dependOn(&run_vb.step);
+    b.getInstallStep().dependOn(&b.addInstallArtifact(vb_exe, .{ .dest_dir = .{ .override = .{ .custom = "tools" } } }).step);
 
     // diagnóstico da captura (Linux)
     if (host.result.os.tag == .linux) {
@@ -149,6 +169,7 @@ const Deps = struct {
     nv_headers: *std.Build.Dependency,
     opus: *std.Build.Dependency,
     miniaudio: *std.Build.Dependency,
+    rnnoise: *std.Build.Dependency,
     nasm: NasmProgram,
 };
 
@@ -167,12 +188,53 @@ fn addAudio(b: *std.Build, deps: Deps, mod: *std.Build.Module, target: std.Build
     mod.addIncludePath(deps.miniaudio.path("."));
     mod.addIncludePath(b.path("src/c"));
     mod.addCSourceFile(.{ .file = b.path("src/c/audio.c"), .flags = &.{ "-O2", "-Wno-everything" } });
+    addRnnoise(b, deps, mod, target, optimize);
     // Linux: som dos aplicativos pelo grafo do PipeWire (sem o próprio telinha)
     if (target.result.os.tag == .linux) {
         mod.addCSourceFile(.{ .file = b.path("src/c/audio_pw.c"), .flags = &.{ "-O2", "-Wno-everything" } });
         mod.linkSystemLibrary("libpipewire-0.3", .{});
     }
 }
+
+/// RNNoise (supressão de ruído da voz). No x86_64 escolhe SSE4.1/AVX2 em runtime.
+fn addRnnoise(b: *std.Build, deps: Deps, mod: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+    const om = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    const lib = b.addLibrary(.{ .name = "rnnoise", .root_module = om, .linkage = .static });
+    om.addIncludePath(deps.rnnoise.path("include"));
+    om.addIncludePath(deps.rnnoise.path("src"));
+    const x86 = target.result.cpu.arch == .x86_64;
+    const flags: []const []const u8 = if (x86)
+        &.{ "-O2", "-Wno-everything", "-DRNN_ENABLE_X86_RTCD", "-DCPU_INFO_BY_C" }
+    else
+        &.{ "-O2", "-Wno-everything" };
+    om.addCSourceFiles(.{ .root = deps.rnnoise.path("src"), .files = &rnnoise_src, .flags = flags });
+    if (x86) {
+        om.addCSourceFiles(.{ .root = deps.rnnoise.path("src"), .files = &.{ "x86/x86_dnn_map.c", "x86/x86cpu.c" }, .flags = flags });
+        // as versões SSE4.1/AVX2 compilam com essas instruções ligadas (o zig
+        // fixa os recursos da CPU por alvo, -mavx2 por arquivo não vale); só
+        // são chamadas se a CPU tiver (detecção em runtime)
+        const F = std.Target.x86.Feature;
+        for ([_]struct { file: []const u8, feats: []const F }{
+            .{ .file = "x86/nnet_sse4_1.c", .feats = &.{.sse4_1} },
+            .{ .file = "x86/nnet_avx2.c", .feats = &.{ .avx2, .fma } },
+        }) |v| {
+            var q = target.query;
+            for (v.feats) |f| q.cpu_features_add.addFeature(@intFromEnum(f));
+            const vm = b.createModule(.{ .target = b.resolveTargetQuery(q), .optimize = optimize, .link_libc = true });
+            vm.addIncludePath(deps.rnnoise.path("include"));
+            vm.addIncludePath(deps.rnnoise.path("src"));
+            vm.addCSourceFiles(.{ .root = deps.rnnoise.path("src"), .files = &.{v.file}, .flags = flags });
+            om.linkLibrary(b.addLibrary(.{ .name = "rnnoise_simd", .root_module = vm, .linkage = .static }));
+        }
+    }
+    mod.linkLibrary(lib);
+    mod.addIncludePath(deps.rnnoise.path("include"));
+}
+
+const rnnoise_src = [_][]const u8{
+    "denoise.c",                "rnn.c",          "pitch.c",        "kiss_fft.c", "celt_lpc.c", "nnet.c", "nnet_default.c",
+    "parse_lpcnet_weights.c",   "rnnoise_data.c", "rnnoise_tables.c",
+};
 
 /// Encoder/decoder em hardware (NVENC/NVDEC). As libs do driver são carregadas em runtime.
 fn addHwenc(b: *std.Build, deps: Deps, mod: *std.Build.Module) void {

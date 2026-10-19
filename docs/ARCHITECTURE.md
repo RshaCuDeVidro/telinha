@@ -36,6 +36,8 @@
 | `src/c/hwdec_nvdec.c` | decoder em hardware NVIDIA (NVDEC/nvcuvid, carregado em runtime) |
 | `src/gl.zig` | texturas e conversão YUV→RGB num shader |
 | `src/audio.zig` | áudio: Opus de quem transmite, anel anti-oscilação e mixer de quem assiste |
+| `src/voice.zig` | voz da sala: microfone → RNNoise → portão → Opus; voz de cada pessoa do outro lado |
+| `src/c/audio_pw.c` | Linux: som dos aplicativos pelo grafo do PipeWire, sem o próprio telinha |
 | `src/c/audio.c` | captura do som do computador e saída (miniaudio) |
 | `src/crypto.zig` | handshake X25519 e canal ChaCha20-Poly1305 |
 | `src/proto.zig` | mensagens, filas de envio, framing, janela de confirmações (`AckWindow`) |
@@ -137,6 +139,18 @@ você assiste fica mudo enquanto você transmite áudio. Pacotes Opus de 10 ms c
 DTX (silêncio quase não gasta banda). Quem assiste guarda 50 ms por transmissão
 antes de tocar, pula pra frente se o atraso passar de 200 ms e soma tudo numa
 saída só. `zig build audiotest` confere que o próprio som não entra na captura.
+
+**Voz.** Microfone mono a 48 kHz em blocos de 10 ms → RNNoise (supressão de
+ruído, e a probabilidade de voz dele abre o "portão": abre acima da
+sensibilidade, fica aberto 250 ms depois da última sílaba) → Opus VOIP, 20 ms,
+~40 kbit/s. Com o portão fechado não sai pacote nenhum. No servidor a voz vai
+pra todo mundo menos quem fala e quem está surdo, furando a fila (conversa não
+espera atrás de vídeo); do outro lado, um anel por pessoa no mesmo mixer das
+transmissões, com volume por pessoa. O microfone só abre quando você liga (o
+indicador de microfone do sistema apaga quando desliga). Sem cancelamento de
+eco: com caixa de som em vez de fone, os outros podem se ouvir de volta (a
+captura do áudio do computador já não pega a voz que o telinha toca).
+`zig build voicebot` entra numa sala e "fala" sílabas sintéticas pra testar.
 
 **UI que dorme.** O loop usa `glfwWaitEventsTimeout`; threads de rede e decode
 acordam a UI com `glfwPostEmptyEvent` quando há quadro novo. Sem transmissão,

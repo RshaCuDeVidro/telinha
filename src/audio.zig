@@ -29,6 +29,7 @@ pub const Ring = struct {
     volume: f32 = 1.0,
     muted: bool = false,
     level: f32 = 0, // nível recente (0..1), pra UI mostrar quem está fazendo barulho
+    last_write_us: u64 = 0, // quando chegou som pela última vez
 
     pub fn deinit(rg: *Ring) void {
         gpa.free(rg.buf);
@@ -59,6 +60,7 @@ pub const Ring = struct {
         }
         rg.len += src.len;
         rg.level = @max(peak, rg.level * 0.9);
+        rg.last_write_us = sync.nowUs();
     }
 
     /// Soma até `out.len` amostras em `out`.
@@ -94,6 +96,8 @@ pub const Mixer = struct {
     failed: bool = false,
     /// Quem transmite áudio no Linux escuta a si mesmo na captura: silencia a saída (sem eco).
     self_mute: std.atomic.Value(bool) = .init(false),
+    /// "Surdo" (como no Discord): não toca nada da sala, nem voz nem transmissão.
+    deaf: std.atomic.Value(bool) = .init(false),
 
     pub fn add(m: *Mixer, rg: *Ring) void {
         m.mutex.lock();
@@ -123,7 +127,7 @@ pub const Mixer = struct {
         @memset(out, 0);
         m.mutex.lock();
         defer m.mutex.unlock();
-        const silent = m.self_mute.load(.monotonic);
+        const silent = m.self_mute.load(.monotonic) or m.deaf.load(.monotonic);
         for (m.rings.items) |rg| {
             const gain: f32 = if (rg.muted or silent) 0 else rg.volume;
             rg.mixInto(out, gain);

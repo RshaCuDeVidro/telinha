@@ -459,3 +459,83 @@ test "NVENC: a conversão RGB→YUV dele bate com a nossa (BT.601, faixa limitad
         try testing.expect(@abs(@as(i32, v_ref[16 * 32 + 16]) - p.v[cu]) <= 2);
     }
 }
+
+const voice = @import("voice.zig");
+
+const VoiceSink = struct {
+    packets: usize = 0,
+    bytes: usize = 0,
+    peer: voice.Peer = .{ .id = 1 },
+    fn on(ctx: *anyopaque, packet: []const u8) void {
+        const sk: *VoiceSink = @ptrCast(@alignCast(ctx));
+        sk.packets += 1;
+        sk.bytes += packet.len;
+        // decodifica do outro lado também (sem tocar: o mixer não abre saída em teste)
+        if (sk.peer.dec == null) sk.peer.dec = audio.Decoder.init() catch return;
+        const pcm = sk.peer.dec.?.decode(packet) catch return;
+        sk.peer.ring.write(pcm);
+    }
+};
+
+/// Vogal sintética: pulsos glotais (f0) com envelope de formantes.
+fn vowel(buf: []f32, start: usize, f0: f32, amp: f32) void {
+    const formants = [_][2]f32{ .{ 700, 1.0 }, .{ 1200, 0.6 }, .{ 2600, 0.25 } };
+    for (buf, 0..) |*v, i| {
+        const t: f32 = @as(f32, @floatFromInt(start + i)) / 48000;
+        var x: f32 = 0;
+        var h: f32 = 1;
+        while (h * f0 < 4000) : (h += 1) {
+            const f = h * f0;
+            var gain: f32 = 0;
+            for (formants) |fm| gain += fm[1] / (1 + ((f - fm[0]) / 150) * ((f - fm[0]) / 150));
+            x += gain * @sin(2 * std.math.pi * f * t) / h;
+        }
+        // vibrato e sílabas (4 por segundo) pra não ser um tom parado
+        const syl = 0.5 + 0.5 * @sin(2 * std.math.pi * 4 * t);
+        v.* = amp * x * syl;
+    }
+}
+
+test "voz: silêncio não manda nada; voz manda; ruído parado não abre o portão" {
+    var sink: VoiceSink = .{};
+    defer sink.peer.deinit();
+    const m = try voice.Mic.openDetached(.{ .sensitivity = 0.5 }, &sink, VoiceSink.on);
+    defer m.close();
+    var buf: [480]f32 = undefined;
+    // 1 s de silêncio
+    @memset(&buf, 0);
+    for (0..100) |_| m.feed(&buf);
+    try testing.expectEqual(@as(usize, 0), sink.packets);
+    // 2 s de "fala"
+    for (0..200) |k| {
+        vowel(&buf, k * 480, 130, 0.08);
+        m.feed(&buf);
+    }
+    const speech_packets = sink.packets;
+    try testing.expect(speech_packets > 30); // portão aberto boa parte do tempo
+    try testing.expect(sink.bytes / speech_packets < 200); // ~40 kbit/s
+    try testing.expect(sink.peer.ring.len > 0 or sink.peer.ring.last_write_us != 0);
+    // 2 s de ventilador (ruído branco parado): o RNNoise não chama de voz
+    var rng = std.Random.DefaultPrng.init(3);
+    for (0..200) |_| {
+        for (&buf) |*v| v.* = (rng.random().float(f32) - 0.5) * 0.05;
+        m.feed(&buf);
+    }
+    try testing.expect(sink.packets - speech_packets < 20);
+}
+
+test "voz: sem supressão de ruído, o portão é por volume" {
+    var sink: VoiceSink = .{};
+    defer sink.peer.deinit();
+    const m = try voice.Mic.openDetached(.{ .noise_suppression = false }, &sink, VoiceSink.on);
+    defer m.close();
+    var buf: [480]f32 = undefined;
+    @memset(&buf, 0.0001);
+    for (0..50) |_| m.feed(&buf);
+    try testing.expectEqual(@as(usize, 0), sink.packets);
+    for (0..100) |k| {
+        vowel(&buf, k * 480, 200, 0.1);
+        m.feed(&buf);
+    }
+    try testing.expect(sink.packets > 30);
+}

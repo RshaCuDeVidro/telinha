@@ -4,6 +4,11 @@
     .fingerprint = 0x1246c121a5fafab1,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
+        .rnnoise = .{
+            .url = "https://github.com/xiph/rnnoise/releases/download/v0.2/rnnoise-0.2.tar.gz",
+            .hash = "N-V-__8AAMFfZAATG9G8nOb883tDK8l93pIoHWYAnpCtDGt9",
+            .lazy = true,
+        },
         .miniaudio = .{
             .url = "https://github.com/mackron/miniaudio/archive/refs/tags/0.11.25.tar.gz",
             .hash = "N-V-__8AAHNWwAASlNuYbrP1-3UqXdwbYvZ_6nIJhpAcRMfi",

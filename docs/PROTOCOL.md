@@ -63,8 +63,11 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 15 | ack | S→C | `u32 seq` (o servidor recebeu esse frame seu) |
 | 15 | ack | C→S | `u32 de`, `u32 seq` (recebi esse frame de `de`) |
 | 16 | viewer_slow | S→C | `u8 piso` (espectador não dá conta: baixe a taxa, até `piso`% do alvo) |
+| 17 | voice | C→S | `u32 seq`, pacote Opus (voz: 48 kHz mono, 20 ms) |
+| 17 | voice | S→C | `u32 de`, `u32 seq`, pacote Opus |
+| 18 | voice_state | C→S | `u8 flags` (1 = microfone ligado, 2 = surdo) |
 
-**Membro:** `u32 id`, `str nome`, `u8 flags` (1 = ao vivo, 2 = admin, 4 = transmitindo com áudio),
+**Membro:** `u32 id`, `str nome`, `u8 flags` (1 = ao vivo, 2 = admin, 4 = transmitindo com áudio, 8 = microfone ligado, 16 = surdo),
 `u16 w`, `u16 h`, `u8 fps`, `u16 k`, k × `u32` (ids que essa pessoa assiste).
 
 **Frame:** `u32 seq`, `u8 flags` (1 = IDR), `u64 hora_da_captura` (relógio da
@@ -80,7 +83,10 @@ SPS/PPS (perfil Baseline).
 - Quem começa a assistir (ou muda de resolução) só recebe a partir de um IDR;
   o servidor manda `keyreq` pro transmissor (no máximo um a cada 500 ms, fora
   quem acabou de começar a assistir).
-- `ack` e `viewer_slow` furam a fila de envio (não esperam atrás de frames).
+- `ack`, `viewer_slow` e `voice` furam a fila de envio (não esperam atrás de
+  frames), mantendo a ordem entre eles.
+- Voz vai pra todo mundo da sala, menos quem fala e quem está surdo; só é
+  descartada se a fila do destinatário passar de 6 MiB.
 - Áudio vai pra quem assiste o transmissor, sem esperar IDR; só é descartado
   se a fila do espectador passar de 6 MiB.
 - Nomes repetidos ganham sufixo: `Ana (2)`.

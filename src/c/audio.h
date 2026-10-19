@@ -26,6 +26,13 @@ audio_dev *audio_capture_open(audio_capture_fn fn, void *user, char *err, int er
 // Saída padrão (caixa/fone).
 audio_dev *audio_output_open(audio_play_fn fn, void *user, char *err, int errlen);
 
+// Microfone (voz da sala): MONO a 48 kHz — o callback recebe `frames` floats.
+// name = NULL ou "" usa o padrão do sistema.
+audio_dev *audio_mic_open(audio_capture_fn fn, void *user, const char *name, char *err, int errlen);
+
+// Nomes dos microfones disponíveis (até max). Retorna quantos.
+int audio_list_mics(char names[][128], int max);
+
 void audio_close(audio_dev *d);
 
 // 1 se essa captura também pega o som que o próprio app toca (só no jeito

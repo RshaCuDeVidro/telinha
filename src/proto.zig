@@ -32,12 +32,20 @@ pub const Type = enum(u8) {
     audio = 14, // C→S áudio | S→C u32 de + áudio
     ack = 15, // S→C u32 seq (servidor recebeu seu frame) | C→S u32 de, u32 seq (espectador recebeu)
     viewer_slow = 16, // S→C u8 piso: espectador não dá conta; baixe a taxa (até piso% do alvo)
+    voice = 17, // C→S u32 seq, Opus | S→C u32 de, u32 seq, Opus (voz da sala)
+    voice_state = 18, // C→S u8 flags (1 = microfone ligado, 2 = surdo)
     _,
 };
 
 pub const member_streaming: u8 = 1;
 pub const member_admin: u8 = 2;
 pub const member_audio: u8 = 4;
+pub const member_mic: u8 = 8; // microfone ligado
+pub const member_deaf: u8 = 16; // não está ouvindo a sala
+
+/// voice_state
+pub const voice_mic: u8 = 1;
+pub const voice_deaf: u8 = 2;
 
 /// Payload de áudio: u32 seq, u64 hora_da_captura (relógio da sala, µs),
 /// pacote Opus (48 kHz estéreo, 10 ms) até o fim.
@@ -326,8 +334,8 @@ pub const SendQueue = struct {
         q.cond.signal();
     }
 
-    /// Fura a fila (confirmações: não podem esperar atrás de quadros), mas
-    /// fica depois de outras urgentes que já estavam lá (ordem entre elas).
+    /// Fura a fila (confirmações e voz: não podem esperar atrás de quadros),
+    /// mas fica depois de outras urgentes que já estavam lá (ordem entre elas).
     pub fn pushUrgent(q: *SendQueue, m: *Msg) void {
         q.mutex.lock();
         defer q.mutex.unlock();
@@ -348,7 +356,7 @@ pub const SendQueue = struct {
     }
 
     fn isUrgent(t: Type) bool {
-        return t == .ack or t == .viewer_slow;
+        return t == .ack or t == .viewer_slow or t == .voice;
     }
 
     pub fn pushUrgentOwned(q: *SendQueue, m: *Msg) void {
