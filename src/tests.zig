@@ -809,3 +809,84 @@ test "eco: com fone, o cancelador sai do caminho; tirou o fone, volta" {
     cn.checkBypass(0.6);
     try testing.expect(!cn.bypassed());
 }
+
+/// Quadrado andando sobre um fundo fixo (conteúdo de tela realista: o resto parado).
+fn movingSquare(img: []u8, w: usize, h: usize, f: usize) void {
+    for (0..h) |y| for (0..w) |x| {
+        const p = (y * w + x) * 4;
+        const in_sq = x >= 20 + f * 8 and x < 60 + f * 8 and y >= 100 and y < 140;
+        img[p + 0] = if (in_sq) 250 else @intCast(x % 256);
+        img[p + 1] = if (in_sq) 30 else @intCast(y % 256);
+        img[p + 2] = if (in_sq) 30 else @intCast((x + y) % 256);
+        img[p + 3] = 255;
+    };
+}
+
+test "codec: quadro de não-referência é reconhecido pelo bitstream" {
+    // nal_ref_idc nos bits 5-6 do cabeçalho: 0x41 = P de referência, 0x01 = P sem
+    try testing.expect(codec.isDroppable(&.{ 0, 0, 0, 1, 0x01, 0x9a, 0, 0, 1, 0x01, 0x9b }));
+    try testing.expect(!codec.isDroppable(&.{ 0, 0, 0, 1, 0x01, 0x9a, 0, 0, 1, 0x41, 0x9b }));
+    try testing.expect(!codec.isDroppable(&.{ 0, 0, 0, 1, 0x67, 1, 0, 0, 1, 0x65, 2 })); // IDR
+    try testing.expect(!codec.isDroppable(&.{ 0, 0, 0, 1, 0x06, 5 })); // só SEI, sem fatia
+}
+
+test "openh264: duas camadas temporais — quadro sim, quadro não pulável" {
+    initPool();
+    const w = 320;
+    const h = 240;
+    const img = try std.heap.c_allocator.alloc(u8, w * h * 4);
+    defer std.heap.c_allocator.free(img);
+    for ([_]codec.Mode{ .screen, .motion }) |mode| {
+        var enc = try codec.Encoder.init(.{ .width = w, .height = h, .fps = 30, .bitrate = 1_000_000, .threads = 1, .mode = mode, .temporal_layers = 2 });
+        defer enc.deinit();
+        var dec = try codec.Decoder.init();
+        defer dec.deinit();
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(std.heap.c_allocator);
+        var dropped: usize = 0;
+        for (0..16) |f| {
+            movingSquare(img, w, h, f);
+            out.clearRetainingCapacity();
+            const key = try enc.encode(img.ptr, w * 4, .bgrx, &out) orelse return error.EncoderSkipped;
+            const drop = codec.isDroppable(out.items);
+            try testing.expectEqual(f % 2 == 1, drop); // I d P d P d ...
+            try testing.expectEqual(f == 0, key);
+            if (drop) {
+                dropped += 1;
+                continue;
+            }
+            // quem só recebe a base decodifica tudo o que recebe
+            _ = (try dec.decode(out.items)) orelse return error.NoPicture;
+        }
+        try testing.expectEqual(@as(usize, 8), dropped);
+    }
+}
+
+test "NVENC: duas camadas temporais (quem decide o tipo do quadro somos nós)" {
+    initPool();
+    const w = 640;
+    const h = 360;
+    var err: [256]u8 = undefined;
+    const img = try std.heap.c_allocator.alloc(u8, w * h * 4);
+    defer std.heap.c_allocator.free(img);
+    var enc = codec.HwEncoder.init(.{ .width = w, .height = h, .fps = 30, .bitrate = 2_000_000, .mode = .motion, .temporal_layers = 2 }, &err) catch return error.SkipZigTest;
+    defer enc.deinit();
+    var dec = try codec.Decoder.init();
+    defer dec.deinit();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(std.heap.c_allocator);
+    var since_idr: usize = 0;
+    for (0..16) |f| {
+        movingSquare(img, w, h, f);
+        out.clearRetainingCapacity();
+        const force = f == 0 or f == 9; // alguém entrou no meio
+        const key = try enc.encode(img.ptr, w * 4, .bgrx, force, &out);
+        try testing.expectEqual(force, key);
+        if (key) since_idr = 0;
+        const drop = codec.isDroppable(out.items);
+        try testing.expectEqual(since_idr % 2 == 1, drop); // recomeça a contagem no IDR
+        since_idr += 1;
+        if (drop) continue;
+        _ = (try dec.decode(out.items)) orelse return error.NoPicture;
+    }
+}

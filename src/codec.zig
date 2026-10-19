@@ -312,6 +312,9 @@ pub const EncoderOptions = struct {
     bitrate: u32, // bits/s
     mode: Mode = .screen,
     threads: u32 = 0, // 0 = automático
+    /// 2 = quadros alternados que ninguém usa de referência (dá pra pular
+    /// pra um espectador que não dá conta sem estragar a decodificação).
+    temporal_layers: u8 = 1,
 };
 
 pub const Encoder = struct {
@@ -341,7 +344,7 @@ pub const Encoder = struct {
         p.iRCMode = oh.RC_BITRATE_MODE;
         p.fMaxFrameRate = @floatFromInt(std.math.clamp(opts.fps, 1, 60));
         p.iSpatialLayerNum = 1;
-        p.iTemporalLayerNum = 1;
+        p.iTemporalLayerNum = opts.temporal_layers;
         p.uiIntraPeriod = 0; // IDR só quando pedirem (gente entrando / atrasada)
         p.bEnableFrameSkip = false; // quem decide pular frame é o sharer (controle de banda)
         p.iMultipleThreadIdc = @intCast(threads);
@@ -439,7 +442,7 @@ pub const HwEncoder = struct {
     /// Falha (com o motivo em `err`) se não houver GPU/driver compatível.
     pub fn init(opts: EncoderOptions, err: []u8) !HwEncoder {
         @memset(err, 0);
-        const h = hw.hwenc_open(@intCast(opts.width), @intCast(opts.height), @intCast(@max(1, opts.fps)), @intCast(opts.bitrate), @intFromBool(opts.mode == .screen), err.ptr, @intCast(err.len)) orelse return error.HwUnavailable;
+        const h = hw.hwenc_open(@intCast(opts.width), @intCast(opts.height), @intCast(@max(1, opts.fps)), @intCast(opts.bitrate), @intFromBool(opts.mode == .screen), opts.temporal_layers, err.ptr, @intCast(err.len)) orelse return error.HwUnavailable;
         return .{ .h = h, .opts = opts };
     }
 
@@ -468,6 +471,25 @@ pub const HwEncoder = struct {
         return idr != 0 or hasIdrNal(bits);
     }
 };
+
+/// Quadro que ninguém usa de referência (todas as fatias com nal_ref_idc = 0):
+/// pode ser pulado sem quebrar a decodificação dos seguintes.
+pub fn isDroppable(bits: []const u8) bool {
+    var slices: usize = 0;
+    var i: usize = 0;
+    while (i + 3 < bits.len) : (i += 1) {
+        if (bits[i] == 0 and bits[i + 1] == 0 and bits[i + 2] == 1) {
+            const hdr = bits[i + 3];
+            const typ = hdr & 0x1f;
+            if (typ == 1 or typ == 5) {
+                if (hdr & 0x60 != 0) return false; // nal_ref_idc != 0: é referência
+                slices += 1;
+            }
+            i += 2;
+        }
+    }
+    return slices > 0;
+}
 
 /// Tem um NAL de IDR (tipo 5) no bitstream Annex B?
 pub fn hasIdrNal(bits: []const u8) bool {

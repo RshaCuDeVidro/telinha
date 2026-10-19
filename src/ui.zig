@@ -713,6 +713,7 @@ pub const App = struct {
     }
 
     fn leaveRoom(a: *App) void {
+        a.closeModals();
         a.stopMic();
         a.mic_wanted = false;
         a.setDeaf(false);
@@ -766,6 +767,7 @@ pub const App = struct {
 
     fn doReconnect(a: *App) void {
         a.reconnect.waiting = false;
+        a.closeModals();
         // derruba o que sobrou da conexão antiga, mas continua na tela da sala
         a.stopMic(); // volta sozinho em finishReconnect (mic_wanted continua)
         a.n_known = 0; // ids podem mudar (servidor reiniciou): sem sons de entrou/saiu
@@ -1189,6 +1191,10 @@ pub const App = struct {
 
     fn drawRoom(a: *App, size: c.ImVec2_c) void {
         const cl = a.client orelse return;
+        // "Sair" no meio do quadro solta a referência da interface; o resto do
+        // quadro ainda desenha com `cl`
+        _ = cl.retain();
+        defer cl.release();
         cl.mutex.lock();
         const status = cl.status;
         cl.mutex.unlock();
@@ -1214,10 +1220,23 @@ pub const App = struct {
             a.drawChat(cl, v2(chat_w, size.y));
         }
 
+        const overlay = status == .connecting or (status == .failed and (a.was_connected or a.reconnect.attempt > 0));
         if (status == .connecting) a.drawConnecting(size);
         if (status == .failed and (a.was_connected or a.reconnect.attempt > 0)) a.drawDropped(cl, size);
-        if (a.share_modal) a.drawShareModal();
-        if (a.settings_modal) a.drawSettingsModal();
+        if (overlay) {
+            // a camada por cima pega o foco a cada quadro, o que fecharia a
+            // janela (e ela reabriria invisível, travando os cliques)
+            a.closeModals();
+        } else {
+            if (a.share_modal) a.drawShareModal();
+            if (a.settings_modal) a.drawSettingsModal();
+        }
+    }
+
+    fn closeModals(a: *App) void {
+        if (a.settings_modal) config.save(&a.cfg); // o que o "Fechar" faria
+        a.settings_modal = false;
+        a.share_modal = false;
     }
 
     /// Janela por cima de tudo (recebe clique, diferente da foreground draw list).
@@ -1513,7 +1532,11 @@ pub const App = struct {
         defer c.igEndPopup();
         const name = for (members) |*m| {
             if (m.id == a.menu_target) break m.nameSlice();
-        } else "?";
+        } else {
+            // a pessoa saiu com o menu aberto
+            c.igCloseCurrentPopup();
+            return;
+        };
         pushFont(font_semibold, 13);
         textColored(col.muted, name);
         popFont();
@@ -1523,15 +1546,20 @@ pub const App = struct {
         var pct: i32 = @intFromFloat(@round(cl.voiceVolume(a.menu_target) * 100));
         const before = pct;
         sliderStyled("##vvol", &pct, 0, 200, "%d%%", S(200));
+        // salva no arquivo quando solta o slider (não a cada quadro do arrasto)
+        var save = c.igIsItemDeactivatedAfterEdit();
         var new_pct: ?i32 = if (pct != before) pct else null;
         const muted = pct == 0;
         c.igDummy(v2(0, S(4)));
-        if (c.igSelectable_Bool(if (muted) "Voltar a ouvir" else "Silenciar pra mim", false, 0, v2(S(200), 0)))
+        if (c.igSelectable_Bool(if (muted) "Voltar a ouvir" else "Silenciar pra mim", false, 0, v2(S(200), 0))) {
             new_pct = if (muted) 100 else 0;
-        if (new_pct) |np| {
-            cl.setVoiceVolume(a.menu_target, @as(f32, @floatFromInt(np)) / 100);
+            save = true;
+        }
+        if (new_pct) |np| cl.setVoiceVolume(a.menu_target, @as(f32, @floatFromInt(std.math.clamp(np, 0, 200))) / 100);
+        if (save) {
             // lembra pelo nome (vale na próxima sala também)
-            a.volumes.set(name, @intCast(np));
+            const v: u16 = @intCast(std.math.clamp(@as(i32, @intFromFloat(@round(cl.voiceVolume(a.menu_target) * 100))), 0, 200));
+            a.volumes.set(name, v);
             a.volumes.save();
         }
         cl.mutex.lock();
@@ -1647,11 +1675,18 @@ pub const App = struct {
         var n: usize = 0;
         var stat_bufs: [33][128]u8 = undefined;
         var lat_bufs: [33][48]u8 = undefined;
+        var name_bufs: [33][48]u8 = undefined;
         cl.mutex.lock();
         for (a.views.items) |v| {
-            if (n >= tiles.len) break;
+            if (n >= tiles.len - 1) break; // o último é da minha prévia
+            // cópia: a thread de rede troca a lista de membros a qualquer hora
             const name = for (cl.members.items) |*m| {
-                if (m.id == v.owner) break m.nameSlice();
+                if (m.id == v.owner) {
+                    const nm = m.nameSlice();
+                    const k = @min(nm.len, name_bufs[n].len);
+                    @memcpy(name_bufs[n][0..k], nm[0..k]);
+                    break name_bufs[n][0..k];
+                }
             } else "?";
             const st = std.fmt.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d:.0} KB/s · {s}", .{ v.tex_w, v.tex_h, v.fps, v.kbps, latencyText(&lat_bufs[n], v) }) catch "";
             tiles[n] = .{ .owner = v.owner, .tex = v.tex, .tw = v.tex_w, .th = v.tex_h, .name = name, .stats = st, .loading = v.tex == 0, .ring = if (v.audio_registered) &v.audio_ring else null };
@@ -1859,7 +1894,8 @@ pub const App = struct {
                 const vy = y + h - vh - S(10);
                 rectFill(d, vx, vy, vx + vw, vy + vh, col.overlay, S(6));
                 c.igSetCursorScreenPos(v2(vx + S(2), vy));
-                if (iconButton("##mute", if (rg.muted) ic.volume_off else ic.volume, vh, if (rg.muted) col.red else col.white, rgba(0xFFFFFF, 30), if (rg.muted) "Ativar som" else "Silenciar")) rg.muted = !rg.muted;
+                const rg_muted = rg.isMuted();
+                if (iconButton("##mute", if (rg_muted) ic.volume_off else ic.volume, vh, if (rg_muted) col.red else col.white, rgba(0xFFFFFF, 30), if (rg_muted) "Ativar som" else "Silenciar")) rg.setMuted(!rg_muted);
                 c.igSameLine(0, S(4));
                 c.igSetCursorScreenPos(v2(vx + vh + S(6), vy + S(7)));
                 c.igSetNextItemWidth(vw - vh - S(14));
@@ -1867,8 +1903,8 @@ pub const App = struct {
                 c.igPushStyleColor_U32(c.ImGuiCol_FrameBgHovered, rgba(0xFFFFFF, 45));
                 c.igPushStyleColor_U32(c.ImGuiCol_FrameBgActive, rgba(0xFFFFFF, 45));
                 c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(4), S(2)));
-                var vol_pct: f32 = rg.volume * 100;
-                if (c.igSliderFloat("##vol", &vol_pct, 0, 200, "%.0f%%", 0)) rg.volume = vol_pct / 100;
+                var vol_pct: f32 = rg.getVolume() * 100;
+                if (c.igSliderFloat("##vol", &vol_pct, 0, 200, "%.0f%%", c.ImGuiSliderFlags_AlwaysClamp)) rg.setVolume(vol_pct / 100);
                 c.igPopStyleVar(1);
                 c.igPopStyleColor(3);
             }
@@ -1881,12 +1917,12 @@ pub const App = struct {
         const talking = if (t.owner == 0)
             (if (a.mic) |m| m.speaking.load(.monotonic) else false)
         else if (a.client) |cl| cl.speaking(t.owner) else false;
+        const ring_level = if (t.ring) |rg| rg.takeLevel() else 0; // decai um pouco a cada quadro
         if (talking) {
             c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), col.green, round, S(3), 0);
         } else if (t.ring) |rg| {
-            if (!rg.muted and rg.level > 0.02) c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), rgba(0x23A55A, 160), round, S(2), 0);
+            if (!rg.isMuted() and ring_level > 0.02) c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), rgba(0x23A55A, 160), round, S(2), 0);
         }
-        if (t.ring) |rg| rg.level *= 0.92;
     }
 
     fn drawEmpty(a: *App, cl: *Client, o: c.ImVec2_c, size: c.ImVec2_c) void {
@@ -2443,7 +2479,8 @@ pub const App = struct {
         c.igPushStyleColor_U32(c.ImGuiCol_SliderGrab, col.blurple);
         c.igPushStyleColor_U32(c.ImGuiCol_SliderGrabActive, col.blurple_hover);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(10), S(7)));
-        _ = c.igSliderInt(id.ptr, v, min, max, f.ptr, 0);
+        // AlwaysClamp: Ctrl+clique deixa digitar qualquer número
+        _ = c.igSliderInt(id.ptr, v, min, max, f.ptr, c.ImGuiSliderFlags_AlwaysClamp);
         c.igPopStyleVar(1);
         c.igPopStyleColor(5);
     }

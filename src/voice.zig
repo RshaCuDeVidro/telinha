@@ -277,6 +277,7 @@ pub const Peer = struct {
     pub fn speaking(p: *Peer, now_us: u64) bool {
         p.ring.mutex.lock();
         defer p.ring.mutex.unlock();
-        return p.ring.last_write_us != 0 and now_us - p.ring.last_write_us < 250_000 and p.ring.level > 0.01;
+        // -|: um pacote pode ter chegado depois de `now_us` ser lido
+        return p.ring.last_write_us != 0 and now_us -| p.ring.last_write_us < 250_000 and p.ring.level > 0.01;
     }
 };

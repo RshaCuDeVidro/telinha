@@ -226,7 +226,9 @@ pub fn quality(w: u32, h: u32, bitrate: u32) !void {
             if (std.c.getenv("TELINHA_BENCH_SO_NVENC") != null and preset == 0) continue;
             if (std.c.getenv("TELINHA_BENCH_PRESET")) |only| if (preset != only[0] - '0') continue;
             var err: [256]u8 = undefined;
-            const opts: codec.EncoderOptions = .{ .width = w, .height = h, .fps = 30, .bitrate = bitrate, .mode = if (scene == .text) .screen else .motion };
+            // TELINHA_BENCH_CAMADAS=1/2: camadas temporais (2 = quadro sim, quadro não pulável)
+            const layers: u8 = if (std.c.getenv("TELINHA_BENCH_CAMADAS")) |v| v[0] - '0' else 2;
+            const opts: codec.EncoderOptions = .{ .width = w, .height = h, .fps = 30, .bitrate = bitrate, .mode = if (scene == .text) .screen else .motion, .temporal_layers = layers };
             var name_buf: [32]u8 = undefined;
             const name = if (preset == 0) "openh264" else std.fmt.bufPrint(&name_buf, "NVENC P{d}", .{preset}) catch "";
             if (preset > 0) {

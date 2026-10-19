@@ -4,7 +4,10 @@
 //
 // Entrada em BGRX/RGBX direto (o NVENC converte a cor na GPU), modo síncrono,
 // preset P4 + tuning de latência ultra baixa, sem B-frames, GOP infinito (IDR
-// só quando pedirem) e VBV de um quadro.
+// só quando pedirem) e VBV de um quadro. Com duas camadas temporais, o tipo de
+// cada quadro é decidido aqui (PTD desligado): um P sim, um não é marcado como
+// não-referência — funciona em qualquer geração de NVENC, sem precisar do
+// "temporal SVC" (que as placas mais antigas não têm).
 #include "hwenc.h"
 
 #include <stdio.h>
@@ -31,6 +34,8 @@ struct hwenc {
     size_t bits_cap;
     uint64_t frame;
     int bitrate;
+    int layers;         // camadas temporais (1 ou 2)
+    uint32_t since_idr; // quadros desde o último IDR (com 2 camadas)
 };
 
 static void set_err(char *err, int errlen, const char *msg, int code) {
@@ -79,12 +84,13 @@ void hwenc_close(hwenc *e) {
     free(e);
 }
 
-hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, char *err, int errlen) {
+hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, int temporal_layers, char *err, int errlen) {
     hwenc *e = calloc(1, sizeof *e);
     if (!e) return NULL;
     e->width = width;
     e->height = height;
     e->fps = fps;
+    e->layers = temporal_layers > 1 ? 2 : 1;
 
     if (cuda_load_functions(&e->cu, NULL) < 0 || nvenc_load_functions(&e->nv, NULL) < 0) {
         set_err(err, errlen, "driver NVIDIA (CUDA/NVENC) não encontrado", 0);
@@ -188,7 +194,7 @@ hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, 
     ip->maxEncodeHeight = (uint32_t)height;
     ip->frameRateNum = (uint32_t)(fps > 0 ? fps : 30);
     ip->frameRateDen = 1;
-    ip->enablePTD = 1;
+    ip->enablePTD = e->layers == 1; // com 2 camadas, quem decide o tipo do quadro é o hwenc_encode
     ip->enableEncodeAsync = 0;
     ip->encodeConfig = &e->cfg;
     st = e->api.nvEncInitializeEncoder(e->enc, ip);
@@ -250,6 +256,14 @@ int hwenc_encode(hwenc *e, const uint8_t *pixels, int stride, int format, int fo
     // ARGB/ABGR do NVENC são "word-ordered": na memória ficam B,G,R,A / R,G,B,A
     pp.bufferFmt = format == HWENC_RGBX ? NV_ENC_BUFFER_FORMAT_ABGR : NV_ENC_BUFFER_FORMAT_ARGB;
     pp.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
+    if (e->layers > 1) {
+        const int idr = force_idr || e->frame == 0;
+        if (idr) e->since_idr = 0;
+        pp.pictureType = idr ? NV_ENC_PIC_TYPE_IDR : NV_ENC_PIC_TYPE_P;
+        pp.codecPicParams.h264PicParams.refPicFlag = e->since_idr % 2 == 0;
+        pp.codecPicParams.h264PicParams.displayPOCSyntax = 2 * e->since_idr;
+        e->since_idr++;
+    }
     pp.inputTimeStamp = e->frame++;
     if (force_idr) pp.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
     // IDR com folga no VBV (ver IDR_VBV_FRAMES); depois volta ao normal

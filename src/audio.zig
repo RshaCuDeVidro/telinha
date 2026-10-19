@@ -36,6 +36,41 @@ pub const Ring = struct {
         gpa.free(rg.buf);
     }
 
+    // a interface mexe nesses campos enquanto o mixer lê (thread de áudio)
+    pub fn setMuted(rg: *Ring, m: bool) void {
+        rg.mutex.lock();
+        defer rg.mutex.unlock();
+        rg.muted = m;
+    }
+
+    pub fn isMuted(rg: *Ring) bool {
+        rg.mutex.lock();
+        defer rg.mutex.unlock();
+        return rg.muted;
+    }
+
+    /// 0..2 (o resto é cortado: NaN/infinito estragaria a mixagem inteira).
+    pub fn setVolume(rg: *Ring, v: f32) void {
+        rg.mutex.lock();
+        defer rg.mutex.unlock();
+        rg.volume = if (std.math.isNan(v)) 1 else std.math.clamp(v, 0, 2);
+    }
+
+    pub fn getVolume(rg: *Ring) f32 {
+        rg.mutex.lock();
+        defer rg.mutex.unlock();
+        return rg.volume;
+    }
+
+    /// Nível recente e decai um pouco (a interface chama uma vez por quadro).
+    pub fn takeLevel(rg: *Ring) f32 {
+        rg.mutex.lock();
+        defer rg.mutex.unlock();
+        const l = rg.level;
+        rg.level *= 0.92;
+        return l;
+    }
+
     pub fn write(rg: *Ring, samples: []const f32) void {
         rg.mutex.lock();
         defer rg.mutex.unlock();

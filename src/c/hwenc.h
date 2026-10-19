@@ -13,7 +13,9 @@ typedef struct hwenc hwenc;
 enum { HWENC_BGRX = 0, HWENC_RGBX = 1 };
 
 // Abre o encoder. screen_mode = 1 pra tela/texto, 0 pra jogo/vídeo.
-hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, char *err, int errlen);
+// temporal_layers = 2: um quadro sim, um não, ninguém usa de referência
+// (dá pra pular pra quem não dá conta).
+hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, int temporal_layers, char *err, int errlen);
 
 // Codifica um quadro BGRX/RGBX. *out aponta pra um buffer interno válido até a
 // próxima chamada. Retorna 0 em sucesso.

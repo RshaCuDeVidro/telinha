@@ -157,13 +157,23 @@ pub const VoiceVolumes = struct {
     pcts: [max]u16 = undefined,
     n: usize = 0,
 
-    pub fn get(v: *const VoiceVolumes, name: []const u8) ?u16 {
+    /// TAB e quebra de linha separam os campos do arquivo: viram espaço.
+    fn clean(raw: []const u8, buf: *[48]u8) ?[]const u8 {
+        if (raw.len == 0 or raw.len > buf.len) return null;
+        for (buf[0..raw.len], raw) |*d, ch| d.* = if (ch == '\t' or ch == '\n' or ch == '\r') ' ' else ch;
+        return buf[0..raw.len];
+    }
+
+    pub fn get(v: *const VoiceVolumes, raw_name: []const u8) ?u16 {
+        var buf: [48]u8 = undefined;
+        const name = clean(raw_name, &buf) orelse return null;
         for (0..v.n) |i| if (std.mem.eql(u8, v.names[i][0..v.lens[i]], name)) return v.pcts[i];
         return null;
     }
 
-    pub fn set(v: *VoiceVolumes, name: []const u8, pct: u16) void {
-        if (name.len == 0 or name.len > 48) return;
+    pub fn set(v: *VoiceVolumes, raw_name: []const u8, pct: u16) void {
+        var buf: [48]u8 = undefined;
+        const name = clean(raw_name, &buf) orelse return;
         for (0..v.n) |i| if (std.mem.eql(u8, v.names[i][0..v.lens[i]], name)) {
             v.pcts[i] = pct;
             return;

@@ -398,6 +398,9 @@ pub const Client = struct {
     voice_volumes: std.AutoHashMapUnmanaged(u32, f32) = .empty,
     /// Estado de voz que mandamos (reenviado ao reconectar).
     voice_flags: std.atomic.Value(u8) = .init(0),
+    /// O servidor já aceitou (welcome). Antes disso, voz não sai: o primeiro
+    /// pacote tem que ser o hello, e a voz fura a fila.
+    welcomed: std.atomic.Value(bool) = .init(false),
     voice_seq: std.atomic.Value(u32) = .init(0),
 
     pub const Options = struct {
@@ -619,6 +622,7 @@ pub const Client = struct {
                 const server_us = try r.u64_();
                 cl.clock_offset.store(@as(i64, @intCast(server_us)) - @as(i64, @intCast(sync.nowUs())), .monotonic);
                 cl.status = .connected;
+                cl.welcomed.store(true, .release);
                 _ = cl.refs.fetchAdd(1, .monotonic);
                 sync.spawn(pingLoop, .{cl}) catch {
                     _ = cl.refs.fetchSub(1, .monotonic);
@@ -690,6 +694,15 @@ pub const Client = struct {
                     break;
                 };
                 if (peer == null) {
+                    // só de quem está na sala (um servidor ruim inventando ids
+                    // criaria um decoder + 1 s de anel por id)
+                    const known = for (cl.members.items) |*mb| {
+                        if (mb.id == from) break true;
+                    } else false;
+                    if (!known or cl.voice_peers.items.len >= 64) {
+                        cl.mutex.unlock();
+                        return;
+                    }
                     const p = gpa.create(voice.Peer) catch {
                         cl.mutex.unlock();
                         return;
@@ -778,6 +791,7 @@ pub const Client = struct {
 
     /// Pacote de voz nosso (thread de áudio): fura a fila, conversa não espera vídeo.
     pub fn sendVoice(cl: *Client, seq: u32, packet: []const u8) void {
+        if (!cl.welcomed.load(.acquire)) return;
         const m = proto.Msg.alloc(.voice, 4 + packet.len) catch return;
         std.mem.writeInt(u32, m.payload()[0..4], seq, .little);
         @memcpy(m.payload()[4..], packet);
@@ -787,7 +801,8 @@ pub const Client = struct {
     /// Microfone ligado / surdo (proto.voice_*). Vale também depois de reconectar.
     pub fn sendVoiceState(cl: *Client, flags: u8) void {
         cl.voice_flags.store(flags, .monotonic);
-        cl.pushVoiceState(flags);
+        // antes do welcome só guarda: o welcome manda o estado guardado
+        if (cl.welcomed.load(.acquire)) cl.pushVoiceState(flags);
     }
 
     fn pushVoiceState(cl: *Client, flags: u8) void {
@@ -810,11 +825,7 @@ pub const Client = struct {
         cl.mutex.lock();
         defer cl.mutex.unlock();
         cl.voice_volumes.put(gpa, id, vol) catch {};
-        for (cl.voice_peers.items) |p| if (p.id == id) {
-            p.ring.mutex.lock();
-            p.ring.volume = vol;
-            p.ring.mutex.unlock();
-        };
+        for (cl.voice_peers.items) |p| if (p.id == id) p.ring.setVolume(vol); // com o lock do anel (o mixer lê)
     }
 
     pub fn voiceVolume(cl: *Client, id: u32) f32 {
