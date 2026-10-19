@@ -130,14 +130,20 @@ fn runHw(name: []const u8, w: u32, h: u32, mode: codec.Mode, scene: enum { text,
     defer enc.deinit();
     var dec = try codec.Decoder.init();
     defer dec.deinit();
+    var hwd: ?codec.HwDecoder = codec.HwDecoder.init(&err) catch null;
+    defer if (hwd) |*d| d.deinit();
     const img = try gpa.alloc(u8, @as(usize, w) * h * 4);
     defer gpa.free(img);
+    const rgba = try gpa.alloc(u8, @as(usize, w) * h * 4);
+    defer gpa.free(rgba);
     fillText(img, w, h, 1);
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(gpa);
     const frames = 90;
     var t_enc: u64 = 0;
     var t_dec: u64 = 0;
+    var t_hwdec: u64 = 0;
+    var hw_frames: u32 = 0;
     var bytes: u64 = 0;
     var worst: u64 = 0;
     for (0..frames) |f| {
@@ -148,18 +154,28 @@ fn runHw(name: []const u8, w: u32, h: u32, mode: codec.Mode, scene: enum { text,
         const b = sync.nowUs();
         _ = try dec.decode(out.items);
         const c = sync.nowUs();
+        var hd: u64 = 0;
+        if (hwd) |*d| {
+            if (try d.decode(out.items)) |fr| {
+                codec.nv12ToRgba(fr.y, fr.uv, fr.w, fr.h, rgba);
+                hd = sync.nowUs() - c;
+                hw_frames += 1;
+            } else return error.NvdecHeldFrame;
+        }
         if (f < 5) continue;
         t_enc += b - a;
         t_dec += c - b;
+        t_hwdec += hd;
         worst = @max(worst, b - a);
         bytes += out.items.len;
     }
     const n: f64 = frames - 5;
-    std.debug.print("{s:<28} encode {d:>5.1} ms (pior {d:.1}) | decode (openh264) {d:>5.1} ms | {d:>6.0} KB/s\n", .{
+    std.debug.print("{s:<28} encode {d:>5.1} ms (pior {d:.1}) | decode openh264 {d:>5.1} ms | NVDEC+rgba {d:>5.1} ms | {d:>6.0} KB/s\n", .{
         name,
         @as(f64, @floatFromInt(t_enc)) / n / 1000,
         @as(f64, @floatFromInt(worst)) / 1000,
         @as(f64, @floatFromInt(t_dec)) / n / 1000,
+        @as(f64, @floatFromInt(t_hwdec)) / n / 1000,
         @as(f64, @floatFromInt(bytes)) / n * 30 / 1024,
     });
 }

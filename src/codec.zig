@@ -5,7 +5,10 @@
 const std = @import("std");
 const sync = @import("sync.zig");
 const oh = @cImport(@cInclude("wels/codec_api.h"));
-const hw = @cImport(@cInclude("hwenc.h"));
+const hw = @cImport({
+    @cInclude("hwenc.h");
+    @cInclude("hwdec.h");
+});
 const gpa = std.heap.c_allocator;
 
 pub const PixelFormat = enum { bgrx, rgbx };
@@ -227,6 +230,71 @@ fn toRgbBand(ctx: *const ToRgbCtx, band: usize) void {
     }
 }
 
+const ToRgbNv12Ctx = struct {
+    y: [*]const u8,
+    uv: [*]const u8,
+    w: usize,
+    h: usize,
+    dst: []u8,
+    bands: usize,
+};
+
+fn uMask() @Vector(16, i32) {
+    var m: [16]i32 = undefined;
+    for (0..16) |i| m[i] = @intCast((i / 2) * 2); // U0 U0 U1 U1 ...
+    return m;
+}
+fn vMask() @Vector(16, i32) {
+    var m: [16]i32 = undefined;
+    for (0..16) |i| m[i] = @intCast((i / 2) * 2 + 1);
+    return m;
+}
+
+fn toRgbNv12Band(ctx: *const ToRgbNv12Ctx, band: usize) void {
+    const per = ((ctx.h + ctx.bands - 1) / ctx.bands + 1) & ~@as(usize, 1);
+    const r0 = band * per;
+    const r1 = @min(ctx.h, r0 + per);
+    const w = ctx.w;
+    var row = r0;
+    while (row < r1) : (row += 1) {
+        const yr = ctx.y + row * w;
+        const uvr = ctx.uv + (row / 2) * w;
+        const out = ctx.dst[row * w * 4 ..][0 .. w * 4];
+        var x: usize = 0;
+        while (x + 16 <= w) : (x += 16) {
+            const yv: V16 = @intCast(@as(@Vector(16, u8), yr[x..][0..16].*));
+            const uvv: @Vector(16, u8) = uvr[x..][0..16].*; // 8 pares U,V
+            const uu: V16 = @intCast(@shuffle(u8, uvv, undefined, uMask()));
+            const vv: V16 = @intCast(@shuffle(u8, uvv, undefined, vMask()));
+            const c = (yv - @as(V16, @splat(16))) * @as(V16, @splat(298));
+            const d = uu - @as(V16, @splat(128));
+            const e = vv - @as(V16, @splat(128));
+            const half: V16 = @splat(128);
+            const r = clamp8((c + e * @as(V16, @splat(409)) + half) >> @splat(8));
+            const g = clamp8((c - d * @as(V16, @splat(100)) - e * @as(V16, @splat(208)) + half) >> @splat(8));
+            const b = clamp8((c + d * @as(V16, @splat(516)) + half) >> @splat(8));
+            const a: @Vector(16, u8) = @splat(255);
+            out[x * 4 ..][0..64].* = @shuffle(u8, std.simd.join(r, g), std.simd.join(b, a), interleaveMask());
+        }
+        while (x < w) : (x += 1) {
+            const c = (@as(i32, yr[x]) - 16) * 298;
+            const d = @as(i32, uvr[(x / 2) * 2]) - 128;
+            const e = @as(i32, uvr[(x / 2) * 2 + 1]) - 128;
+            out[x * 4 + 0] = @intCast(std.math.clamp((c + 409 * e + 128) >> 8, 0, 255));
+            out[x * 4 + 1] = @intCast(std.math.clamp((c - 100 * d - 208 * e + 128) >> 8, 0, 255));
+            out[x * 4 + 2] = @intCast(std.math.clamp((c + 516 * d + 128) >> 8, 0, 255));
+            out[x * 4 + 3] = 255;
+        }
+    }
+}
+
+/// Converte NV12 (saída do NVDEC) pra RGBA.
+pub fn nv12ToRgba(y: [*]const u8, uv: [*]const u8, w: usize, h: usize, dst: []u8) void {
+    const bands = @max(1, @min(sync.pool.threads + 1, h / 32));
+    const ctx: ToRgbNv12Ctx = .{ .y = y, .uv = uv, .w = w, .h = h, .dst = dst, .bands = bands };
+    sync.pool.run(bands, &ctx, toRgbNv12Band);
+}
+
 /// Converte I420 pra RGBA (pronto pra subir numa textura).
 pub fn toRgba(y: [*]const u8, u: [*]const u8, v: [*]const u8, ys: usize, uvs: usize, w: usize, h: usize, dst: []u8) void {
     const bands = @max(1, @min(sync.pool.threads + 1, h / 32));
@@ -412,6 +480,34 @@ pub fn hasIdrNal(bits: []const u8) bool {
     }
     return false;
 }
+
+// ---------------------------------------------------------------------------
+// Decoder em hardware (NVDEC)
+
+pub const HwDecoder = struct {
+    h: *hw.hwdec,
+
+    pub fn init(err: []u8) !HwDecoder {
+        @memset(err, 0);
+        const h = hw.hwdec_open(err.ptr, @intCast(err.len)) orelse return error.HwUnavailable;
+        return .{ .h = h };
+    }
+
+    pub fn deinit(d: *HwDecoder) void {
+        hw.hwdec_close(d.h);
+    }
+
+    pub const Frame = struct { y: [*]const u8, uv: [*]const u8, w: u32, h: u32 };
+
+    /// Decodifica um quadro completo. A imagem vale até a próxima chamada.
+    pub fn decode(d: *HwDecoder, data: []const u8) !?Frame {
+        var f: hw.hwdec_frame = undefined;
+        const r = hw.hwdec_decode(d.h, data.ptr, @intCast(data.len), &f);
+        if (r < 0) return error.Decode;
+        if (r == 0) return null;
+        return .{ .y = f.y, .uv = f.uv, .w = @intCast(f.width), .h = @intCast(f.height) };
+    }
+};
 
 // ---------------------------------------------------------------------------
 // Decoder

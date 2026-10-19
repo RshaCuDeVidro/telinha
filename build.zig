@@ -95,11 +95,12 @@ const Deps = struct {
     nasm: NasmProgram,
 };
 
-/// Encoder em hardware (NVENC). As libs do driver são carregadas em runtime.
+/// Encoder/decoder em hardware (NVENC/NVDEC). As libs do driver são carregadas em runtime.
 fn addHwenc(b: *std.Build, deps: Deps, mod: *std.Build.Module) void {
     mod.addIncludePath(deps.nv_headers.path("include"));
     mod.addIncludePath(b.path("src/c"));
     mod.addCSourceFile(.{ .file = b.path("src/c/hwenc_nvenc.c"), .flags = &.{ "-O2", "-Wno-everything" } });
+    mod.addCSourceFile(.{ .file = b.path("src/c/hwdec_nvdec.c"), .flags = &.{ "-O2", "-Wno-everything" } });
 }
 
 const NasmProgram = union(enum) {

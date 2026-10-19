@@ -461,7 +461,7 @@ pub const App = struct {
     fn connect(a: *App, host: []const u8, port: u16, pass: []const u8, admin_token: []const u8) void {
         a.home_error_len = 0;
         config.save(&a.cfg);
-        a.client = Client.create(.{ .host = host, .port = port, .name = a.myName(), .password = pass, .admin_token = admin_token, .wake = wakeUi }) catch {
+        a.client = Client.create(.{ .host = host, .port = port, .name = a.myName(), .password = pass, .admin_token = admin_token, .hw_decode = a.cfg.hardware, .wake = wakeUi }) catch {
             a.setHomeError("Falha ao iniciar a conexão.");
             return;
         };
@@ -1275,7 +1275,7 @@ pub const App = struct {
 
     fn latencyText(buf: *[48]u8, v: *const View) []const u8 {
         if (v.fps < 0.5) return "tela parada";
-        return std.fmt.bufPrint(buf, "atraso {d:.0} ms · decode {d:.1} ms", .{ v.latency_ms, v.decode_ms }) catch "";
+        return std.fmt.bufPrint(buf, "atraso {d:.0} ms · {s} {d:.1} ms", .{ v.latency_ms, v.decoder_name, v.decode_ms }) catch "";
     }
 
     fn drawTile(a: *App, t: *const Tile, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f32, big: bool) void {
@@ -1684,7 +1684,7 @@ pub const App = struct {
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         c.igPushStyleColor_U32(c.ImGuiCol_CheckMark, col.white);
         _ = c.igCheckbox("Mostrar o cursor do mouse", &a.cfg.cursor);
-        _ = c.igCheckbox("Usar a placa de vídeo pra codificar (NVIDIA NVENC), se tiver", &a.cfg.hardware);
+        _ = c.igCheckbox("Usar a placa de vídeo (NVIDIA NVENC/NVDEC), se tiver", &a.cfg.hardware);
         c.igPopStyleColor(2);
 
         if (!sync.is_windows and a.n_sources > 0 and std.mem.startsWith(u8, std.mem.sliceTo(&a.sources[0].name, 0), "Escolher")) {

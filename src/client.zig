@@ -83,6 +83,7 @@ pub const View = struct {
     fps: f32 = 0,
     kbps: f32 = 0,
     decode_ms: f32 = 0,
+    decoder_name: []const u8 = "",
     latency_ms: f32 = 0, // escrita pela UI quando o quadro vai pra tela
     stat_frames: u32 = 0,
     stat_bytes: u64 = 0,
@@ -139,15 +140,42 @@ pub const View = struct {
         v.qmutex.unlock();
     }
 
+    /// Decoder em uso: NVDEC (placa NVIDIA) ou openh264.
+    const Decoder = union(enum) {
+        hw: codec.HwDecoder,
+        sw: codec.Decoder,
+
+        fn deinit(d: *Decoder) void {
+            switch (d.*) {
+                inline else => |*x| x.deinit(),
+            }
+        }
+    };
+
     fn decodeLoop(v: *View) void {
         defer v.release();
-        var dec = codec.Decoder.init() catch return;
+        var err: [256]u8 = undefined;
+        var dec: Decoder = blk: {
+            if (v.client.hw_decode) {
+                if (codec.HwDecoder.init(&err)) |h| break :blk .{ .hw = h } else |_| {}
+            }
+            break :blk .{ .sw = codec.Decoder.init() catch return };
+        };
         defer dec.deinit();
+        v.decoder_name = if (dec == .hw) "NVDEC" else "openh264";
         v.stat_since = sync.nowMs();
         while (v.pop()) |frame| {
             defer gpa.free(frame);
             v.decodeFrame(&dec, frame) catch {
                 // perdeu referência ou veio lixo: recomeça do próximo IDR
+                if (dec == .hw) {
+                    // erro no NVDEC: segue com o openh264 daqui pra frente
+                    if (codec.Decoder.init()) |sw| {
+                        dec.deinit();
+                        dec = .{ .sw = sw };
+                        v.decoder_name = "openh264";
+                    } else |_| {}
+                }
                 v.qmutex.lock();
                 v.waiting_key = true;
                 v.qmutex.unlock();
@@ -156,7 +184,7 @@ pub const View = struct {
         }
     }
 
-    fn decodeFrame(v: *View, dec: *codec.Decoder, frame: []const u8) !void {
+    fn decodeFrame(v: *View, dec: *Decoder, frame: []const u8) !void {
         const t0 = sync.nowUs();
         var r: proto.Reader = .{ .data = frame };
         _ = try r.u32_(); // seq
@@ -173,25 +201,38 @@ pub const View = struct {
         v.qmutex.unlock();
         if (waiting and !key) return; // sem referência ainda: espera o IDR
 
-        const pic = dec.decode(bitstream) catch |e| {
-            if (debugEnabled()) std.debug.print("[telinha] decode falhou (quadro {s}, {d} bytes)\n", .{ if (key) "IDR" else "P", bitstream.len });
-            return e;
-        } orelse {
+        const Out = union(enum) { i420: codec.Decoder.Picture, nv12: codec.HwDecoder.Frame };
+        const decoded: ?Out = switch (dec.*) {
+            .sw => |*d| if (try d.decode(bitstream)) |p| .{ .i420 = p } else null,
+            .hw => |*d| if (try d.decode(bitstream)) |f| .{ .nv12 = f } else null,
+        };
+        const pic = decoded orelse {
             if (debugEnabled()) std.debug.print("[telinha] decoder não devolveu imagem (quadro {s}, {d} bytes)\n", .{ if (key) "IDR" else "P", bitstream.len });
             return;
+        };
+        const pw: u32 = switch (pic) {
+            .i420 => |p| p.w,
+            .nv12 => |f| f.w,
+        };
+        const ph: u32 = switch (pic) {
+            .i420 => |p| p.h,
+            .nv12 => |f| f.h,
         };
         {
             v.mutex.lock();
             defer v.mutex.unlock();
-            if (pic.w != v.w or pic.h != v.h) {
-                const px = try gpa.alloc(u8, @as(usize, pic.w) * pic.h * 4);
+            if (pw != v.w or ph != v.h) {
+                const px = try gpa.alloc(u8, @as(usize, pw) * ph * 4);
                 gpa.free(v.pixels);
                 v.pixels = px;
-                v.w = pic.w;
-                v.h = pic.h;
+                v.w = pw;
+                v.h = ph;
                 v.resized = true;
             }
-            codec.toRgba(pic.y, pic.u, pic.v, pic.ys, pic.uvs, pic.w, pic.h, v.pixels);
+            switch (pic) {
+                .i420 => |p| codec.toRgba(p.y, p.u, p.v, p.ys, p.uvs, p.w, p.h, v.pixels),
+                .nv12 => |f| codec.nv12ToRgba(f.y, f.uv, f.w, f.h, v.pixels),
+            }
             v.dirty = true;
             v.capture_ts = ts;
             v.got_first = true;
@@ -226,6 +267,7 @@ pub const Client = struct {
     admin_token: [64]u8 = undefined,
     admin_token_len: usize = 0,
     wake_fn: *const fn () void,
+    hw_decode: bool = true,
 
     sock: net.Socket = undefined,
     sock_ok: std.atomic.Value(bool) = .init(false),
@@ -258,12 +300,13 @@ pub const Client = struct {
         name: []const u8,
         password: []const u8,
         admin_token: []const u8 = "",
+        hw_decode: bool = true,
         wake: *const fn () void,
     };
 
     pub fn create(o: Options) !*Client {
         const cl = try gpa.create(Client);
-        cl.* = .{ .wake_fn = o.wake, .port = o.port };
+        cl.* = .{ .wake_fn = o.wake, .port = o.port, .hw_decode = o.hw_decode };
         copyInto(&cl.host, &cl.host_len, o.host);
         copyInto(cl.name[0..32], &cl.name_len, o.name);
         copyInto(&cl.pass, &cl.pass_len, o.password);
