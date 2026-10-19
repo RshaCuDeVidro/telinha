@@ -134,6 +134,11 @@ joga a fila fora e manda `keyreq alvo` (o servidor aplica a mesma espera
 crescente). Quadros que já têm um mais novo esperando são decodificados mas
 não vão pra tela.
 
+O pedido de IDR pra um espectador esperando normalmente sai quando chega o
+próximo quadro do transmissor; com a tela dele parada (nada chegando há 1 s e
+nenhum pedido nos últimos 2 s), o servidor pede sozinho — verifica a cada
+250 ms —, senão o espectador ficaria preso na imagem velha.
+
 No Linux os sockets usam `TCP_NOTSENT_LOWAT` = 32 KB: o kernel segura pouco
 dado ainda não enviado e o resto espera na fila do app, onde dá pra descartar.
 
