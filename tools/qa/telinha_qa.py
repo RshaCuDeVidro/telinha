@@ -500,6 +500,31 @@ class App:
             time.sleep(0.03)
         time.sleep(0.1)
 
+    def x_windows(self):
+        """Nomes das janelas na tela dessa instância."""
+        out = []
+        for w in self.d.screen().root.query_tree().children:
+            try:
+                n = w.get_wm_name()
+            except Exception:
+                n = None
+            if n:
+                out.append((n, w))
+        return out
+
+    def close_x_window(self, name):
+        """Fecha uma janela como o X do gerenciador de janelas faria (WM_DELETE_WINDOW)."""
+        from Xlib import protocol
+        wm_protocols = self.d.intern_atom("WM_PROTOCOLS")
+        wm_delete = self.d.intern_atom("WM_DELETE_WINDOW")
+        for n, w in self.x_windows():
+            if n == name:
+                ev = protocol.event.ClientMessage(window=w, client_type=wm_protocols, data=(32, [wm_delete, X.CurrentTime, 0, 0, 0]))
+                w.send_event(ev, event_mask=X.NoEventMask)
+                self.d.flush()
+                return True
+        return False
+
     def unfocus(self):
         """Tira o foco do teclado da janela (como se a pessoa fosse pra outro app)."""
         self.d.set_input_focus(self.d.screen().root, X.RevertToPointerRoot, X.CurrentTime)

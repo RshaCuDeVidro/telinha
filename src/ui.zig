@@ -19,6 +19,7 @@ const voice = @import("voice.zig");
 const qa = @import("qa.zig");
 const clip = @import("clip.zig");
 const mp4 = @import("mp4.zig");
+const pip = @import("pip.zig");
 pub const version_string = "2.1.0";
 const Sharer = sharer_mod.Sharer;
 
@@ -417,6 +418,7 @@ pub const App = struct {
     tile_controls: ?u32 = null,
     zooms: [24]Zoom = [_]Zoom{.{}} ** 24,
     clip_jobs: [6]?*ClipJob = [_]?*ClipJob{null} ** 6,
+    pips: [4]?*pip.Pip = [_]?*pip.Pip{null} ** 4, // janelas flutuantes
     last_saved: [512]u8 = undefined, // último clipe/gravação salvo (modo de testes)
     last_saved_len: usize = 0,
     /// Transmissão com o ponteiro "olha aqui" ligado (o mouse vira o ponteiro).
@@ -520,6 +522,7 @@ pub const App = struct {
     }
 
     pub fn shutdown(a: *App) void {
+        a.closePips();
         if (a.screen == .room) a.leaveRoom();
         config.save(&a.cfg);
     }
@@ -901,6 +904,7 @@ pub const App = struct {
         a.setDeaf(false);
         a.n_known = 0;
         a.known_ready = false;
+        a.closePips();
         a.stopSharing();
         a.stopCamera();
         a.leave_confirm = false;
@@ -2581,6 +2585,14 @@ pub const App = struct {
                     }
                 }
                 bx -= bs + S(6);
+                // janela flutuante (só transmissões de outras pessoas)
+                if (t.view != null) {
+                    const open = a.findPip(t.stream) != null;
+                    c.igSetCursorScreenPos(v2(bx, by));
+                    rectFill(d, bx, by, bx + bs, by + bs, if (open) col.blurple else col.overlay, S(6));
+                    if (iconButton("##pip", ic.window_restore, bs, col.white, rgba(0x5865F2, 200), if (open) "Fechar a janela flutuante" else "Abrir numa janela flutuante (por cima das outras)")) a.togglePip(t.stream, t.name);
+                    bx -= bs + S(6);
+                }
                 // clipe (últimos 30 s) e gravação
                 if (t.clipbuf) |cb| {
                     const rs = cb.recState();
@@ -2847,6 +2859,74 @@ pub const App = struct {
     fn baseName(path: []const u8) []const u8 {
         const i = std.mem.findLastAny(u8, path, "/\\") orelse return path;
         return path[i + 1 ..];
+    }
+
+    // ------------------------------------------------------ janela flutuante
+
+    fn findPip(a: *App, stream: u32) ?*pip.Pip {
+        for (a.pips) |maybe| if (maybe) |p| if (p.stream == stream) return p;
+        return null;
+    }
+
+    fn togglePip(a: *App, stream: u32, name: []const u8) void {
+        for (&a.pips) |*sl| if (sl.*) |p| if (p.stream == stream) {
+            p.close(a.window);
+            sl.* = null;
+            return;
+        };
+        const slot = for (&a.pips) |*sl| {
+            if (sl.* == null) break sl;
+        } else {
+            a.toast("No máximo 4 janelas flutuantes.", .{}, true);
+            return;
+        };
+        var title: [96]u8 = undefined;
+        const t = std.fmt.bufPrintZ(&title, "telinha · {s}", .{name}) catch "telinha";
+        slot.* = pip.Pip.open(a.window, stream, t, scale) catch {
+            a.toast("Não consegui abrir a janela flutuante.", .{}, true);
+            return;
+        };
+    }
+
+    /// Desenha as janelas flutuantes (depois da principal, a cada volta do loop).
+    pub fn drawPips(a: *App) void {
+        for (&a.pips) |*sl| {
+            const p = sl.* orelse continue;
+            const v = a.findView(p.stream) orelse {
+                // pararam de transmitir (ou paramos de assistir): fecha
+                p.close(a.window);
+                sl.* = null;
+                continue;
+            };
+            var name_buf: [64]u8 = undefined;
+            var name: []const u8 = "";
+            if (a.client) |cl| {
+                cl.mutex.lock();
+                for (cl.members.items) |*m| if (m.id == v.member()) {
+                    name = std.fmt.bufPrint(&name_buf, "{s}{s}", .{ m.nameSlice()[0..@min(m.name_len, 40)], if (v.kind() == proto.kind_camera) " (câmera)" else "" }) catch "";
+                };
+                cl.mutex.unlock();
+            }
+            switch (p.frame(a.window, v.tex, v.tex_w, v.tex_h, name, if (v.audio_registered) &v.audio_ring else null)) {
+                .none => {},
+                .close => {
+                    p.close(a.window);
+                    sl.* = null;
+                },
+                .back => {
+                    p.close(a.window);
+                    sl.* = null;
+                    c.glfwFocusWindow(a.window);
+                },
+            }
+        }
+    }
+
+    pub fn closePips(a: *App) void {
+        for (&a.pips) |*sl| if (sl.*) |p| {
+            p.close(a.window);
+            sl.* = null;
+        };
     }
 
     /// Abre a pasta dos clipes no gerenciador de arquivos.
@@ -3478,6 +3558,20 @@ pub const App = struct {
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);
         try w.print(",\"clipboard\":{f},\"chat_input\":{f}", .{ s(if (cb_text != null) std.mem.span(cb_text) else ""), s(std.mem.sliceTo(&a.chat_input, 0)) });
         try w.print(",\"notifications_sent\":{d},\"away\":{}", .{ a.notifications_sent, a.away() });
+        try w.writeAll(",\"pips\":[");
+        var first_pip = true;
+        for (a.pips) |maybe| if (maybe) |pp| {
+            var px: c_int = 0;
+            var py: c_int = 0;
+            var pw: c_int = 0;
+            var ph: c_int = 0;
+            c.glfwGetWindowPos(pp.win, &px, &py);
+            c.glfwGetWindowSize(pp.win, &pw, &ph);
+            if (!first_pip) try w.writeByte(',');
+            first_pip = false;
+            try w.print("{{\"stream\":{d},\"x\":{d},\"y\":{d},\"w\":{d},\"h\":{d}}}", .{ pp.stream, px, py, pw, ph });
+        };
+        try w.writeAll("]");
         try w.print(",\"last_saved\":{f},\"clip_jobs\":{d}", .{ s(a.last_saved[0..a.last_saved_len]), blk: {
             var n: usize = 0;
             for (a.clip_jobs) |j| n += @intFromBool(j != null);

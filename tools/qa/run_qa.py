@@ -587,6 +587,41 @@ def clipes_e_gravacao():
         expect(frames >= 10, "clipe da própria transmissão vazio")
 
 
+@test
+def janela_flutuante():
+    """Janela flutuante: abre pelo quadro, mostra o vídeo, fecha pelo sistema, pelo botão dela e sozinha quando a transmissão some."""
+    S = os.environ.get("QA_SHOTS")
+    with Session("pip") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"])
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}", "--assistir"], size=(1280, 760))
+        aid = b.member_id("Ana")
+        b.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 15, "ver a tela da Ana")
+        tile = b.tile(aid)
+        b.click("##pip", within=tile, hover_first=center(tile))
+        st = b.wait(lambda st: any(q["stream"] == aid for q in st["pips"]), 5, "abrir a janela flutuante")
+        expect(any(n == "telinha · Ana" for n, _ in b.x_windows()), f"janela não apareceu: {[n for n, _ in b.x_windows()]}")
+        if S:
+            time.sleep(1)
+            b.screenshot(os.path.join(S, "pip.png"))
+        # fechar pelo sistema (X da barra de título)
+        b.close_x_window("telinha · Ana")
+        b.wait(lambda st: not st["pips"], 5, "fechar pelo sistema")
+        # de novo, e fechar pelo botão dela
+        b.click("##pip", within=b.tile(aid), hover_first=center(b.tile(aid)))
+        q = b.wait(lambda st: st["pips"], 5, "abrir de novo")["pips"][0]
+        b.move(q["x"] + q["w"] / 2, q["y"] + q["h"] / 2)
+        time.sleep(0.3)
+        b.click_at(q["x"] + q["w"] - 20, q["y"] + 20)
+        b.wait(lambda st: not st["pips"], 5, "fechar pelo botão da janelinha")
+        # aberta e a Ana para de transmitir: fecha sozinha
+        b.click("##pip", within=b.tile(aid), hover_first=center(b.tile(aid)))
+        b.wait(lambda st: st["pips"], 5, "abrir de novo")
+        a.click(contains="Ao vivo (configurar)##share")
+        a.click("Parar")
+        b.wait(lambda st: not st["pips"], 10, "fechar sozinha quando a transmissão acaba")
+
+
 # ---------------------------------------------------------------------------
 
 

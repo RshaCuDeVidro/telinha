@@ -14,10 +14,7 @@ fn noGpuYuv() bool {
     return getenv("TELINHA_SEM_SHADER") != null;
 }
 
-const inter_regular = @embedFile("assets/Inter-400.ttf");
-const inter_semibold = @embedFile("assets/Inter-600.ttf");
-const inter_bold = @embedFile("assets/Inter-700.ttf");
-const fa_solid = @embedFile("assets/fa-solid-900.ttf");
+const fonts = @import("fonts.zig");
 const icon64 = @embedFile("assets/icon64.rgba");
 
 extern "winmm" fn timeBeginPeriod(ms: c_uint) callconv(.winapi) c_uint;
@@ -25,19 +22,6 @@ extern "winmm" fn timeBeginPeriod(ms: c_uint) callconv(.winapi) c_uint;
 fn onGlfwError(code: c_int, desc: [*c]const u8) callconv(.c) void {
     _ = code;
     _ = desc;
-}
-
-fn loadFont(atlas: *c.ImFontAtlas, data: []const u8, size: f32) *c.ImFont {
-    const cfg = c.ImFontConfig_ImFontConfig();
-    defer c.ImFontConfig_destroy(cfg);
-    cfg.*.FontDataOwnedByAtlas = false;
-    const font = c.ImFontAtlas_AddFontFromMemoryTTF(atlas, @constCast(data.ptr), @intCast(data.len), size, cfg, null);
-    // ícones (Font Awesome) misturados na mesma fonte
-    cfg.*.MergeMode = true;
-    cfg.*.GlyphMinAdvanceX = size;
-    cfg.*.GlyphOffset = .{ .x = 0, .y = size * 0.05 };
-    _ = c.ImFontAtlas_AddFontFromMemoryTTF(atlas, @constCast(fa_solid.ptr), @intCast(fa_solid.len), size * 0.9, cfg, null);
-    return font;
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -76,9 +60,10 @@ pub fn main(init: std.process.Init) !void {
     io.*.ConfigInputTextEnterKeepActive = true;
     qa.init(); // TELINHA_QA: modo de testes (posição dos botões + estado em arquivos)
     const base = 15 * ui.scale;
-    ui.font_regular = loadFont(io.*.Fonts, inter_regular, base);
-    ui.font_semibold = loadFont(io.*.Fonts, inter_semibold, base);
-    ui.font_bold = loadFont(io.*.Fonts, inter_bold, base);
+    const fs = fonts.load(io.*.Fonts, base);
+    ui.font_regular = fs.regular;
+    ui.font_semibold = fs.semibold;
+    ui.font_bold = fs.bold;
     io.*.FontDefault = ui.font_regular;
     ui.applyStyle();
     c.igGetStyle().*.FontSizeBase = base;
@@ -124,6 +109,7 @@ pub fn main(init: std.process.Init) !void {
         glClear(0x4000);
         c.ImGui_ImplOpenGL3_RenderDrawData(c.igGetDrawData());
         c.glfwSwapBuffers(win);
+        app.drawPips(); // janelas flutuantes (cada uma com o contexto dela)
 
         const active = io.*.MouseDelta.x != 0 or io.*.MouseDelta.y != 0 or io.*.MouseWheel != 0 or
             c.igIsMouseDown_Nil(0) or c.igIsMouseDown_Nil(1) or c.igIsAnyItemActive();
