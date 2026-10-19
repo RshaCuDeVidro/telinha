@@ -319,7 +319,7 @@ pub const View = struct {
         }
     }
 
-    /// Decoder em uso: o da placa (NVDEC, Media Foundation...) ou openh264.
+    /// Decoder em uso: em hardware (NVDEC, VA-API, Media Foundation) ou openh264.
     const Decoder = union(enum) {
         hw: codec.HwDecoder,
         sw: codec.Decoder,
@@ -352,7 +352,7 @@ pub const View = struct {
             v.decodeFrame(&dec, frame, behind) catch {
                 // perdeu referência ou veio lixo: recomeça do próximo IDR
                 if (dec == .hw) {
-                    // erro no decoder da placa: segue com o openh264 daqui pra frente
+                    // erro no decoder em hardware: segue com o openh264 daqui pra frente
                     if (codec.Decoder.init()) |sw| {
                         dec.deinit();
                         dec = .{ .sw = sw };

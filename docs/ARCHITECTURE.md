@@ -42,10 +42,11 @@ pipeline, o mesmo controle de taxa e confirmações separadas.
 | `src/tunnel.zig` | link público: cliente do protocolo do bore; cada visitante vira uma conexão da sala |
 | `src/upnp.zig` | porta aberta no roteador (UPnP IGD: SSDP + SOAP), com aviso de CGNAT |
 | `src/codec.zig` | wrapper do openh264 e do encoder em hardware + conversões de cor vetorizadas |
-| `src/c/hwenc.c` | escolhe o encoder em hardware: NVENC → Media Foundation (Windows) → nenhum (openh264) |
+| `src/c/hwenc.c` | escolhe o encoder em hardware: NVENC → Media Foundation (Windows) ou VA-API (Linux) → nenhum (openh264) |
 | `src/c/hwenc_nvenc.c` | encoder em hardware NVIDIA (API NVENC 11.1, carregada em runtime) |
 | `src/c/hwenc_mf.c` | Windows: encoder H.264 em hardware de qualquer placa (MFT do Media Foundation: Intel, AMD, NVIDIA) |
 | `src/c/hwdec_nvdec.c` | decoder em hardware NVIDIA (NVDEC/nvcuvid, carregado em runtime) |
+| `src/c/hwva.c` | Linux: encoder e decoder H.264 pelo VA-API (Intel/AMD; libva carregada em runtime). O decoder faz a parte "de software" do H.264 (SPS/PPS, POC, referências, MMCO); o encoder se testa ao abrir (3 quadros decodificados pelo openh264) |
 | `src/gl.zig` | texturas e conversão YUV→RGB num shader |
 | `src/audio.zig` | áudio: Opus de quem transmite, anel anti-oscilação e mixer de quem assiste |
 | `src/voice.zig` | voz da sala: microfone → cancelamento de eco → RNNoise → portão → Opus; voz de cada pessoa do outro lado |
@@ -75,7 +76,10 @@ pipeline, o mesmo controle de taxa e confirmações separadas.
 CPU e recebe o BGRX direto, a conversão de cor acontece na GPU); no Windows, o
 encoder em hardware do Media Foundation (MFT de Intel Quick Sync, AMD ou
 NVIDIA; baixa latência, CBR, sem B-frames, uma camada temporal só, entrada em
-NV12); e, sem nenhum, openh264. Se o encoder em hardware falhar em qualquer
+NV12); no Linux, o VA-API (Intel/AMD: I e P, CBR com HRD curto, SPS/PPS
+nossos, uma camada temporal só, entrada em NV12; antes de ser usado ele
+codifica 3 quadros sintéticos e confere com o openh264, então driver com bug
+não manda lixo pra ninguém); e, sem nenhum, openh264. Se o encoder em hardware falhar em qualquer
 momento, o app cai pro openh264 sem interromper a transmissão. Encoder que
 ignora pedido de IDR (o do wine, algum driver por aí) é descoberto na segunda
 vez seguida e passa a ser **recriado a cada pedido** — encoder novo sempre
@@ -130,7 +134,9 @@ em ~89% da meta (antes descia pra 50%) e o lento acompanha com ~90 ms de atraso
 (medido com `TELINHA_BENCH_CAMADAS=1/2`), então nesse caso fica uma só — e o
 servidor volta pro jeito antigo (taxa da sala e recomeço por IDR).
 
-**Quem assiste quase não usa CPU.** Com NVIDIA, o NVDEC decodifica; em
+**Quem assiste quase não usa CPU.** Com NVIDIA, o NVDEC decodifica (com
+Intel/AMD no Linux, o VA-API, que dá a mesma imagem bit a bit que o openh264
+e o ffmpeg — `zig build test` confere); em
 qualquer caso a thread de decode entrega os planos YUV (1,5 byte/pixel) e um
 shader converte a cor direto na GPU. Sem shader (OpenGL antigo), a CPU
 converte em paralelo, como antes.

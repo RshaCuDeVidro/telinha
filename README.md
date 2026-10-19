@@ -24,7 +24,7 @@
 - **Voz, tipo Discord**: microfone com cancelamento de eco (dá pra usar caixa de som em vez de fone), supressão de ruído (RNNoise: tira ventilador, teclado, chiado) e ativação por voz, em Opus. Bolinha verde em quem está falando, botão de microfone e de "surdo", volume da voz de cada pessoa (clique direito). A voz fura a fila: não espera atrás do vídeo.
 - **Áudio do computador junto** (vídeo, jogo, música), em Opus com pouca latência, com volume e mudo por transmissão. O som que o próprio telinha toca nunca entra na captura (Windows: loopback excluindo o processo; Linux: cada aplicativo ligado direto na captura pelo grafo do PipeWire, menos o telinha) — sem eco, e você continua ouvindo o que assiste enquanto compartilha.
 - **Chat** com histórico (quem chega vê as últimas mensagens), lista de membros com o caminho de cada um (rede local, internet, IPv6, link público), quem está ao vivo, quem está assistindo quem, ping. **Notificações do sistema** com o telinha em segundo plano.
-- **H.264 com pouca latência**: encode e decode na **placa de vídeo (NVIDIA NVENC/NVDEC; no Windows também Intel e AMD pelo Media Foundation)** quando tem, senão **openh264** com SIMD em várias threads. Só manda quadro quando a tela muda; a conversão de cor de quem assiste roda num shader na GPU.
+- **H.264 com pouca latência**: encode e decode na **placa de vídeo (NVIDIA NVENC/NVDEC; Intel e AMD pelo Media Foundation no Windows e pelo VA-API no Linux)** quando tem, senão **openh264** com SIMD em várias threads. Só manda quadro quando a tela muda; a conversão de cor de quem assiste roda num shader na GPU.
 - **Atraso controlado de ponta a ponta, até atrás de túnel**: cada quadro é confirmado, então o telinha mede o atraso real do caminho inteiro — inclusive dentro de ngrok/bore, que escondem o congestionamento. Se o upload não aguenta, a taxa cai e quadros são pulados em vez de acumular atraso; se um espectador não aguenta, ele passa a receber só metade dos quadros (a transmissão sai em duas camadas: um quadro sim, um não, ninguém depende dele) sem tocar na qualidade dos outros, e a qualidade só cai pra todo mundo se a maioria estiver sofrendo.
 - **Criptografia de ponta a ponta** entre cada pessoa e a sala (X25519 + ChaCha20-Poly1305); a senha da sala entra na derivação das chaves.
 - **Reconexão automática**: se a internet oscilar ou o servidor reiniciar, o app volta sozinho, retoma a transmissão e volta a assistir quem estava assistindo.
@@ -68,7 +68,7 @@ Ponta a ponta, numa sala local com conteúdo pesado (tela inteira mudando a cada
 
 ## Compilar
 
-Precisa do [Zig 0.16](https://ziglang.org/download/). As dependências de C/C++ (openh264, Dear ImGui, GLFW, NASM, headers do NVENC) são baixadas pelo próprio `zig build`.
+Precisa do [Zig 0.16](https://ziglang.org/download/). As dependências de C/C++ (openh264, Dear ImGui, GLFW, NASM, headers do NVENC e do VA-API) são baixadas pelo próprio `zig build`.
 
 No Linux, as bibliotecas do sistema pra interface e captura:
 
@@ -107,7 +107,7 @@ Pra binários que rodam em qualquer CPU x86-64 (como no CI): `zig build -Dcpu=x8
 --fps N --qualidade N --modo tela|jogo --software
 --estatisticas        estatísticas sempre visíveis
 ```
-`TELINHA_DEBUG=1` imprime o tempo de cada etapa do pipeline. `TELINHA_SEM_SHADER=1` força a conversão de cor na CPU; `TELINHA_CURSOR_EMBUTIDO=1` deixa o compositor desenhar o cursor (Hyprland); `TELINHA_SEM_DMABUF=1` captura por memória compartilhada em vez de DMA-BUF; `TELINHA_SEM_SOM=1` não toca o áudio recebido. `TELINHA_PASTA_CONFIG` e `TELINHA_PASTA_CLIPES` trocam as pastas de configuração e de clipes (telinha "portátil"). No Windows: `TELINHA_SEM_NVENC=1`/`TELINHA_SEM_MF=1` pulam esses encoders; `TELINHA_SEM_WGC=1` captura janela por PrintWindow.
+`TELINHA_DEBUG=1` imprime o tempo de cada etapa do pipeline. `TELINHA_SEM_SHADER=1` força a conversão de cor na CPU; `TELINHA_CURSOR_EMBUTIDO=1` deixa o compositor desenhar o cursor (Hyprland); `TELINHA_SEM_DMABUF=1` captura por memória compartilhada em vez de DMA-BUF; `TELINHA_SEM_SOM=1` não toca o áudio recebido. `TELINHA_PASTA_CONFIG` e `TELINHA_PASTA_CLIPES` trocam as pastas de configuração e de clipes (telinha "portátil"). No Linux, `TELINHA_SEM_VAAPI=1` pula o encoder VA-API. No Windows: `TELINHA_SEM_NVENC=1`/`TELINHA_SEM_MF=1` pulam esses encoders; `TELINHA_SEM_WGC=1` captura janela por PrintWindow.
 
 Se a captura não funcionar ou estiver lenta, `zig build captest` (ou `zig-out/tools/captest 10 30 quadro.ppm`) mostra o método, o formato, o fps real e salva um quadro.
 </details>

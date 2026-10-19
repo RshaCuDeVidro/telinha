@@ -504,7 +504,7 @@ pub fn hasIdrNal(bits: []const u8) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Decoder em hardware (NVDEC, Media Foundation, VA-API)
+// Decoder em hardware (NVDEC; VA-API no Linux, Media Foundation no Windows)
 
 pub const HwDecoder = struct {
     h: *hw.hwdec,
@@ -519,7 +519,7 @@ pub const HwDecoder = struct {
         hw.hwdec_close(d.h);
     }
 
-    /// "NVDEC", "Media Foundation", "VA-API"...
+    /// "NVDEC", "VA-API", "Media Foundation"
     pub fn name(d: *HwDecoder) []const u8 {
         return std.mem.span(hw.hwdec_name(d.h));
     }

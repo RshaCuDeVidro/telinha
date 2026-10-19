@@ -24,6 +24,11 @@
             .hash = "N-V-__8AAAmivwH7RvCrZo25NNu0lx2Sw-ogZhmqGXvorlHg",
             .lazy = true,
         },
+        .libva = .{
+            .url = "https://github.com/intel/libva/archive/refs/tags/2.22.0.tar.gz",
+            .hash = "N-V-__8AAL3bFwChrgH-cT2C0ojPrCRsctwjnBE-T4ewg7n-",
+            .lazy = true,
+        },
         .nv_codec_headers = .{
             .url = "https://github.com/FFmpeg/nv-codec-headers/archive/refs/tags/n11.1.5.3.tar.gz",
             .hash = "N-V-__8AAHnKBQD2coquOXXuAjl2p5EEQ5IH36AWJTOUDbP5",

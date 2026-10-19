@@ -1036,3 +1036,541 @@ test "mp4: NAL units do Annex B, SPS/PPS e conversão pra tamanho+NAL" {
     // só a fatia IDR (SPS/PPS vão no avcC; AUD sai)
     try testing.expectEqualSlices(u8, &.{ 0, 0, 0, 3, 0x65, 0x88, 0x84 }, out.items);
 }
+
+// ------------------------------------------------------------------ VA-API
+//
+// Decodificar H.264 é bit a bit determinístico: o VA-API tem que dar
+// exatamente a mesma imagem que o openh264/ffmpeg. Sem placa/driver com
+// VA-API (CI), os testes do decoder são pulados.
+
+const hwva = @cImport(@cInclude("hwva.h"));
+const oh = @cImport(@cInclude("wels/codec_api.h"));
+extern "c" fn fread(ptr: [*]u8, size: usize, n: usize, f: *anyopaque) usize;
+
+fn openVaDecoder() ?*hwva.vadec {
+    var err: [256]u8 = undefined;
+    @memset(&err, 0);
+    return hwva.vadec_open(hwva.HW_CODEC_H264, &err, err.len);
+}
+
+/// Imagem de referência em I420.
+const RefPic = struct { y: [*]const u8, u: [*]const u8, v: [*]const u8, ys: usize, uvs: usize, w: usize, h: usize };
+
+fn refOf(p: codec.Decoder.Picture) RefPic {
+    return .{ .y = p.y, .u = p.u, .v = p.v, .ys = p.ys, .uvs = p.uvs, .w = p.w, .h = p.h };
+}
+
+/// Decodifica no VA-API e exige a mesma imagem, pixel a pixel (luma e croma).
+fn vaExpectSame(d: *hwva.vadec, bits: []const u8, ref: RefPic, what: []const u8, frame: usize) !void {
+    var f: hwva.hwdec_frame = undefined;
+    const r = hwva.vadec_decode(d, bits.ptr, @intCast(bits.len), &f);
+    if (r != 1) {
+        std.debug.print("VA-API ({s}, quadro {d}): decode devolveu {d}\n", .{ what, frame, r });
+        return error.VaNoPicture;
+    }
+    if (f.width != ref.w or f.height != ref.h) {
+        std.debug.print("VA-API ({s}, quadro {d}): {d}x{d} em vez de {d}x{d}\n", .{ what, frame, f.width, f.height, ref.w, ref.h });
+        return error.VaWrongSize;
+    }
+    const w = ref.w;
+    for (0..ref.h) |y| {
+        const a = ref.y[y * ref.ys ..][0..w];
+        const b = f.y[y * w ..][0..w];
+        if (std.mem.findDiff(u8, a, b)) |x| {
+            std.debug.print("VA-API ({s}, quadro {d}): luma diferente em ({d},{d}): {d} != {d}\n", .{ what, frame, x, y, a[x], b[x] });
+            return error.VaLumaDiffers;
+        }
+    }
+    for (0..ref.h / 2) |y| for (0..w / 2) |x| {
+        const u = ref.u[y * ref.uvs + x];
+        const v = ref.v[y * ref.uvs + x];
+        if (f.uv[y * w + 2 * x] != u or f.uv[y * w + 2 * x + 1] != v) {
+            std.debug.print("VA-API ({s}, quadro {d}): croma diferente em ({d},{d})\n", .{ what, frame, x, y });
+            return error.VaChromaDiffers;
+        }
+    };
+}
+
+/// Conteúdo com movimento de verdade: degradê deslizando, "texto" rolando e
+/// um quadrado andando (vetores de movimento em várias direções).
+fn vaScene(img: []u8, w: usize, h: usize, f: usize) void {
+    const sq_x = (20 + f * 13) % (w - 48);
+    const sq_y = (10 + f * 5) % (h - 48);
+    for (0..h) |y| for (0..w) |x| {
+        const p = (y * w + x) * 4;
+        var r: u8 = @intCast((x + f * 3) % 256);
+        var g: u8 = @intCast((y * 2 + f) % 256);
+        var b: u8 = @intCast((x ^ y) & 0xff);
+        const ty = (y + f * 4) % 32;
+        const tx = x % 12;
+        if (y > h / 3 and y < h * 2 / 3 and ty < 12 and (tx == 2 or ty == 5 or tx == ty)) {
+            r = 20;
+            g = 20;
+            b = 20;
+        }
+        if (x >= sq_x and x < sq_x + 40 and y >= sq_y and y < sq_y + 40) {
+            r = 240;
+            g = @intCast((x * 5) % 256);
+            b = 30;
+        }
+        img[p + 0] = b;
+        img[p + 1] = g;
+        img[p + 2] = r;
+        img[p + 3] = 255;
+    };
+}
+
+test "VA-API: SPS/PPS do encoder voltam iguais pelo parser do decoder" {
+    var err: [256]u8 = undefined;
+    @memset(&err, 0);
+    if (hwva.hwva_test_headers(&err, err.len) != 0) {
+        std.debug.print("hwva_test_headers: {s}\n", .{std.mem.sliceTo(&err, 0)});
+        return error.HeaderMismatch;
+    }
+}
+
+test "VA-API: encoder abre com autoteste ou falha com motivo claro" {
+    initPool();
+    const w = 1366;
+    const h = 768;
+    var err: [256]u8 = undefined;
+    @memset(&err, 0);
+    const e = hwva.vaenc_open(hwva.HW_CODEC_H264, w, h, 30, 3_000_000, 1, 1, &err, err.len) orelse {
+        // sem encoder VA-API (ex.: só o driver NVDEC da NVIDIA): tem que dizer por quê
+        const msg = std.mem.sliceTo(&err, 0);
+        try testing.expect(std.mem.startsWith(u8, msg, "VA-API: "));
+        try testing.expect(msg.len > "VA-API: ".len + 5);
+        return;
+    };
+    defer hwva.vaenc_close(e);
+    // tem encoder (Intel/AMD): quadros de verdade, decodificados pelo openh264
+    try testing.expect(std.mem.startsWith(u8, std.mem.span(hwva.vaenc_name(e)), "VA-API"));
+    var dec = try codec.Decoder.init();
+    defer dec.deinit();
+    const img = try std.heap.c_allocator.alloc(u8, w * h * 4);
+    defer std.heap.c_allocator.free(img);
+    for (0..10) |f| {
+        vaScene(img, w, h, f);
+        if (f == 5) hwva.vaenc_set_bitrate(e, 1_500_000);
+        var data: [*c]const u8 = null;
+        var len: c_int = 0;
+        var idr: c_int = 0;
+        try testing.expectEqual(@as(c_int, 0), hwva.vaenc_encode(e, img.ptr, w * 4, hwva.HWENC_BGRX, @intFromBool(f == 7), &data, &len, &idr));
+        try testing.expectEqual(f == 0 or f == 7, idr != 0);
+        const pic = (try dec.decode(data[0..@intCast(len)])) orelse return error.NoPicture;
+        try testing.expectEqual(@as(u32, w), pic.w);
+    }
+}
+
+test "VA-API: decoder igual ao openh264 bit a bit (camadas, fatias, tamanhos, troca de resolução)" {
+    initPool();
+    const d = openVaDecoder() orelse return error.SkipZigTest;
+    defer hwva.vadec_close(d);
+    var ref = try codec.Decoder.init();
+    defer ref.deinit();
+    const gpa = std.heap.c_allocator;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    const Case = struct { w: u32, h: u32, layers: u8, mode: codec.Mode, threads: u32, frames: usize };
+    // o mesmo decoder do começo ao fim: cada caso é uma troca de resolução no meio do fluxo
+    const cases = [_]Case{
+        .{ .w = 640, .h = 360, .layers = 1, .mode = .screen, .threads = 1, .frames = 12 },
+        .{ .w = 1366, .h = 768, .layers = 2, .mode = .motion, .threads = 4, .frames = 12 },
+        .{ .w = 320, .h = 240, .layers = 2, .mode = .screen, .threads = 2, .frames = 12 },
+        .{ .w = 1280, .h = 720, .layers = 1, .mode = .motion, .threads = 3, .frames = 10 },
+        .{ .w = 1366, .h = 768, .layers = 1, .mode = .screen, .threads = 4, .frames = 8 },
+    };
+    for (cases) |c| {
+        const img = try gpa.alloc(u8, c.w * c.h * 4);
+        defer gpa.free(img);
+        var enc = try codec.Encoder.init(.{ .width = c.w, .height = c.h, .fps = 30, .bitrate = 1_500_000, .threads = c.threads, .mode = c.mode, .temporal_layers = c.layers });
+        defer enc.deinit();
+        for (0..c.frames) |f| {
+            vaScene(img, c.w, c.h, f);
+            out.clearRetainingCapacity();
+            if (f == 9) enc.forceKey(); // IDR no meio
+            _ = try enc.encode(img.ptr, c.w * 4, .bgrx, &out) orelse return error.EncoderSkipped;
+            const pic = (try ref.decode(out.items)) orelse return error.NoPicture;
+            try vaExpectSame(d, out.items, refOf(pic), "openh264", f);
+        }
+    }
+    var st: hwva.vadec_stats = undefined;
+    hwva.vadec_get_stats(d, &st);
+    try testing.expect(st.multi_slice > 0); // openh264 com várias threads = várias fatias
+}
+
+test "VA-API: decoder igual ao openh264 bit a bit com NVENC (High, CABAC, camadas)" {
+    initPool();
+    const d = openVaDecoder() orelse return error.SkipZigTest;
+    defer hwva.vadec_close(d);
+    var ref = try codec.Decoder.init();
+    defer ref.deinit();
+    const gpa = std.heap.c_allocator;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    const Case = struct { w: u32, h: u32, layers: u8, mode: codec.Mode };
+    const cases = [_]Case{
+        .{ .w = 640, .h = 360, .layers = 1, .mode = .screen },
+        .{ .w = 1366, .h = 768, .layers = 2, .mode = .motion },
+        .{ .w = 1920, .h = 1080, .layers = 1, .mode = .motion },
+    };
+    var ran = false;
+    for (cases) |c| {
+        var err: [256]u8 = undefined;
+        var enc = codec.HwEncoder.init(.{ .width = c.w, .height = c.h, .fps = 30, .bitrate = 3_000_000, .mode = c.mode, .temporal_layers = c.layers }, &err) catch continue;
+        defer enc.deinit();
+        if (!std.mem.eql(u8, enc.name(), "NVENC")) continue;
+        ran = true;
+        const img = try gpa.alloc(u8, c.w * c.h * 4);
+        defer gpa.free(img);
+        for (0..14) |f| {
+            vaScene(img, c.w, c.h, f);
+            out.clearRetainingCapacity();
+            _ = try enc.encode(img.ptr, c.w * 4, .bgrx, f == 0 or f == 10, &out);
+            const pic = (try ref.decode(out.items)) orelse return error.NoPicture;
+            try vaExpectSame(d, out.items, refOf(pic), "NVENC", f);
+        }
+    }
+    if (!ran) return error.SkipZigTest;
+}
+
+/// openh264 em modo tela com referências de longo prazo: usa MMCO (marcar
+/// longo prazo, limite de índices) e reordenação por long_term_pic_num, que o
+/// encoder do app não usa — mas o decoder tem que aguentar fluxos de fora.
+const LtrEncoder = struct {
+    enc: [*c]oh.ISVCEncoder,
+    w: u32,
+    h: u32,
+    ts: u64 = 0,
+    y: []u8,
+    u: []u8,
+    v: []u8,
+
+    fn init(w: u32, h: u32, cabac: bool) !LtrEncoder {
+        var enc: [*c]oh.ISVCEncoder = null;
+        if (oh.WelsCreateSVCEncoder(&enc) != 0 or enc == null) return error.EncoderCreate;
+        errdefer oh.WelsDestroySVCEncoder(enc);
+        var trace: c_int = oh.WELS_LOG_QUIET;
+        _ = enc.*.*.SetOption.?(enc, oh.ENCODER_OPTION_TRACE_LEVEL, &trace);
+        var p: oh.SEncParamExt = undefined;
+        _ = enc.*.*.GetDefaultParams.?(enc, &p);
+        p.iUsageType = oh.SCREEN_CONTENT_REAL_TIME;
+        p.iPicWidth = @intCast(w);
+        p.iPicHeight = @intCast(h);
+        p.iTargetBitrate = 1_500_000;
+        p.iMaxBitrate = oh.UNSPECIFIED_BIT_RATE;
+        p.iRCMode = oh.RC_BITRATE_MODE;
+        p.fMaxFrameRate = 30;
+        p.iSpatialLayerNum = 1;
+        p.iTemporalLayerNum = 1;
+        p.uiIntraPeriod = 0;
+        p.bEnableFrameSkip = false;
+        p.iMultipleThreadIdc = 1;
+        p.bEnableLongTermReference = true;
+        p.bIsLosslessLink = true; // sem isso o openh264 desliga o LTR em modo tela
+        p.iLTRRefNum = 4;
+        p.iNumRefFrame = oh.AUTO_REF_PIC_COUNT;
+        p.iEntropyCodingModeFlag = @intFromBool(cabac);
+        p.eSpsPpsIdStrategy = oh.CONSTANT_ID;
+        const l = &p.sSpatialLayers[0];
+        l.iVideoWidth = @intCast(w);
+        l.iVideoHeight = @intCast(h);
+        l.fFrameRate = 30;
+        l.iSpatialBitrate = 1_500_000;
+        l.iMaxSpatialBitrate = oh.UNSPECIFIED_BIT_RATE;
+        l.sSliceArgument.uiSliceMode = oh.SM_FIXEDSLCNUM_SLICE;
+        l.sSliceArgument.uiSliceNum = 2;
+        if (enc.*.*.InitializeExt.?(enc, &p) != 0) return error.EncoderInit;
+        var fmt: c_int = oh.videoFormatI420;
+        _ = enc.*.*.SetOption.?(enc, oh.ENCODER_OPTION_DATAFORMAT, &fmt);
+        const gpa = std.heap.c_allocator;
+        const n = @as(usize, w) * h;
+        return .{ .enc = enc, .w = w, .h = h, .y = try gpa.alloc(u8, n), .u = try gpa.alloc(u8, n / 4), .v = try gpa.alloc(u8, n / 4) };
+    }
+
+    fn deinit(e: *LtrEncoder) void {
+        _ = e.enc.*.*.Uninitialize.?(e.enc);
+        oh.WelsDestroySVCEncoder(e.enc);
+        const gpa = std.heap.c_allocator;
+        gpa.free(e.y);
+        gpa.free(e.u);
+        gpa.free(e.v);
+    }
+
+    fn encode(e: *LtrEncoder, img: []const u8, out: *std.ArrayList(u8)) !void {
+        codec.toI420(img.ptr, e.w * 4, e.w, e.h, .bgrx, e.y, e.u, e.v);
+        var pic = std.mem.zeroes(oh.SSourcePicture);
+        pic.iColorFormat = oh.videoFormatI420;
+        pic.iPicWidth = @intCast(e.w);
+        pic.iPicHeight = @intCast(e.h);
+        pic.iStride[0] = @intCast(e.w);
+        pic.iStride[1] = @intCast(e.w / 2);
+        pic.iStride[2] = @intCast(e.w / 2);
+        pic.pData[0] = e.y.ptr;
+        pic.pData[1] = e.u.ptr;
+        pic.pData[2] = e.v.ptr;
+        pic.uiTimeStamp = @intCast(e.ts);
+        e.ts += 33;
+        var info = std.mem.zeroes(oh.SFrameBSInfo);
+        if (e.enc.*.*.EncodeFrame.?(e.enc, &pic, &info) != 0) return error.Encode;
+        if (info.eFrameType == oh.videoFrameTypeSkip) return error.EncoderSkipped;
+        for (0..@intCast(info.iLayerNum)) |li| {
+            const layer = &info.sLayerInfo[li];
+            var len: usize = 0;
+            for (0..@intCast(layer.iNalCount)) |ni| len += @intCast(layer.pNalLengthInByte[ni]);
+            try out.appendSlice(std.heap.c_allocator, layer.pBsBuf[0..len]);
+        }
+    }
+};
+
+/// Tela de "documento": trechos que somem e voltam (bom pra referência de longo prazo).
+fn ltrScene(img: []u8, w: usize, h: usize, f: usize) void {
+    const page = (f / 6) % 3; // alterna entre 3 "páginas"
+    for (0..h) |y| for (0..w) |x| {
+        const p = (y * w + x) * 4;
+        const tx = (x + page * 5) % 10;
+        const ty = (y + page * 7 + f % 6) % 18;
+        const ink = ty < 11 and (tx == 1 or ty == 4 or tx == ty / 2) and ((x / 10 + y / 18 + page) % 4 != 0);
+        const v: u8 = if (ink) 25 else @intCast(230 - (y * 20 / h));
+        img[p + 0] = v;
+        img[p + 1] = v;
+        img[p + 2] = if (ink and page == 1) 200 else v;
+        img[p + 3] = 255;
+    };
+}
+
+test "VA-API: decoder com referências de longo prazo e MMCO (openh264 em modo tela)" {
+    initPool();
+    const d = openVaDecoder() orelse return error.SkipZigTest;
+    defer hwva.vadec_close(d);
+    const gpa = std.heap.c_allocator;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    const w = 640;
+    const h = 368;
+    const frames = 48;
+    const img = try gpa.alloc(u8, w * h * 4);
+    defer gpa.free(img);
+    {
+        // CAVLC: referência = decoder do openh264
+        var ref = try codec.Decoder.init();
+        defer ref.deinit();
+        var enc = try LtrEncoder.init(w, h, false);
+        defer enc.deinit();
+        for (0..frames) |f| {
+            ltrScene(img, w, h, f);
+            out.clearRetainingCapacity();
+            try enc.encode(img, &out);
+            const pic = (try ref.decode(out.items)) orelse return error.NoPicture;
+            try vaExpectSame(d, out.items, refOf(pic), "openh264 LTR", f);
+        }
+    }
+    var st: hwva.vadec_stats = undefined;
+    hwva.vadec_get_stats(d, &st);
+    try testing.expect(st.long_term > 0 and st.mmco > 0 and st.reorder > 0);
+    // CABAC: o decoder do openh264 diverge do ffmpeg nesse fluxo (o VA-API bate
+    // com o ffmpeg); a referência aqui é o ffmpeg, se tiver
+    if (access("/usr/bin/ffmpeg", 0) != 0) return;
+    var path_buf: [96]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/telinha-teste-va-ltr-{d}.h264", .{getpid()});
+    defer _ = unlink(path.ptr);
+    var aus: std.ArrayList([]u8) = .empty;
+    defer {
+        for (aus.items) |au| gpa.free(au);
+        aus.deinit(gpa);
+    }
+    {
+        var enc = try LtrEncoder.init(w, h, true);
+        defer enc.deinit();
+        const fp = std.c.fopen(path.ptr, "w") orelse return error.TmpFile;
+        for (0..frames) |f| {
+            ltrScene(img, w, h, f);
+            out.clearRetainingCapacity();
+            try enc.encode(img, &out);
+            _ = std.c.fwrite(out.items.ptr, 1, out.items.len, fp);
+            try aus.append(gpa, try gpa.dupe(u8, out.items));
+        }
+        _ = std.c.fclose(fp);
+    }
+    var yuv: std.ArrayList(u8) = .empty;
+    defer yuv.deinit(gpa);
+    var cmd_buf: [256]u8 = undefined;
+    try readCmd(try std.fmt.bufPrintZ(&cmd_buf, "ffmpeg -v error -i {s} -f rawvideo -pix_fmt yuv420p -", .{path}), &yuv);
+    const fsize = w * h * 3 / 2;
+    try testing.expectEqual(frames * fsize, yuv.items.len);
+    for (aus.items, 0..) |au, f| {
+        const base = yuv.items[f * fsize ..].ptr;
+        const r: RefPic = .{ .y = base, .u = base + w * h, .v = base + w * h * 5 / 4, .ys = w, .uvs = w / 2, .w = w, .h = h };
+        try vaExpectSame(d, au, r, "openh264 LTR CABAC", f);
+    }
+}
+
+test "VA-API: quadro perdido não quebra; o próximo IDR volta exato" {
+    initPool();
+    const d = openVaDecoder() orelse return error.SkipZigTest;
+    defer hwva.vadec_close(d);
+    var ref = try codec.Decoder.init();
+    defer ref.deinit();
+    const gpa = std.heap.c_allocator;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    const w = 640;
+    const h = 360;
+    const img = try gpa.alloc(u8, w * h * 4);
+    defer gpa.free(img);
+    var f_out: hwva.hwdec_frame = undefined;
+    {
+        // uma camada: perder um P de referência quebra a cadeia até o IDR
+        var enc = try codec.Encoder.init(.{ .width = w, .height = h, .fps = 30, .bitrate = 1_000_000, .threads = 2 });
+        defer enc.deinit();
+        for (0..30) |f| {
+            vaScene(img, w, h, f);
+            out.clearRetainingCapacity();
+            if (f == 16) enc.forceKey();
+            const key = try enc.encode(img.ptr, w * 4, .bgrx, &out) orelse return error.EncoderSkipped;
+            const pic = (try ref.decode(out.items)) orelse return error.NoPicture;
+            if (f == 8) continue; // perdido no caminho
+            if (f == 3) {
+                // pacote cortado ao meio: pode dar erro ou imagem errada, mas não pode travar
+                _ = hwva.vadec_decode(d, out.items.ptr, @intCast(out.items.len / 2), &f_out);
+                continue;
+            }
+            if (f > 3 and f < 8) {
+                // depois do pacote cortado: imagem errada é aceitável até o IDR
+                _ = hwva.vadec_decode(d, out.items.ptr, @intCast(out.items.len), &f_out);
+                continue;
+            }
+            if (f > 8 and f < 16) {
+                // sem a referência: erro (quem chama pede um IDR), nunca imagem montada no escuro
+                try testing.expect(!key);
+                try testing.expect(hwva.vadec_decode(d, out.items.ptr, @intCast(out.items.len), &f_out) < 0);
+                continue;
+            }
+            try testing.expect(f < 3 or f >= 16);
+            try vaExpectSame(d, out.items, refOf(pic), "perda (1 camada)", f);
+        }
+    }
+    {
+        // duas camadas: o espectador lento pula os quadros que ninguém referencia, sem erro nenhum
+        var enc = try codec.Encoder.init(.{ .width = w, .height = h, .fps = 30, .bitrate = 1_000_000, .threads = 2, .temporal_layers = 2 });
+        defer enc.deinit();
+        for (0..20) |f| {
+            vaScene(img, w, h, f);
+            out.clearRetainingCapacity();
+            _ = try enc.encode(img.ptr, w * 4, .bgrx, &out) orelse return error.EncoderSkipped;
+            const pic = (try ref.decode(out.items)) orelse return error.NoPicture;
+            if (codec.isDroppable(out.items)) continue;
+            try vaExpectSame(d, out.items, refOf(pic), "perda (2 camadas)", f);
+        }
+    }
+    // lixo puro também não pode derrubar
+    var junk: [4096]u8 = undefined;
+    var prng = std.Random.DefaultPrng.init(42);
+    for (0..20) |i| {
+        prng.random().bytes(&junk);
+        junk[0] = 0;
+        junk[1] = 0;
+        junk[2] = 1;
+        junk[3] = @as(u8, @intCast(i % 2)) * 4 + 0x41 + @as(u8, @intCast(i % 3)) * 0x20; // fatias e IDRs "válidos" no cabeçalho
+        _ = hwva.vadec_decode(d, &junk, junk.len, &f_out);
+    }
+}
+
+/// Lê tudo o que um comando escreve no stdout (binário).
+fn readCmd(cmd: [:0]const u8, out: *std.ArrayList(u8)) !void {
+    const f = popen(cmd.ptr, "r") orelse return error.Popen;
+    var buf: [65536]u8 = undefined;
+    while (true) {
+        const n = fread(&buf, 1, buf.len, f);
+        if (n == 0) break;
+        try out.appendSlice(std.heap.c_allocator, buf[0..n]);
+    }
+    _ = pclose(f);
+}
+
+/// Separa um fluxo Annex B em quadros (access units): começa um novo no
+/// AUD/SPS/PPS/SEI ou na fatia com first_mb_in_slice = 0, se o atual já tem fatia.
+fn splitAccessUnits(bits: []const u8, aus: *std.ArrayList([]const u8)) !void {
+    var start: usize = 0;
+    var has_vcl = false;
+    var i: usize = 0;
+    while (i + 4 < bits.len) : (i += 1) {
+        if (!(bits[i] == 0 and bits[i + 1] == 0 and bits[i + 2] == 1)) continue;
+        const nal_at = if (i > 0 and bits[i - 1] == 0) i - 1 else i;
+        const typ = bits[i + 3] & 0x1f;
+        const vcl = typ == 1 or typ == 5;
+        const first_slice = vcl and (bits[i + 4] & 0x80) != 0; // ue(0) = bit 1
+        if (has_vcl and (first_slice or typ == 9 or typ == 7 or typ == 8 or typ == 6)) {
+            try aus.append(std.heap.c_allocator, bits[start..nal_at]);
+            start = nal_at;
+            has_vcl = false;
+        }
+        if (vcl) has_vcl = true;
+        i += 2;
+    }
+    if (has_vcl) try aus.append(std.heap.c_allocator, bits[start..]);
+}
+
+test "VA-API: decoder igual ao ffmpeg bit a bit com x264 (CAVLC/CABAC, várias refs, pesos, matrizes, fatias)" {
+    const d = openVaDecoder() orelse return error.SkipZigTest;
+    defer hwva.vadec_close(d);
+    if (access("/usr/bin/ffmpeg", 0) != 0) return error.SkipZigTest;
+    var probe: [8192]u8 = undefined;
+    if (std.mem.find(u8, run("ffmpeg -hide_banner -encoders 2>/dev/null", &probe), "libx264") == null) return error.SkipZigTest;
+    const gpa = std.heap.c_allocator;
+    const Case = struct { w: u32, h: u32, profile: []const u8, params: []const u8 };
+    const cases = [_]Case{
+        // High: CABAC, 8x8, matrizes de quantização (JVT), 4 refs, pesos com referências duplicadas (reordenação), 4 fatias
+        .{ .w = 640, .h = 360, .profile = "high", .params = "bframes=0:ref=4:weightp=2:slices=4:cqm=jvt:keyint=20:min-keyint=20:scenecut=0" },
+        // Main CAVLC, tamanho quebrado (corte), pesos simples, 3 fatias, sem deblocking
+        .{ .w = 1366, .h = 768, .profile = "main", .params = "bframes=0:ref=3:cabac=0:weightp=1:slices=3:no-deblock=1:keyint=25:min-keyint=25:scenecut=0" },
+        // Constrained Baseline, intra restrito, 2 fatias
+        .{ .w = 352, .h = 288, .profile = "baseline", .params = "bframes=0:ref=2:slices=2:constrained-intra=1:keyint=30:min-keyint=30:scenecut=0" },
+        // High com 8 refs, offsets no deblocking e no croma
+        .{ .w = 1280, .h = 720, .profile = "high", .params = "bframes=0:ref=8:weightp=2:deblock=-2,1:chroma-qp-offset=3:keyint=40:scenecut=0" },
+    };
+    var path_buf: [96]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/telinha-teste-va-{d}.h264", .{getpid()});
+    defer _ = unlink(path.ptr);
+    var cmd_buf: [1024]u8 = undefined;
+    for (cases, 0..) |c, ci| {
+        const frames = 45;
+        // fade in/out: o x264 só usa predição com pesos quando o brilho muda
+        _ = run(try std.fmt.bufPrintZ(&cmd_buf, "ffmpeg -v error -y -f lavfi -i testsrc2=size={d}x{d}:rate=30 -vf fade=in:0:12,fade=out:30:12,format=yuv420p -frames:v {d} -c:v libx264 -preset faster -profile:v {s} -x264-params {s} -f h264 {s} 2>&1", .{ c.w, c.h, frames, c.profile, c.params, path }), &probe);
+        var bits: std.ArrayList(u8) = .empty;
+        defer bits.deinit(gpa);
+        try readCmd(try std.fmt.bufPrintZ(&cmd_buf, "cat {s}", .{path}), &bits);
+        var yuv: std.ArrayList(u8) = .empty;
+        defer yuv.deinit(gpa);
+        try readCmd(try std.fmt.bufPrintZ(&cmd_buf, "ffmpeg -v error -i {s} -f rawvideo -pix_fmt yuv420p -", .{path}), &yuv);
+        var aus: std.ArrayList([]const u8) = .empty;
+        defer aus.deinit(gpa);
+        try splitAccessUnits(bits.items, &aus);
+        const fsize = c.w * c.h * 3 / 2;
+        try testing.expectEqual(@as(usize, frames), aus.items.len);
+        try testing.expectEqual(frames * fsize, yuv.items.len);
+        for (aus.items, 0..) |au, f| {
+            const base = yuv.items[f * fsize ..].ptr;
+            const r: RefPic = .{ .y = base, .u = base + c.w * c.h, .v = base + c.w * c.h * 5 / 4, .ys = c.w, .uvs = c.w / 2, .w = c.w, .h = c.h };
+            var what_buf: [64]u8 = undefined;
+            try vaExpectSame(d, au, r, try std.fmt.bufPrint(&what_buf, "x264 caso {d}", .{ci}), f);
+        }
+        if (ci == 0) {
+            // perda num fluxo com várias referências: erro até o próximo IDR (quadro 20), depois exato
+            for (aus.items, 0..) |au, f| {
+                if (f == 5) continue;
+                if (f > 5 and f < 20) {
+                    var fr: hwva.hwdec_frame = undefined;
+                    try testing.expect(hwva.vadec_decode(d, au.ptr, @intCast(au.len), &fr) < 0);
+                    continue;
+                }
+                const base = yuv.items[f * fsize ..].ptr;
+                const r: RefPic = .{ .y = base, .u = base + c.w * c.h, .v = base + c.w * c.h * 5 / 4, .ys = c.w, .uvs = c.w / 2, .w = c.w, .h = c.h };
+                try vaExpectSame(d, au, r, "x264 com perda", f);
+            }
+        }
+    }
+    var st: hwva.vadec_stats = undefined;
+    hwva.vadec_get_stats(d, &st);
+    try testing.expect(st.weighted > 0 and st.scaling > 0 and st.multi_slice > 0 and st.reorder > 0);
+}
