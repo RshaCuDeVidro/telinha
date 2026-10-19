@@ -45,11 +45,12 @@ const Timing = struct {
     encode: std.atomic.Value(u64) = .init(0),
     encoded: std.atomic.Value(u32) = .init(0),
     skipped: std.atomic.Value(u32) = .init(0),
+    enc_dropped: std.atomic.Value(u32) = .init(0), // o encoder não gerou nada (controle de taxa do openh264)
 
     fn report(t: *Timing, bps: u32, queued: usize) void {
         const nc = @max(1, t.captured.swap(0, .monotonic));
         const ne = @max(1, t.encoded.load(.monotonic));
-        std.debug.print("[telinha] captura {d} q/s: espera {d:.1} ms, cópia/escala {d:.1} ms, I420 {d:.1} ms | encode {d} q/s: {d:.1} ms | pulados {d} | {d} kbit/s | fila {d} KB\n", .{
+        std.debug.print("[telinha] captura {d} q/s: espera {d:.1} ms, cópia/escala {d:.1} ms, I420 {d:.1} ms | encode {d} q/s: {d:.1} ms | pulados {d} (+{d} pelo encoder) | {d} kbit/s | fila {d} KB\n", .{
             nc,
             @as(f64, @floatFromInt(t.capture.swap(0, .monotonic))) / @as(f64, @floatFromInt(nc)) / 1000,
             @as(f64, @floatFromInt(t.ingest.swap(0, .monotonic))) / @as(f64, @floatFromInt(nc)) / 1000,
@@ -57,6 +58,7 @@ const Timing = struct {
             t.encoded.swap(0, .monotonic),
             @as(f64, @floatFromInt(t.encode.swap(0, .monotonic))) / @as(f64, @floatFromInt(ne)) / 1000,
             t.skipped.swap(0, .monotonic),
+            t.enc_dropped.swap(0, .monotonic),
             bps / 1000,
             queued / 1024,
         });
@@ -724,6 +726,7 @@ const Pipeline = struct {
                 s.client.keyreq.store(true, .release);
                 break :blk null;
             } orelse {
+                if (enc != null) _ = p.timing.enc_dropped.fetchAdd(1, .monotonic);
                 p.doneWith(i, enc != null);
                 continue;
             };
