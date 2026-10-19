@@ -278,6 +278,19 @@ fn segmented(id: [:0]const u8, options: []const [:0]const u8, current: *i32, wid
 
 const Toast = struct { text: [256]u8, len: usize, until: f64, err: bool };
 
+/// Reconexão automática depois de uma queda (internet oscilou, túnel caiu...).
+const Reconnect = struct {
+    attempt: u32 = 0, // 0 = não está reconectando
+    waiting: bool = false, // esperando a hora da próxima tentativa
+    at: f64 = 0,
+    // o que restaurar quando voltar (por nome: depois de o servidor reiniciar os ids mudam)
+    share: bool = false,
+    watch: [16][48]u8 = undefined,
+    watch_len: [16]usize = undefined,
+    n_watch: usize = 0,
+};
+const max_reconnect = 6;
+
 pub const App = struct {
     window: *c.GLFWwindow,
     cfg: config.Config,
@@ -316,6 +329,10 @@ pub const App = struct {
 
     toasts: [4]Toast = undefined,
     n_toasts: usize = 0,
+    reconnect: Reconnect = .{},
+    // quem voltar a assistir assim que aparecer ao vivo de novo
+    rewatch: Reconnect = .{},
+    rewatch_until: f64 = 0,
 
     settings_modal: bool = false,
     show_advanced: bool = false,
@@ -490,7 +507,92 @@ pub const App = struct {
         a.screen = .home;
         a.theater = false;
         a.focused = null;
+        a.reconnect = .{};
+        a.rewatch = .{};
         if (a.fullscreen) a.toggleFullscreen();
+    }
+
+    /// Agenda a próxima tentativa (espera 1, 2, 4, 8, 10, 10 s).
+    fn scheduleReconnect(a: *App) void {
+        const r = &a.reconnect;
+        if (r.attempt == 0) {
+            r.share = a.sharer != null;
+            r.n_watch = 0;
+            if (a.client) |cl| {
+                cl.mutex.lock();
+                defer cl.mutex.unlock();
+                for (a.views.items) |v| {
+                    if (r.n_watch == r.watch.len) break;
+                    for (cl.members.items) |*m| {
+                        if (m.id != v.owner) continue;
+                        const n = m.name_len;
+                        @memcpy(r.watch[r.n_watch][0..n], m.name[0..n]);
+                        r.watch_len[r.n_watch] = n;
+                        r.n_watch += 1;
+                    }
+                }
+            }
+        }
+        r.attempt += 1;
+        r.waiting = true;
+        const exp: u5 = @intCast(@min(r.attempt - 1, 4));
+        r.at = c.igGetTime() + @min(10.0, @as(f64, @floatFromInt(@as(u32, 1) << exp)));
+    }
+
+    fn doReconnect(a: *App) void {
+        a.reconnect.waiting = false;
+        // derruba o que sobrou da conexão antiga, mas continua na tela da sala
+        a.stopSharing();
+        for (a.views.items) |v| {
+            freeViewGpu(v);
+            if (a.client) |cl| cl.unwatch(v);
+        }
+        a.views.clearRetainingCapacity();
+        if (a.client) |cl| cl.close();
+        a.client = null;
+        a.joinRoom();
+        if (a.client == null) {
+            a.reconnect = .{};
+            a.screen = .home;
+        }
+    }
+
+    fn finishReconnect(a: *App) void {
+        const r = a.reconnect;
+        a.reconnect = .{};
+        if (r.share) a.startSharing();
+        a.rewatch = r;
+        a.rewatch_until = c.igGetTime() + 20;
+        a.toast("Reconectado!", .{}, false);
+    }
+
+    /// Depois de reconectar: volta a assistir quem estava assistindo, quando aparecer ao vivo.
+    fn applyRewatch(a: *App, cl: *Client) void {
+        if (a.rewatch.n_watch == 0) return;
+        if (c.igGetTime() > a.rewatch_until) {
+            a.rewatch = .{};
+            return;
+        }
+        var want: [16]u32 = undefined;
+        var n_want: usize = 0;
+        cl.mutex.lock();
+        var i: usize = 0;
+        while (i < a.rewatch.n_watch) {
+            const name = a.rewatch.watch[i][0..a.rewatch.watch_len[i]];
+            const found = for (cl.members.items) |*m| {
+                if (m.streaming and m.id != cl.my_id and std.mem.eql(u8, m.nameSlice(), name)) break m.id;
+            } else null;
+            if (found) |id| {
+                want[n_want] = id;
+                n_want += 1;
+                // tira da lista
+                a.rewatch.n_watch -= 1;
+                a.rewatch.watch[i] = a.rewatch.watch[a.rewatch.n_watch];
+                a.rewatch.watch_len[i] = a.rewatch.watch_len[a.rewatch.n_watch];
+            } else i += 1;
+        }
+        cl.mutex.unlock();
+        for (want[0..n_want]) |id| a.watch(id);
     }
 
     fn shareSettings(a: *App) sharer_mod.Settings {
@@ -633,11 +735,14 @@ pub const App = struct {
         cl.mutex.unlock();
         if (st == .connected and !a.was_connected) {
             a.was_connected = true;
-            if (a.auto_share and a.sharer == null) {
+            if (a.reconnect.attempt > 0) {
+                a.finishReconnect();
+            } else if (a.auto_share and a.sharer == null) {
                 a.n_sources = @intCast(c.cap_list_sources(&a.sources, a.sources.len));
                 a.startSharing();
             }
         }
+        if (st == .connected) a.applyRewatch(cl);
         if (a.auto_watch and st == .connected) {
             var want: [32]u32 = undefined;
             var n_want: usize = 0;
@@ -651,11 +756,23 @@ pub const App = struct {
             cl.mutex.unlock();
             for (want[0..n_want]) |id| if (a.findView(id) == null) a.watch(id);
         }
-        if (st == .failed and !a.was_connected) {
-            // não conectou: volta pra tela inicial com o erro
-            a.setHomeError(cl.errSlice());
-            a.leaveRoom();
-            return;
+        if (st == .failed) {
+            cl.mutex.lock();
+            const final = cl.final;
+            cl.mutex.unlock();
+            // queda de rede depois de ter entrado (ou durante uma reconexão): tenta de novo sozinho
+            const retry = !final and a.server == null and (a.was_connected or a.reconnect.attempt > 0);
+            if (retry and a.reconnect.attempt < max_reconnect) {
+                if (!a.reconnect.waiting) a.scheduleReconnect();
+                if (c.igGetTime() >= a.reconnect.at) a.doReconnect();
+                return;
+            }
+            if (!a.was_connected) {
+                // não conectou: volta pra tela inicial com o erro
+                a.setHomeError(if (a.reconnect.attempt > 0) "Não consegui reconectar na sala." else cl.errSlice());
+                a.leaveRoom();
+                return;
+            }
         }
         // transmissão falhou?
         if (a.sharer) |s| {
@@ -844,7 +961,7 @@ pub const App = struct {
         }
 
         if (status == .connecting) a.drawConnecting(size);
-        if (status == .failed and a.was_connected) a.drawDropped(cl, size);
+        if (status == .failed and (a.was_connected or a.reconnect.attempt > 0)) a.drawDropped(cl, size);
         if (a.share_modal) a.drawShareModal();
         if (a.settings_modal) a.drawSettingsModal();
     }
@@ -865,7 +982,10 @@ pub const App = struct {
     fn drawConnecting(a: *App, size: c.ImVec2_c) void {
         const d = beginOverlay("##connecting", size, rgba(0x1E1F22, 240));
         defer c.igEnd();
-        const t = fmtZ("Conectando em {s}...", .{a.connect_label[0..a.connect_label_len]});
+        const t = if (a.reconnect.attempt > 0)
+            fmtZ("Reconectando em {s}... (tentativa {d} de {d})", .{ a.connect_label[0..a.connect_label_len], a.reconnect.attempt, max_reconnect })
+        else
+            fmtZ("Conectando em {s}...", .{a.connect_label[0..a.connect_label_len]});
         const ts = textSizeF(font_semibold, 18, t);
         // bolinhas animadas
         const tm: f32 = @floatCast(c.igGetTime());
@@ -888,6 +1008,19 @@ pub const App = struct {
         const it = textSizeF(font_regular, 36, ic.warn);
         drawTextF(d, font_regular, 36, v2((size.x - it.x) / 2, size.y / 2 - S(70)), col.yellow, ic.warn);
         drawTextF(d, font_semibold, 18, v2((size.x - ts.x) / 2, size.y / 2 - S(10)), col.header, t);
+        if (a.reconnect.waiting) {
+            // contagem até a próxima tentativa automática
+            const left = @max(0, a.reconnect.at - c.igGetTime());
+            const sub = fmtZ("Tentando de novo em {d:.0} s... (tentativa {d} de {d})", .{ @ceil(left), a.reconnect.attempt, max_reconnect });
+            const ss = textSizeF(font_regular, 14, sub);
+            drawTextF(d, font_regular, 14, v2((size.x - ss.x) / 2, size.y / 2 + S(16)), col.muted, sub);
+            c.igSetCursorScreenPos(v2(size.x / 2 - S(130), size.y / 2 + S(50)));
+            if (primaryButton("Tentar agora", v2(S(125), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.reconnect.at = 0;
+            c.igSameLine(0, S(10));
+            if (secondaryButton("Sair", v2(S(125), S(38)))) a.leaveRoom();
+            wakeUi(); // mantém a contagem andando
+            return;
+        }
         c.igSetCursorScreenPos(v2(size.x / 2 - S(130), size.y / 2 + S(30)));
         if (primaryButton("Reconectar", v2(S(125), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) {
             const was_host = a.server != null;

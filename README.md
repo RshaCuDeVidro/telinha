@@ -18,12 +18,13 @@
 - **Salas** — alguém cria (ou sobe um [servidor dedicado](docs/DEPLOY.md)), a galera entra com endereço + senha ou com um **convite** `telinha://…`.
 - **Várias transmissões ao mesmo tempo**, em grade que se ajusta pra deixar os vídeos o maior possível; destaque, tela cheia e modo cinema.
 - **Chat**, lista de membros, quem está ao vivo, quem está assistindo quem, ping.
-- **H.264 com pouca latência**: encoder na **placa de vídeo (NVIDIA NVENC)** quando tem, senão **openh264** com SIMD em várias threads. Só manda quadro quando a tela muda.
+- **H.264 com pouca latência**: encode e decode na **placa de vídeo (NVIDIA NVENC/NVDEC)** quando tem, senão **openh264** com SIMD em várias threads. Só manda quadro quando a tela muda; a conversão de cor de quem assiste roda num shader na GPU.
 - **Banda adaptativa**: se a internet de alguém não aguenta, a taxa cai e quadros são pulados em vez de acumular atraso; quando melhora, volta a subir.
 - **Criptografia de ponta a ponta** entre cada pessoa e a sala (X25519 + ChaCha20-Poly1305); a senha da sala entra na derivação das chaves.
+- **Reconexão automática**: se a internet oscilar ou o servidor reiniciar, o app volta sozinho, retoma a transmissão e volta a assistir quem estava assistindo.
 - **Admin**: quem cria a sala ganha a coroa e pode expulsar gente.
 - **Estatísticas ao vivo**: resolução, fps, banda e **atraso de ponta a ponta medido** (captura no transmissor → tela de quem assiste).
-- **Captura nativa**: PipeWire + xdg-desktop-portal no Wayland (Hyprland, GNOME, KDE, Sway…), X11, e DXGI Desktop Duplication no Windows.
+- **Captura nativa**: PipeWire + xdg-desktop-portal no Wayland (Hyprland, GNOME, KDE, Sway…), X11, e DXGI Desktop Duplication no Windows. No Hyprland o cursor é desenhado pelo telinha, pra o mouse não ficar com lag enquanto você compartilha.
 - **Windows**: um `.exe` só, sem instalar nada.
 
 | | |
@@ -54,10 +55,10 @@ Medido num **Intel i5-2400S (2011, 4 núcleos)** com GTX 1050 Ti, 1080p, via `zi
 |---|---|---|---|---|
 | texto rolando — openh264 | 3,7 ms | 23 ms | 4 ms | ~200 KB/s |
 | movimento — openh264 | 3,9 ms | 13 ms | 13 ms | ~730 KB/s (no teto de 6 Mbit/s) |
-| texto rolando — **NVENC** | — (na GPU) | **7 ms** | 8 ms | ~650 KB/s |
-| movimento — **NVENC** | — (na GPU) | **8 ms** | 14 ms | ~660 KB/s |
+| texto rolando — **NVENC + NVDEC** | — (na GPU) | **7 ms** | **6 ms** | ~460 KB/s |
+| movimento — **NVENC + NVDEC** | — (na GPU) | **8 ms** | **6 ms** | ~530 KB/s |
 
-Ponta a ponta, numa sala local com conteúdo pesado (tela inteira mudando a cada quadro): **30–50 fps em 1080p com 57–64 ms de atraso** usando NVENC. Em CPU moderna o openh264 sozinho já faz 1080p60.
+Ponta a ponta, numa sala local com conteúdo pesado (tela inteira mudando a cada quadro): **30–50 fps em 1080p com 53–64 ms de atraso** usando NVENC/NVDEC. Em CPU moderna o openh264 sozinho já faz 1080p60.
 
 ## Compilar
 
@@ -97,7 +98,7 @@ Pra binários que rodam em qualquer CPU x86-64 (como no CI): `zig build -Dcpu=x8
 --fps N --qualidade N --modo tela|jogo --software
 --estatisticas        estatísticas sempre visíveis
 ```
-`TELINHA_DEBUG=1` imprime o tempo de cada etapa do pipeline.
+`TELINHA_DEBUG=1` imprime o tempo de cada etapa do pipeline. `TELINHA_SEM_SHADER=1` força a conversão de cor na CPU; `TELINHA_CURSOR_EMBUTIDO=1` deixa o compositor desenhar o cursor (Hyprland).
 </details>
 
 ## Documentação

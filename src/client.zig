@@ -311,6 +311,8 @@ pub const Client = struct {
     /// Protege tudo abaixo.
     mutex: sync.Mutex = .{},
     status: Status = .connecting,
+    /// Queda definitiva (expulso, senha errada, versão diferente): não adianta reconectar.
+    final: bool = false,
     err: [256]u8 = undefined,
     err_len: usize = 0,
     my_id: u32 = 0,
@@ -387,6 +389,12 @@ pub const Client = struct {
         return @intCast(@max(0, local + cl.clock_offset.load(.monotonic)));
     }
 
+    fn setFinal(cl: *Client) void {
+        cl.mutex.lock();
+        cl.final = true;
+        cl.mutex.unlock();
+    }
+
     fn setError(cl: *Client, comptime fmt: []const u8, args: anytype) void {
         cl.mutex.lock();
         defer cl.mutex.unlock();
@@ -407,6 +415,7 @@ pub const Client = struct {
         try net.recvAll(cl.sock, &hb);
         const peer = try crypto.parseHello(&hb);
         if (peer.version != proto.version) {
+            cl.setFinal();
             cl.setError("A sala usa outra versão do telinha (protocolo {d}, o seu é {d}). Atualizem pra mesma versão.", .{ peer.version, proto.version });
             return error.VersionMismatch;
         }
@@ -431,6 +440,7 @@ pub const Client = struct {
         }
         cl.sock_ok.store(true, .release);
         cl.handshake() catch |e| {
+            if (e == error.NotTelinha) cl.setFinal();
             if (e != error.VersionMismatch) cl.setError("{s}", .{switch (e) {
                 error.NotTelinha => "Isso não é uma sala do telinha.",
                 else => "A sala não respondeu direito (o endereço está certo?).",
@@ -459,7 +469,10 @@ pub const Client = struct {
         defer rb.deinit();
         while (!cl.closing.load(.acquire)) {
             const typ = proto.recvMsg(cl.sock, &cl.channel, &rb) catch |e| {
-                if (e == error.WrongPassword) cl.setError("Senha errada.", .{});
+                if (e == error.WrongPassword) {
+                    cl.setFinal();
+                    cl.setError("Senha errada.", .{});
+                }
                 break;
             };
             cl.handle(typ, proto.payloadOf(&rb)) catch break;
@@ -531,6 +544,7 @@ pub const Client = struct {
                 };
             },
             .denied => {
+                cl.setFinal();
                 cl.setError("{s}", .{try r.str()});
                 return error.Denied;
             },

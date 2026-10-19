@@ -28,7 +28,10 @@ DISPLAY=:99 XDG_SESSION_TYPE=x11 WAYLAND_DISPLAY= XDG_CONFIG_HOME=/tmp/b \
   zig-out/bin/telinha --janela 800,0,800,450 --nome B --entrar 127.0.0.1:7777 --assistir --estatisticas &
 ```
 
-O `.exe` roda no wine do mesmo jeito (sem NVENC, ele cai pro openh264).
+O `.exe` roda no wine do mesmo jeito (sem NVENC/NVDEC, ele cai pro openh264).
+O `wineserver` de algumas versões do wine às vezes cai sozinho com
+`sock_poll_event: Assertion ... failed` — é bug do wine (não acontece no
+Windows); é só rodar de novo.
 
 ## Estilo
 

@@ -29,6 +29,8 @@
 | `src/server_main.zig` | executável do servidor dedicado |
 | `src/codec.zig` | wrapper do openh264 e do NVENC + conversões de cor vetorizadas |
 | `src/c/hwenc_nvenc.c` | encoder em hardware NVIDIA (API NVENC 11.1, carregada em runtime) |
+| `src/c/hwdec_nvdec.c` | decoder em hardware NVIDIA (NVDEC/nvcuvid, carregado em runtime) |
+| `src/gl.zig` | texturas e conversão YUV→RGB num shader |
 | `src/crypto.zig` | handshake X25519 e canal ChaCha20-Poly1305 |
 | `src/proto.zig` | mensagens, filas de envio, framing |
 | `src/net.zig` | sockets (POSIX/Winsock) |
@@ -71,6 +73,25 @@ assiste; cada escritora cifra com a chave da sua conexão na hora de enviar.
    recomeça de um IDR.
 3. *Espectador:* se o decode não dá conta (mais de 3 quadros na fila), joga
    fora e pede IDR.
+
+**Quem assiste quase não usa CPU.** Com NVIDIA, o NVDEC decodifica; em
+qualquer caso a thread de decode entrega os planos YUV (1,5 byte/pixel) e um
+shader converte a cor direto na GPU. Sem shader (OpenGL antigo), a CPU
+converte em paralelo, como antes.
+
+**Baseline sempre.** O decoder do openh264 segura um quadro pra reordenação
+em perfis Main/High; com Baseline (o que os dois encoders geram) cada quadro
+sai na mesma chamada — nada de atraso escondido.
+
+**Cursor no Hyprland.** Pedir o cursor embutido no portal faz o Hyprland
+trocar pro cursor em software durante a captura (o mouse fica preso à
+renderização). O telinha captura sem cursor, pega a posição pelo IPC do
+Hyprland e desenha a seta no quadro.
+
+**Reconexão.** Queda de rede depois de entrar (e não expulsão/senha errada)
+dispara tentativas automáticas com espera crescente; ao voltar, a transmissão
+recomeça e quem você assistia volta pra tela (procurado pelo nome, já que os
+ids mudam se o servidor reiniciou).
 
 **UI que dorme.** O loop usa `glfwWaitEventsTimeout`; threads de rede e decode
 acordam a UI com `glfwPostEmptyEvent` quando há quadro novo. Sem transmissão,

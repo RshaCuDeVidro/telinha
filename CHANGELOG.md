@@ -6,7 +6,8 @@ Reescrita completa.
 
 - Interface nova estilo Discord (Dear ImGui): salas, chat, membros, várias transmissões em grade, destaque, modo cinema.
 - Qualquer pessoa da sala transmite e assiste; Linux ↔ Windows nos dois sentidos.
-- Vídeo H.264: NVIDIA NVENC quando disponível, openh264 (SIMD, multithread) como alternativa.
+- Vídeo H.264: NVIDIA NVENC/NVDEC quando disponível, openh264 (SIMD, multithread) como alternativa; conversão de cor de quem assiste num shader.
+- Reconexão automática com retomada da transmissão e de quem você assistia.
 - Pipeline em duas threads (captura ∥ encode), controle de banda adaptativo, descarte de atraso por espectador.
 - Criptografia X25519 + ChaCha20-Poly1305 com a senha da sala na derivação das chaves.
 - Captura: PipeWire/xdg-desktop-portal (Wayland), X11, DXGI (Windows); no Hyprland o cursor é desenhado pelo telinha pra não deixar o mouse com lag.
