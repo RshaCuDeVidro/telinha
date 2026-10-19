@@ -86,6 +86,8 @@ pub fn main(init: std.process.Init) !void {
         c.glfwSetWindowSize(win, v[2], v[3]);
     }
 
+    // arquivo solto em cima da janela (imagem no chat)
+    _ = c.glfwSetDropCallback(win, ui.onDrop);
     var app = ui.App.init(win);
     app.applyArgs(args);
     var idle_frames: u32 = 0;

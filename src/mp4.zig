@@ -15,7 +15,7 @@ const std = @import("std");
 const gpa = std.heap.c_allocator;
 
 const sync = @import("sync.zig");
-const cio = @cImport(@cInclude("stdio.h"));
+pub const cio = @cImport(@cInclude("stdio.h"));
 
 extern "c" fn _wfopen(path: [*:0]const u16, mode: [*:0]const u16) ?*cio.FILE;
 

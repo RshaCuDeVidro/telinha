@@ -23,6 +23,8 @@ const pip = @import("pip.zig");
 const connect_mod = @import("connect.zig");
 const net = @import("net.zig");
 const update = @import("update.zig");
+const chatimg = @import("chatimg.zig");
+const chatsend = @import("chatsend.zig");
 const build_options = @import("build_options");
 pub const version_string = proto.app_version;
 const Sharer = sharer_mod.Sharer;
@@ -134,6 +136,8 @@ const ic = struct {
     const window_restore = &iconArr(0xF2D2);
     const bell = &iconArr(0xF0F3);
     const hand_pointer = &iconArr(0xF25A);
+    const image = &iconArr(0xF03E);
+    const face_smile = &iconArr(0xF118);
     const folder = &iconArr(0xF07B);
 };
 
@@ -187,6 +191,39 @@ fn texRef(tex: u32) c.ImTextureRef_c {
 }
 
 var fmt_buf: [1024]u8 = undefined;
+/// Reações do chat (mesma ordem do protocolo): curti, amei, haha, fogo, uau, triste.
+const reaction_icons = [proto.reactions][]const u8{ &iconArr(0xF164), &iconArr(0xF004), &iconArr(0xF59B), &iconArr(0xF06D), &iconArr(0xF5C2), &iconArr(0xF5B4) };
+const reaction_colors = [proto.reactions]u32{ rgb(0x5865F2), rgb(0xF23F43), rgb(0xF0B232), rgb(0xF57731), rgb(0xF0B232), rgb(0x00A8FC) };
+const reaction_names = [proto.reactions][:0]const u8{ "Curti", "Amei", "Haha", "Fogo", "Uau", "Triste" };
+
+/// Arquivos soltos em cima da janela (callback do GLFW; tratados no quadro).
+var drop_paths: [4][1024]u8 = undefined;
+var drop_lens: [4]usize = undefined;
+var n_drops: usize = 0;
+
+pub fn onDrop(_: ?*c.GLFWwindow, count: c_int, paths: [*c][*c]const u8) callconv(.c) void {
+    var i: usize = 0;
+    while (i < @as(usize, @intCast(count)) and n_drops < drop_paths.len) : (i += 1) {
+        const p = std.mem.span(paths[i]);
+        if (p.len >= drop_paths[0].len) continue;
+        @memcpy(drop_paths[n_drops][0..p.len], p);
+        drop_lens[n_drops] = p.len;
+        n_drops += 1;
+    }
+}
+
+/// "@Nome" (nome inteiro, sem diferenciar maiúscula) no texto?
+fn mentions(text: []const u8, name: []const u8) bool {
+    if (name.len == 0) return false;
+    var i: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, text, i, '@')) |at| : (i = at + 1) {
+        const rest = text[at + 1 ..];
+        if (rest.len < name.len or !std.ascii.eqlIgnoreCase(rest[0..name.len], name)) continue;
+        if (rest.len == name.len or !std.ascii.isAlphanumeric(rest[name.len])) return true;
+    }
+    return false;
+}
+
 fn fmtZ(comptime f: []const u8, args: anytype) [:0]const u8 {
     return std.fmt.bufPrintZ(&fmt_buf, f, args) catch "...";
 }
@@ -348,6 +385,15 @@ const Reconnect = struct {
 };
 const max_reconnect = 6;
 
+const ImgTex = struct {
+    id: u32 = 0, // mensagem (0 = livre)
+    tex: u32 = 0,
+    w: u16 = 0,
+    h: u16 = 0,
+    failed: bool = false,
+    used: u64 = 0, // último quadro em que apareceu
+};
+
 pub const App = struct {
     window: *c.GLFWwindow,
     cfg: config.Config,
@@ -392,6 +438,19 @@ pub const App = struct {
     chat_visible: bool = true,
     side_visible: bool = true,
     focus_chat: bool = false,
+    // imagens do chat: texturas já decodificadas (as mais usadas ficam)
+    img_cache: [32]ImgTex = [_]ImgTex{.{}} ** 32,
+    img_view: ?u32 = null, // imagem aberta em tela cheia (id da mensagem)
+    img_failed_seen: u32 = 0,
+    img_sent_seen: u32 = 0,
+    frame_no: u64 = 0,
+    // @menção: sugestões pro que está sendo digitado
+    mention_sugg: [6][48]u8 = undefined,
+    mention_sugg_len: [6]usize = undefined,
+    n_mention_sugg: usize = 0,
+    mention_apply: [48]u8 = undefined, // nome escolhido (o callback da caixa aplica)
+    mention_apply_len: usize = 0,
+    react_hover: ?u32 = null, // mensagem com o mouse em cima (mostra as reações)
 
     share_modal: bool = false,
     sources: [48]c.cap_source = undefined, // monitores e, no Windows, janelas
@@ -695,6 +754,11 @@ pub const App = struct {
         var text: [256]u8 = undefined;
         var text_len: usize = 0;
         var fresh: u64 = 0;
+        var mentioned = false;
+        var my_name: []const u8 = "";
+        for (cl.members.items) |*m| {
+            if (m.id == cl.my_id) my_name = m.nameSlice();
+        }
         if (count > a.notif_chat_seen) {
             // as novas estão no fim da lista
             var i = cl.chat.items.len;
@@ -706,12 +770,15 @@ pub const App = struct {
                 left -= 1;
                 if (l.from == 0 or l.from == cl.my_id) continue;
                 fresh += 1;
-                if (name_len == 0) {
+                const ment = mentions(l.text, my_name);
+                if (name_len == 0 or (ment and !mentioned)) {
                     name_len = @min(l.name_len, name.len);
                     @memcpy(name[0..name_len], l.name[0..name_len]);
-                    text_len = @min(l.text.len, text.len);
-                    @memcpy(text[0..text_len], l.text[0..text_len]);
+                    const body: []const u8 = if (l.text.len > 0) l.text else if (l.img != null) "mandou uma imagem" else "";
+                    text_len = @min(body.len, text.len);
+                    @memcpy(text[0..text_len], body[0..text_len]);
                 }
+                if (ment) mentioned = true;
             }
         }
         cl.mutex.unlock();
@@ -731,7 +798,10 @@ pub const App = struct {
         }
         if (c.igGetTime() - a.notified_at < 2.0) return; // espera: junta as próximas
         a.notif_chat_seen = count;
-        if (fresh == 1) {
+        if (mentioned) {
+            var t: [96]u8 = undefined;
+            a.notifyAway(std.fmt.bufPrint(&t, "{s} mencionou você", .{name[0..name_len]}) catch "telinha", text[0..text_len]);
+        } else if (fresh == 1) {
             a.notifyAway(name[0..name_len], text[0..text_len]);
         } else {
             var b: [64]u8 = undefined;
@@ -921,6 +991,7 @@ pub const App = struct {
 
     fn leaveRoom(a: *App) void {
         a.closeModals();
+        a.clearChatImages();
         a.stopMic();
         a.mic_wanted = false;
         a.setDeaf(false);
@@ -1446,7 +1517,9 @@ pub const App = struct {
     }
 
     pub fn frame(a: *App) void {
+        a.frame_no += 1;
         a.checkClipJobs();
+        a.checkChatImages();
         a.n_tile_rects = 0;
         a.n_member_rects = 0;
         a.n_live_rects = 0;
@@ -1658,6 +1731,7 @@ pub const App = struct {
             if (a.share_modal) a.drawShareModal();
             if (a.settings_modal) a.drawSettingsModal();
             if (a.leave_confirm) a.drawLeaveConfirm();
+            if (a.img_view != null) a.drawImageViewer(size);
         }
     }
 
@@ -3304,6 +3378,170 @@ pub const App = struct {
 
     // ------------------------------------------------------------------ chat
 
+    /// Arquivos soltos na janela e o resultado das imagens sendo preparadas.
+    fn checkChatImages(a: *App) void {
+        if (n_drops > 0) {
+            for (0..n_drops) |i| {
+                const p = drop_paths[i][0..drop_lens[i]];
+                if (a.screen != .room or a.client == null) {
+                    a.toast("Entre numa sala pra mandar imagem no chat.", .{}, true);
+                    break;
+                }
+                if (!chatsend.looksLikeImage(p)) {
+                    a.toast("Só dá pra mandar imagem (PNG, JPEG, GIF ou BMP).", .{}, true);
+                    continue;
+                }
+                chatsend.sendFile(a.client.?, p);
+            }
+            n_drops = 0;
+        }
+        const f = chatsend.failed.load(.acquire);
+        if (f != a.img_failed_seen) {
+            a.img_failed_seen = f;
+            a.toast("Não mandei a imagem: {s}.", .{chatsend.failureText(@enumFromInt(chatsend.last_error.load(.acquire)))}, true);
+        }
+        a.img_sent_seen = chatsend.sent.load(.acquire);
+    }
+
+    /// Textura da imagem da mensagem (decodifica na primeira vez). null = não deu.
+    fn chatImageTex(a: *App, line: *const client_mod.ChatLine) ?*ImgTex {
+        var free_i: usize = 0;
+        var oldest: u64 = std.math.maxInt(u64);
+        for (&a.img_cache, 0..) |*e, i| {
+            if (e.id == line.id and e.id != 0) {
+                e.used = a.frame_no;
+                return if (e.failed) null else e;
+            }
+            if (e.used < oldest) {
+                oldest = e.used;
+                free_i = i;
+            }
+        }
+        const e = &a.img_cache[free_i];
+        gl.delete(&e.tex);
+        e.* = .{ .id = line.id, .used = a.frame_no, .w = line.img_w, .h = line.img_h };
+        const data = line.img orelse {
+            e.failed = true;
+            return null;
+        };
+        const px = chatimg.decode(data, line.img_w, line.img_h) catch {
+            e.failed = true;
+            return null;
+        };
+        defer std.heap.c_allocator.free(px);
+        gl.upload(&e.tex, px, line.img_w, line.img_h, gl.RGBA);
+        return e;
+    }
+
+    fn clearChatImages(a: *App) void {
+        for (&a.img_cache) |*e| {
+            gl.delete(&e.tex);
+            e.* = .{};
+        }
+        a.img_view = null;
+    }
+
+    /// Reações embaixo da mensagem (as que alguém deu). Clique liga/desliga a sua.
+    fn drawReactionChips(a: *App, cl: *Client, line: *const client_mod.ChatLine, me: u32) void {
+        _ = a;
+        if (line.n_reacts == 0) return;
+        c.igDummy(v2(0, S(2)));
+        var first = true;
+        for (0..proto.reactions) |e| {
+            const rc = line.reactCount(@intCast(e), me);
+            if (rc.n == 0) continue;
+            if (!first) c.igSameLine(0, S(4));
+            first = false;
+            const label = fmtZ("{d}", .{rc.n});
+            const tw = textSizeF(font_semibold, 12.5, label).x;
+            const w = S(32) + tw;
+            const h = S(22);
+            const p = c.igGetCursorScreenPos();
+            const clicked = c.igInvisibleButton(fmtZ("##chip{d}_{d}", .{ line.id, e }).ptr, v2(w, h), 0);
+            const hov = c.igIsItemHovered(0);
+            const d = drawList();
+            rectFill(d, p.x, p.y, p.x + w, p.y + h, if (rc.mine) rgba(0x5865F2, 70) else if (hov) col.hover else rgba(0x000000, 60), S(8));
+            if (rc.mine) c.ImDrawList_AddRect(d, p, v2(p.x + w, p.y + h), rgb(0x5865F2), S(8), S(1), 0);
+            drawTextF(d, font_regular, 12.5, v2(p.x + S(8), p.y + S(4)), reaction_colors[e], reaction_icons[e]);
+            drawTextF(d, font_semibold, 12.5, v2(p.x + S(26), p.y + S(3)), col.text, label);
+            if (hov) tooltipText(reaction_names[e]);
+            if (clicked) cl.sendReact(line.id, @intCast(e), !rc.mine);
+        }
+    }
+
+    /// Imagem aberta em tela cheia (clique ou Esc fecha).
+    fn drawImageViewer(a: *App, size: c.ImVec2_c) void {
+        const id = a.img_view orelse return;
+        const e = for (&a.img_cache) |*x| {
+            if (x.id == id and x.tex != 0) break x;
+        } else {
+            a.img_view = null;
+            return;
+        };
+        const d = beginOverlay("##imgview", size, rgba(0x000000, 225));
+        defer c.igEnd();
+        const ar = @as(f32, @floatFromInt(e.w)) / @as(f32, @floatFromInt(e.h));
+        var w = @min(size.x * 0.92, @as(f32, @floatFromInt(e.w)) * 2);
+        var h = w / ar;
+        if (h > size.y * 0.88) {
+            h = size.y * 0.88;
+            w = h * ar;
+        }
+        const x = (size.x - w) / 2;
+        const y = (size.y - h) / 2;
+        c.ImDrawList_AddImage(d, .{ ._TexData = null, ._TexID = e.tex }, v2(x, y), v2(x + w, y + h), v2(0, 0), v2(1, 1), 0xFFFFFFFF);
+        drawTextF(d, font_regular, 13, v2(x, y + h + S(8)), col.muted, fmtZ("{d} x {d} · clique ou Esc pra fechar", .{ e.w, e.h }));
+        c.igSetCursorScreenPos(v2(0, 0));
+        if (c.igInvisibleButton("##imgclose", size, 0) or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) a.img_view = null;
+    }
+
+    /// Sugestões de @menção pro fim do que está digitado ("@an" → "Ana").
+    fn updateMentionSuggestions(a: *App, cl: *Client) void {
+        a.n_mention_sugg = 0;
+        const text = std.mem.sliceTo(&a.chat_input, 0);
+        const at = std.mem.lastIndexOfScalar(u8, text, '@') orelse return;
+        if (at > 0 and text[at - 1] != ' ') return;
+        const typed = text[at + 1 ..];
+        if (std.mem.indexOfScalar(u8, typed, ' ') != null) return;
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        for (cl.members.items) |*m| {
+            if (m.id == cl.my_id or a.n_mention_sugg == a.mention_sugg.len) continue;
+            const name = m.nameSlice();
+            if (typed.len > name.len or !std.ascii.eqlIgnoreCase(name[0..typed.len], typed)) continue;
+            const n = @min(name.len, 48);
+            @memcpy(a.mention_sugg[a.n_mention_sugg][0..n], name[0..n]);
+            a.mention_sugg_len[a.n_mention_sugg] = n;
+            a.n_mention_sugg += 1;
+        }
+    }
+
+    /// Imagem dentro da mensagem (clique abre em tela cheia).
+    fn drawChatLineImage(a: *App, line: *const client_mod.ChatLine, max_w: f32) void {
+        const e = a.chatImageTex(line) orelse {
+            pushFont(font_regular, 13);
+            textColored(col.faint, fmtZ("{s}  imagem com defeito", .{ic.image}));
+            popFont();
+            return;
+        };
+        const iw: f32 = @floatFromInt(e.w);
+        const ih: f32 = @floatFromInt(e.h);
+        const sc = @min(@min(1.0, max_w / iw), S(240) / ih);
+        const w = @max(S(24), iw * sc);
+        const h = @max(S(24), ih * sc);
+        const p = c.igGetCursorScreenPos();
+        c.igSetNextItemAllowOverlap(); // a barra de reações fica por cima
+        if (c.igInvisibleButton(fmtZ("##img{d}", .{line.id}).ptr, v2(w, h), 0)) a.img_view = line.id;
+        if (c.igIsItemHovered(0)) c.igSetMouseCursor(c.ImGuiMouseCursor_Hand);
+        c.ImDrawList_AddImageRounded(drawList(), .{ ._TexData = null, ._TexID = e.tex }, p, v2(p.x + w, p.y + h), v2(0, 0), v2(1, 1), 0xFFFFFFFF, S(6), 0);
+    }
+
+    fn pickMention(a: *App, i: usize) void {
+        const n = a.mention_sugg_len[i];
+        @memcpy(a.mention_apply[0..n], a.mention_sugg[i][0..n]);
+        a.mention_apply_len = n;
+    }
+
     fn drawChat(a: *App, cl: *Client, size: c.ImVec2_c) void {
         c.igPushStyleColor_U32(c.ImGuiCol_ChildBg, col.bg_side);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(0, 0));
@@ -3330,8 +3568,25 @@ pub const App = struct {
 
         cl.mutex.lock();
         const count = cl.chat_count;
+        const me = cl.my_id;
+        var my_name_buf: [48]u8 = undefined;
+        var my_name: []const u8 = "";
+        for (cl.members.items) |*m| {
+            if (m.id == me) {
+                const n = @min(m.name_len, my_name_buf.len);
+                @memcpy(my_name_buf[0..n], m.name[0..n]);
+                my_name = my_name_buf[0..n];
+            }
+        }
         var last_from: u32 = 0xffffffff;
         var in_history = false;
+        const mdl = drawList();
+        // fundo das menções atrás do texto: canal 0; o resto no 1
+        c.ImDrawList_ChannelsSplit(mdl, 2);
+        c.ImDrawList_ChannelsSetCurrent(mdl, 1);
+        const mouse = c.igGetIO_Nil().*.MousePos;
+        const msgs_hovered = c.igIsWindowHovered(c.ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+        var hover_line: ?u32 = null;
         for (cl.chat.items) |*line| {
             const text = line.text;
             // o histórico (de antes da gente entrar) fica separado do que é novo
@@ -3362,9 +3617,11 @@ pub const App = struct {
                 last_from = 0;
                 continue;
             }
+            var top: f32 = 0;
             if (line.from != last_from) {
                 c.igDummy(v2(0, S(12)));
                 const p = c.igGetCursorScreenPos();
+                top = p.y;
                 const dl = drawList();
                 drawAvatar(dl, v2(p.x + S(18), p.y + S(18)), S(18), line.from, line.nameSlice(), false);
                 drawTextF(dl, font_semibold, 14.5, v2(p.x + S(48), p.y), avatarColor(line.from), line.nameSlice());
@@ -3372,15 +3629,58 @@ pub const App = struct {
                 drawTextF(dl, font_regular, 11.5, v2(p.x + S(54) + ns.x, p.y + S(3)), col.faint, fmtZ("{d:0>2}:{d:0>2}", .{ line.hour, line.minute }));
                 c.igSetCursorScreenPos(v2(p.x + S(48), p.y + S(20)));
             } else {
+                top = c.igGetCursorScreenPos().y;
                 c.igSetCursorPosX(c.igGetCursorPosX() + S(48));
             }
-            c.igPushTextWrapPos(0);
-            pushFont(font_regular, 14.5);
-            textColored(col.text, text);
-            popFont();
-            c.igPopTextWrapPos();
+            const left = c.igGetCursorScreenPos().x;
+            if (text.len > 0) {
+                c.igPushTextWrapPos(0);
+                pushFont(font_regular, 14.5);
+                textColored(col.text, text);
+                popFont();
+                c.igPopTextWrapPos();
+            }
+            if (line.img != null) {
+                if (text.len > 0) c.igSetCursorScreenPos(v2(left, c.igGetCursorScreenPos().y + S(2)));
+                a.drawChatLineImage(line, size.x - S(48) - S(36));
+            } else if (line.img_expired) {
+                pushFont(font_regular, 13);
+                textColored(col.faint, fmtZ("{s}  imagem antiga (não está mais guardada na sala)", .{ic.image}));
+                popFont();
+            }
+            if (line.n_reacts > 0) {
+                c.igSetCursorScreenPos(v2(left, c.igGetCursorScreenPos().y));
+                a.drawReactionChips(cl, line, me);
+            }
+            const bottom = c.igGetCursorScreenPos().y;
+            // menção a você: fundo amarelado com faixa do lado (como no Discord)
+            if (line.from != me and mentions(text, my_name)) {
+                c.ImDrawList_ChannelsSetCurrent(mdl, 0);
+                const wx = c.igGetWindowPos().x;
+                rectFill(mdl, wx, top - S(2), wx + size.x, bottom + S(2), rgba(0xF0B232, 26), 0);
+                rectFill(mdl, wx, top - S(2), wx + S(3), bottom + S(2), rgb(0xF0B232), 0);
+                c.ImDrawList_ChannelsSetCurrent(mdl, 1);
+            }
+            // mouse em cima: barra de reações no canto da mensagem
+            if (msgs_hovered and mouse.y >= top - S(10) and mouse.y < bottom + S(2)) hover_line = line.id;
+            if (a.react_hover == line.id) {
+                const bs = S(26);
+                const bx0 = c.igGetWindowPos().x + size.x - S(14) - bs * proto.reactions - S(8);
+                const by0 = top - S(12);
+                const back = c.igGetCursorScreenPos();
+                rectFill(mdl, bx0 - S(4), by0 - S(3), bx0 + bs * proto.reactions + S(4), by0 + bs + S(3), col.bg_main, S(6));
+                c.ImDrawList_AddRect(mdl, v2(bx0 - S(4), by0 - S(3)), v2(bx0 + bs * proto.reactions + S(4), by0 + bs + S(3)), rgba(0x000000, 90), S(6), S(1), 0);
+                for (0..proto.reactions) |e| {
+                    c.igSetCursorScreenPos(v2(bx0 + bs * @as(f32, @floatFromInt(e)), by0));
+                    const mine = line.reactCount(@intCast(e), me).mine;
+                    if (iconButton(fmtZ("##r{d}_{d}", .{ line.id, e }), reaction_icons[e], bs, reaction_colors[e], col.hover, reaction_names[e])) cl.sendReact(line.id, @intCast(e), !mine);
+                }
+                c.igSetCursorScreenPos(back);
+            }
             last_from = line.from;
         }
+        c.ImDrawList_ChannelsMerge(mdl);
+        a.react_hover = hover_line;
         cl.mutex.unlock();
         c.igDummy(v2(0, S(8)));
         if (count != a.chat_seen) {
@@ -3404,7 +3704,6 @@ pub const App = struct {
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBgHovered, 0);
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBgActive, 0);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(8), S(9)));
-        c.igSetNextItemWidth(bw - S(46));
         if (a.focus_chat) {
             c.igSetKeyboardFocusHere(0);
             a.focus_chat = false;
@@ -3413,10 +3712,45 @@ pub const App = struct {
         // sem buraco de foco, nenhuma letra digitada logo depois se perde. O
         // callback guarda a mensagem e esvazia a caixa no mesmo quadro do Enter.
         a.chat_sent_len = 0;
-        const enter = c.igInputTextWithHint("##chatin", "Mandar mensagem na sala", &a.chat_input, a.chat_input.len, c.ImGuiInputTextFlags_EnterReturnsTrue | c.ImGuiInputTextFlags_CallbackAlways, chatCallback, a);
+        a.updateMentionSuggestions(cl);
+        c.igSetNextItemWidth(bw - S(82));
+        const enter = c.igInputTextWithHint("##chatin", "Mensagem, @nome, ou cole/arraste uma imagem", &a.chat_input, a.chat_input.len, c.ImGuiInputTextFlags_EnterReturnsTrue | c.ImGuiInputTextFlags_CallbackAlways | c.ImGuiInputTextFlags_CallbackCompletion, chatCallback, a);
+        const input_active = c.igIsItemActive();
         c.igPopStyleVar(1);
         c.igPopStyleColor(3);
+        // Ctrl+V com imagem copiada: manda a imagem (texto colado segue normal)
+        const io = c.igGetIO_Nil();
+        if (input_active and io.*.KeyCtrl and c.igIsKeyPressed_Bool(c.ImGuiKey_V, false)) _ = chatsend.paste(cl);
+        // sugestões de @menção (Tab completa a primeira; clique escolhe)
+        if (a.n_mention_sugg > 0 and (input_active or a.mention_apply_len > 0)) {
+            const row = S(30);
+            const hgt = row * @as(f32, @floatFromInt(a.n_mention_sugg)) + S(8);
+            const sy = by - hgt - S(6);
+            rectFill(d, bx, sy, bx + bw, sy + hgt, col.bg_main, S(8));
+            c.ImDrawList_AddRect(d, v2(bx, sy), v2(bx + bw, sy + hgt), rgba(0x000000, 90), S(8), S(1), 0);
+            const back = c.igGetCursorScreenPos();
+            for (0..a.n_mention_sugg) |i| {
+                const ry = sy + S(4) + row * @as(f32, @floatFromInt(i));
+                c.igSetCursorScreenPos(v2(bx + S(4), ry));
+                const name = a.mention_sugg[i][0..a.mention_sugg_len[i]];
+                if (c.igInvisibleButton(fmtZ("@{s}##mention", .{name}).ptr, v2(bw - S(8), row), 0)) {
+                    a.pickMention(i);
+                    a.focus_chat = true;
+                }
+                if (c.igIsItemHovered(0) or i == 0) rectFill(d, bx + S(4), ry, bx + bw - S(4), ry + row, if (c.igIsItemHovered(0)) col.hover else rgba(0xFFFFFF, 10), S(5));
+                drawTextF(d, font_semibold, 14, v2(bx + S(14), ry + S(6)), col.text, fmtZ("@{s}", .{name}));
+                if (i == 0) drawTextF(d, font_regular, 12, v2(bx + bw - S(60), ry + S(8)), col.faint, "Tab");
+            }
+            c.igSetCursorScreenPos(back);
+        }
+        if (chatsend.running.load(.acquire) > 0) {
+            drawTextF(d, font_regular, 12, v2(bx + S(6), by - S(18)), col.muted, fmtZ("{s}  mandando imagem...", .{ic.image}));
+        }
         c.igSameLine(0, 0);
+        c.igSetCursorScreenPos(v2(bx + bw - S(76), by + S(5)));
+        if (iconButton("##attach", ic.image, S(34), col.muted, col.hover, "Imagem: arraste o arquivo pra janela ou copie e aperte Ctrl+V aqui")) {
+            if (!chatsend.paste(cl)) a.toast("Pra mandar imagem: arraste o arquivo pra janela do telinha, ou copie a imagem e aperte Ctrl+V no chat.", .{}, false);
+        }
         c.igSetCursorScreenPos(v2(bx + bw - S(40), by + S(5)));
         const send_click = iconButton("##send", ic.send, S(34), col.muted, col.hover, "Enviar");
         if (enter or send_click) {
@@ -3436,6 +3770,23 @@ pub const App = struct {
     /// esvazia a caixa sem tirar o foco dela.
     fn chatCallback(data: [*c]c.ImGuiInputTextCallbackData) callconv(.c) c_int {
         const a: *App = @ptrCast(@alignCast(data.*.UserData));
+        // Tab: completa a @menção com a primeira sugestão
+        if (data.*.EventFlag == c.ImGuiInputTextFlags_CallbackCompletion) {
+            if (a.n_mention_sugg > 0) a.pickMention(0);
+        }
+        // troca o "@an" do fim pelo nome escolhido
+        if (a.mention_apply_len > 0) {
+            const text = data.*.Buf[0..@intCast(data.*.BufTextLen)];
+            if (std.mem.lastIndexOfScalar(u8, text, '@')) |at| {
+                c.ImGuiInputTextCallbackData_DeleteChars(data, @intCast(at), @intCast(text.len - at));
+                const ins = fmtZ("@{s} ", .{a.mention_apply[0..a.mention_apply_len]});
+                c.ImGuiInputTextCallbackData_InsertChars(data, @intCast(at), ins.ptr, null);
+                data.*.CursorPos = data.*.BufTextLen;
+                data.*.SelectionStart = data.*.BufTextLen;
+                data.*.SelectionEnd = data.*.BufTextLen;
+            }
+            a.mention_apply_len = 0;
+        }
         if (c.igIsKeyPressed_Bool(c.ImGuiKey_Enter, false) or c.igIsKeyPressed_Bool(c.ImGuiKey_KeypadEnter, false)) {
             const n: usize = @intCast(@min(data.*.BufTextLen, a.chat_sent.len));
             @memcpy(a.chat_sent[0..n], data.*.Buf[0..n]);
@@ -3934,11 +4285,26 @@ pub const App = struct {
                 if (i > 0) try w.writeByte(',');
                 try w.print("{{\"from\":{d},\"stream\":{d},\"x\":{d},\"y\":{d},\"flags\":{d},\"ping\":{}}}", .{ pt.from, pt.stream, pt.x, pt.y, pt.flags, pt.ping_us != 0 });
             }
+            try w.writeAll("]");
+            try w.print(",\"img_view\":{?d},\"img_sending\":{d},\"img_sent\":{d},\"react_hover\":{?d},\"mention_sugg\":[", .{ a.img_view, chatsend.running.load(.acquire), chatsend.sent.load(.acquire), a.react_hover });
+            for (0..a.n_mention_sugg) |i| {
+                if (i > 0) try w.writeByte(',');
+                try w.print("{f}", .{s(a.mention_sugg[i][0..a.mention_sugg_len[i]])});
+            }
             try w.writeAll("],\"chat\":[");
             const first = cl.chat.items.len -| 30;
             for (cl.chat.items[first..], 0..) |*l, i| {
                 if (i > 0) try w.writeByte(',');
-                try w.print("{{\"id\":{d},\"from\":{d},\"name\":{f},\"text\":{f},\"history\":{}}}", .{ l.id, l.from, s(l.nameSlice()), s(l.text), l.history });
+                try w.print("{{\"id\":{d},\"from\":{d},\"name\":{f},\"text\":{f},\"history\":{}", .{ l.id, l.from, s(l.nameSlice()), s(l.text), l.history });
+                const ready = for (a.img_cache) |e| {
+                    if (e.id == l.id and e.tex != 0) break true;
+                } else false;
+                try w.print(",\"img\":{},\"img_w\":{d},\"img_h\":{d},\"img_bytes\":{d},\"img_ready\":{},\"img_expired\":{},\"reacts\":[", .{ l.img != null, l.img_w, l.img_h, if (l.img) |im| im.len else 0, ready, l.img_expired });
+                for (0..proto.reactions) |e| {
+                    if (e > 0) try w.writeByte(',');
+                    try w.print("{d}", .{l.reactCount(@intCast(e), cl.my_id).n});
+                }
+                try w.writeAll("]}");
             }
             try w.writeAll("]");
         } else try w.writeAll(",\"status\":null");

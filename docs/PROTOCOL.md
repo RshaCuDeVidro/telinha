@@ -84,8 +84,8 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (servidor fecha em seguida) |
 | 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo), n × `str versão_do_app` (mesma ordem) |
-| 5 | chat | C→S | `str texto` |
-| 5 | chat | S→C | `u32 id`, `u32 de` (0 = sistema), `str nome`, `str texto`, `u64 hora` (relógio da sala, µs), `u8 flags` (1 = histórico) |
+| 5 | chat | C→S | `str texto`, imagem (opcional, abaixo) |
+| 5 | chat | S→C | `u32 id`, `u32 de` (0 = sistema), `str nome`, `str texto`, `u64 hora` (relógio da sala, µs), `u8 flags` (1 = histórico), imagem, `u8 n`, n × (`u8 reação`, `u32 de`) |
 | 6 | stream_start | C→S | `u8 tipo`, `u16 w`, `u16 h`, `u8 fps`, `u8 flags` (1 = com áudio; só vale pra tela) |
 | 7 | stream_stop | C→S | `u8 tipo` |
 | 8 | frame | C→S | frame (abaixo) |
@@ -108,6 +108,8 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 20 | notice | S→C | `u8 tipo`, `str texto`, `u8 extra`: algo que um admin fez com você |
 | 21 | pointer | C→S | `u32 stream`, `u16 x`, `u16 y`, `u8 flags` |
 | 21 | pointer | S→C | `u32 de`, `u32 stream`, `u16 x`, `u16 y`, `u8 flags` |
+| 22 | react | C→S | `u32 id_da_mensagem`, `u8 reação` (0–5), `u8 ligado` |
+| 22 | react | S→C | `u32 id_da_mensagem`, `u32 de`, `u8 reação`, `u8 ligado` |
 
 `versão_do_app` ("3.0.0") serve só pra avisar quem está desatualizado (a
 interface mostra "fulano está no telinha X: tem versão nova"); vazia = não
@@ -139,6 +141,21 @@ servidor sobe (se mudou, o servidor reiniciou e os ids do chat recomeçaram).
 **denied:** `código` 0 = genérico, 1 = expulso, 2 = banido, 3 = o dono fechou
 a sala, 4 = o link público por onde você entrou foi desligado, 5 = sala
 trancada, 6 = sala cheia. Com qualquer um o cliente não tenta reconectar.
+
+**Imagem no chat:** `u8 tipo` — 0 = nenhuma; 1 = `u16 w`, `u16 h`, `u32 tamanho`,
+bytes; 2 = era uma imagem, mas o servidor já não guarda (histórico). Os bytes
+são **um quadro H.264 (IDR)**: quem manda lê o arquivo/área de transferência no
+próprio PC, reduz pra no máximo 1600 px e codifica com o openh264; quem
+recebe decodifica com o mesmo decoder do vídeo e confere que o tamanho bate.
+Assim nenhum leitor de PNG/JPEG fica exposto ao que vem da rede. Limites:
+lado entre 16 e 1920 px, até 1,5 MB, uma imagem a cada 1,5 s por pessoa
+(rajada é ignorada); fora disso a mensagem é inválida e o servidor derruba a
+conexão. O histórico guarda até 24 MB de imagens; as mais velhas viram tipo 2.
+
+**Reações:** 0 curti, 1 amei, 2 haha, 3 fogo, 4 uau, 5 triste. Uma por pessoa
+e por tipo em cada mensagem (ligar de novo não muda nada); só em mensagens que
+ainda estão no histórico, e não em avisos do sistema. No histórico, a
+mensagem de chat já vem com as reações; depois disso elas chegam uma a uma.
 
 **Membro:** `u32 id`, `str nome`, `u8 flags`, `u8 rota` (bit `0x80` = dono;
 os 7 de baixo = rota, tabela acima), `u16 w`, `u16 h`, `u8 fps` (tela),

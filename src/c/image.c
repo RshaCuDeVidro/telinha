@@ -30,6 +30,7 @@ void img_free(uint8_t *rgba) {
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
+#include <stdio.h>
 
 // Copia um DIB (BITMAPINFOHEADER + pixels) pra RGBA de cima pra baixo.
 static uint8_t *dib_to_rgba(const uint8_t *p, size_t size, int *w, int *h) {
@@ -77,7 +78,30 @@ uint8_t *img_clipboard(int *w, int *h, wchar_t *path, int path_cap) {
     uint8_t *out = NULL;
     if (path && path_cap > 0) path[0] = 0;
     if (!OpenClipboard(NULL)) return NULL;
-    HANDLE hd = GetClipboardData(CF_DIB);
+    if (getenv("TELINHA_DEBUG")) {
+        // diagnóstico: quais formatos tem na área de transferência
+        for (UINT f = EnumClipboardFormats(0); f; f = EnumClipboardFormats(f)) {
+            char name[64] = "";
+            GetClipboardFormatNameA(f, name, sizeof name);
+            fprintf(stderr, "[telinha] área de transferência: formato %u %s\n", f, name);
+        }
+    }
+    // "PNG" (navegador, Ferramenta de Captura, wine): melhor que o DIB, tem transparência
+    const UINT png = RegisterClipboardFormatA("PNG");
+    HANDLE hd = png ? GetClipboardData(png) : NULL;
+    if (hd) {
+        const uint8_t *p = GlobalLock(hd);
+        if (p) {
+            const SIZE_T n = GlobalSize(hd);
+            if (n > 0 && n < 64u * 1024 * 1024) out = img_decode(p, (int)n, w, h); // stbi usa malloc: free() serve
+            GlobalUnlock(hd);
+        }
+        if (out) {
+            CloseClipboard();
+            return out;
+        }
+    }
+    hd = GetClipboardData(CF_DIB);
     if (hd) {
         const uint8_t *p = GlobalLock(hd);
         if (p) {

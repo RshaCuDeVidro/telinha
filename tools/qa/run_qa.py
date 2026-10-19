@@ -723,6 +723,76 @@ def som_de_um_programa():
         expect(ana.state()["sharer"]["audio"], "o som parou depois de trocar")
 
 
+def write_png(path, w, h):
+    """PNG de teste (degradê com listras), sem depender de biblioteca de imagem."""
+    import struct
+    import zlib
+    raw = bytearray()
+    for y in range(h):
+        raw.append(0)
+        for x in range(w):
+            raw += bytes((x * 255 // w, y * 255 // h, 230 if (x // 8) % 2 else 40))
+    def chunk(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(bytes(raw), 6)) + chunk(b"IEND", b""))
+
+
+@test
+def chat_imagem_reacao_mencao():
+    """Chat: @menção com Tab, imagem colada (Ctrl+V), abrir a imagem, reações e tudo isso no histórico de quem entra depois."""
+    with Session("chatimg") as s:
+        p = port()
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p)])
+        bia = s.app("bia", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}"])
+        bia.wait(lambda st: st["status"] == "connected", 10, "a Bia entrar")
+        ana.wait(lambda st: len(st["members"]) == 2, 10, "a Ana ver a Bia")
+        # @menção: "@an" sugere Ana; Tab completa
+        bia.click("##chatin")
+        bia.type("@an")
+        bia.wait(lambda st: st["mention_sugg"] == ["Ana"], 3, "sugerir a Ana")
+        bia.key("Tab")
+        bia.wait(lambda st: st["chat_input"] == "@Ana ", 3, "completar com @Ana")
+        bia.type("olha isso\n")
+        ana.wait(lambda st: any(l["text"] == "@Ana olha isso" for l in st["chat"]), 5, "a Ana receber a menção")
+        # imagem colada: PNG na área de transferência da tela da Ana, Ctrl+V no chat
+        png = os.path.join(s.base, "teste.png")
+        write_png(png, 300, 200)
+        s.spawn("xclip", ["xclip", "-quiet", "-selection", "clipboard", "-t", "image/png", "-i", png], dict(os.environ, DISPLAY=f":{ana.num}"))
+        time.sleep(0.5)
+        ana.click("##chatin")
+        ana.key("v", ctrl=True)
+        st = bia.wait(lambda st: any(l["img"] and l["img_ready"] for l in st["chat"]), 10, "a imagem aparecer pra Bia")
+        img = next(l for l in st["chat"] if l["img"])
+        log(f"imagem: {img['img_w']}x{img['img_h']}, {img['img_bytes']} bytes")
+        expect((img["img_w"], img["img_h"]) == (300, 200), f"tamanho errado: {img['img_w']}x{img['img_h']}")
+        # abre em tela cheia e fecha
+        bia.click(f"##img{img['id']}")
+        bia.wait(lambda st: st["img_view"] == img["id"], 3, "abrir a imagem")
+        bia.key("Escape")
+        bia.wait(lambda st: st["img_view"] is None, 3, "fechar a imagem")
+        # reação pela barra que aparece com o mouse em cima
+        it = bia.find(f"##img{img['id']}")
+        bia.move(*bia._abs(it, 0.5, 0.5))
+        bia.wait(lambda st: st["react_hover"] == img["id"], 3, "a barra de reações aparecer")
+        it2 = bia.click(f"##r{img['id']}_1")
+        if os.environ.get("QA_DEBUG"):
+            log(f"clique em {it2}")
+            time.sleep(0.5)
+            bia.screenshot(os.path.join(s.base, "reacao.png"))
+            log(f"bia: {[l['reacts'] for l in bia.state()['chat'] if l['img']]} hover={bia.state()['react_hover']}")
+        ana.wait(lambda st: next(l for l in st["chat"] if l["id"] == img["id"])["reacts"][1] == 1, 5, "a Ana ver o coração")
+        # a Ana clica no mesmo coração (embaixo da mensagem): 2
+        ana.click(f"##chip{img['id']}_1")
+        bia.wait(lambda st: next(l for l in st["chat"] if l["id"] == img["id"])["reacts"][1] == 2, 5, "dois corações")
+        # quem entra depois vê a imagem e as reações
+        cai = s.app("cai", 93, ["--nome", "Caio", "--entrar", f"127.0.0.1:{p}"])
+        st = cai.wait(lambda st: any(l["img"] and l["img_ready"] for l in st["chat"]), 10, "o Caio ver a imagem do histórico")
+        h = next(l for l in st["chat"] if l["img"])
+        expect(h["history"] and h["reacts"][1] == 2, f"histórico sem as reações: {h}")
+
+
 @test
 def versao_nova():
     """Aviso de versão nova: pelo GitHub (de mentira, local) na tela inicial, e por alguém da sala que está numa versão mais nova."""
@@ -791,6 +861,28 @@ def windows_exe():
         # câmera: no wine não tem nenhuma; avisa e não trava
         w.click("##camera")
         w.wait(lambda st: st["camera"] is None and any("câmera" in t.lower() for t in st["toasts"]), 20, "avisar que não tem câmera")
+
+
+@test
+def windows_chat_imagem():
+    """O .exe (wine) cola uma imagem no chat (área de transferência do Windows) e o Linux vê."""
+    with Session("winchat") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Linux", "--criar", str(p)])
+        a.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
+        w = s.wine_app("w", 96, ["--nome", "Windows", "--entrar", f"127.0.0.1:{p}"], extra_env={"TELINHA_DEBUG": "1"})
+        w.wait(lambda st: st["status"] == "connected", 60, "o .exe entrar")
+        png = os.path.join(s.base, "teste.png")
+        write_png(png, 320, 180)
+        s.spawn("xclip", ["xclip", "-quiet", "-selection", "clipboard", "-t", "image/png", "-i", png], dict(os.environ, DISPLAY=f":{w.num}"))
+        time.sleep(1)
+        w.click("##chatin")
+        w.key("v", ctrl=True)
+        st = a.wait(lambda st: any(l["img"] and l["img_ready"] for l in st["chat"]), 30, "o Linux ver a imagem colada no .exe")
+        img = next(l for l in st["chat"] if l["img"])
+        log(f"imagem do .exe: {img['img_w']}x{img['img_h']}, {img['img_bytes']} bytes")
+        expect((img["img_w"], img["img_h"]) == (320, 180), f"tamanho errado: {img['img_w']}x{img['img_h']}")
+        w.wait(lambda st: any(l["img"] and l["img_ready"] for l in st["chat"]), 10, "o .exe mostrar a própria imagem")
 
 
 @test
