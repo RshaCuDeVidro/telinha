@@ -12,6 +12,7 @@ O telinha é MIT (ver [LICENSE](LICENSE)). Ele usa estes projetos:
 | [miniaudio](https://miniaud.io) 0.11.25 | captura e saída de áudio | MIT-0 / domínio público | baixado pelo `build.zig.zon` |
 | [RNNoise](https://gitlab.xiph.org/xiph/rnnoise) 0.2 | supressão de ruído e detecção de voz do microfone | BSD 3-Clause | baixado pelo `build.zig.zon` |
 | [SpeexDSP](https://gitlab.xiph.org/xiph/speexdsp) 1.2.1 | cancelamento de eco do microfone | BSD 3-Clause | baixado pelo `build.zig.zon` |
+| [stb_image](https://github.com/nothings/stb) 2.30 | lê a imagem (PNG/JPEG/GIF/BMP) que você manda no chat — só no seu PC; pela rede ela vai como um quadro H.264 | MIT / domínio público | baixado pelo `build.zig.zon` |
 | [nv-codec-headers](https://github.com/FFmpeg/nv-codec-headers) 11.1 | headers do NVENC/NVDEC (as libs vêm do driver) | MIT | baixado pelo `build.zig.zon` |
 | [NASM](https://www.nasm.us) 2.16.03 | só no build: monta o assembly SIMD do openh264 | BSD 2-Clause | baixado pelo `build.zig.zon` |
 | [Inter](https://rsms.me/inter/) | fonte da interface | SIL Open Font License 1.1 | `src/assets/Inter-*.ttf` |

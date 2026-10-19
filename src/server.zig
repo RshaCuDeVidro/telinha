@@ -86,6 +86,7 @@ const Conn = struct {
     flows: std.ArrayList(Flow) = .empty, // frames a caminho, por stream assistido
     pointer_sec: u64 = 0, // limite do ponteiro: segundo atual e quantos já vieram
     pointer_count: u32 = 0,
+    last_img_ms: u64 = 0, // última imagem no chat (limite)
     dismissed: bool = false, // já recebeu o aviso de saída (não manda outro)
     reader_done: std.atomic.Value(bool) = .init(false),
     refs: std.atomic.Value(u32) = .init(1), // leitora (+ escritora quando existir)
@@ -247,7 +248,25 @@ const ChatEntry = struct {
     name_len: usize = 0,
     text: []u8,
     time_us: u64,
+    img: ?[]u8 = null, // quadro H.264 da imagem (proto.chat_img_h264)
+    img_w: u16 = 0,
+    img_h: u16 = 0,
+    img_expired: bool = false, // a imagem saiu da memória (histórico grande demais)
+    reacts: std.ArrayList(React) = .empty,
+
+    const React = struct { emoji: u8, from: u32 };
+
+    fn free(e: *ChatEntry) void {
+        gpa.free(e.text);
+        if (e.img) |im| gpa.free(im);
+        e.reacts.deinit(gpa);
+    }
 };
+
+/// Imagens guardadas no histórico do chat, no total (as mais velhas expiram).
+const chat_img_budget = 24 * 1024 * 1024;
+/// Imagem no chat: no máximo uma a cada tanto, por pessoa.
+const chat_img_interval_ms = 1500;
 
 pub const Options = struct {
     port: u16,
@@ -595,10 +614,32 @@ pub const Server = struct {
         switch (typ) {
             .chat => {
                 const text = std.mem.trim(u8, try r.str(), " \t\r\n");
-                if (text.len == 0) return;
+                var img: ?Image = null;
+                if ((r.u8_() catch proto.chat_img_none) == proto.chat_img_h264) {
+                    const w = try r.u16_();
+                    const h = try r.u16_();
+                    const len = try r.u32_();
+                    if (w < 16 or h < 16 or w > proto.chat_image_side or h > proto.chat_image_side or len == 0 or len > proto.chat_image_max) return error.BadMessage;
+                    img = .{ .w = w, .h = h, .data = try r.take(len) };
+                }
+                if (text.len == 0 and img == null) return;
                 s.mutex.lock();
                 defer s.mutex.unlock();
-                try s.broadcastChat(cn.id, cn.nameSlice(), text);
+                if (img != null) {
+                    const now = sync.nowMs();
+                    if (now -% cn.last_img_ms < chat_img_interval_ms) return; // rajada de imagem: ignora
+                    cn.last_img_ms = now;
+                }
+                try s.broadcastChatImg(cn.id, cn.nameSlice(), text, img);
+            },
+            .react => {
+                const id = try r.u32_();
+                const emoji = try r.u8_();
+                const on = (try r.u8_()) != 0;
+                if (emoji >= proto.reactions) return error.BadMessage;
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                try s.react(cn, id, emoji, on);
             },
             .stream_start => {
                 const kind = try r.u8_();
@@ -996,28 +1037,94 @@ pub const Server = struct {
         try b.str(e.text);
         try b.u64_(e.time_us);
         try b.u8_(flags);
+        if (e.img) |im| {
+            try b.u8_(proto.chat_img_h264);
+            try b.u16_(e.img_w);
+            try b.u16_(e.img_h);
+            try b.u32_(@intCast(im.len));
+            try b.bytes(im);
+        } else try b.u8_(if (e.img_expired) proto.chat_img_expired else proto.chat_img_none);
+        // reações (no histórico; ao vivo elas vêm uma a uma)
+        try b.u8_(@intCast(e.reacts.items.len));
+        for (e.reacts.items) |rc| {
+            try b.u8_(rc.emoji);
+            try b.u32_(rc.from);
+        }
         return b.finish();
     }
 
+    const Image = struct { w: u16, h: u16, data: []const u8 };
+
     /// Guarda no histórico e manda pra todo mundo. Chamado com o mutex travado.
     fn broadcastChat(s: *Server, from: u32, name: []const u8, text: []const u8) !void {
+        return s.broadcastChatImg(from, name, text, null);
+    }
+
+    fn broadcastChatImg(s: *Server, from: u32, name: []const u8, text: []const u8, img: ?Image) !void {
         const owned = try gpa.dupe(u8, text[0..@min(text.len, 4000)]);
         var e: ChatEntry = .{ .id = s.next_chat_id, .from = from, .text = owned, .time_us = s.nowUs() };
+        if (img) |im| {
+            e.img = gpa.dupe(u8, im.data) catch {
+                gpa.free(owned);
+                return error.OutOfMemory;
+            };
+            e.img_w = im.w;
+            e.img_h = im.h;
+        }
         s.next_chat_id +%= 1;
         copyInto(&e.name, &e.name_len, name);
         const m = chatMsg(&e, 0) catch |err| {
-            gpa.free(owned);
+            e.free();
             return err;
         };
         defer m.release();
         if (s.chat_len == chat_history_len) {
-            gpa.free(s.chat_log[s.chat_head].text);
+            s.chat_log[s.chat_head].free();
             s.chat_log[s.chat_head] = e;
             s.chat_head = (s.chat_head + 1) % chat_history_len;
         } else {
             s.chat_log[(s.chat_head + s.chat_len) % chat_history_len] = e;
             s.chat_len += 1;
         }
+        // memória: as imagens mais velhas do histórico expiram
+        var total: usize = 0;
+        var i: usize = s.chat_len;
+        while (i > 0) {
+            i -= 1;
+            const ent = &s.chat_log[(s.chat_head + i) % chat_history_len];
+            const im = ent.img orelse continue;
+            total += im.len;
+            if (total > chat_img_budget) {
+                gpa.free(im);
+                ent.img = null;
+                ent.img_expired = true;
+            }
+        }
+        for (s.conns.items) |o| o.queue.push(m);
+    }
+
+    /// Liga/desliga uma reação numa mensagem do histórico. Mutex travado.
+    fn react(s: *Server, cn: *Conn, id: u32, emoji: u8, on: bool) !void {
+        const e = for (0..s.chat_len) |i| {
+            const ent = &s.chat_log[(s.chat_head + i) % chat_history_len];
+            if (ent.id == id) break ent;
+        } else return; // mensagem velha demais: ignora
+        if (e.from == 0) return; // aviso do sistema não ganha reação
+        const idx = for (e.reacts.items, 0..) |rc, k| {
+            if (rc.emoji == emoji and rc.from == cn.id) break k;
+        } else null;
+        if (on == (idx != null)) return; // já estava assim
+        if (on) {
+            if (e.reacts.items.len >= 64) return;
+            try e.reacts.append(gpa, .{ .emoji = emoji, .from = cn.id });
+        } else _ = e.reacts.orderedRemove(idx.?);
+        const m = try proto.Msg.alloc(.react, 10);
+        defer m.release();
+        const pl = m.payload();
+        std.mem.writeInt(u32, pl[0..4], id, .little);
+        std.mem.writeInt(u32, pl[4..8], cn.id, .little);
+        pl[8] = emoji;
+        pl[9] = @intFromBool(on);
         for (s.conns.items) |o| o.queue.push(m);
     }
 

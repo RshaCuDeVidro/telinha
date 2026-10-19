@@ -307,6 +307,123 @@ test "chat: quem entra depois recebe o histórico (marcado como antigo)" {
     try testing.expectEqualStrings("segunda", texts[2]);
 }
 
+/// Mensagem de chat decodificada (com imagem e reações, se tiver).
+const ChatMsg = struct {
+    id: u32,
+    from: u32,
+    flags: u8,
+    img: u8,
+    img_w: u16 = 0,
+    img_h: u16 = 0,
+    img_len: usize = 0,
+    img_first: u8 = 0,
+    n_reacts: u8 = 0,
+    react0: u8 = 0,
+};
+
+fn readChat(c: *TestClient) !ChatMsg {
+    var r: proto.Reader = .{ .data = try c.expect(.chat) };
+    var m: ChatMsg = .{ .id = try r.u32_(), .from = try r.u32_(), .flags = 0, .img = 0 };
+    _ = try r.str();
+    _ = try r.str();
+    _ = try r.u64_();
+    m.flags = try r.u8_();
+    m.img = try r.u8_();
+    if (m.img == proto.chat_img_h264) {
+        m.img_w = try r.u16_();
+        m.img_h = try r.u16_();
+        const len = try r.u32_();
+        const data = try r.take(len);
+        m.img_len = data.len;
+        m.img_first = data[0];
+    }
+    m.n_reacts = try r.u8_();
+    if (m.n_reacts > 0) {
+        m.react0 = try r.u8_();
+        _ = try r.u32_();
+    }
+    return m;
+}
+
+fn chatImage(c: *TestClient, w: u16, h: u16, len: usize, fill: u8) !void {
+    var b: proto.Builder = .{};
+    defer b.deinit();
+    try b.begin(.chat);
+    try b.str("olha isso");
+    try b.u8_(proto.chat_img_h264);
+    try b.u16_(w);
+    try b.u16_(h);
+    try b.u32_(@intCast(len));
+    const data = try testing.allocator.alloc(u8, len);
+    defer testing.allocator.free(data);
+    @memset(data, fill);
+    try b.bytes(data);
+    try c.send(try b.finish());
+}
+
+/// Próxima mensagem de chat de alguém (pula os avisos do sistema).
+fn nextUserChat(c: *TestClient) !ChatMsg {
+    while (true) {
+        const m = try readChat(c);
+        if (m.from != 0) return m;
+    }
+}
+
+test "chat: imagem chega pra todos e no histórico; reações; limites" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+    var a = try TestClient.connect(port, "A", "", "");
+    defer a.close();
+    try a.welcome();
+    var b = try TestClient.connect(port, "B", "", "");
+    defer b.close();
+    try b.welcome();
+    try chatImage(&a, 640, 360, 50_000, 0x5A);
+    const got = try nextUserChat(&b);
+    try testing.expectEqual(proto.chat_img_h264, got.img);
+    try testing.expectEqual(@as(u16, 640), got.img_w);
+    try testing.expectEqual(@as(usize, 50_000), got.img_len);
+    try testing.expectEqual(@as(u8, 0x5A), got.img_first);
+    // rajada: a segunda imagem logo em seguida é ignorada; texto passa
+    try chatImage(&a, 640, 360, 1000, 1);
+    try a.chat("depois");
+    const next = try nextUserChat(&b);
+    try testing.expectEqual(proto.chat_img_none, next.img);
+    // reação: B curte a imagem; todo mundo recebe
+    {
+        const m = try proto.Msg.alloc(.react, 6);
+        std.mem.writeInt(u32, m.payload()[0..4], got.id, .little);
+        m.payload()[4] = 1;
+        m.payload()[5] = 1;
+        try b.send(m);
+    }
+    var r: proto.Reader = .{ .data = try a.expect(.react) };
+    try testing.expectEqual(got.id, try r.u32_());
+    try testing.expectEqual(b.id, try r.u32_());
+    try testing.expectEqual(@as(u8, 1), try r.u8_());
+    try testing.expectEqual(@as(u8, 1), try r.u8_());
+    // quem entra depois vê a imagem e a reação no histórico
+    var c = try TestClient.connect(port, "C", "", "");
+    defer c.close();
+    try c.welcome();
+    const hist = try nextUserChat(&c);
+    try testing.expect(hist.flags & proto.chat_history != 0);
+    try testing.expectEqual(proto.chat_img_h264, hist.img);
+    try testing.expectEqual(@as(usize, 50_000), hist.img_len);
+    try testing.expectEqual(@as(u8, 1), hist.n_reacts);
+    try testing.expectEqual(@as(u8, 1), hist.react0);
+    // imagem fora dos limites derruba quem mandou (mensagem inválida): o
+    // servidor fecha e a leitura termina com erro bem antes do prazo de 5 s
+    try chatImage(&c, 4000, 360, 100, 1);
+    const t0 = sync.nowMs();
+    while (true) {
+        _ = proto.recvMsg(c.sock, &c.ch, &c.rb) catch break;
+    }
+    try testing.expect(sync.nowMs() - t0 < 4000);
+}
+
 test "sala: frames só vão pra quem assiste, começando por IDR" {
     net.init();
     const port = freshPort();

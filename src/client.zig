@@ -91,9 +91,50 @@ pub const ChatLine = struct {
     hour: u8,
     minute: u8,
     history: bool, // já estava na sala antes da gente entrar
+    img: ?[]u8 = null, // imagem: um quadro H.264 (decodifica na hora de mostrar)
+    img_w: u16 = 0,
+    img_h: u16 = 0,
+    img_expired: bool = false, // era imagem, mas saiu do histórico da sala
+    reacts: [32]React = undefined,
+    n_reacts: u8 = 0,
+
+    pub const React = struct { emoji: u8, from: u32 };
 
     pub fn nameSlice(self: *const ChatLine) []const u8 {
         return self.name[0..self.name_len];
+    }
+
+    /// Quantas pessoas deram essa reação, e se `me` está entre elas.
+    pub fn reactCount(self: *const ChatLine, emoji: u8, me: u32) struct { n: u32, mine: bool } {
+        var n: u32 = 0;
+        var mine = false;
+        for (self.reacts[0..self.n_reacts]) |rc| {
+            if (rc.emoji != emoji) continue;
+            n += 1;
+            if (rc.from == me) mine = true;
+        }
+        return .{ .n = n, .mine = mine };
+    }
+
+    fn setReact(self: *ChatLine, emoji: u8, from: u32, on: bool) void {
+        for (self.reacts[0..self.n_reacts], 0..) |rc, i| {
+            if (rc.emoji == emoji and rc.from == from) {
+                if (!on) {
+                    self.n_reacts -= 1;
+                    self.reacts[i] = self.reacts[self.n_reacts];
+                }
+                return;
+            }
+        }
+        if (on and self.n_reacts < self.reacts.len) {
+            self.reacts[self.n_reacts] = .{ .emoji = emoji, .from = from };
+            self.n_reacts += 1;
+        }
+    }
+
+    fn free(self: *ChatLine) void {
+        gpa.free(self.text);
+        if (self.img) |im| gpa.free(im);
     }
 };
 
@@ -477,6 +518,7 @@ pub const Client = struct {
     chat: std.ArrayList(ChatLine) = .empty,
     chat_count: u64 = 0, // total de mensagens já recebidas (pra rolar o chat)
     chat_new: u64 = 0, // mensagens novas (não de histórico) — notificação
+    chat_react_gen: u32 = 0, // muda quando chega reação (a UI redesenha)
     /// Último id de mensagem visto (o histórico que chega depois não repete).
     chat_last_id: u32 = 0,
     instance: u64 = 0,
@@ -546,7 +588,7 @@ pub const Client = struct {
         if (cl.refs.fetchSub(1, .acq_rel) == 1) {
             cl.queue.deinit();
             cl.members.deinit(gpa);
-            for (cl.chat.items) |l| gpa.free(l.text);
+            for (cl.chat.items) |*l| l.free();
             cl.chat.deinit(gpa);
             cl.notices.deinit(gpa);
             cl.pointers.deinit(gpa);
@@ -885,6 +927,29 @@ pub const Client = struct {
                 const at_us = try r.u64_();
                 const flags = try r.u8_();
                 line.history = flags & proto.chat_history != 0;
+                line.img = null;
+                line.img_w = 0;
+                line.img_h = 0;
+                line.img_expired = false;
+                line.n_reacts = 0;
+                var img_bytes: ?[]const u8 = null;
+                switch (r.u8_() catch proto.chat_img_none) {
+                    proto.chat_img_h264 => {
+                        line.img_w = try r.u16_();
+                        line.img_h = try r.u16_();
+                        const len = try r.u32_();
+                        if (len > proto.chat_image_max or line.img_w > proto.chat_image_side or line.img_h > proto.chat_image_side) return error.BadMessage;
+                        img_bytes = try r.take(len);
+                    },
+                    proto.chat_img_expired => line.img_expired = true,
+                    else => {},
+                }
+                const n_reacts = r.u8_() catch 0;
+                for (0..n_reacts) |_| {
+                    const emoji = try r.u8_();
+                    const from = try r.u32_();
+                    if (emoji < proto.reactions) line.setReact(emoji, from, true);
+                }
                 cl.mutex.lock();
                 defer cl.mutex.unlock();
                 // histórico que já chegou (não deveria repetir, mas não custa)
@@ -896,16 +961,35 @@ pub const Client = struct {
                 line.hour = t.h;
                 line.minute = t.m;
                 line.text = try gpa.dupe(u8, text);
+                if (img_bytes) |ib| line.img = gpa.dupe(u8, ib) catch null;
                 if (cl.chat.items.len >= 500) {
-                    gpa.free(cl.chat.items[0].text);
+                    cl.chat.items[0].free();
                     _ = cl.chat.orderedRemove(0);
                 }
                 cl.chat.append(gpa, line) catch |e| {
-                    gpa.free(line.text);
+                    line.free();
                     return e;
                 };
                 cl.chat_count += 1;
                 if (!line.history) cl.chat_new += 1;
+            },
+            .react => {
+                const id = try r.u32_();
+                const from = try r.u32_();
+                const emoji = try r.u8_();
+                const on = (try r.u8_()) != 0;
+                if (emoji >= proto.reactions) return;
+                cl.mutex.lock();
+                defer cl.mutex.unlock();
+                var i = cl.chat.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    if (cl.chat.items[i].id == id) {
+                        cl.chat.items[i].setReact(emoji, from, on);
+                        cl.chat_react_gen +%= 1;
+                        break;
+                    }
+                }
             },
             .frame => {
                 const stream = try r.u32_();
@@ -1001,6 +1085,29 @@ pub const Client = struct {
         b.begin(.chat) catch return;
         b.str(text) catch return;
         cl.queue.pushOwned(b.finish() catch return);
+    }
+
+    /// Imagem no chat (um quadro H.264, ver chatimg.zig), com legenda opcional.
+    pub fn sendChatImage(cl: *Client, text: []const u8, w: u16, h: u16, h264: []const u8) void {
+        if (h264.len > proto.chat_image_max) return;
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        b.begin(.chat) catch return;
+        b.str(text) catch return;
+        b.u8_(proto.chat_img_h264) catch return;
+        b.u16_(w) catch return;
+        b.u16_(h) catch return;
+        b.u32_(@intCast(h264.len)) catch return;
+        b.bytes(h264) catch return;
+        cl.queue.pushOwned(b.finish() catch return);
+    }
+
+    pub fn sendReact(cl: *Client, chat_id: u32, emoji: u8, on: bool) void {
+        const m = proto.Msg.alloc(.react, 6) catch return;
+        std.mem.writeInt(u32, m.payload()[0..4], chat_id, .little);
+        m.payload()[4] = emoji;
+        m.payload()[5] = @intFromBool(on);
+        cl.queue.pushOwned(m);
     }
 
     pub fn sendWatch(cl: *Client, stream: u32, on: bool, opts: u8) void {

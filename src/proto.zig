@@ -43,8 +43,21 @@ pub const Type = enum(u8) {
     admin = 19, // C→S u8 ação (admin_*), u32 alvo, u8 valor (só admin)
     notice = 20, // S→C u8 tipo (notice_*), str texto: algo que o admin fez com você
     pointer = 21, // C→S u32 stream, u16 x, u16 y, u8 flags | S→C u32 de, u32 stream, u16 x, u16 y, u8 flags
+    react = 22, // C→S u32 id_da_mensagem, u8 reação, u8 ligado | S→C u32 id, u32 de, u8 reação, u8 ligado
     _,
 };
+
+/// Imagem no chat: vai como um quadro H.264 (IDR) no fim da mensagem de chat
+/// (u8 chat_img_*, e se tiver: u16 w, u16 h, u32 tamanho, bytes). Quem recebe
+/// decodifica com o mesmo decoder do vídeo: nenhum leitor de PNG/JPEG exposto
+/// à rede.
+pub const chat_img_none: u8 = 0;
+pub const chat_img_h264: u8 = 1;
+pub const chat_img_expired: u8 = 2; // era uma imagem, mas saiu do histórico (memória)
+pub const chat_image_max = 1_500_000; // bytes
+pub const chat_image_side = 1920; // pixels (cada lado)
+/// Reações (índice): curti, amei, haha, fogo, uau, triste.
+pub const reactions = 6;
 
 pub const member_streaming: u8 = 1; // transmitindo a tela
 pub const member_admin: u8 = 2;

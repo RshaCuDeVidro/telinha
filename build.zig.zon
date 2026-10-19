@@ -49,6 +49,12 @@
             .hash = "N-V-__8AAA14OwAnjBemy4fwO1a3Zbixy5gSLW2fyME4iPJn",
             .lazy = true,
         },
+        .stb = .{
+            // stb_image: lê PNG/JPEG/GIF/BMP no PC de quem manda imagem no chat
+            .url = "https://github.com/nothings/stb/archive/a7d4c2175630e1ea5b6f8dd00ab96fed0b97b96d.tar.gz",
+            .hash = "N-V-__8AAFNETgDxQPwefsoBQhY7el1SUgPWt8Q8IYvZyOt9",
+            .lazy = true,
+        },
         .imgui = .{
             .url = "https://github.com/ocornut/imgui/archive/6d32174508fb8c518e7a832cc1d571fadd5cba76.tar.gz",
             .hash = "N-V-__8AAGNjfgBD2GOqdPUGkR89I-Ygw93OyAENnPPahX_t",
