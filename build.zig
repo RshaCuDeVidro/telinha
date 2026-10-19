@@ -48,6 +48,7 @@ pub fn build(b: *std.Build) void {
     const miniaudio = b.lazyDependency("miniaudio", .{});
     const rnnoise = b.lazyDependency("rnnoise", .{});
     const speexdsp = b.lazyDependency("speexdsp", .{});
+    const stb = b.lazyDependency("stb", .{});
     const nasm = nasmProgram(b) orelse return;
     const deps: Deps = .{
         .imgui = imgui orelse return,
@@ -59,6 +60,7 @@ pub fn build(b: *std.Build) void {
         .miniaudio = miniaudio orelse return,
         .rnnoise = rnnoise orelse return,
         .speexdsp = speexdsp orelse return,
+        .stb = stb orelse return,
         .nasm = nasm,
         .options = b.addOptions(),
     };
@@ -177,6 +179,7 @@ const Deps = struct {
     miniaudio: *std.Build.Dependency,
     rnnoise: *std.Build.Dependency,
     speexdsp: *std.Build.Dependency,
+    stb: *std.Build.Dependency,
     nasm: NasmProgram,
     options: *std.Build.Step.Options, // build_options do app (repo)
 };
@@ -429,6 +432,9 @@ fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: st
     });
     mod.addIncludePath(b.path("src/c"));
     mod.addOptions("build_options", deps.options);
+    // imagens do chat (stb_image só lê arquivo/área de transferência locais)
+    mod.addIncludePath(deps.stb.path(""));
+    mod.addCSourceFile(.{ .file = b.path("src/c/image.c"), .flags = &.{"-O2"} });
     addImgui(b, deps, mod);
     linkOpenh264(b, deps, mod, target, optimize);
     addHwenc(b, deps, mod);

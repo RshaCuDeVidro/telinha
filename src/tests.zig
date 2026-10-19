@@ -10,6 +10,7 @@ const audio = @import("audio.zig");
 test {
     _ = @import("integration_test.zig");
     _ = @import("update.zig");
+    _ = @import("chatimg.zig");
 }
 
 fn initPool() void {
