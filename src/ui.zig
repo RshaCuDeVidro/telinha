@@ -11,6 +11,7 @@ const Member = client_mod.Member;
 const Server = @import("server.zig").Server;
 const tunnel_mod = @import("tunnel.zig");
 const Tunnel = tunnel_mod.Tunnel;
+const upnp = @import("upnp.zig");
 const sharer_mod = @import("sharer.zig");
 const proto = @import("proto.zig");
 const audio = @import("audio.zig");
@@ -139,6 +140,11 @@ fn drawText(d: *c.ImDrawList, pos: c.ImVec2_c, color: u32, s: []const u8) void {
 }
 fn drawTextF(d: *c.ImDrawList, f: *c.ImFont, size: f32, pos: c.ImVec2_c, color: u32, s: []const u8) void {
     c.ImDrawList_AddText_FontPtr(d, f, S(size), pos, color, s.ptr, s.ptr + s.len, 0, null);
+}
+
+/// Igual, quebrando linha em `wrap` pixels.
+fn drawTextWrapF(d: *c.ImDrawList, f: *c.ImFont, size: f32, pos: c.ImVec2_c, color: u32, s: []const u8, wrap: f32) void {
+    c.ImDrawList_AddText_FontPtr(d, f, S(size), pos, color, s.ptr, s.ptr + s.len, wrap, null);
 }
 fn textSizeF(f: *c.ImFont, size: f32, s: []const u8) c.ImVec2_c {
     pushFont(f, size);
@@ -331,6 +337,7 @@ pub const App = struct {
     client: ?*Client = null,
     server: ?*Server = null,
     tunnel: ?*Tunnel = null, // link público da sala que eu hospedo
+    upnp: ?*upnp.Mapper = null, // porta aberta no roteador (conexão direta)
     own_tunnel_open: bool = false, // card: "prefere seu próprio túnel?" aberto
     sharer: ?*Sharer = null,
     connect_label: [300]u8 = undefined,
@@ -663,7 +670,26 @@ pub const App = struct {
         for (&pw, rnd) |*ch, r| ch.* = alphabet[r % alphabet.len];
         config.setStr(&a.cfg.host_pass, &pw);
         config.save(&a.cfg);
-        a.toast("Link público precisa de senha: a sala ganhou a senha {s} (já vai no convite).", .{pw}, false);
+        a.toast("Sala aberta pra fora precisa de senha: ela ganhou a senha {s} (já vai no convite).", .{pw}, false);
+        return true;
+    }
+
+    /// Sala com endereço público (túnel ou porta aberta) precisa de senha.
+    /// Retorna false se ainda não dá (a gente mesmo ainda está entrando).
+    fn requirePublicPassword(a: *App, s: *Server) bool {
+        if (s.hasPassword()) return true;
+        // a senha nova só vale pra quem conectar depois: a gente mesmo
+        // precisa já estar dentro, senão nosso próprio handshake falha
+        const connected = if (a.client) |cl| blk: {
+            cl.mutex.lock();
+            defer cl.mutex.unlock();
+            break :blk cl.status == .connected;
+        } else false;
+        if (!connected) {
+            a.toast("Espera entrar na sala pra abrir ela pra fora.", .{}, true);
+            return false;
+        }
+        if (a.ensureRoomPassword()) s.setPassword(config.getStr(&a.cfg.host_pass));
         return true;
     }
 
@@ -671,24 +697,28 @@ pub const App = struct {
     fn startTunnel(a: *App) void {
         const s = a.server orelse return;
         if (a.tunnel != null) return;
-        if (!s.hasPassword()) {
-            // a senha nova só vale pra quem conectar depois: a gente mesmo
-            // precisa já estar dentro, senão nosso próprio handshake falha
-            const connected = if (a.client) |cl| blk: {
-                cl.mutex.lock();
-                defer cl.mutex.unlock();
-                break :blk cl.status == .connected;
-            } else false;
-            if (!connected) {
-                a.toast("Espera entrar na sala pra criar o link público.", .{}, true);
-                return;
-            }
-            if (a.ensureRoomPassword()) s.setPassword(config.getStr(&a.cfg.host_pass));
-        }
+        if (!a.requirePublicPassword(s)) return;
         a.tunnel = Tunnel.start(config.getStr(&a.cfg.tunnel_host), s, Server.adoptCallback) catch {
             a.toast("Não consegui abrir o link público.", .{}, true);
             return;
         };
+    }
+
+    /// Pede pro roteador abrir a porta da sala (UPnP): conexão direta, sem túnel.
+    fn startUpnp(a: *App) void {
+        const s = a.server orelse return;
+        if (a.upnp != null) return;
+        if (!a.requirePublicPassword(s)) return;
+        const to, const to_port = upnp.discoveryTarget();
+        a.upnp = upnp.Mapper.start(s.port, to, to_port) catch {
+            a.toast("Não consegui pedir a porta pro roteador.", .{}, true);
+            return;
+        };
+    }
+
+    fn stopUpnp(a: *App) void {
+        if (a.upnp) |m| m.stop(); // a thread fecha a porta no roteador
+        a.upnp = null;
     }
 
     fn stopTunnel(a: *App) void {
@@ -728,6 +758,7 @@ pub const App = struct {
         if (a.client) |cl| cl.close();
         a.client = null;
         a.stopTunnel();
+        a.stopUpnp();
         if (a.server) |s| s.stop();
         a.server = null;
         a.screen = .home;
@@ -1575,12 +1606,52 @@ pub const App = struct {
         }
     }
 
+    fn drawUpnpState(a: *App, m: *upnp.Mapper, d: *c.ImDrawList, x: f32, yy: f32, w: f32, pad: f32) void {
+        const st = m.status();
+        switch (st.state) {
+            .working => {
+                drawTextF(d, font_semibold, 14, v2(x + pad, yy + S(4)), col.text, "Pedindo pro roteador abrir a porta…");
+                drawTextF(d, font_regular, 13, v2(x + pad, yy + S(26)), col.muted, "Procurando o roteador na rede (UPnP). Leva uns segundos.");
+                c.igSetCursorScreenPos(v2(x + pad, yy + S(48)));
+                if (secondaryButton("Cancelar##upnp", v2(S(110), S(38)))) a.stopUpnp();
+            },
+            .ready => {
+                var abuf: [64]u8 = undefined;
+                const addr = m.address(&abuf);
+                drawTextF(d, font_regular, 13, v2(x + pad, yy), col.muted, "Porta aberta no roteador: conexão direta, sem túnel.");
+                rectFill(d, x + pad, yy + S(22), x + w - pad, yy + S(52), col.input, S(5));
+                drawTextF(d, font_regular, 13, v2(x + pad + S(10), yy + S(29)), col.green, ic.circle);
+                drawTextF(d, font_semibold, 14, v2(x + pad + S(30), yy + S(28)), col.header, fmtZ("{s}", .{addr}));
+                c.igSetCursorScreenPos(v2(x + pad, yy + S(62)));
+                if (primaryButton(fmtZ("{s}  Copiar convite##upnp", .{ic.user_plus}), v2(S(170), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.copyInvite();
+                c.igSameLine(0, S(10));
+                if (secondaryButton(fmtZ("{s}  Fechar porta", .{ic.power}), v2(S(140), S(38)))) a.stopUpnp();
+            },
+            .failed => {
+                drawTextF(d, font_semibold, 14, v2(x + pad, yy - S(2)), col.red, fmtZ("{s}  Não deu pra abrir a porta", .{ic.warn}));
+                drawTextWrapF(d, font_regular, 12.5, v2(x + pad, yy + S(18)), col.muted, st.err, w - 2 * pad);
+                c.igSetCursorScreenPos(v2(x + pad, yy + S(56)));
+                if (primaryButton(fmtZ("{s}  Criar link público##upnp", .{ic.globe}), v2(S(200), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) {
+                    a.stopUpnp();
+                    a.startTunnel();
+                }
+                c.igSameLine(0, S(10));
+                if (secondaryButton("Fechar##upnp", v2(S(100), S(38)))) a.stopUpnp();
+            },
+        }
+    }
+
     fn copyInvite(a: *App) void {
         var buf: [512]u8 = undefined;
         var tun_buf: [300]u8 = undefined;
+        var up_buf: [64]u8 = undefined;
         const pass = if (a.server != null) config.getStr(&a.cfg.host_pass) else config.getStr(&a.cfg.join_pass);
+        // porta aberta no roteador (direto, menos atraso) > túnel > endereço digitado
+        const up_addr: []const u8 = if (a.upnp) |m| m.address(&up_buf) else "";
         const tun_addr: []const u8 = if (a.tunnel) |t| t.address(&tun_buf) else "";
-        const addr: []const u8 = if (tun_addr.len > 0)
+        const addr: []const u8 = if (up_addr.len > 0)
+            up_addr
+        else if (tun_addr.len > 0)
             tun_addr
         else if (a.server != null)
             std.mem.trim(u8, config.getStr(&a.cfg.public_addr), " ")
@@ -2008,11 +2079,15 @@ pub const App = struct {
         // link público embutido
         var yy = y + S(44);
         const st: ?tunnel_mod.Status = if (a.tunnel) |t| t.status() else null;
-        if (st == null) {
-            drawTextF(d, font_regular, 13, v2(x + pad, yy), col.muted, "Um endereço público pra essa sala, sem instalar nada.");
-            drawTextF(d, font_regular, 13, v2(x + pad, yy + S(18)), col.muted, fmtZ("Passa pelo {s}; tudo continua cifrado de ponta a ponta.", .{config.getStr(&a.cfg.tunnel_host)}));
+        if (a.upnp) |m| {
+            a.drawUpnpState(m, d, x, yy, w, pad);
+        } else if (st == null) {
+            drawTextF(d, font_regular, 13, v2(x + pad, yy), col.muted, fmtZ("Link público: pelo {s}, funciona em qualquer rede.", .{config.getStr(&a.cfg.tunnel_host)}));
+            drawTextF(d, font_regular, 13, v2(x + pad, yy + S(18)), col.muted, "Porta no roteador (UPnP): direto, menos atraso. Tudo cifrado.");
             c.igSetCursorScreenPos(v2(x + pad, yy + S(48)));
             if (primaryButton(fmtZ("{s}  Criar link público", .{ic.globe}), v2(S(200), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.startTunnel();
+            c.igSameLine(0, S(10));
+            if (secondaryButton(fmtZ("{s}  Abrir porta no roteador", .{ic.link}), v2(S(230), S(38)))) a.startUpnp();
         } else switch (st.?.state) {
             .connecting => {
                 drawTextF(d, font_semibold, 14, v2(x + pad, yy + S(4)), col.text, fmtZ("Abrindo o link público no {s}…", .{a.tunnel.?.hostSlice()}));

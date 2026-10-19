@@ -16,6 +16,7 @@
 ## O que tem
 
 - **Salas** — alguém cria (ou sobe um [servidor dedicado](docs/DEPLOY.md)), a galera entra com endereço + senha ou com um **convite** `telinha://…`.
+- **Galera de fora sem configurar nada**: *Abrir porta no roteador* (UPnP) dá conexão direta, com o menor atraso; se a operadora usa CGNAT, o telinha avisa e o *link público* (túnel pelo bore.pub, embutido) resolve em qualquer rede.
 - **Várias transmissões ao mesmo tempo**, em grade que se ajusta pra deixar os vídeos o maior possível; destaque, tela cheia e modo cinema.
 - **Voz, tipo Discord**: microfone com cancelamento de eco (dá pra usar caixa de som em vez de fone), supressão de ruído (RNNoise: tira ventilador, teclado, chiado) e ativação por voz, em Opus. Bolinha verde em quem está falando, botão de microfone e de "surdo", volume da voz de cada pessoa (clique direito). A voz fura a fila: não espera atrás do vídeo.
 - **Áudio do computador junto** (vídeo, jogo, música), em Opus com pouca latência, com volume e mudo por transmissão. O som que o próprio telinha toca nunca entra na captura (Windows: loopback excluindo o processo; Linux: cada aplicativo ligado direto na captura pelo grafo do PipeWire, menos o telinha) — sem eco, e você continua ouvindo o que assiste enquanto compartilha.
@@ -36,7 +37,7 @@
 ## Como usar
 
 1. **Criar sala**: abre o telinha → *Criar sala* (porta padrão 7777, senha opcional).
-2. **Galera de fora**: no card *Chamando a galera de fora*, clica em **Criar link público** → *Copiar convite* e manda pra galera. Não precisa instalar nada: o telinha abre um túnel pelo protocolo do [bore](https://github.com/ekzhang/bore) (bore.pub). O conteúdo continua cifrado de ponta a ponta — o túnel só vê bytes embaralhados — e sala pública sempre tem senha (se você não pôs, o telinha cria uma e já coloca no convite).
+2. **Galera de fora**: no card *Chamando a galera de fora*, clica em **Abrir porta no roteador** (direto, menos atraso — se o roteador deixar) ou em **Criar link público** → *Copiar convite* e manda pra galera. Não precisa instalar nada: o telinha abre um túnel pelo protocolo do [bore](https://github.com/ekzhang/bore) (bore.pub). O conteúdo continua cifrado de ponta a ponta — o túnel só vê bytes embaralhados — e sala pública sempre tem senha (se você não pôs, o telinha cria uma e já coloca no convite).
    Prefere outro túnel (ngrok, serveo, playit…)? Abre *Prefere seu próprio túnel?* no mesmo card. Na mesma rede (ou Tailscale/ZeroTier/Radmin) é só usar o IP. Tem VPS? Use o [servidor dedicado](docs/DEPLOY.md).
 3. **Entrar**: *Entrar numa sala* → cola o convite (ou endereço + senha).
 4. **Transmitir**: botão de tela no canto de baixo da barra lateral → escolhe resolução, fps, qualidade e tipo de conteúdo → *Ao vivo*. Dá pra mudar tudo com a transmissão rolando.

@@ -682,3 +682,173 @@ test "voz: chega em todo mundo menos quem fala e quem está surdo; estado aparec
         }
     }
 }
+
+// ------------------------------------------------------------------- UPnP
+
+const upnp = @import("upnp.zig");
+
+/// Roteador de mentira: responde ao M-SEARCH (UDP) e à descrição e às ações
+/// SOAP (HTTP), anotando o que pediram.
+const MockIgd = struct {
+    udp: net.Socket,
+    udp_port: u16,
+    http: net.Socket,
+    http_port: u16,
+    ext_ip: []const u8 = "203.0.113.7",
+    taken_port: u16 = 0, // porta de fora que "outro aparelho" já usa (erro 718)
+    mutex: sync.Mutex = .{},
+    log: std.ArrayList(u8) = .empty,
+    stop: std.atomic.Value(bool) = .init(false),
+
+    fn init(m: *MockIgd) !void {
+        m.udp_port = freshPort();
+        m.udp = try net.udpBindLocal(m.udp_port);
+        net.setRecvTimeout(m.udp, 100);
+        m.http_port = freshPort();
+        m.http = try net.listen(m.http_port);
+        try sync.spawn(runUdp, .{m});
+        try sync.spawn(runHttp, .{m});
+    }
+
+    fn deinit(m: *MockIgd) void {
+        m.stop.store(true, .release);
+        net.shutdown(m.http);
+        net.close(m.http);
+        sync.sleepMs(250); // as threads saem (timeout do UDP / accept falhando)
+        net.close(m.udp);
+        m.log.deinit(std.heap.c_allocator);
+    }
+
+    fn logged(m: *MockIgd, what: []const u8) bool {
+        m.mutex.lock();
+        defer m.mutex.unlock();
+        return std.mem.find(u8, m.log.items, what) != null;
+    }
+
+    fn runUdp(m: *MockIgd) void {
+        var buf: [1500]u8 = undefined;
+        var reply: [256]u8 = undefined;
+        const r = std.fmt.bufPrint(&reply, "HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=120\r\nST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\nLocation: http://127.0.0.1:{d}/rootDesc.xml\r\n\r\n", .{m.http_port}) catch return;
+        while (!m.stop.load(.acquire)) _ = net.udpRecvReply(m.udp, &buf, r);
+    }
+
+    fn runHttp(m: *MockIgd) void {
+        while (!m.stop.load(.acquire)) {
+            const s = net.accept(m.http) catch return;
+            defer net.close(s);
+            net.setRecvTimeout(s, 2000);
+            var req: std.ArrayList(u8) = .empty;
+            defer req.deinit(std.heap.c_allocator);
+            var buf: [2048]u8 = undefined;
+            // lê cabeçalho + corpo (Content-Length)
+            while (true) {
+                const n = net.recvSome(s, &buf) catch break;
+                req.appendSlice(std.heap.c_allocator, buf[0..n]) catch break;
+                const he = std.mem.find(u8, req.items, "\r\n\r\n") orelse continue;
+                const cl_at = std.ascii.indexOfIgnoreCase(req.items[0..he], "content-length:") orelse break;
+                const line_end = std.mem.find(u8, req.items[cl_at..], "\r\n") orelse break;
+                const want = std.fmt.parseInt(usize, std.mem.trim(u8, req.items[cl_at + 15 .. cl_at + line_end], " "), 10) catch break;
+                if (req.items.len >= he + 4 + want) break;
+            }
+            m.mutex.lock();
+            m.log.appendSlice(std.heap.c_allocator, req.items) catch {};
+            m.mutex.unlock();
+            var out: [2048]u8 = undefined;
+            const resp = m.answer(req.items, &out) catch continue;
+            net.sendAll(s, resp) catch {};
+        }
+    }
+
+    fn answer(m: *MockIgd, req: []const u8, out: []u8) ![]const u8 {
+        if (std.mem.startsWith(u8, req, "GET /rootDesc.xml")) {
+            const xml = "<?xml version=\"1.0\"?><root><device><deviceType>urn:schemas-upnp-org:device:InternetGatewayDevice:1</deviceType><deviceList><device><serviceList>" ++
+                "<service><serviceType>urn:schemas-upnp-org:service:WANCommonInterfaceConfig:1</serviceType><controlURL>/ctl/CmnIfCfg</controlURL></service>" ++
+                "<service><serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType><controlURL>/ctl/IPConn</controlURL></service>" ++
+                "</serviceList></device></deviceList></device></root>";
+            return std.fmt.bufPrint(out, "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: {d}\r\n\r\n{s}", .{ xml.len, xml });
+        }
+        var body_buf: [512]u8 = undefined;
+        var code: u16 = 200;
+        const body = if (std.mem.find(u8, req, "#GetExternalIPAddress") != null)
+            try std.fmt.bufPrint(&body_buf, "<s:Envelope><s:Body><u:GetExternalIPAddressResponse><NewExternalIPAddress>{s}</NewExternalIPAddress></u:GetExternalIPAddressResponse></s:Body></s:Envelope>", .{m.ext_ip})
+        else if (std.mem.find(u8, req, "#AddPortMapping") != null) blk: {
+            var tp: [32]u8 = undefined;
+            const taken = try std.fmt.bufPrint(&tp, "<NewExternalPort>{d}<", .{m.taken_port});
+            if (m.taken_port != 0 and std.mem.find(u8, req, taken) != null) {
+                code = 500;
+                break :blk "<s:Envelope><s:Body><s:Fault><detail><UPnPError><errorCode>718</errorCode><errorDescription>ConflictInMappingEntry</errorDescription></UPnPError></detail></s:Fault></s:Body></s:Envelope>";
+            }
+            break :blk "<s:Envelope><s:Body><u:AddPortMappingResponse/></s:Body></s:Envelope>";
+        } else "<s:Envelope><s:Body><u:DeletePortMappingResponse/></s:Body></s:Envelope>";
+        return std.fmt.bufPrint(out, "HTTP/1.1 {d} {s}\r\nContent-Type: text/xml\r\nContent-Length: {d}\r\n\r\n{s}", .{ code, if (code == 200) "OK" else "Internal Server Error", body.len, body });
+    }
+};
+
+test "UPnP: acha o roteador, abre a porta pra esta máquina e fecha" {
+    net.init();
+    var igd: MockIgd = .{ .udp = undefined, .udp_port = 0, .http = undefined, .http_port = 0 };
+    try igd.init();
+    defer igd.deinit();
+
+    const router = try upnp.discover(.{ 127, 0, 0, 1 }, igd.udp_port, 2000);
+    var mp = try upnp.open(router, 7777);
+    try testing.expectEqual([4]u8{ 203, 0, 113, 7 }, mp.ext_ip);
+    try testing.expectEqual(@as(u16, 7777), mp.ext_port);
+    try testing.expect(igd.logged("POST /ctl/IPConn"));
+    try testing.expect(igd.logged("<NewInternalClient>127.0.0.1</NewInternalClient>"));
+    try testing.expect(igd.logged("<NewLeaseDuration>3600</NewLeaseDuration>"));
+    upnp.close(&mp);
+    try testing.expect(igd.logged("#DeletePortMapping"));
+}
+
+test "UPnP: porta de fora ocupada por outro aparelho -> usa a próxima" {
+    net.init();
+    var igd: MockIgd = .{ .udp = undefined, .udp_port = 0, .http = undefined, .http_port = 0, .taken_port = 7777 };
+    try igd.init();
+    defer igd.deinit();
+    const router = try upnp.discover(.{ 127, 0, 0, 1 }, igd.udp_port, 2000);
+    var mp = try upnp.open(router, 7777);
+    defer upnp.close(&mp);
+    try testing.expectEqual(@as(u16, 7778), mp.ext_port);
+    try testing.expectEqual(@as(u16, 7777), mp.int_port);
+}
+
+test "UPnP: operadora com CGNAT -> avisa em vez de abrir porta à toa" {
+    net.init();
+    var igd: MockIgd = .{ .udp = undefined, .udp_port = 0, .http = undefined, .http_port = 0, .ext_ip = "100.72.10.3" };
+    try igd.init();
+    defer igd.deinit();
+    const router = try upnp.discover(.{ 127, 0, 0, 1 }, igd.udp_port, 2000);
+    try testing.expectError(error.Cgnat, upnp.open(router, 7777));
+    try testing.expect(!igd.logged("#AddPortMapping"));
+}
+
+test "UPnP: em segundo plano (como a interface usa) e sem roteador" {
+    net.init();
+    var igd: MockIgd = .{ .udp = undefined, .udp_port = 0, .http = undefined, .http_port = 0 };
+    try igd.init();
+    defer igd.deinit();
+    const m = try upnp.Mapper.start(7777, .{ 127, 0, 0, 1 }, igd.udp_port);
+    for (0..100) |_| {
+        if (m.status().state != .working) break;
+        sync.sleepMs(50);
+    }
+    try testing.expectEqual(upnp.Mapper.State.ready, m.status().state);
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("203.0.113.7:7777", m.address(&buf));
+    m.stop();
+    for (0..40) |_| {
+        if (igd.logged("#DeletePortMapping")) break;
+        sync.sleepMs(50);
+    }
+    try testing.expect(igd.logged("#DeletePortMapping"));
+
+    // ninguém responde: falha com uma mensagem, sem travar
+    const none = try upnp.Mapper.start(7777, .{ 127, 0, 0, 1 }, freshPort());
+    defer none.stop();
+    for (0..100) |_| {
+        if (none.status().state != .working) break;
+        sync.sleepMs(50);
+    }
+    try testing.expectEqual(upnp.Mapper.State.failed, none.status().state);
+}

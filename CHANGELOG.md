@@ -2,6 +2,12 @@
 
 ## 2.1.0
 
+- **Porta aberta no roteador (UPnP)**: conexão direta pra galera de fora, sem
+  túnel no meio — menos atraso que o link público (que passa por outro
+  continente) e sem o limite de banda dele. Detecta CGNAT da operadora e avisa
+  (aí o link público é o caminho). No servidor dedicado: `--upnp`. A porta é
+  renovada enquanto a sala está aberta, fechada quando ela fecha, e some
+  sozinha em até 1 h se o app cair.
 - **Espectador lento não derruba mais a qualidade de todo mundo**: a
   transmissão sai em duas camadas temporais e o servidor passa a mandar só
   metade dos quadros (os que os outros usam de referência) pra quem não está

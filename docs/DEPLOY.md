@@ -84,6 +84,24 @@ cair, ele reconecta pedindo a mesma porta, então o convite continua valendo.
 Outro servidor bore (o seu, por exemplo): `--publico meu.servidor.com` (ou
 `tunnel_host=` no `config.ini` do app).
 
+## Sem VPS: porta aberta no roteador (UPnP)
+
+Com o roteador de casa deixando (a maioria vem com UPnP ligado), dá pra ter
+conexão **direta**, sem túnel no meio: menos atraso (o bore.pub fica em outro
+continente) e sem o limite de banda dele. No app, *Abrir porta no roteador*; no
+servidor dedicado, `--upnp`:
+
+```sh
+./telinha-server --upnp
+# [21:03] porta aberta no roteador: 177.45.10.8:7777  —  convite: telinha://177.45.10.8:7777#k3m9qx2a
+```
+
+A porta fica aberta (renovada a cada 25 min) enquanto a sala está aberta e é
+fechada quando ela fecha; se o processo cair sem fechar, o roteador apaga
+sozinho em até 1 h. Se a operadora usa **CGNAT** (o roteador não tem IP próprio
+na internet — comum em fibra e 4G), o telinha percebe e avisa: aí o caminho é o
+link público. O firewall da própria máquina também precisa deixar a porta entrar.
+
 Ou um túnel externo:
 
 | túnel | comando | observação |

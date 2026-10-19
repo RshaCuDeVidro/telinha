@@ -175,3 +175,89 @@ pub fn shutdown(s: Socket) void {
 pub fn close(s: Socket) void {
     if (is_windows) _ = c.closesocket(s) else _ = c.close(s);
 }
+
+// ------------------------------------------------------------ UDP (rede local)
+
+/// Socket UDP IPv4 (descoberta do roteador por SSDP). Multicast com TTL 2:
+/// não passa do roteador.
+pub fn udpOpen() Error!Socket {
+    const s = c.socket(c.AF_INET, c.SOCK_DGRAM, c.IPPROTO_UDP);
+    if (s == invalid) return error.ConnectFailed;
+    setOpt(s, c.IPPROTO_IP, c.IP_MULTICAST_TTL, 2);
+    return s;
+}
+
+fn sockaddr4(ip: [4]u8, port: u16) c.struct_sockaddr_in {
+    var a = std.mem.zeroes(c.struct_sockaddr_in);
+    a.sin_family = c.AF_INET;
+    a.sin_port = std.mem.nativeToBig(u16, port);
+    @memcpy(std.mem.asBytes(&a.sin_addr)[0..4], &ip);
+    return a;
+}
+
+pub fn udpSendTo(s: Socket, ip: [4]u8, port: u16, data: []const u8) bool {
+    const a = sockaddr4(ip, port);
+    const n = if (is_windows)
+        c.sendto(s, data.ptr, @intCast(data.len), 0, @ptrCast(&a), @sizeOf(c.struct_sockaddr_in))
+    else
+        c.sendto(s, data.ptr, data.len, 0, @ptrCast(&a), @sizeOf(c.struct_sockaddr_in));
+    return n == @as(@TypeOf(n), @intCast(data.len));
+}
+
+/// Um datagrama (espera até o tempo de `setRecvTimeout`); null se nada chegou.
+pub fn udpRecv(s: Socket, buf: []u8) ?usize {
+    const n = if (is_windows)
+        c.recvfrom(s, buf.ptr, @intCast(buf.len), 0, null, null)
+    else
+        c.recvfrom(s, buf.ptr, buf.len, 0, null, null);
+    if (n <= 0) return null;
+    return @intCast(n);
+}
+
+/// Pra testes: socket UDP escutando em 127.0.0.1:porta.
+pub fn udpBindLocal(port: u16) Error!Socket {
+    const s = c.socket(c.AF_INET, c.SOCK_DGRAM, c.IPPROTO_UDP);
+    if (s == invalid) return error.ListenFailed;
+    const a = sockaddr4(.{ 127, 0, 0, 1 }, port);
+    if (c.bind(s, @ptrCast(&a), @sizeOf(c.struct_sockaddr_in)) != 0) {
+        close(s);
+        return error.ListenFailed;
+    }
+    return s;
+}
+
+/// Responde pra quem mandou o último datagrama (testes: o roteador de mentira).
+pub fn udpRecvReply(s: Socket, buf: []u8, reply: []const u8) ?usize {
+    var from: c.struct_sockaddr_in = undefined;
+    var len: if (is_windows) c_int else c.socklen_t = @sizeOf(c.struct_sockaddr_in);
+    const n = if (is_windows)
+        c.recvfrom(s, buf.ptr, @intCast(buf.len), 0, @ptrCast(&from), &len)
+    else
+        c.recvfrom(s, buf.ptr, buf.len, 0, @ptrCast(&from), &len);
+    if (n <= 0) return null;
+    if (reply.len > 0) {
+        _ = if (is_windows)
+            c.sendto(s, reply.ptr, @intCast(reply.len), 0, @ptrCast(&from), len)
+        else
+            c.sendto(s, reply.ptr, reply.len, 0, @ptrCast(&from), len);
+    }
+    return @intCast(n);
+}
+
+/// IPv4 local de um socket conectado (o endereço da máquina na rede do roteador).
+pub fn localIp4(s: Socket) ?[4]u8 {
+    var st: [128]u8 align(8) = undefined;
+    var len: if (is_windows) c_int else c.socklen_t = st.len;
+    if (c.getsockname(s, @ptrCast(&st), &len) != 0) return null;
+    const family = std.mem.readInt(u16, st[0..2], .little);
+    if (family == c.AF_INET) {
+        const a: *const c.struct_sockaddr_in = @ptrCast(&st);
+        return std.mem.asBytes(&a.sin_addr)[0..4].*;
+    }
+    if (family == c.AF_INET6) {
+        // IPv4 mapeado em IPv6 (::ffff:a.b.c.d)
+        const a6: *const SockAddrIn6 = @ptrCast(&st);
+        if (std.mem.eql(u8, a6.addr[0..12], &.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff })) return a6.addr[12..16].*;
+    }
+    return null;
+}

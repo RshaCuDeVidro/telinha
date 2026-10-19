@@ -1,7 +1,8 @@
 //! telinha-server — servidor dedicado da sala (sem interface).
 //!
 //! Roda numa VPS/servidor com porta aberta (ninguém precisa de túnel), ou em
-//! qualquer máquina com --publico (abre um link público pelo bore.pub).
+//! qualquer máquina com --publico (abre um link público pelo bore.pub) ou
+//! --upnp (pede pro roteador abrir a porta: conexão direta).
 //! Binário estático, sem dependências. Ver docs/DEPLOY.md.
 const std = @import("std");
 const sync = @import("sync.zig");
@@ -9,6 +10,7 @@ const net = @import("net.zig");
 const proto = @import("proto.zig");
 const Server = @import("server.zig").Server;
 const tunnel = @import("tunnel.zig");
+const upnp = @import("upnp.zig");
 
 const usage =
     \\telinha-server — servidor dedicado de salas do telinha
@@ -22,6 +24,8 @@ const usage =
     \\  -m, --max N            máximo de pessoas (padrão 32)
     \\  --publico [SERVIDOR]   abre um link público pelo túnel (padrão bore.pub);
     \\                         sem --senha, cria uma senha aleatória
+    \\  --upnp                 pede pro roteador abrir a porta (UPnP): conexão
+    \\                         direta, sem túnel; também cria senha se não tiver
     \\  -h, --help             mostra isso
     \\
 ;
@@ -59,6 +63,29 @@ fn watchTunnel(t: *tunnel.Tunnel, password: []const u8) void {
     }
 }
 
+/// Mostra o endereço (e o convite) quando o roteador abrir a porta.
+fn watchUpnp(m: *upnp.Mapper, password: []const u8) void {
+    log("pedindo pro roteador abrir a porta (UPnP)...");
+    var buf: [400]u8 = undefined;
+    while (true) {
+        const st = m.status();
+        switch (st.state) {
+            .working => {},
+            .ready => {
+                var abuf: [64]u8 = undefined;
+                const addr = m.address(&abuf);
+                log(std.fmt.bufPrint(&buf, "porta aberta no roteador: {s}  —  convite: telinha://{s}#{s}", .{ addr, addr, password }) catch "porta aberta no roteador");
+                return;
+            },
+            .failed => {
+                log(std.fmt.bufPrint(&buf, "UPnP: {s}", .{st.err}) catch "UPnP falhou");
+                return;
+            },
+        }
+        sync.sleepMs(200);
+    }
+}
+
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 
 fn env(name: [*:0]const u8) ?[]const u8 {
@@ -74,6 +101,7 @@ pub fn main(init: std.process.Init) !void {
     var admin: []const u8 = env("TELINHA_ADMIN") orelse "";
     var max: u32 = 32;
     var public_host: ?[]const u8 = null;
+    var use_upnp = false;
     if (env("TELINHA_PORTA")) |p| port = std.fmt.parseInt(u16, p, 10) catch die("TELINHA_PORTA inválida: {s}", .{p});
 
     var i: usize = 1;
@@ -82,6 +110,10 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "--help")) {
             std.debug.print("{s}", .{usage});
             return;
+        }
+        if (std.mem.eql(u8, a, "--upnp")) {
+            use_upnp = true;
+            continue;
         }
         if (std.mem.eql(u8, a, "--publico")) {
             public_host = tunnel.default_host;
@@ -109,8 +141,8 @@ pub fn main(init: std.process.Init) !void {
 
     net.init();
     var pw_buf: [8]u8 = undefined;
-    if (public_host != null and password.len == 0) {
-        // link público sem senha: qualquer um que achasse a porta entraria
+    if ((public_host != null or use_upnp) and password.len == 0) {
+        // endereço público sem senha: qualquer um que achasse a porta entraria
         const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
         var rnd: [8]u8 = undefined;
         sync.osRandom(&rnd);
@@ -128,6 +160,13 @@ pub fn main(init: std.process.Init) !void {
     if (public_host) |h| {
         const t = tunnel.Tunnel.start(h, srv, Server.adoptCallback) catch die("não consegui iniciar o túnel", .{});
         sync.spawn(watchTunnel, .{ t, password }) catch {};
+    }
+    if (use_upnp) {
+        // a porta fica aberta (renovada) enquanto o servidor roda; se ele for
+        // derrubado sem fechar, o roteador apaga sozinho em até 1 h
+        const to, const to_port = upnp.discoveryTarget();
+        const m = upnp.Mapper.start(port, to, to_port) catch die("não consegui iniciar o UPnP", .{});
+        sync.spawn(watchUpnp, .{ m, password }) catch {};
     }
 
     // estatística a cada minuto

@@ -28,6 +28,10 @@ Mexeu no pipeline de vídeo? Rode `zig build bench` antes e depois e coloque os 
 | `zig build voicebot -- host:porta nome` | um robô entra na sala e "fala" sílabas sintéticas (voz sem microfone) |
 | `zig build voicebot -- host:porta Ouvinte 20 --ouvinte "Monitor of X"` | cancelamento de eco de ponta a ponta: o monitor da saída vira "microfone" (o som tocado volta inteiro); conta o eco que vazou pra sala, segundo a segundo |
 
+O UPnP é testado contra um roteador de mentira (nos testes de integração); pra
+testar na interface sem mexer no seu roteador de verdade, aponte a descoberta
+pra um roteador de mentira local com `TELINHA_UPNP_SSDP=127.0.0.1:PORTA`.
+
 A captura no Wayland (portal + PipeWire) dá pra testar inteira sem mexer na sua
 sessão: um sway headless (`WLR_BACKENDS=headless`) + `xdg-desktop-portal-hyprland`
 com `custom_picker_binary` que imprime `[SELECTION]r/screen:HEADLESS-1`, e D-Bus,
