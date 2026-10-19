@@ -686,7 +686,12 @@ const Pipeline = struct {
                 const target = targetBitrate(sl.w, sl.h, fps, quality);
                 if (gen != enc_gen) bw.reset(target) else bw.retarget(target);
                 _ = bw.takeChange(); // o encoder novo já nasce com a taxa certa
-                const opts: codec.EncoderOptions = .{ .width = sl.w, .height = sl.h, .fps = fps, .bitrate = bw.bps, .mode = mode };
+                // duas camadas temporais: o servidor pode mandar só metade dos
+                // quadros pra quem não dá conta. No openh264 e no modo jogo é de
+                // graça; com texto, o NVENC gasta ~3x mais bits (zig build bench
+                // com TELINHA_BENCH_CAMADAS), então lá fica uma camada só
+                const layers: u8 = if (want_hw and mode == .screen) 1 else 2;
+                const opts: codec.EncoderOptions = .{ .width = sl.w, .height = sl.h, .fps = fps, .bitrate = bw.bps, .mode = mode, .temporal_layers = layers };
                 if (want_hw) {
                     var err: [256]u8 = undefined;
                     if (codec.HwEncoder.init(opts, &err)) |h| {
@@ -735,7 +740,7 @@ const Pipeline = struct {
             seq +%= 1;
             try msg.begin(.frame);
             try msg.u32_(frame_seq);
-            try msg.u8_(if (is_key) proto.frame_key else 0);
+            try msg.u8_(if (is_key) proto.frame_key else if (codec.isDroppable(out.items)) proto.frame_droppable else 0);
             try msg.u64_(if (resend) s.client.serverNowUs() else sl.ts);
             try msg.u16_(@intCast(sl.w));
             try msg.u16_(@intCast(sl.h));

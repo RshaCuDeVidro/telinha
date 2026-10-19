@@ -370,6 +370,69 @@ test "sala: tela parada não deixa o espectador preso esperando IDR" {
     try testing.expectEqual(@as(u32, 1), try r.u32_());
 }
 
+fn frameFlags(flags: u8, payload_len: usize, seq: u32) !*proto.Msg {
+    const m = try frameSeq(false, payload_len, seq);
+    m.payload()[4] = flags;
+    return m;
+}
+
+test "sala: decoder que não dá conta passa a receber só os quadros de referência" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+
+    var streamer = try TestClient.connect(port, "T", "", "");
+    defer streamer.close();
+    try streamer.welcome();
+    var viewer = try TestClient.connect(port, "E", "", "");
+    defer viewer.close();
+    try viewer.welcome();
+
+    var b: proto.Builder = .{};
+    defer b.deinit();
+    try b.begin(.stream_start);
+    try b.u16_(64);
+    try b.u16_(64);
+    try b.u8_(30);
+    try streamer.send(try b.finish());
+    try b.begin(.watch);
+    try b.u32_(streamer.id);
+    try b.u8_(1);
+    try viewer.send(try b.finish());
+    _ = try streamer.expect(.keyreq);
+
+    // antes: todo quadro chega, inclusive os puláveis
+    try streamer.send(try frameSeq(true, 100, 0));
+    try streamer.send(try frameFlags(proto.frame_droppable, 100, 1));
+    for ([_]u32{ 0, 1 }) |want| {
+        var r: proto.Reader = .{ .data = try viewer.expect(.frame) };
+        _ = try r.u32_();
+        try testing.expectEqual(want, try r.u32_());
+        try viewer.ackFrame(r.data);
+    }
+
+    // o decoder dele ficou pra trás: pede IDR
+    sync.sleepMs(600);
+    try b.begin(.keyreq);
+    try b.u32_(streamer.id);
+    try viewer.send(try b.finish());
+    _ = try streamer.expect(.keyreq);
+
+    // depois: o IDR chega, o pulável não, o de referência sim
+    try streamer.send(try frameSeq(true, 100, 2));
+    try streamer.send(try frameFlags(proto.frame_droppable, 100, 3));
+    try streamer.send(try frameFlags(0, 100, 4));
+    try streamer.send(try frameFlags(proto.frame_droppable, 100, 5));
+    try streamer.send(try frameFlags(0, 100, 6));
+    for ([_]u32{ 2, 4, 6 }) |want| {
+        var r: proto.Reader = .{ .data = try viewer.expect(.frame) };
+        _ = try r.u32_();
+        try testing.expectEqual(want, try r.u32_());
+        try viewer.ackFrame(r.data);
+    }
+}
+
 test "sala: watch só aceita quem existe" {
     net.init();
     const port = freshPort();

@@ -55,6 +55,9 @@ pub const stream_audio: u8 = 1;
 /// Payload de frame: u32 seq, u8 flags, u64 hora_da_captura (relógio do
 /// servidor, µs), u16 w, u16 h, bitstream H.264 (Annex B) até o fim.
 pub const frame_key: u8 = 1;
+/// Ninguém usa esse quadro de referência (camada temporal de cima): o servidor
+/// pode pular pra quem não está dando conta (metade dos quadros e da banda).
+pub const frame_droppable: u8 = 2;
 pub const frame_header_len = 4 + 1 + 8 + 2 + 2;
 
 /// Mensagem pronta pra enviar (em claro; a escritora cifra por conexão),
@@ -63,7 +66,7 @@ pub const Msg = struct {
     refs: std.atomic.Value(u32),
     typ: Type,
     from: u32 = 0, // remetente de frames encaminhados
-    flags: u8 = 0,
+    flags: u8 = 0, // frames encaminhados: frame_key / frame_droppable
     data: []u8, // u32 (reservado) + tipo + payload
 
     pub fn payload(m: *Msg) []u8 {
@@ -374,6 +377,27 @@ pub const SendQueue = struct {
         q.mutex.lock();
         defer q.mutex.unlock();
         return q.bytes;
+    }
+
+    /// Joga fora os frames puláveis (ninguém usa de referência) de `from` que
+    /// ainda não saíram: alivia na hora quem acabou de ser afinado.
+    pub fn dropDroppable(q: *SendQueue, from: u32) usize {
+        q.mutex.lock();
+        defer q.mutex.unlock();
+        var w: usize = q.head;
+        var dropped: usize = 0;
+        for (q.items.items[q.head..]) |m| {
+            if (m.typ == .frame and m.from == from and m.flags & frame_droppable != 0) {
+                q.bytes -= m.data.len;
+                m.release();
+                dropped += 1;
+            } else {
+                q.items.items[w] = m;
+                w += 1;
+            }
+        }
+        q.items.shrinkRetainingCapacity(w);
+        return dropped;
     }
 
     /// Joga fora frames ainda não enviados (de um remetente, ou todos se

@@ -70,9 +70,12 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 **Membro:** `u32 id`, `str nome`, `u8 flags` (1 = ao vivo, 2 = admin, 4 = transmitindo com áudio, 8 = microfone ligado, 16 = surdo),
 `u16 w`, `u16 h`, `u8 fps`, `u16 k`, k × `u32` (ids que essa pessoa assiste).
 
-**Frame:** `u32 seq`, `u8 flags` (1 = IDR), `u64 hora_da_captura` (relógio da
-sala, µs), `u16 w`, `u16 h`, bitstream H.264 Annex B até o fim. Todo IDR leva
-SPS/PPS (perfil Baseline).
+**Frame:** `u32 seq`, `u8 flags` (1 = IDR, 2 = pulável), `u64 hora_da_captura`
+(relógio da sala, µs), `u16 w`, `u16 h`, bitstream H.264 Annex B até o fim. Todo
+IDR leva SPS/PPS. "Pulável" = ninguém usa esse quadro de referência (todas as
+fatias com `nal_ref_idc = 0`; o transmissor codifica com duas camadas temporais,
+um quadro sim, um não): o servidor pode deixar de mandar pra quem não dá conta
+sem quebrar a decodificação dos seguintes. Quem não conhece o bit ignora.
 
 **Áudio:** `u32 seq`, `u64 hora_da_captura`, pacote Opus até o fim
 (48 kHz, estéreo, 10 ms por pacote, ~96 kbit/s).
@@ -127,7 +130,16 @@ medido com confirmações:
 - o piso do `viewer_slow` é 10% se mais da metade dos espectadores está com
   dificuldade (gargalo comum, ex.: o upload de quem hospeda a sala, ou só tem
   um espectador) e 50% se é a minoria — quem não dá conta nem com metade fica
-  recomeçando de IDR de vez em quando, sem estragar a qualidade dos outros.
+  recomeçando de IDR de vez em quando, sem estragar a qualidade dos outros;
+- **afinar** (se a transmissão tem quadros puláveis): quem atrasa sendo a
+  minoria passa a receber só os quadros de referência — metade dos quadros,
+  ~metade da banda —, e os puláveis que ainda estavam na fila dele são
+  descartados na hora. Fica assim 10 s (o dobro, até 1 min, se precisar de novo
+  em menos de 30 s); quando volta a receber tudo e atrasa nos 3 s seguintes,
+  afina de novo na hora. Afinado só conta como "com dificuldade" pro
+  `viewer_slow` se nem assim der conta (atrasando 3 s depois de afinar, ou
+  recomeçando de IDR). Quem pede IDR porque o decoder não deu conta é afinado
+  sempre (metade do trabalho pro decoder).
 
 **Espectador:** confirma na hora; se o decoder fica mais de 150 ms atrasado,
 joga a fila fora e manda `keyreq alvo` (o servidor aplica a mesma espera

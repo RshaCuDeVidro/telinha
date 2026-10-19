@@ -93,6 +93,19 @@ TCP não enxerga (ngrok, bore…). Detalhes e números no
 `zig build loadtest` testa isso com espectadores em link lento, maioria lenta
 e o transmissor atrás de um túnel com buffer sem limite.
 
+**Um espectador lento não derruba a qualidade da sala.** O transmissor
+codifica com duas camadas temporais: um quadro sim, um não, ninguém usa de
+referência (no openh264 com `iTemporalLayerNum`; no NVENC decidindo o tipo de
+cada quadro e marcando `refPicFlag`, o que funciona em qualquer geração de
+placa). O servidor reconhece esses quadros pelo bit "pulável" e, pra quem está
+atrasando sendo a minoria (ou com o decoder pra trás), manda só os de
+referência: 15 q/s em vez de 30, ~metade da banda e do decode, sem mexer em
+quem está dando conta. No `zig build loadtest -- 8 60 1`: a taxa da sala fica
+em ~89% da meta (antes descia pra 50%) e o lento acompanha com ~90 ms de atraso
+(antes ~360 ms). Com texto, o NVENC gasta ~3x mais bits com duas camadas
+(medido com `TELINHA_BENCH_CAMADAS=1/2`), então nesse caso fica uma só — e o
+servidor volta pro jeito antigo (taxa da sala e recomeço por IDR).
+
 **Quem assiste quase não usa CPU.** Com NVIDIA, o NVDEC decodifica; em
 qualquer caso a thread de decode entrega os planos YUV (1,5 byte/pixel) e um
 shader converte a cor direto na GPU. Sem shader (OpenGL antigo), a CPU

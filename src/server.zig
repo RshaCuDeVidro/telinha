@@ -27,6 +27,13 @@ pub const max_viewer_excess_us = 500_000;
 const soft_viewer_excess_us = 150_000;
 /// Referência de RTT enquanto o espectador ainda não confirmou nenhum frame.
 const default_base_us = 300_000;
+/// Espectador "afinado" (só os quadros de referência) fica assim pelo menos
+/// isso; se precisar de novo logo depois de voltar, o dobro (até 1 min).
+const thin_min_ms = 10_000;
+const thin_max_ms = 60_000;
+/// Recém-afinado não conta como "com dificuldade" (pra pedir taxa menor pra
+/// sala toda) enquanto o atraso acumulado escoa.
+const thin_grace_ms = 3000;
 const keyreq_interval_ms = 500;
 const handshake_timeout_ms = 10_000;
 
@@ -53,6 +60,7 @@ const Conn = struct {
     last_keyreq_ms: u64 = 0,
     last_slow_ms: u64 = 0,
     last_frame_ms: u64 = 0, // último quadro que essa pessoa transmitiu
+    last_droppable_ms: u64 = 0, // último quadro pulável dela (a transmissão tem camadas temporais)
     refs: std.atomic.Value(u32) = .init(1), // leitora (+ escritora quando existir)
 
     fn nameSlice(self: *const Conn) []const u8 {
@@ -98,10 +106,40 @@ const Flow = struct {
     trend_excess_us: u64 = 0,
     late: bool = false, // atrasado e sem escoar na última medida
     decoder_behind: bool = false, // pediu IDR porque o decoder não deu conta (vale como recomeço pro aviso)
+    // "afinado": só recebe os quadros de referência (os puláveis ficam de fora)
+    thin: bool = false,
+    thin_since_ms: u64 = 0,
+    thin_until_ms: u64 = 0,
+    thin_ms: u64 = thin_min_ms,
+    thin_ended_ms: u64 = 0,
+    probe_until_ms: u64 = 0, // acabou de voltar a receber tudo: atrasou, afina na hora
 
-    /// Atrasado sem escoar, ou recomeçou há menos de 10 s.
+    /// Atrasado sem escoar, ou recomeçou há menos de 10 s. Afinado: só se nem
+    /// assim deu conta — continua atrasando passado o tempo de escoar, ou
+    /// recomeçou de um IDR depois de afinado.
     fn struggling(f: *const Flow, now_ms: u64) bool {
-        return f.late or (f.last_resync_ms != 0 and now_ms - f.last_resync_ms < 10_000);
+        const recent_resync = f.last_resync_ms != 0 and now_ms - f.last_resync_ms < 10_000;
+        if (f.thin) {
+            const settled = now_ms - f.thin_since_ms >= thin_grace_ms;
+            return (settled and f.late) or (recent_resync and f.last_resync_ms > f.thin_since_ms);
+        }
+        return f.late or recent_resync;
+    }
+
+    /// Passa a receber só os quadros de referência por um tempo: metade dos
+    /// quadros, ~metade da banda e do trabalho do decoder, sem mexer na
+    /// qualidade de quem está dando conta. Retorna true se começou agora.
+    fn thinOut(f: *Flow, now_ms: u64) bool {
+        if (f.thin) {
+            f.thin_until_ms = @max(f.thin_until_ms, now_ms + f.thin_ms);
+            return false;
+        }
+        const again = f.thin_ended_ms != 0 and now_ms - f.thin_ended_ms < 30_000;
+        f.thin_ms = if (again) @min(f.thin_ms * 2, thin_max_ms) else thin_min_ms;
+        f.thin = true;
+        f.thin_since_ms = now_ms;
+        f.thin_until_ms = now_ms + f.thin_ms;
+        return true;
     }
 
     fn updateTrend(f: *Flow, excess: u64, now_us: u64) void {
@@ -483,6 +521,11 @@ pub const Server = struct {
                 if (now >= f.resync_after_ms) s.requestKey(target, false);
                 _ = f.backoff(now);
                 f.decoder_behind = true;
+                // metade dos quadros alivia o decoder dele sem mexer em ninguém
+                if (s.findConn(target)) |sh| {
+                    if (now -| sh.last_droppable_ms < 2000 and f.thinOut(now))
+                        s.log("{s} não deu conta de decodificar {s}: recebendo só metade dos quadros por {d} s", .{ cn.nameSlice(), sh.nameSlice(), f.thin_ms / 1000 });
+                }
             },
             .ping => {
                 const t = try r.u64_();
@@ -693,6 +736,7 @@ pub const Server = struct {
         if (payload.len < proto.frame_header_len) return error.BadMessage;
         const seq = std.mem.readInt(u32, payload[0..4], .little);
         const is_key = payload[4] & proto.frame_key != 0;
+        const droppable = payload[4] & proto.frame_droppable != 0 and !is_key;
 
         // confirma na hora: o transmissor mede o próprio upload com isso
         const ack = try proto.Msg.alloc(.ack, 4);
@@ -703,6 +747,7 @@ pub const Server = struct {
         const m = try proto.Msg.alloc(.frame, 4 + payload.len);
         defer m.release();
         m.from = cn.id;
+        m.flags = payload[4];
         std.mem.writeInt(u32, m.payload()[0..4], cn.id, .little);
         @memcpy(m.payload()[4..], payload);
 
@@ -711,12 +756,37 @@ pub const Server = struct {
         const now_ms = sync.nowMs();
         const now_us = sync.nowUs();
         cn.last_frame_ms = now_ms;
+        if (droppable) cn.last_droppable_ms = now_ms;
+        // dá pra afinar quem não dá conta (a transmissão tem quadros puláveis)
+        var thinnable = now_ms -| cn.last_droppable_ms < 2000;
+        if (thinnable) {
+            // afinar é pra proteger quem está dando conta. Se a maioria está
+            // sofrendo (gargalo comum, ex.: o upload de quem hospeda, ou só tem
+            // um espectador), quem resolve é a taxa (mantém os 30 q/s)
+            var viewers: u32 = 0;
+            var struggling: u32 = 0;
+            for (s.conns.items) |o| {
+                if (o == cn or !contains(&o.watching, cn.id)) continue;
+                viewers += 1;
+                const f = o.flow(cn.id) orelse continue;
+                if (f.struggling(now_ms)) struggling += 1;
+            }
+            thinnable = (struggling + 1) * 2 <= viewers;
+        }
         var need_key = false;
         var resynced = false; // algum espectador recomeçou agora
         var late = false; // algum espectador acumulando atraso há mais de 1 s
         for (s.conns.items) |o| {
             if (o == cn or !contains(&o.watching, cn.id)) continue;
             const f = o.flow(cn.id) orelse continue;
+            if (f.thin and now_ms >= f.thin_until_ms and !f.late) {
+                // tempo de afinar acabou e ele está em dia: volta a receber tudo
+                // (é um teste: se começar a atrasar, afina de novo na hora)
+                f.thin = false;
+                f.thin_ended_ms = now_ms;
+                f.probe_until_ms = now_ms + 3000;
+            }
+            if (f.thin and droppable) continue; // ninguém precisa desse pra decodificar o resto
             if (f.decoder_behind) {
                 // CPU de quem assiste não deu conta: taxa menor também alivia o decoder
                 f.decoder_behind = false;
@@ -739,7 +809,16 @@ pub const Server = struct {
             const allowance = f.win.keyAllowanceUs(now_us);
             const excess = f.win.excessUs(now_us, default_base_us);
             f.updateTrend(excess, now_us);
-            if (f.late) late = true;
+            const probe_failed = !f.thin and now_ms < f.probe_until_ms and excess > soft_viewer_excess_us;
+            if ((f.late or probe_failed) and thinnable and f.thinOut(now_ms)) {
+                // primeiro tira só dele metade dos quadros (os que já estão na
+                // fila também); a taxa da sala toda só desce se nem assim ele der conta
+                _ = o.queue.dropDroppable(cn.id);
+                f.probe_until_ms = 0;
+                s.log("{s} atrasando {d} ms com {s}: recebendo só metade dos quadros por {d} s", .{ o.nameSlice(), excess / 1000, cn.nameSlice(), f.thin_ms / 1000 });
+            }
+            // recém-afinado ainda escoando o atraso não conta
+            if (f.late and !(f.thin and now_ms - f.thin_since_ms < thin_grace_ms)) late = true;
             if (excess > max_viewer_excess_us + allowance or o.queue.queuedBytes() > max_viewer_backlog) {
                 // espectador acumulando atraso: descarta o que nem saiu da
                 // fila, espera o resto chegar e recomeça de um IDR
@@ -750,6 +829,7 @@ pub const Server = struct {
                 f.trend_at_us = 0;
                 resynced = true;
                 _ = f.backoff(now_ms);
+                if (thinnable) _ = f.thinOut(now_ms); // depois do IDR, só metade
                 s.log("{s} atrasou {d} ms assistindo {s}: recomeçando de um IDR (próximo em {d} ms)", .{ o.nameSlice(), excess / 1000, cn.nameSlice(), f.resync_after_ms - now_ms });
                 continue;
             }
@@ -773,6 +853,8 @@ pub const Server = struct {
                 const f = o.flow(cn.id) orelse continue;
                 if (f.struggling(now_ms)) struggling += 1;
             }
+            // todo mundo que atrasou foi afinado e está escoando: a taxa fica
+            if (struggling == 0) return;
             const majority = struggling * 2 > viewers;
             const hint = try proto.Msg.alloc(.viewer_slow, 1);
             hint.payload()[0] = if (majority) 10 else 50;

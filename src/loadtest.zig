@@ -289,7 +289,10 @@ pub fn main(init: std.process.Init) !void {
     _ = rc.takeChange();
     var skipped: u32 = 0;
     var end_sent_bytes: u64 = 0; // enviado pelo transmissor no último quarto
-    var enc = try codec.Encoder.init(.{ .width = w, .height = h, .fps = 30, .bitrate = target_bps });
+    // como o transmissor de verdade com openh264: duas camadas temporais
+    // (TELINHA_CAMADAS=1 pra comparar com uma só)
+    const layers: u8 = if (std.c.getenv("TELINHA_CAMADAS")) |v| v[0] - '0' else 2;
+    var enc = try codec.Encoder.init(.{ .width = w, .height = h, .fps = 30, .bitrate = target_bps, .temporal_layers = layers });
     defer enc.deinit();
     const img = try gpa.alloc(u8, w * h * 4);
     defer gpa.free(img);
@@ -345,7 +348,7 @@ pub fn main(init: std.process.Init) !void {
         const p = m.payload();
         std.mem.writeInt(u32, p[0..4], seq, .little);
         seq +%= 1;
-        p[4] = if (key) proto.frame_key else 0;
+        p[4] = if (key) proto.frame_key else if (codec.isDroppable(out.items)) proto.frame_droppable else 0;
         std.mem.writeInt(u64, p[5..13], sync.nowUs(), .little);
         std.mem.writeInt(u16, p[13..15], w, .little);
         std.mem.writeInt(u16, p[15..17], h, .little);
@@ -427,9 +430,16 @@ pub fn main(init: std.process.Init) !void {
     check(&ok, slow_keys >= 2, "o espectador lento se recuperou (recebeu IDR de novo)");
     check(&ok, slow_max < 3_000_000, "o atraso do espectador lento ficou limitado (< 3 s)");
     if (n_slow > 0) {
-        // depois de a taxa se ajustar, o lento acompanha: quase todos os quadros, pouco atraso
         check(&ok, slow_end_lat < 600_000, "no fim, o espectador lento acompanha com < 600 ms de atraso");
-        check(&ok, slow_end_frames * 4 * 100 >= sent * 80, "no fim, o espectador lento recebe >= 80% dos quadros");
+        if (layers == 2 and n_slow * 2 < n_viewers + n_slow) {
+            // minoria lenta: ela é afinada (só os quadros de referência, ~metade)
+            // e a taxa da sala não desce pra metade por causa dela
+            check(&ok, slow_end_frames * 4 * 100 >= sent * 40, "no fim, o espectador lento recebe >= 40% dos quadros (afinado)");
+            check(&ok, rc.bps * 100 >= target_bps * 65, "a taxa da sala ficou >= 65% da meta (o lento foi afinado em vez de derrubar todo mundo)");
+        } else {
+            // a taxa desce até caber no link do lento: ele recebe quase tudo
+            check(&ok, slow_end_frames * 4 * 100 >= sent * 80, "no fim, o espectador lento recebe >= 80% dos quadros");
+        }
     }
     if (!ok) std.process.exit(1);
 }

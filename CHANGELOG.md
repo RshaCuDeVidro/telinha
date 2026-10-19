@@ -2,6 +2,12 @@
 
 ## 2.1.0
 
+- **Espectador lento não derruba mais a qualidade de todo mundo**: a
+  transmissão sai em duas camadas temporais e o servidor passa a mandar só
+  metade dos quadros (os que os outros usam de referência) pra quem não está
+  dando conta — por banda ou por CPU no decoder. Teste de carga com 8
+  espectadores + 1 num link de 2 Mbit/s: a taxa da sala ficou em ~89% (antes
+  caía pra 50%) e o lento com ~90 ms de atraso (antes ~360 ms), a 15 q/s.
 - **Cancelamento de eco** (SpeexDSP) na voz: dá pra falar com caixa de som em
   vez de fone sem a sala se ouvir de volta. A referência é o que o mixer
   acabou de tocar; um detector de atraso acha onde o eco está (até 500 ms:
