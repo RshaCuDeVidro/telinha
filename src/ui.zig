@@ -392,7 +392,7 @@ pub const App = struct {
     focus_chat: bool = false,
 
     share_modal: bool = false,
-    sources: [16]c.cap_source = undefined,
+    sources: [48]c.cap_source = undefined, // monitores e, no Windows, janelas
     n_sources: usize = 0,
     source_idx: i32 = 0,
 
@@ -435,6 +435,8 @@ pub const App = struct {
     /// Onde cada membro aparece na lista (modo de testes).
     member_rects: [64]struct { id: u32, x0: f32, y0: f32, x1: f32, y1: f32 } = undefined,
     n_member_rects: usize = 0,
+    live_rects: [64]struct { stream: u32, x0: f32, y0: f32, x1: f32, y1: f32 } = undefined,
+    n_live_rects: usize = 0,
 
     // voz
     mic: ?*voice.Mic = null,
@@ -1353,6 +1355,7 @@ pub const App = struct {
         a.checkClipJobs();
         a.n_tile_rects = 0;
         a.n_member_rects = 0;
+        a.n_live_rects = 0;
         a.checkState();
         a.uploadTextures();
 
@@ -1836,6 +1839,10 @@ pub const App = struct {
         const row_w = width - S(16);
         const clicked = c.igInvisibleButton("live", v2(row_w, h), 0);
         const hovered = c.igIsItemHovered(0);
+        if (a.n_live_rects < a.live_rects.len) {
+            a.live_rects[a.n_live_rects] = .{ .stream = stream, .x0 = p.x, .y0 = p.y, .x1 = p.x + row_w, .y1 = p.y + h };
+            a.n_live_rects += 1;
+        }
         const is_me = m.id == my_id;
         const watching = a.findView(stream) != null;
         if (hovered or watching) rectFill(d, p.x, p.y, p.x + row_w, p.y + h, if (watching) col.selected else col.hover, S(6));
@@ -3425,7 +3432,7 @@ pub const App = struct {
         c.igPushStyleColor_U32(c.ImGuiCol_CheckMark, col.white);
         _ = c.igCheckbox("Mostrar o cursor do mouse", &a.cfg.cursor);
         _ = c.igCheckbox("Compartilhar o áudio do computador", &a.cfg.audio);
-        _ = c.igCheckbox("Usar a placa de vídeo (NVIDIA NVENC/NVDEC), se tiver", &a.cfg.hardware);
+        _ = c.igCheckbox("Usar a placa de vídeo (NVIDIA; no Windows também AMD e Intel), se tiver", &a.cfg.hardware);
 
         c.igPopStyleColor(2);
 
@@ -3624,6 +3631,12 @@ pub const App = struct {
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);
         try w.print(",\"clipboard\":{f},\"chat_input\":{f}", .{ s(if (cb_text != null) std.mem.span(cb_text) else ""), s(std.mem.sliceTo(&a.chat_input, 0)) });
         try w.print(",\"notifications_sent\":{d},\"away\":{}", .{ a.notifications_sent, a.away() });
+        try w.writeAll(",\"sources\":[");
+        for (a.sources[0..a.n_sources], 0..) |*src, i| {
+            if (i > 0) try w.writeByte(',');
+            try w.print("{{\"id\":{d},\"name\":{f}}}", .{ src.id, s(std.mem.sliceTo(&src.name, 0)) });
+        }
+        try w.print("],\"source_idx\":{d}", .{a.source_idx});
         try w.writeAll(",\"pips\":[");
         var first_pip = true;
         for (a.pips) |maybe| if (maybe) |pp| {
@@ -3665,7 +3678,7 @@ pub const App = struct {
         if (a.sharer) |sh| {
             sh.mutex.lock();
             defer sh.mutex.unlock();
-            try w.print(",\"sharer\":{{\"state\":{f},\"w\":{d},\"h\":{d},\"fps\":{d:.1}}}", .{ s(@tagName(sh.state)), sh.w, sh.h, sh.fps });
+            try w.print(",\"sharer\":{{\"state\":{f},\"w\":{d},\"h\":{d},\"fps\":{d:.1},\"backend\":{f},\"encoder\":{f}}}", .{ s(@tagName(sh.state)), sh.w, sh.h, sh.fps, s(sh.backendSlice()), s(sh.encoder_name) });
         } else try w.writeAll(",\"sharer\":null");
         // avisos na tela
         try w.writeAll(",\"toasts\":[");
@@ -3680,6 +3693,12 @@ pub const App = struct {
             if (i > 0) try w.writeByte(',');
             const zm = a.zoomFor(r.stream);
             try w.print("{{\"stream\":{d},\"x0\":{d:.0},\"y0\":{d:.0},\"x1\":{d:.0},\"y1\":{d:.0},\"zoom\":{d:.2},\"follow\":{}}}", .{ r.stream, r.x0, r.y0, r.x1, r.y1, zm.z, zm.follow });
+        }
+        try w.writeAll("]");
+        try w.writeAll(",\"live_rows\":[");
+        for (a.live_rects[0..a.n_live_rects], 0..) |r, i| {
+            if (i > 0) try w.writeByte(',');
+            try w.print("{{\"stream\":{d},\"x0\":{d:.0},\"y0\":{d:.0},\"x1\":{d:.0},\"y1\":{d:.0}}}", .{ r.stream, r.x0, r.y0, r.x1, r.y1 });
         }
         try w.writeAll("]");
         try w.writeAll(",\"member_rows\":[");

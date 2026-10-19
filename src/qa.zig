@@ -92,7 +92,9 @@ fn writeFile(name: []const u8, data: []const u8) !void {
     const f = cio.fopen(tmp.ptr, "wb") orelse return error.Open;
     _ = cio.fwrite(data.ptr, 1, data.len, f);
     _ = cio.fclose(f);
-    // troca atômica: quem lê nunca vê o arquivo pela metade
+    // troca atômica: quem lê nunca vê o arquivo pela metade (no Windows o
+    // rename não substitui: apaga antes, e quem lê tenta de novo se faltar)
+    if (sync.is_windows) _ = cio.remove(dst.ptr);
     _ = cio.rename(tmp.ptr, dst.ptr);
 }
 

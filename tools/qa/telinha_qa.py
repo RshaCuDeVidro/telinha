@@ -27,6 +27,14 @@ from Xlib.ext import xtest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 APP = os.path.join(ROOT, "zig-out", "bin", "telinha")
+EXE = os.path.join(ROOT, "zig-out", "bin", "telinha.exe")
+# prefixo do wine só dos testes (nunca o de outro programa)
+WINEPREFIX = os.environ.get("QA_WINEPREFIX", os.path.join(tempfile.gettempdir(), "telinha-qa-wineprefix"))
+
+
+def winpath(p):
+    """Caminho do Linux como o wine vê (unidade Z:)."""
+    return "Z:" + p.replace("/", "\\")
 SERVER = os.path.join(ROOT, "zig-out", "bin", "telinha-server-x86_64")
 
 
@@ -79,6 +87,9 @@ class Session:
     def stop(self):
         for app in reversed(self.apps):
             app.stop()
+        if any(getattr(a, "wine", False) for a in self.apps):
+            # só o wineserver do NOSSO prefixo
+            subprocess.run(["wineserver", "-k"], env=dict(os.environ, WINEPREFIX=WINEPREFIX), timeout=20, check=False)
         for name, p in reversed(self.procs):
             self.stop_proc(p)
         for d in self.displays.values():
@@ -212,6 +223,15 @@ class Session:
         raise QAError(f"não apareceu: {path}")
 
     # -------------------------------------------------------------------- apps
+    def wine_app(self, name, display, args, size=(1280, 760), extra_env=None):
+        """O telinha.exe no wine (tela escondida, prefixo próprio, sem som)."""
+        a = App(self, name, display, args, size, extra_env or {}, False)
+        a.wine = True
+        a.wrap = []
+        self.apps.append(a)
+        a.start()
+        return a
+
     def app(self, name, display, args, size=(1280, 760), extra_env=None, audio=None, wrap=None, config=None):
         a = App(self, name, display, args, size, extra_env or {}, self.runtime is not None if audio is None else audio)
         a.wrap = wrap or []
@@ -266,15 +286,25 @@ class App:
             base["PULSE_SERVER"] = "unix:/nonexistent"
             base["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/nonexistent"
             os.makedirs(base["XDG_RUNTIME_DIR"], mode=0o700, exist_ok=True)
+        if getattr(self, "wine", False):
+            # o .exe vê caminhos do Windows; configuração (APPDATA) e clipes na pasta do teste
+            appdata = os.path.join(self.dir, "appdata")
+            os.makedirs(appdata, exist_ok=True)
+            base.update({
+                "WINEPREFIX": WINEPREFIX, "WINEDEBUG": "-all", "TELINHA_QA": winpath(self.qa_dir),
+                # o wine ignora APPDATA vindo de fora (pega do registro do prefixo)
+                "TELINHA_PASTA_CONFIG": winpath(appdata), "TELINHA_PASTA_CLIPES": winpath(os.path.join(self.dir, "clipes")),
+            })
         base.update(self.extra_env)
         return base
 
     def start(self):
         self.d = self.s.display(self.num, f"{max(self.size[0], 1280)}x{max(self.size[1], 760)}")
         w, h = self.size
-        cmd = getattr(self, "wrap", []) + [APP, "--janela", f"0,0,{w},{h}"] + self.args
+        prog = ["wine", EXE] if getattr(self, "wine", False) else [APP]
+        cmd = getattr(self, "wrap", []) + prog + ["--janela", f"0,0,{w},{h}"] + self.args
         self.proc = self.s.spawn(self.name, cmd, self.env())
-        self.wait(lambda st: st.get("screen") is not None, 15, "o app abrir")
+        self.wait(lambda st: st.get("screen") is not None, 60 if getattr(self, "wine", False) else 15, "o app abrir")
 
     def stop(self):
         if self.proc:
@@ -386,6 +416,11 @@ class App:
     def member_row(self, mid, timeout=10.0):
         st = self.wait(lambda s: any(r["id"] == mid for r in s["member_rows"]), timeout, f"a linha do membro {mid}")
         r = next(r for r in st["member_rows"] if r["id"] == mid)
+        return (r["x0"], r["y0"], r["x1"], r["y1"])
+
+    def live_row(self, stream, timeout=10.0):
+        st = self.wait(lambda s: any(r["stream"] == stream for r in s["live_rows"]), timeout, f"a linha ao vivo de {stream}")
+        r = next(r for r in st["live_rows"] if r["stream"] == stream)
         return (r["x0"], r["y0"], r["x1"], r["y1"])
 
     def click_rect(self, r, button=1):
@@ -500,6 +535,20 @@ class App:
             time.sleep(0.03)
         time.sleep(0.1)
 
+    def click_unlabeled(self, window, index=0):
+        """Clica no n-ésimo item sem rótulo de uma janela (o combo do ImGui não registra o rótulo)."""
+        t0 = time.time()
+        while True:
+            win, items = self.items()
+            hits = [it for it in items if it["label"] == "" and window in it["window"] and it["y1"] - it["y0"] < 80]
+            if len(hits) > index:
+                break
+            if time.time() - t0 > 5:
+                raise QAError(f"[{self.name}] não achei item sem rótulo #{index} em {window}")
+            time.sleep(0.1)
+        it = hits[index]
+        self.click_at(win[0] + (it["x0"] + it["x1"]) / 2, win[1] + (it["y0"] + it["y1"]) / 2)
+
     def x_windows(self):
         """Nomes das janelas na tela dessa instância."""
         out = []
@@ -511,6 +560,18 @@ class App:
             if n:
                 out.append((n, w))
         return out
+
+    def move_x_window(self, name, x, y, w, h, timeout=20.0):
+        """Põe uma janela (de outro programa) num lugar fixo da tela."""
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            for n, win in self.x_windows():
+                if n == name:
+                    win.configure(x=x, y=y, width=w, height=h)
+                    self.d.sync()
+                    return True
+            time.sleep(0.2)
+        return False
 
     def close_x_window(self, name):
         """Fecha uma janela como o X do gerenciador de janelas faria (WM_DELETE_WINDOW)."""

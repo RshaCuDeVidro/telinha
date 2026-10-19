@@ -175,6 +175,7 @@ pub const Sharer = struct {
     congested: bool = false,
     slow_viewer: bool = false, // algum espectador pediu menos nos últimos segundos
     encoder_name: []const u8 = "",
+    encoder_name_buf: [48]u8 = undefined, // cópia (o encoder pode ser recriado a qualquer hora)
     audio_on: bool = false, // capturando o som do computador
     audio_hears_self: bool = false, // a captura pega também o que o telinha toca (jeito antigo)
     audio_err: [160]u8 = [_]u8{0} ** 160, // por que o áudio não deu (vazio = deu certo ou não pediu)
@@ -383,7 +384,7 @@ const Pipeline = struct {
         }
         const b = std.mem.span(p.cap.?.backend());
         // PipeWire/DXGI/câmera só entregam quadro quando tem um novo
-        p.event_driven = s.kind == proto.kind_camera or std.mem.eql(u8, b, "PipeWire") or std.mem.eql(u8, b, "DXGI");
+        p.event_driven = s.kind == proto.kind_camera or std.mem.eql(u8, b, "PipeWire") or std.mem.eql(u8, b, "DXGI") or std.mem.eql(u8, b, "WGC");
         if (p.settings.audio and s.kind == proto.kind_screen) {
             var err: [160]u8 = undefined;
             if (audio.Sender.create(p, onAudioPacket, &err)) |a| {
@@ -700,6 +701,11 @@ const Pipeline = struct {
         var stat_frames: u32 = 0;
         var stat_bytes: u64 = 0;
         var last_key_us: u64 = 0;
+        // encoder de hardware que ignora o pedido de IDR (o do wine; algum
+        // driver por aí): recria o encoder a cada pedido (encoder novo sempre
+        // começa com IDR) — senão quem entra depois nunca vê nada
+        var key_misses: u8 = 0;
+        var hw_ignores_idr = false;
 
         while (true) {
             // espera um quadro novo (ou um pedido de IDR)
@@ -751,7 +757,8 @@ const Pipeline = struct {
             }
 
             // (re)cria o encoder se mudou resolução ou configuração
-            if (enc == null or enc.?.width() != sl.w or enc.?.height() != sl.h or gen != enc_gen or enc.?.isHw() != want_hw) {
+            const renew = key and hw_ignores_idr and enc != null and enc.?.isHw();
+            if (enc == null or enc.?.width() != sl.w or enc.?.height() != sl.h or gen != enc_gen or enc.?.isHw() != want_hw or renew) {
                 if (enc) |*e| e.deinit();
                 enc = null;
                 const target = targetBitrate(sl.w, sl.h, fps, quality);
@@ -780,7 +787,10 @@ const Pipeline = struct {
                 }
                 enc_gen = gen;
                 s.mutex.lock();
-                s.encoder_name = if (enc.? == .hw) "NVENC" else "openh264";
+                const en = if (enc.? == .hw) enc.?.hw.name() else "openh264";
+                const k = @min(en.len, s.encoder_name_buf.len);
+                @memcpy(s.encoder_name_buf[0..k], en[0..k]);
+                s.encoder_name = s.encoder_name_buf[0..k];
                 s.mutex.unlock();
                 s.mutex.lock();
                 s.w = sl.w;
@@ -795,6 +805,7 @@ const Pipeline = struct {
             out.clearRetainingCapacity();
             const is_key = enc.?.encode(sl, key, &out) catch |e| blk: {
                 if (enc.? != .hw) return e;
+                if (debugEnabled()) std.debug.print("[telinha] encoder em hardware ({s}) falhou no meio: {s}; seguindo em software\n", .{ enc.?.hw.name(), @errorName(e) });
                 // erro no NVENC no meio da transmissão: cai pro software
                 enc.?.deinit();
                 enc = null;
@@ -807,6 +818,16 @@ const Pipeline = struct {
                 continue;
             };
             if (key and debugEnabled()) std.debug.print("[telinha] IDR pedido: codificado como {s} ({d} bytes)\n", .{ if (is_key) "IDR" else "P (!)", out.items.len });
+            if (key and !is_key and enc.?.isHw()) {
+                // pode ser só atraso de um quadro (encoder assíncrono): pede de
+                // novo; na segunda vez seguida, desiste de pedir e recria
+                key_misses += 1;
+                if (key_misses >= 2 and !hw_ignores_idr) {
+                    hw_ignores_idr = true;
+                    if (debugEnabled()) std.debug.print("[telinha] o encoder {s} ignora pedido de IDR: recriando a cada pedido\n", .{enc.?.hw.name()});
+                }
+                s.client.keyreq[kind].store(true, .release);
+            } else if (is_key) key_misses = 0;
             const frame_seq = seq;
             seq +%= 1;
             try msg.begin(.frame);
@@ -975,7 +996,13 @@ const Encoder = union(enum) {
     }
     fn encode(e: *Encoder, sl: *const Slot, key: bool, out: *std.ArrayList(u8)) !?bool {
         switch (e.*) {
-            .hw => |*h| return try h.encode(sl.bgrx.ptr, @as(usize, sl.w) * 4, sl.fmt, key, out),
+            .hw => |*h| {
+                const before = out.items.len;
+                const is_key = try h.encode(sl.bgrx.ptr, @as(usize, sl.w) * 4, sl.fmt, key, out);
+                // encoder de hardware que ainda não soltou nada (Media Foundation): sem quadro
+                if (out.items.len == before) return null;
+                return is_key;
+            },
             .sw => |*x| {
                 if (key) x.forceKey();
                 return x.encodeI420(sl.y.ptr, sl.u.ptr, sl.v.ptr, out);

@@ -650,6 +650,64 @@ def convite_varios_caminhos():
         log(f"Bruno entrou pela rota {st['route']}")
 
 
+@test
+def windows_exe():
+    """O telinha.exe (wine isolado): entra, assiste, lista janelas, compartilha só uma janela e a câmera avisa que não tem."""
+    import subprocess
+    from telinha_qa import WINEPREFIX
+    with Session("wine") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Linux", "--criar", str(p), "--transmitir", "--software"])
+        a.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
+        s.display(96)
+        # outra janela no "Windows" pra compartilhar (o bloco de notas do wine)
+        s.spawn("notepad", ["wine", "notepad"], {k: v for k, v in os.environ.items() if k != "WAYLAND_DISPLAY"} | {"DISPLAY": ":96", "WINEPREFIX": WINEPREFIX, "WINEDEBUG": "-all"})
+        w = s.wine_app("w", 96, ["--nome", "Windows", "--entrar", f"127.0.0.1:{p}", "--assistir", "--software"])
+        # o bloco de notas vai pro lado (senão fica por cima do telinha e pega os cliques)
+        expect(w.move_x_window("Untitled - Notepad", 1290, 0, 300, 300), "o bloco de notas não abriu")
+        lid = w.member_id("Linux")
+        w.wait(lambda st: any(v["stream"] == lid and v["shown"] for v in st["views"]), 40, "o .exe ver a tela do Linux")
+        # compartilhar: a lista tem monitor e janelas (o bloco de notas, não o próprio telinha)
+        w.click(contains="Compartilhar tela##share")
+        st = w.wait(lambda st: st["share_modal"] and any(x["name"].startswith("Janela:") for x in st["sources"]), 20, "a lista de janelas")
+        names = [x["name"] for x in st["sources"]]
+        log(f"fontes no .exe: {names}")
+        expect(not any("telinha" in n.lower() for n in names if n.startswith("Janela:")), "a lista mostrou a janela do próprio telinha")
+        w.click_unlabeled("Compartilhar tela")
+        w.click(contains="Janela:", window="##Combo")
+        w.wait(lambda st: st["sources"][st["source_idx"]]["name"].startswith("Janela:"), 5, "escolher a janela")
+        w.click(contains="Ao vivo", window="Compartilhar")
+        st = w.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 30, "o .exe transmitir a janela")
+        st = w.wait(lambda st: st["sharer"]["backend"] != "", 10, "o método de captura")
+        log(f"transmitindo a janela: {st['sharer']}")
+        wid = a.member_id("Windows")
+        a.click_rect(a.live_row(wid))
+        sv = a.wait(lambda st: any(v["stream"] == wid and v["shown"] for v in st["views"]), 30, "o Linux ver a janela")
+        v = next(v for v in sv["views"] if v["stream"] == wid)
+        log(f"o Linux vê a janela em {v['w']}x{v['h']}")
+        expect(v["w"] < 1280 or v["h"] < 760, "isso parece a tela inteira, não a janela")
+        # câmera: no wine não tem nenhuma; avisa e não trava
+        w.click("##camera")
+        w.wait(lambda st: st["camera"] is None and any("câmera" in t.lower() for t in st["toasts"]), 20, "avisar que não tem câmera")
+
+
+@test
+def windows_encoder():
+    """O .exe (wine) transmitindo com 'usar a placa de vídeo': sem NVIDIA, tenta o Media Foundation e, se não der, openh264 — sempre transmite."""
+    with Session("wineenc") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Linux", "--criar", str(p), "--assistir"])
+        a.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
+        mf_sw = os.environ.get("QA_MF_SOFTWARE")
+        w = s.wine_app("w", 96, ["--nome", "Windows", "--entrar", f"127.0.0.1:{p}", "--transmitir"],
+                       extra_env={"TELINHA_DEBUG": "1"} | ({"TELINHA_MF_SOFTWARE": "1"} if mf_sw else {}))
+        st = w.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live" and st["sharer"]["encoder"], 60, "o .exe transmitir")
+        log(f"encoder no .exe: {st['sharer']['encoder']} (captura {st['sharer']['backend']})")
+        wid = a.member_id("Windows")
+        sv = a.wait(lambda st: any(v["stream"] == wid and v["shown"] for v in st["views"]), 30, "o Linux ver a tela do .exe")
+        log(f"o Linux vê {next(v for v in sv['views'] if v['stream'] == wid)}")
+
+
 # ---------------------------------------------------------------------------
 
 

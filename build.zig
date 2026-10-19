@@ -262,7 +262,10 @@ const rnnoise_src = [_][]const u8{
 fn addHwenc(b: *std.Build, deps: Deps, mod: *std.Build.Module) void {
     mod.addIncludePath(deps.nv_headers.path("include"));
     mod.addIncludePath(b.path("src/c"));
+    mod.addCSourceFile(.{ .file = b.path("src/c/hwenc.c"), .flags = &.{ "-O2", "-Wno-everything" } });
     mod.addCSourceFile(.{ .file = b.path("src/c/hwenc_nvenc.c"), .flags = &.{ "-O2", "-Wno-everything" } });
+    if (mod.resolved_target.?.result.os.tag == .windows)
+        mod.addCSourceFile(.{ .file = b.path("src/c/hwenc_mf.c"), .flags = &.{ "-O2", "-Wno-everything" } });
     mod.addCSourceFile(.{ .file = b.path("src/c/hwdec_nvdec.c"), .flags = &.{ "-O2", "-Wno-everything" } });
 }
 

@@ -70,24 +70,32 @@ fn openFile(write: bool) ?*c.FILE {
 }
 
 /// Arquivo na pasta de configuração do telinha (criada se faltar).
+/// TELINHA_PASTA_CONFIG troca a pasta inteira (testes; telinha "portátil").
 fn openNamed(comptime name: []const u8, write: bool) ?*c.FILE {
     if (is_windows) {
         var dir: [600]u16 = undefined;
-        const n = c.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("APPDATA"), &dir, 500);
-        if (n == 0 or n >= 500) return null;
+        var n = c.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("TELINHA_PASTA_CONFIG"), &dir, 500);
         const sub = std.unicode.utf8ToUtf16LeStringLiteral("\\telinha");
-        @memcpy(dir[n..][0..sub.len], sub);
-        dir[n + sub.len] = 0;
+        if (n == 0 or n >= 500) {
+            n = c.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("APPDATA"), &dir, 500);
+            if (n == 0 or n >= 500) return null;
+            @memcpy(dir[n..][0..sub.len], sub);
+            n += sub.len;
+        }
+        dir[n] = 0;
         _ = c.CreateDirectoryW(&dir, null);
         const file = std.unicode.utf8ToUtf16LeStringLiteral("\\" ++ name);
-        @memcpy(dir[n + sub.len ..][0..file.len], file);
-        dir[n + sub.len + file.len] = 0;
+        @memcpy(dir[n..][0..file.len], file);
+        dir[n + file.len] = 0;
         const mode = if (write) std.unicode.utf8ToUtf16LeStringLiteral("wb") else std.unicode.utf8ToUtf16LeStringLiteral("rb");
         return c._wfopen(&dir, mode);
     } else {
         var path: [512]u8 = undefined;
         const xdg = c.getenv("XDG_CONFIG_HOME");
-        const base = if (xdg != null and xdg[0] != 0)
+        const own = c.getenv("TELINHA_PASTA_CONFIG");
+        const base = if (own != null and own[0] != 0)
+            std.fmt.bufPrintZ(&path, "{s}", .{std.mem.span(own)}) catch return null
+        else if (xdg != null and xdg[0] != 0)
             std.fmt.bufPrintZ(&path, "{s}/telinha", .{std.mem.span(xdg)}) catch return null
         else
             std.fmt.bufPrintZ(&path, "{s}/.config/telinha", .{std.mem.span(c.getenv("HOME") orelse return null)}) catch return null;

@@ -10,6 +10,8 @@
 // "temporal SVC" (que as placas mais antigas não têm).
 #include "hwenc.h"
 
+typedef struct nvenc nvenc;
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,7 +21,7 @@
 #include <ffnvcodec/dynlink_loader.h>
 #include <ffnvcodec/nvEncodeAPI.h>
 
-struct hwenc {
+struct nvenc {
     CudaFunctions *cu;
     NvencFunctions *nv;
     NV_ENCODE_API_FUNCTION_LIST api;
@@ -48,7 +50,7 @@ static void set_err(char *err, int errlen, const char *msg, int code) {
 /// de código em 1080p, 34 dB → 45 dB no IDR, ~60 KB a mais (zig build bench).
 #define IDR_VBV_FRAMES 10
 
-static void configure_rc(hwenc *e, int bitrate) {
+static void configure_rc(nvenc *e, int bitrate) {
     e->bitrate = bitrate;
     NV_ENC_RC_PARAMS *rc = &e->cfg.rcParams;
     // VBR com teto: tela calma gasta pouco, movimento usa até o limite
@@ -60,7 +62,7 @@ static void configure_rc(hwenc *e, int bitrate) {
     rc->vbvInitialDelay = rc->vbvBufferSize;
 }
 
-static void reconfigure(hwenc *e) {
+static void reconfigure(nvenc *e) {
     NV_ENC_RECONFIGURE_PARAMS rp = {0};
     rp.version = NV_ENC_RECONFIGURE_PARAMS_VER;
     rp.reInitEncodeParams = e->init;
@@ -70,7 +72,7 @@ static void reconfigure(hwenc *e) {
     e->api.nvEncReconfigureEncoder(e->enc, &rp);
 }
 
-void hwenc_close(hwenc *e) {
+void nvenc_close(nvenc *e) {
     if (!e) return;
     if (e->enc) {
         if (e->input) e->api.nvEncDestroyInputBuffer(e->enc, e->input);
@@ -84,8 +86,8 @@ void hwenc_close(hwenc *e) {
     free(e);
 }
 
-hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, int temporal_layers, char *err, int errlen) {
-    hwenc *e = calloc(1, sizeof *e);
+nvenc *nvenc_open(int width, int height, int fps, int bitrate, int screen_mode, int temporal_layers, char *err, int errlen) {
+    nvenc *e = calloc(1, sizeof *e);
     if (!e) return NULL;
     e->width = width;
     e->height = height;
@@ -94,7 +96,7 @@ hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, 
 
     if (cuda_load_functions(&e->cu, NULL) < 0 || nvenc_load_functions(&e->nv, NULL) < 0) {
         set_err(err, errlen, "driver NVIDIA (CUDA/NVENC) não encontrado", 0);
-        hwenc_close(e);
+        nvenc_close(e);
         return NULL;
     }
     uint32_t max_ver = 0;
@@ -102,7 +104,7 @@ hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, 
         ((max_ver >> 4) < NVENCAPI_MAJOR_VERSION ||
          ((max_ver >> 4) == NVENCAPI_MAJOR_VERSION && (max_ver & 0xf) < NVENCAPI_MINOR_VERSION))) {
         set_err(err, errlen, "driver NVIDIA antigo demais pro NVENC (precisa 470+)", (int)max_ver);
-        hwenc_close(e);
+        nvenc_close(e);
         return NULL;
     }
 
@@ -112,7 +114,7 @@ hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, 
     if (cr == CUDA_SUCCESS) cr = e->cu->cuCtxCreate(&e->ctx, 0, dev);
     if (cr != CUDA_SUCCESS) {
         set_err(err, errlen, "não consegui iniciar o CUDA", (int)cr);
-        hwenc_close(e);
+        nvenc_close(e);
         return NULL;
     }
 
@@ -120,7 +122,7 @@ hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, 
     NVENCSTATUS st = e->nv->NvEncodeAPICreateInstance(&e->api);
     if (st != NV_ENC_SUCCESS) {
         set_err(err, errlen, "NvEncodeAPICreateInstance falhou", st);
-        hwenc_close(e);
+        nvenc_close(e);
         return NULL;
     }
 
@@ -133,7 +135,7 @@ hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, 
     if (st != NV_ENC_SUCCESS) {
         e->enc = NULL;
         set_err(err, errlen, "a placa não abriu uma sessão NVENC", st);
-        hwenc_close(e);
+        nvenc_close(e);
         return NULL;
     }
 
@@ -151,7 +153,7 @@ hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, 
     st = e->api.nvEncGetEncodePresetConfigEx(e->enc, NV_ENC_CODEC_H264_GUID, preset, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY, &pc);
     if (st != NV_ENC_SUCCESS) {
         set_err(err, errlen, "preset do NVENC indisponível", st);
-        hwenc_close(e);
+        nvenc_close(e);
         return NULL;
     }
     e->cfg = pc.presetCfg;
@@ -194,13 +196,13 @@ hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, 
     ip->maxEncodeHeight = (uint32_t)height;
     ip->frameRateNum = (uint32_t)(fps > 0 ? fps : 30);
     ip->frameRateDen = 1;
-    ip->enablePTD = e->layers == 1; // com 2 camadas, quem decide o tipo do quadro é o hwenc_encode
+    ip->enablePTD = e->layers == 1; // com 2 camadas, quem decide o tipo do quadro é o nvenc_encode
     ip->enableEncodeAsync = 0;
     ip->encodeConfig = &e->cfg;
     st = e->api.nvEncInitializeEncoder(e->enc, ip);
     if (st != NV_ENC_SUCCESS) {
         set_err(err, errlen, "NVENC recusou a configuração (resolução grande demais?)", st);
-        hwenc_close(e);
+        nvenc_close(e);
         return NULL;
     }
 
@@ -212,7 +214,7 @@ hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, 
     st = e->api.nvEncCreateInputBuffer(e->enc, &ib);
     if (st != NV_ENC_SUCCESS) {
         set_err(err, errlen, "NVENC: falha ao criar buffer de entrada", st);
-        hwenc_close(e);
+        nvenc_close(e);
         return NULL;
     }
     e->input = ib.inputBuffer;
@@ -222,14 +224,14 @@ hwenc *hwenc_open(int width, int height, int fps, int bitrate, int screen_mode, 
     st = e->api.nvEncCreateBitstreamBuffer(e->enc, &bb);
     if (st != NV_ENC_SUCCESS) {
         set_err(err, errlen, "NVENC: falha ao criar buffer de saída", st);
-        hwenc_close(e);
+        nvenc_close(e);
         return NULL;
     }
     e->output = bb.bitstreamBuffer;
     return e;
 }
 
-int hwenc_encode(hwenc *e, const uint8_t *pixels, int stride, int format, int force_idr,
+int nvenc_encode(nvenc *e, const uint8_t *pixels, int stride, int format, int force_idr,
                  const uint8_t **out, int *out_len, int *is_idr) {
     // copia o quadro pro buffer de entrada (memória visível pela GPU)
     NV_ENC_LOCK_INPUT_BUFFER li = {0};
@@ -301,12 +303,12 @@ int hwenc_encode(hwenc *e, const uint8_t *pixels, int stride, int format, int fo
     return 0;
 }
 
-void hwenc_set_bitrate(hwenc *e, int bitrate) {
+void nvenc_set_bitrate(nvenc *e, int bitrate) {
     configure_rc(e, bitrate);
     reconfigure(e);
 }
 
-const char *hwenc_name(hwenc *e) {
+const char *nvenc_name(nvenc *e) {
     (void)e;
     return "NVENC";
 }
