@@ -17,6 +17,7 @@
 
 - **Salas** — alguém cria (ou sobe um [servidor dedicado](docs/DEPLOY.md)), a galera entra com endereço + senha ou com um **convite** `telinha://…`.
 - **Várias transmissões ao mesmo tempo**, em grade que se ajusta pra deixar os vídeos o maior possível; destaque, tela cheia e modo cinema.
+- **Áudio do computador junto** (vídeo, jogo, música), em Opus com pouca latência, com volume e mudo por transmissão. No Windows o som que o próprio telinha toca não entra na captura, então não tem eco.
 - **Chat**, lista de membros, quem está ao vivo, quem está assistindo quem, ping.
 - **H.264 com pouca latência**: encode e decode na **placa de vídeo (NVIDIA NVENC/NVDEC)** quando tem, senão **openh264** com SIMD em várias threads. Só manda quadro quando a tela muda; a conversão de cor de quem assiste roda num shader na GPU.
 - **Banda adaptativa**: se a internet de alguém não aguenta, a taxa cai e quadros são pulados em vez de acumular atraso; quando melhora, volta a subir.
@@ -98,7 +99,7 @@ Pra binários que rodam em qualquer CPU x86-64 (como no CI): `zig build -Dcpu=x8
 --fps N --qualidade N --modo tela|jogo --software
 --estatisticas        estatísticas sempre visíveis
 ```
-`TELINHA_DEBUG=1` imprime o tempo de cada etapa do pipeline. `TELINHA_SEM_SHADER=1` força a conversão de cor na CPU; `TELINHA_CURSOR_EMBUTIDO=1` deixa o compositor desenhar o cursor (Hyprland).
+`TELINHA_DEBUG=1` imprime o tempo de cada etapa do pipeline. `TELINHA_SEM_SHADER=1` força a conversão de cor na CPU; `TELINHA_CURSOR_EMBUTIDO=1` deixa o compositor desenhar o cursor (Hyprland); `TELINHA_SEM_SOM=1` não toca o áudio recebido.
 </details>
 
 ## Documentação

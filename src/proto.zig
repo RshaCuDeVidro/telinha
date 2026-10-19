@@ -8,7 +8,7 @@ const sync = @import("sync.zig");
 const net = @import("net.zig");
 const crypto = @import("crypto.zig");
 
-pub const version: u16 = 3;
+pub const version: u16 = 4;
 pub const max_msg = 32 * 1024 * 1024;
 /// Marcador em claro no lugar do tamanho: "senha errada" (o servidor não
 /// conseguiu decifrar a primeira mensagem).
@@ -21,7 +21,7 @@ pub const Type = enum(u8) {
     denied = 3, // S→C str motivo
     members = 4, // S→C u16 n, n×{u32 id, str nome, u8 flags, u16 w, u16 h, u8 fps, u16 k, k×u32 assistindo}
     chat = 5, // C→S str texto | S→C u32 de (0 = sistema), str nome, str texto
-    stream_start = 6, // C→S u16 w, u16 h, u8 fps
+    stream_start = 6, // C→S u16 w, u16 h, u8 fps, u8 flags (1 = com áudio)
     stream_stop = 7, // C→S
     frame = 8, // C→S frame | S→C u32 de + frame
     watch = 9, // C→S u32 alvo, u8 ligado
@@ -29,11 +29,18 @@ pub const Type = enum(u8) {
     ping = 11, // C→S u64 t
     pong = 12, // S→C u64 t, u64 relógio_do_servidor_us
     kick = 13, // C→S u32 alvo (só admin)
+    audio = 14, // C→S áudio | S→C u32 de + áudio
     _,
 };
 
 pub const member_streaming: u8 = 1;
 pub const member_admin: u8 = 2;
+pub const member_audio: u8 = 4;
+
+/// Payload de áudio: u32 seq, u64 hora_da_captura (relógio da sala, µs),
+/// pacote Opus (48 kHz estéreo, 10 ms) até o fim.
+pub const audio_header_len = 4 + 8;
+pub const stream_audio: u8 = 1;
 
 /// Payload de frame: u32 seq, u8 flags, u64 hora_da_captura (relógio do
 /// servidor, µs), u16 w, u16 h, bitstream H.264 (Annex B) até o fim.

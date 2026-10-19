@@ -220,3 +220,60 @@ test "sala: espectador lento perde o atraso e recebe IDR de novo" {
     // o servidor tem que pedir outro IDR
     _ = try streamer.expect(.keyreq);
 }
+
+test "sala: áudio chega em quem assiste, com o remetente certo" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+
+    var streamer = try TestClient.connect(port, "T", "", "");
+    defer streamer.close();
+    try streamer.welcome();
+    var viewer = try TestClient.connect(port, "E", "", "");
+    defer viewer.close();
+    try viewer.welcome();
+
+    var b: proto.Builder = .{};
+    defer b.deinit();
+    try b.begin(.stream_start);
+    try b.u16_(64);
+    try b.u16_(64);
+    try b.u8_(30);
+    try b.u8_(proto.stream_audio);
+    try streamer.send(try b.finish());
+    try b.begin(.watch);
+    try b.u32_(streamer.id);
+    try b.u8_(1);
+    try viewer.send(try b.finish());
+
+    // a lista de membros marca que a transmissão tem áudio
+    while (true) {
+        var r: proto.Reader = .{ .data = try viewer.expect(.members) };
+        const n = try r.u16_();
+        var found = false;
+        for (0..n) |_| {
+            const id = try r.u32_();
+            _ = try r.str();
+            const flags = try r.u8_();
+            _ = try r.take(2 + 2 + 1);
+            const k = try r.u16_();
+            _ = try r.take(@as(usize, k) * 4);
+            if (id == streamer.id and flags & proto.member_audio != 0) found = true;
+        }
+        if (found) break;
+    }
+
+    const opus_fake = [_]u8{ 0xfc, 1, 2, 3, 4, 5, 6, 7 };
+    const m = try proto.Msg.alloc(.audio, proto.audio_header_len + opus_fake.len);
+    std.mem.writeInt(u32, m.payload()[0..4], 7, .little);
+    std.mem.writeInt(u64, m.payload()[4..12], 123, .little);
+    @memcpy(m.payload()[12..], &opus_fake);
+    try streamer.send(m);
+
+    var r: proto.Reader = .{ .data = try viewer.expect(.audio) };
+    try testing.expectEqual(streamer.id, try r.u32_());
+    try testing.expectEqual(@as(u32, 7), try r.u32_());
+    try testing.expectEqual(@as(u64, 123), try r.u64_());
+    try testing.expectEqualSlices(u8, &opus_fake, r.rest());
+}

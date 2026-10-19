@@ -31,6 +31,8 @@
 | `src/c/hwenc_nvenc.c` | encoder em hardware NVIDIA (API NVENC 11.1, carregada em runtime) |
 | `src/c/hwdec_nvdec.c` | decoder em hardware NVIDIA (NVDEC/nvcuvid, carregado em runtime) |
 | `src/gl.zig` | texturas e conversão YUV→RGB num shader |
+| `src/audio.zig` | áudio: Opus de quem transmite, anel anti-oscilação e mixer de quem assiste |
+| `src/c/audio.c` | captura do som do computador e saída (miniaudio) |
 | `src/crypto.zig` | handshake X25519 e canal ChaCha20-Poly1305 |
 | `src/proto.zig` | mensagens, filas de envio, framing |
 | `src/net.zig` | sockets (POSIX/Winsock) |
@@ -92,6 +94,14 @@ Hyprland e desenha a seta no quadro.
 dispara tentativas automáticas com espera crescente; ao voltar, a transmissão
 recomeça e quem você assistia volta pra tela (procurado pelo nome, já que os
 ids mudam se o servidor reiniciou).
+
+**Áudio.** Quem transmite captura o som do computador (WASAPI loopback
+excluindo o próprio processo no Windows; monitor da saída padrão no Linux) e
+manda pacotes Opus de 10 ms com DTX (silêncio quase não gasta banda). Quem
+assiste guarda 50 ms por transmissão antes de tocar, pula pra frente se o
+atraso passar de 200 ms e soma tudo numa saída só. No Linux, enquanto você
+transmite áudio, o que você assiste fica mudo (a captura escutaria o próprio
+app e viraria eco).
 
 **UI que dorme.** O loop usa `glfwWaitEventsTimeout`; threads de rede e decode
 acordam a UI com `glfwPostEmptyEvent` quando há quadro novo. Sem transmissão,

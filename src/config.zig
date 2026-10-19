@@ -29,6 +29,7 @@ pub const Config = struct {
     show_chat: bool = true,
     stats_always: bool = false,
     hardware: bool = true, // encoder na placa de vídeo (NVENC) quando der
+    audio: bool = true, // compartilhar o som do computador junto
     admin_token: [65]u8 = zstr("", 65), // pra entrar como admin num servidor dedicado
     public_addr: [256]u8 = zstr("", 256), // endereço do túnel (pra montar o convite)
 };
@@ -112,6 +113,7 @@ pub fn save(cfg: *const Config) void {
         \\mode={d}
         \\stats_always={d}
         \\hardware={d}
+        \\audio={d}
         \\admin_token={s}
         \\public_addr={s}
         \\
@@ -119,7 +121,8 @@ pub fn save(cfg: *const Config) void {
         getStr(&cfg.name),              getStr(&cfg.join_addr),     getStr(&cfg.join_pass),      getStr(&cfg.room_name),
         getStr(&cfg.host_pass),         cfg.host_port,              cfg.fps,                     cfg.quality,
         cfg.resolution,                 @intFromBool(cfg.cursor),   @intFromBool(cfg.show_chat), cfg.mode,
-        @intFromBool(cfg.stats_always), @intFromBool(cfg.hardware), getStr(&cfg.admin_token),    getStr(&cfg.public_addr),
+        @intFromBool(cfg.stats_always), @intFromBool(cfg.hardware), @intFromBool(cfg.audio),     getStr(&cfg.admin_token),
+        getStr(&cfg.public_addr),
     }) catch return;
     _ = c.fwrite(s.ptr, 1, s.len, f);
 }

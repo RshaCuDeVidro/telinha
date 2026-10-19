@@ -15,6 +15,7 @@ const std = @import("std");
 const sync = @import("sync.zig");
 const proto = @import("proto.zig");
 const codec = @import("codec.zig");
+const audio = @import("audio.zig");
 const Client = @import("client.zig").Client;
 const c = @cImport(@cInclude("capture.h"));
 const gpa = proto.gpa;
@@ -69,6 +70,7 @@ pub const Settings = struct {
     cursor: bool = true,
     mode: codec.Mode = .screen,
     hardware: bool = true, // tenta NVENC antes do encoder em software
+    audio: bool = true, // compartilha o som do computador
 };
 
 /// Taxa de bits alvo pra uma resolução/fps/qualidade.
@@ -157,6 +159,8 @@ pub const Sharer = struct {
     bitrate_kbps: u32 = 0,
     congested: bool = false,
     encoder_name: []const u8 = "",
+    audio_on: bool = false, // capturando o som do computador
+    audio_err: [160]u8 = [_]u8{0} ** 160, // por que o áudio não deu (vazio = deu certo ou não pediu)
     w: u32 = 0,
     h: u32 = 0,
     // pré-visualização: buffer de trás preenchido pela captura, trocado com o da frente
@@ -283,6 +287,8 @@ const Pipeline = struct {
     timing: Timing = .{},
     /// Encoder em hardware em uso? Decidido no início; vira false se o NVENC falhar.
     use_hw: std.atomic.Value(bool) = .init(false),
+    audio_sender: ?*audio.Sender = null,
+    audio_seq: u32 = 0,
     fps_gen: u32 = 0, // muda quando fps/modo/qualidade mudam (encoder recria)
     fps: u32 = 30,
     quality: u8 = 60,
@@ -293,6 +299,7 @@ const Pipeline = struct {
     }
 
     fn deinit(p: *Pipeline) void {
+        if (p.audio_sender) |a| a.destroy();
         if (p.cap) |cp| c.cap_close(cp);
         gpa.free(p.cur);
         gpa.free(p.prev);
@@ -317,6 +324,19 @@ const Pipeline = struct {
         }
         const b = std.mem.span(c.cap_backend(p.cap));
         p.event_driven = std.mem.eql(u8, b, "PipeWire") or std.mem.eql(u8, b, "DXGI");
+        if (p.settings.audio) {
+            var err: [160]u8 = undefined;
+            if (audio.Sender.create(p, onAudioPacket, &err)) |a| {
+                p.audio_sender = a;
+            } else |_| {
+                s.mutex.lock();
+                @memcpy(&s.audio_err, &err);
+                s.mutex.unlock();
+            }
+            s.mutex.lock();
+            s.audio_on = p.audio_sender != null;
+            s.mutex.unlock();
+        }
         s.mutex.lock();
         s.backend_len = @min(b.len, s.backend.len);
         @memcpy(s.backend[0..s.backend_len], b[0..s.backend_len]);
@@ -661,7 +681,7 @@ const Pipeline = struct {
                 s.w = sl.w;
                 s.h = sl.h;
                 s.mutex.unlock();
-                announce(s, sl.w, sl.h, fps);
+                announce(s, sl.w, sl.h, fps, p.audio_sender != null);
             }
             bw.rampUp(&enc.?);
 
@@ -725,12 +745,27 @@ const Pipeline = struct {
         if (encoded) p.last = idx;
     }
 
-    fn announce(s: *Sharer, w: u32, h: u32, fps: u32) void {
-        const m = proto.Msg.alloc(.stream_start, 5) catch return;
+    fn announce(s: *Sharer, w: u32, h: u32, fps: u32, with_audio: bool) void {
+        const m = proto.Msg.alloc(.stream_start, 6) catch return;
         const pl = m.payload();
         std.mem.writeInt(u16, pl[0..2], @intCast(w), .little);
         std.mem.writeInt(u16, pl[2..4], @intCast(h), .little);
         pl[4] = @intCast(fps);
+        pl[5] = if (with_audio) proto.stream_audio else 0;
+        s.client.queue.pushOwned(m);
+    }
+
+    /// Pacote Opus pronto (thread de áudio): manda pra sala com a hora da captura.
+    fn onAudioPacket(ctx: *anyopaque, packet: []const u8) void {
+        const p: *Pipeline = @ptrCast(@alignCast(ctx));
+        const s = p.s;
+        const m = proto.Msg.alloc(.audio, proto.audio_header_len + packet.len) catch return;
+        const pl = m.payload();
+        std.mem.writeInt(u32, pl[0..4], p.audio_seq, .little);
+        p.audio_seq +%= 1;
+        // o pacote cobre os últimos 10 ms: a captura foi ~10 ms atrás
+        std.mem.writeInt(u64, pl[4..12], s.client.serverNowUs() -| 10_000, .little);
+        @memcpy(pl[12..], packet);
         s.client.queue.pushOwned(m);
     }
 };

@@ -1,4 +1,4 @@
-# Protocolo (versão 3)
+# Protocolo (versão 4)
 
 Tudo vai sobre **uma conexão TCP** por pessoa, cliente → servidor da sala.
 Inteiros são little-endian. `str` = `u16` tamanho + bytes UTF-8.
@@ -10,7 +10,7 @@ Os dois lados mandam, ao mesmo tempo, 54 bytes:
 | campo | tamanho | |
 |---|---|---|
 | `"TLNH"` | 4 | identifica o protocolo |
-| versão | u16 | hoje `3` |
+| versão | u16 | hoje `4` |
 | chave pública X25519 | 32 | efêmera, nova a cada conexão |
 | nonce | 16 | aleatório |
 
@@ -48,7 +48,7 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 4 | members | S→C | `u16 n`, n × membro (abaixo) |
 | 5 | chat | C→S | `str texto` |
 | 5 | chat | S→C | `u32 de` (0 = sistema), `str nome`, `str texto` |
-| 6 | stream_start | C→S | `u16 w`, `u16 h`, `u8 fps` |
+| 6 | stream_start | C→S | `u16 w`, `u16 h`, `u8 fps`, `u8 flags` (1 = com áudio) |
 | 7 | stream_stop | C→S | — |
 | 8 | frame | C→S | frame (abaixo) |
 | 8 | frame | S→C | `u32 de`, frame |
@@ -57,13 +57,18 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 11 | ping | C→S | `u64 t` |
 | 12 | pong | S→C | `u64 t` (eco), `u64 relógio_µs` |
 | 13 | kick | C→S | `u32 alvo` (só admin) |
+| 14 | audio | C→S | áudio (abaixo) |
+| 14 | audio | S→C | `u32 de`, áudio |
 
-**Membro:** `u32 id`, `str nome`, `u8 flags` (1 = ao vivo, 2 = admin),
+**Membro:** `u32 id`, `str nome`, `u8 flags` (1 = ao vivo, 2 = admin, 4 = transmitindo com áudio),
 `u16 w`, `u16 h`, `u8 fps`, `u16 k`, k × `u32` (ids que essa pessoa assiste).
 
 **Frame:** `u32 seq`, `u8 flags` (1 = IDR), `u64 hora_da_captura` (relógio da
 sala, µs), `u16 w`, `u16 h`, bitstream H.264 Annex B até o fim. Todo IDR leva
-SPS/PPS.
+SPS/PPS (perfil Baseline).
+
+**Áudio:** `u32 seq`, `u64 hora_da_captura`, pacote Opus até o fim
+(48 kHz, estéreo, 10 ms por pacote, ~96 kbit/s).
 
 ## 3. Regras do servidor
 
@@ -73,6 +78,8 @@ SPS/PPS.
 - Se a fila de envio de um espectador passa de 3 MiB, os frames pendentes dele
   são descartados, ele volta a esperar um IDR e o transmissor recebe `keyreq`
   (no máximo um a cada 500 ms). Assim um espectador lento nunca atrasa os outros.
+- Áudio vai pra quem assiste o transmissor, sem esperar IDR; só é descartado
+  se a fila do espectador passar de 6 MiB.
 - Nomes repetidos ganham sufixo: `Ana (2)`.
 
 ## 4. Relógio e latência

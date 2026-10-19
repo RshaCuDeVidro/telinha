@@ -7,6 +7,7 @@ const proto = @import("proto.zig");
 const crypto = @import("crypto.zig");
 const codec = @import("codec.zig");
 const gl = @import("gl.zig");
+const audio = @import("audio.zig");
 const gpa = proto.gpa;
 
 /// A UI liga isso quando o shader de YUV→RGB compilou: aí a thread de decode
@@ -34,6 +35,7 @@ pub const Member = struct {
     name_len: usize,
     streaming: bool,
     admin: bool,
+    audio: bool,
     w: u16,
     h: u16,
     fps: u8,
@@ -97,14 +99,26 @@ pub const View = struct {
     stat_bytes: u64 = 0,
     stat_since: u64 = 0,
 
+    // áudio (a thread de rede decodifica, o mixer toca)
+    audio_ring: audio.Ring = .{},
+    audio_dec: ?audio.Decoder = null,
+    audio_registered: bool = false,
+
     // GPU (só a thread da UI mexe)
     yuv: gl.YuvRenderer.Target = .{},
     tex: u32 = 0,
     tex_w: u32 = 0,
     tex_h: u32 = 0,
 
+    fn retain(v: *View) *View {
+        _ = v.refs.fetchAdd(1, .monotonic);
+        return v;
+    }
+
     pub fn release(v: *View) void {
         if (v.refs.fetchSub(1, .acq_rel) == 1) {
+            if (v.audio_dec) |*d| d.deinit();
+            v.audio_ring.deinit();
             for (v.frames.items) |f| gpa.free(f);
             v.frames.deinit(gpa);
             gpa.free(v.pixels);
@@ -147,6 +161,22 @@ pub const View = struct {
         v.stop = true;
         v.qcond.broadcast();
         v.qmutex.unlock();
+        // depois de `stop`, ninguém mais registra no mixer; tira se já estava
+        audio.mixer.remove(&v.audio_ring);
+    }
+
+    /// Pacote Opus recebido (thread de rede).
+    fn pushAudio(v: *View, packet: []const u8) void {
+        v.qmutex.lock();
+        defer v.qmutex.unlock();
+        if (v.stop) return;
+        if (v.audio_dec == null) v.audio_dec = audio.Decoder.init() catch return;
+        const pcm = v.audio_dec.?.decode(packet) catch return;
+        v.audio_ring.write(pcm);
+        if (!v.audio_registered) {
+            v.audio_registered = true;
+            audio.mixer.add(&v.audio_ring);
+        }
     }
 
     /// Decoder em uso: NVDEC (placa NVIDIA) ou openh264.
@@ -560,6 +590,7 @@ pub const Client = struct {
                     const flags = try r.u8_();
                     m.streaming = flags & proto.member_streaming != 0;
                     m.admin = flags & proto.member_admin != 0;
+                    m.audio = flags & proto.member_audio != 0;
                     m.w = try r.u16_();
                     m.h = try r.u16_();
                     m.fps = try r.u8_();
@@ -597,13 +628,16 @@ pub const Client = struct {
                 cl.chat_count += 1;
             },
             .frame => {
-                const from = try r.u32_();
-                cl.mutex.lock();
-                const view: ?*View = for (cl.views.items) |v| {
-                    if (v.owner == from) break v;
-                } else null;
-                cl.mutex.unlock();
-                if (view) |v| v.enqueue(try gpa.dupe(u8, r.rest()));
+                const v = cl.viewRetained(try r.u32_()) orelse return;
+                defer v.release();
+                v.enqueue(try gpa.dupe(u8, r.rest()));
+            },
+            .audio => {
+                const v = cl.viewRetained(try r.u32_()) orelse return;
+                defer v.release();
+                _ = try r.u32_(); // seq
+                _ = try r.u64_(); // hora da captura
+                v.pushAudio(r.rest());
             },
             .keyreq => cl.keyreq.store(true, .release),
             .pong => {
@@ -634,6 +668,15 @@ pub const Client = struct {
         const m = proto.Msg.alloc(.kick, 4) catch return;
         std.mem.writeInt(u32, m.payload()[0..4], target, .little);
         cl.queue.pushOwned(m);
+    }
+
+    /// Acha a view de um transmissor e segura uma referência (a UI pode parar
+    /// de assistir a qualquer momento).
+    fn viewRetained(cl: *Client, owner: u32) ?*View {
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        for (cl.views.items) |v| if (v.owner == owner) return v.retain();
+        return null;
     }
 
     pub fn findView(cl: *Client, owner: u32) ?*View {

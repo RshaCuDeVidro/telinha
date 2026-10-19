@@ -8,6 +8,7 @@ Reescrita completa.
 - Qualquer pessoa da sala transmite e assiste; Linux ↔ Windows nos dois sentidos.
 - Vídeo H.264: NVIDIA NVENC/NVDEC quando disponível, openh264 (SIMD, multithread) como alternativa; conversão de cor de quem assiste num shader.
 - Reconexão automática com retomada da transmissão e de quem você assistia.
+- Áudio do computador junto com a tela (Opus, 10 ms, volume e mudo por transmissão).
 - Pipeline em duas threads (captura ∥ encode), controle de banda adaptativo, descarte de atraso por espectador.
 - Criptografia X25519 + ChaCha20-Poly1305 com a senha da sala na derivação das chaves.
 - Captura: PipeWire/xdg-desktop-portal (Wayland), X11, DXGI (Windows); no Hyprland o cursor é desenhado pelo telinha pra não deixar o mouse com lag.

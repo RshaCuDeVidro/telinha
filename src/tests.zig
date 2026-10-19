@@ -5,6 +5,7 @@ const sync = @import("sync.zig");
 const codec = @import("codec.zig");
 const crypto = @import("crypto.zig");
 const proto = @import("proto.zig");
+const audio = @import("audio.zig");
 
 test {
     _ = @import("integration_test.zig");
@@ -138,6 +139,59 @@ test "NVENC: um IDR sozinho já vira imagem (sem atraso de reordenação)" {
         const pic = (try dec.decode(out.items)) orelse return error.DecoderHeldFrame;
         try testing.expectEqual(@as(u32, w), pic.w);
     }
+}
+
+test "Opus: codifica e decodifica 10 ms de áudio" {
+    var err: c_int = 0;
+    const enc = audio.c.opus_encoder_create(audio.rate, audio.channels, audio.c.OPUS_APPLICATION_RESTRICTED_LOWDELAY, &err) orelse return error.OpusInit;
+    defer audio.c.opus_encoder_destroy(enc);
+    var dec = try audio.Decoder.init();
+    defer dec.deinit();
+    var pcm: [audio.frame_len * audio.channels]f32 = undefined;
+    var got: usize = 0;
+    var packet: [1500]u8 = undefined;
+    for (0..10) |f| {
+        for (0..audio.frame_len) |i| {
+            const t: f32 = @floatFromInt(f * audio.frame_len + i);
+            const v = 0.5 * @sin(t * 2.0 * std.math.pi * 440.0 / 48000.0);
+            pcm[i * 2] = v;
+            pcm[i * 2 + 1] = v;
+        }
+        const n = audio.c.opus_encode_float(enc, &pcm, audio.frame_len, &packet, packet.len);
+        try testing.expect(n > 0);
+        const out = try dec.decode(packet[0..@intCast(n)]);
+        try testing.expectEqual(@as(usize, audio.frame_len * audio.channels), out.len);
+        got += out.len;
+    }
+    try testing.expectEqual(@as(usize, 10 * audio.frame_len * audio.channels), got);
+}
+
+test "anel de áudio: espera encher, toca e não acumula atraso" {
+    var rg: audio.Ring = .{};
+    defer rg.deinit();
+    var chunk = [_]f32{0.25} ** (audio.frame_len * audio.channels); // 10 ms
+    var out = [_]f32{0} ** (audio.frame_len * audio.channels);
+
+    rg.write(&chunk); // 10 ms guardados: ainda não toca (buffer anti-oscilação)
+    rg.mixInto(&out, 1.0);
+    try testing.expectEqual(@as(f32, 0), out[0]);
+
+    for (0..5) |_| rg.write(&chunk); // 60 ms: começa a tocar
+    rg.mixInto(&out, 1.0);
+    try testing.expectApproxEqAbs(@as(f32, 0.25), out[0], 1e-6);
+
+    // consome tudo: no fim faltou áudio, então volta a esperar encher
+    for (0..10) |_| {
+        @memset(&out, 0);
+        rg.mixInto(&out, 1.0);
+    }
+    try testing.expect(!rg.primed);
+
+    // a rede despejou 400 ms de uma vez: pula pra frente e fica perto do alvo
+    for (0..40) |_| rg.write(&chunk);
+    @memset(&out, 0);
+    rg.mixInto(&out, 1.0);
+    try testing.expect(rg.len <= audio.target_samples);
 }
 
 test "detecta IDR no bitstream" {

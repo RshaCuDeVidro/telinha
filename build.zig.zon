@@ -4,6 +4,16 @@
     .fingerprint = 0x1246c121a5fafab1,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
+        .miniaudio = .{
+            .url = "https://github.com/mackron/miniaudio/archive/refs/tags/0.11.25.tar.gz",
+            .hash = "N-V-__8AAHNWwAASlNuYbrP1-3UqXdwbYvZ_6nIJhpAcRMfi",
+            .lazy = true,
+        },
+        .opus = .{
+            .url = "https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz",
+            .hash = "N-V-__8AAAmivwH7RvCrZo25NNu0lx2Sw-ogZhmqGXvorlHg",
+            .lazy = true,
+        },
         .nv_codec_headers = .{
             .url = "https://github.com/FFmpeg/nv-codec-headers/archive/refs/tags/n11.1.5.3.tar.gz",
             .hash = "N-V-__8AAHnKBQD2coquOXXuAjl2p5EEQ5IH36AWJTOUDbP5",

@@ -11,6 +11,7 @@ const Member = client_mod.Member;
 const Server = @import("server.zig").Server;
 const sharer_mod = @import("sharer.zig");
 const proto = @import("proto.zig");
+const audio = @import("audio.zig");
 pub const version_string = "2.0.0";
 const Sharer = sharer_mod.Sharer;
 
@@ -98,6 +99,8 @@ const ic = struct {
     const ban = &iconArr(0xF05E);
     const chev_down = &iconArr(0xF078);
     const chev_up = &iconArr(0xF077);
+    const volume = &iconArr(0xF028);
+    const volume_off = &iconArr(0xF6A9);
     const warn = &iconArr(0xF071);
 };
 
@@ -339,6 +342,8 @@ pub const App = struct {
     room_admin_token: [33]u8 = [_]u8{0} ** 33, // gerado ao criar a sala
     menu_target: u32 = 0, // membro do menu de contexto (expulsar)
     open_member_menu: bool = false,
+
+    audio_err_shown: bool = false,
 
     // opções de linha de comando
     auto_share: bool = false,
@@ -605,6 +610,7 @@ pub const App = struct {
             .cursor = a.cfg.cursor,
             .mode = if (a.cfg.mode == 1) .motion else .screen,
             .hardware = a.cfg.hardware,
+            .audio = a.cfg.audio,
         };
     }
 
@@ -624,6 +630,8 @@ pub const App = struct {
     }
 
     fn stopSharing(a: *App) void {
+        audio.mixer.self_mute.store(false, .monotonic);
+        a.audio_err_shown = false;
         if (a.sharer) |s| {
             gl.delete(&s.preview_tex);
             s.stop();
@@ -778,7 +786,15 @@ pub const App = struct {
         if (a.sharer) |s| {
             s.mutex.lock();
             const sst = s.state;
+            const audio_on = s.audio_on;
+            var audio_err: [160]u8 = s.audio_err;
             s.mutex.unlock();
+            // no Linux a captura escuta o próprio app: silencia o que você assiste (sem eco)
+            audio.mixer.self_mute.store(audio_on and audio.captureHearsSelf(), .monotonic);
+            if (!a.audio_err_shown and audio_err[0] != 0) {
+                a.audio_err_shown = true;
+                a.toast("Transmitindo sem áudio: {s}", .{std.mem.sliceTo(&audio_err, 0)}, true);
+            }
             if (sst == .failed) {
                 a.toast("A transmissão parou: {s}", .{s.errSlice()}, true);
                 a.stopSharing();
@@ -1139,7 +1155,10 @@ pub const App = struct {
         for (all) |*o| {
             if (o.isWatching(m.id)) viewers += 1;
         }
-        const info = fmtZ("{d}x{d} · {d} fps · {s} {d}", .{ m.w, m.h, m.fps, ic.eye, viewers });
+        const info = if (m.audio)
+            fmtZ("{d}x{d} · {d} fps · {s} · {s} {d}", .{ m.w, m.h, m.fps, ic.volume, ic.eye, viewers })
+        else
+            fmtZ("{d}x{d} · {d} fps · {s} {d}", .{ m.w, m.h, m.fps, ic.eye, viewers });
         drawTextF(d, font_regular, 11.5, v2(p.x + S(46), p.y + S(27)), col.muted, info);
         // tooltip: ação + quem está assistindo
         var tip_buf: [320]u8 = undefined;
@@ -1293,6 +1312,7 @@ pub const App = struct {
         name: []const u8,
         stats: [:0]const u8,
         loading: bool,
+        ring: ?*audio.Ring = null, // áudio dessa transmissão (null = sem áudio / minha prévia)
     };
 
     fn drawMain(a: *App, cl: *Client, size: c.ImVec2_c) void {
@@ -1317,7 +1337,7 @@ pub const App = struct {
                 if (m.id == v.owner) break m.nameSlice();
             } else "?";
             const st = std.fmt.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d:.0} KB/s · {s}", .{ v.tex_w, v.tex_h, v.fps, v.kbps, latencyText(&lat_bufs[n], v) }) catch "";
-            tiles[n] = .{ .owner = v.owner, .tex = v.tex, .tw = v.tex_w, .th = v.tex_h, .name = name, .stats = st, .loading = v.tex == 0 };
+            tiles[n] = .{ .owner = v.owner, .tex = v.tex, .tw = v.tex_w, .th = v.tex_h, .name = name, .stats = st, .loading = v.tex == 0, .ring = if (v.audio_registered) &v.audio_ring else null };
             n += 1;
         }
         cl.mutex.unlock();
@@ -1514,9 +1534,35 @@ pub const App = struct {
             } else if (clicked and !big) {
                 a.focused = t.owner;
             }
+            // volume dessa transmissão (canto de baixo)
+            if (t.ring) |rg| {
+                const vh = S(30);
+                const vw = S(150);
+                const vx = x + w - vw - S(10);
+                const vy = y + h - vh - S(10);
+                rectFill(d, vx, vy, vx + vw, vy + vh, col.overlay, S(6));
+                c.igSetCursorScreenPos(v2(vx + S(2), vy));
+                if (iconButton("##mute", if (rg.muted) ic.volume_off else ic.volume, vh, if (rg.muted) col.red else col.white, rgba(0xFFFFFF, 30), if (rg.muted) "Ativar som" else "Silenciar")) rg.muted = !rg.muted;
+                c.igSameLine(0, S(4));
+                c.igSetCursorScreenPos(v2(vx + vh + S(6), vy + S(7)));
+                c.igSetNextItemWidth(vw - vh - S(14));
+                c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, rgba(0xFFFFFF, 30));
+                c.igPushStyleColor_U32(c.ImGuiCol_FrameBgHovered, rgba(0xFFFFFF, 45));
+                c.igPushStyleColor_U32(c.ImGuiCol_FrameBgActive, rgba(0xFFFFFF, 45));
+                c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(4), S(2)));
+                var vol_pct: f32 = rg.volume * 100;
+                if (c.igSliderFloat("##vol", &vol_pct, 0, 200, "%.0f%%", 0)) rg.volume = vol_pct / 100;
+                c.igPopStyleVar(1);
+                c.igPopStyleColor(3);
+            }
             c.igSetCursorScreenPos(save);
             c.igDummy(v2(0, 0));
             c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), rgba(0xFFFFFF, 40), round, S(1.5), 0);
+        }
+        // contorno verde enquanto a transmissão está tocando som (tipo "falando" do Discord)
+        if (t.ring) |rg| {
+            if (!rg.muted and rg.level > 0.02) c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), rgba(0x23A55A, 200), round, S(2.5), 0);
+            rg.level *= 0.92;
         }
     }
 
@@ -1839,7 +1885,15 @@ pub const App = struct {
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         c.igPushStyleColor_U32(c.ImGuiCol_CheckMark, col.white);
         _ = c.igCheckbox("Mostrar o cursor do mouse", &a.cfg.cursor);
+        _ = c.igCheckbox("Compartilhar o áudio do computador", &a.cfg.audio);
         _ = c.igCheckbox("Usar a placa de vídeo (NVIDIA NVENC/NVDEC), se tiver", &a.cfg.hardware);
+        if (a.cfg.audio and audio.captureHearsSelf()) {
+            c.igPushTextWrapPos(c.igGetCursorPosX() + w);
+            pushFont(font_regular, 12);
+            textColored(col.faint, "Enquanto você compartilha o áudio, o som das transmissões que você assiste fica mudo (no Linux ele voltaria em eco).");
+            popFont();
+            c.igPopTextWrapPos();
+        }
         c.igPopStyleColor(2);
 
         if (!sync.is_windows and a.n_sources > 0 and std.mem.startsWith(u8, std.mem.sliceTo(&a.sources[0].name, 0), "Escolher")) {

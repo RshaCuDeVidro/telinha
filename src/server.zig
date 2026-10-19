@@ -27,6 +27,7 @@ const Conn = struct {
     authed: bool = false,
     admin: bool = false,
     streaming: bool = false,
+    audio: bool = false,
     w: u16 = 0,
     h: u16 = 0,
     fps: u8 = 0,
@@ -226,10 +227,12 @@ pub const Server = struct {
                 const w = try r.u16_();
                 const h = try r.u16_();
                 const fps = try r.u8_();
+                const flags: u8 = r.u8_() catch 0;
                 s.mutex.lock();
                 defer s.mutex.unlock();
                 const was = cn.streaming;
                 cn.streaming = true;
+                cn.audio = flags & proto.stream_audio != 0;
                 cn.w = w;
                 cn.h = h;
                 cn.fps = fps;
@@ -249,12 +252,14 @@ pub const Server = struct {
                 defer s.mutex.unlock();
                 if (cn.streaming) {
                     cn.streaming = false;
+                    cn.audio = false;
                     for (s.conns.items) |o| o.queue.dropFrames(cn.id);
                     s.log("{s} parou de transmitir", .{cn.nameSlice()});
                     try s.broadcastMembers();
                 }
             },
             .frame => try s.forwardFrame(cn, payload),
+            .audio => try s.forwardAudio(cn, payload),
             .watch => {
                 const target = try r.u32_();
                 const on = (try r.u8_()) != 0;
@@ -403,6 +408,7 @@ pub const Server = struct {
             var flags: u8 = 0;
             if (o.streaming) flags |= proto.member_streaming;
             if (o.admin) flags |= proto.member_admin;
+            if (o.streaming and o.audio) flags |= proto.member_audio;
             try b.u8_(flags);
             try b.u16_(o.w);
             try b.u16_(o.h);
@@ -425,6 +431,25 @@ pub const Server = struct {
             o.last_keyreq_ms = now;
             o.queue.pushOwned(proto.simple(.keyreq) catch return);
             return;
+        }
+    }
+
+    /// Áudio vai pra quem assiste; não espera IDR e só é descartado se a fila
+    /// do espectador estiver muito atrasada (som picotado é melhor que atraso).
+    fn forwardAudio(s: *Server, cn: *Conn, payload: []const u8) !void {
+        if (payload.len < proto.audio_header_len) return error.BadMessage;
+        const m = try proto.Msg.alloc(.audio, 4 + payload.len);
+        defer m.release();
+        m.from = cn.id;
+        std.mem.writeInt(u32, m.payload()[0..4], cn.id, .little);
+        @memcpy(m.payload()[4..], payload);
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        for (s.conns.items) |o| {
+            if (o == cn or !contains(&o.watching, cn.id)) continue;
+            if (o.queue.queuedBytes() > max_viewer_backlog * 2) continue;
+            o.queue.push(m);
+            _ = s.relayed_bytes.fetchAdd(m.data.len, .monotonic);
         }
     }
 
