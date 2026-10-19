@@ -177,6 +177,259 @@ def camera():
         conv.wait(lambda st: not any(v["stream"] == cam for v in st["views"]), 10, "o quadro da câmera sumir pro convidado")
 
 
+@test
+def tela_inicial():
+    """Tela inicial: abas, campos, opções avançadas, erros de endereço/porta, criar sala."""
+    with Session("inicio") as s:
+        a = s.app("a", 91, [])
+        a.wait(lambda st: st["screen"] == "home", 10, "a tela inicial")
+        a.fill("##name", "Testador")
+        a.wait(lambda st: st["cfg"]["name"] == "Testador", 3, "o nome mudar")
+        # entrar sem endereço / com endereço sem porta / porta fechada
+        a.fill("##addr", "")
+        a.click("Entrar##go")
+        a.wait(lambda st: "porta" in st["home_error"], 3, "pedir o endereço com a porta")
+        a.fill("##addr", "127.0.0.1:1")
+        a.click("Entrar##go")
+        a.wait(lambda st: st["screen"] == "home" and "recusada" in st["home_error"], 10, "conexão recusada")
+        # convite colado no campo de endereço: separa senha
+        a.fill("##addr", "telinha://127.0.0.1:1#segredo")
+        a.click("Entrar##go")
+        a.wait(lambda st: st["cfg"]["join_pass"] == "segredo" and st["cfg"]["join_addr"] == "127.0.0.1:1", 10, "o convite virar endereço + senha")
+        # opções avançadas
+        a.click("##adv")
+        a.wait(lambda st: st["show_advanced"], 3, "abrir as opções avançadas")
+        a.find("##tok")
+        a.click("##adv")
+        a.wait(lambda st: not st["show_advanced"], 3, "fechar as opções avançadas")
+        # aba criar sala
+        a.click("Criar sala")
+        a.wait(lambda st: st["home_tab"] == 1, 3, "a aba criar sala")
+        a.fill("##room", "Sala QA")
+        a.fill("##port", "abc")
+        a.click("Criar sala##go")
+        a.wait(lambda st: "inválida" in st["home_error"], 3, "porta inválida")
+        p = port()
+        a.fill("##port", str(p))
+        a.fill("##hpass", "s3nha")
+        a.click("Criar sala##go")
+        st = a.wait(lambda st: st["screen"] == "room" and st["status"] == "connected", 10, "a sala abrir")
+        expect(st["hosting"] and st["room"] == "Sala QA" and st["admin"], f"sala errada: {st['room']}")
+        expect(st["cfg"]["host_pass"] == "s3nha", "senha não guardada")
+
+
+@test
+def sala_controles():
+    """Sala: convite, chat (Enter e botão), esconder/mostrar chat, surdo, configurações, compartilhar tela, assistir pela barra lateral e pelo card, modo cinema, F11."""
+    with Session("controles") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--senha", "pw1"])
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}", "--senha", "pw1"])
+        bid = b.wait(lambda st: st["status"] == "connected", 10, "o Bruno entrar")["my_id"]
+        aid = b.member_id("Ana")
+        # convite: quem hospeda sem link público é avisado; quem entrou copia o endereço que usou
+        a.click("##invite")
+        a.toasted("link público")
+        b.click("##invite")
+        b.wait(lambda st: st["clipboard"] == f"telinha://127.0.0.1:{p}#pw1", 3, "o convite na área de transferência")
+        # chat: Enter e o botão de enviar
+        b.click("##chatin")
+        b.type("ola sala\n")
+        a.wait(lambda st: any(c["text"] == "ola sala" and c["from"] == bid for c in st["chat"]), 5, "a mensagem chegar (Enter)")
+        b.type("segunda")
+        b.click("##send")
+        a.wait(lambda st: any(c["text"] == "segunda" for c in st["chat"]), 5, "a mensagem chegar (botão)")
+        b.wait(lambda st: st["chat_input"] == "", 3, "a caixa esvaziar")
+        # esconder e mostrar o chat
+        b.click("##hidechat")
+        b.wait(lambda st: not st["chat_visible"] and not st["cfg"]["show_chat"], 3, "esconder o chat")
+        a.click("##chatin")
+        a.type("enquanto escondido\n")
+        b.wait(lambda st: st["chat_unread"] >= 1, 5, "contar mensagem não lida")
+        b.click("##showchat")
+        b.wait(lambda st: st["chat_visible"] and st["chat_unread"] == 0, 3, "mostrar o chat")
+        # surdo
+        b.click("##deaf")
+        b.wait(lambda st: st["deaf"], 3, "ficar surdo")
+        a.wait(lambda st: any(m["id"] == bid and m["flags"] & 16 for m in st["members"]), 5, "a sala ver o surdo")
+        b.click("##deaf")
+        b.wait(lambda st: not st["deaf"], 3, "voltar a ouvir")
+        # configurações
+        b.click("##gear")
+        b.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        before = b.state()["cfg"]
+        for label, key in [("Mostrar estatísticas sempre", "stats_always"), ("Sons de aviso", "sounds"),
+                           ("Entrar na sala com o microfone ligado", "mic_on_join"), ("Supressão de ruído", "noise_suppression"),
+                           ("Cancelamento de eco", "echo_cancellation")]:
+            b.click(contains=label)
+            b.wait(lambda st, k=key, v=before[key]: st["cfg"][k] != v, 3, f"marcar {label}")
+        b.drag("##sens", 0.5, 0.9)
+        b.wait(lambda st: st["cfg"]["voice_sensitivity"] > 70, 3, "a sensibilidade subir")
+        b.fill("##sname", "Bruno2")
+        b.click("Fechar", window="Configura")
+        b.wait(lambda st: not st["settings_modal"] and st["cfg"]["name"] == "Bruno2", 3, "fechar as configurações")
+        ini = open(os.path.join(b.cfg, "telinha", "config.ini")).read()
+        expect("name=Bruno2" in ini and "stats_always=1" in ini, "configuração não foi salva no arquivo")
+        # compartilhar tela: modal, opções, cancelar, ao vivo, aplicar, parar
+        a.click(contains="Compartilhar tela##share")
+        a.wait(lambda st: st["share_modal"], 3, "abrir o compartilhar tela")
+        a.click("Jogo e vídeo")
+        a.click("720p")
+        a.click("15")
+        a.wait(lambda st: st["cfg"]["mode"] == 1 and st["cfg"]["resolution"] == 2 and st["cfg"]["fps"] == 15, 3, "as opções mudarem")
+        a.drag("##q", 0.5, 0.95)
+        a.wait(lambda st: st["cfg"]["quality"] > 85, 3, "a qualidade subir")
+        c0 = a.state()["cfg"]
+        a.click(contains="Mostrar o cursor")
+        a.click(contains="Compartilhar o áudio")
+        a.click(contains="Usar a placa de vídeo")
+        a.wait(lambda st: st["cfg"]["cursor"] != c0["cursor"] and st["cfg"]["audio"] != c0["audio"] and st["cfg"]["hardware"] != c0["hardware"], 3, "as caixas de marcar")
+        a.click("Cancelar", window="Compartilhar")
+        a.wait(lambda st: not st["share_modal"] and st["sharer"] is None, 3, "cancelar sem transmitir")
+        a.click(contains="Compartilhar tela##share")
+        a.click(contains="Ao vivo", window="Compartilhar")
+        a.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 15, "ficar ao vivo")
+        a.click(contains="Ao vivo (configurar)##share")
+        a.click("Aplicar")
+        a.toasted("Configurações aplicadas")
+        # Bruno assiste pela barra lateral e para; depois pelo card
+        b.click("live")
+        b.wait(lambda st: any(v["stream"] == aid for v in st["views"]), 5, "assistir pela barra lateral")
+        b.click("live")
+        b.wait(lambda st: not st["views"], 5, "parar de assistir pela barra lateral")
+        b.click("card")
+        b.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 15, "assistir pelo card")
+        # modo cinema (duplo clique) e Esc
+        tile = b.tile(aid)
+        b.click_at(*[int(x) for x in (b.items()[0][0] + (tile[0] + tile[2]) / 2, b.items()[0][1] + (tile[1] + tile[3]) / 2)], double=True)
+        b.wait(lambda st: st["theater"] and st["fullscreen"], 3, "modo cinema")
+        b.key("Escape")
+        b.wait(lambda st: not st["theater"] and not st["fullscreen"], 3, "sair do modo cinema")
+        b.key("F11")
+        b.wait(lambda st: st["fullscreen"], 3, "tela cheia (F11)")
+        b.key("F11")
+        b.wait(lambda st: not st["fullscreen"], 3, "sair da tela cheia")
+        # volume da voz de alguém, só pra mim
+        b.click_rect(b.member_row(aid), button=3)
+        b.click(contains="Silenciar pra mim")
+        b.wait(lambda st: any(m["id"] == aid and m["voice_volume"] == 0 for m in st["members"]), 3, "silenciar a voz da Ana pra mim")
+        b.click_rect(b.member_row(aid), button=3)
+        b.click(contains="Voltar a ouvir")
+        b.wait(lambda st: any(m["id"] == aid and m["voice_volume"] == 1 for m in st["members"]), 3, "voltar a ouvir a Ana")
+        # parar a transmissão pelo modal
+        a.click(contains="Ao vivo (configurar)##share")
+        a.click("Parar")
+        a.wait(lambda st: st["sharer"] is None, 5, "parar de transmitir")
+        b.wait(lambda st: not st["views"], 5, "o Bruno parar de ver a Ana")
+
+
+@test
+def upnp_e_tunel_proprio():
+    """Card 'galera de fora': porta no roteador (roteador de mentira), túnel próprio (copiar comandos e convite), link público que falha."""
+    with Session("upnp") as s:
+        udp, http = port(), port()
+        s.spawn("igd", [sys.executable, os.path.join(os.path.dirname(__file__), "mockigd.py"), str(udp), str(http), os.path.join(s.base, "igd.log")], dict(os.environ))
+        time.sleep(0.5)
+        p, dead = port(), port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--senha", "pw2"], extra_env={"TELINHA_UPNP_SSDP": f"127.0.0.1:{udp}"},
+                  config={"tunnel_host": f"127.0.0.1:{dead}"})
+        a.wait(lambda st: st["status"] == "connected", 10, "entrar")
+        a.click(contains="Abrir porta no roteador")
+        st = a.wait(lambda st: st["upnp"] and st["upnp"]["state"] == "ready", 10, "o roteador abrir a porta")
+        expect(st["upnp"]["addr"] == f"203.0.113.7:{p}", f"endereço errado: {st['upnp']}")
+        a.click(contains="Copiar convite##upnp")
+        a.wait(lambda st: st["clipboard"] == f"telinha://203.0.113.7:{p}#pw2", 3, "o convite com o IP de fora")
+        a.click(contains="Fechar porta")
+        a.wait(lambda st: st["upnp"] is None, 3, "fechar a porta")
+        time.sleep(1)
+        expect("DeletePortMapping" in open(os.path.join(s.base, "igd.log")).read(), "a porta não foi fechada no roteador")
+        # link público com o servidor do túnel fora do ar: falha, tenta de novo, fecha
+        a.click(contains="Criar link público")
+        a.wait(lambda st: st["tunnel"] and st["tunnel"]["state"] == "failed", 10, "o link público falhar")
+        a.click(contains="Tentar de novo")
+        a.wait(lambda st: st["tunnel"] is not None, 3, "tentar de novo")
+        a.wait(lambda st: st["tunnel"]["state"] == "failed", 10, "falhar de novo")
+        a.click("Fechar##tunel")
+        a.wait(lambda st: st["tunnel"] is None, 3, "fechar o aviso")
+        # túnel próprio: comandos e convite com o endereço digitado
+        a.click("##own")
+        a.wait(lambda st: st["own_tunnel_open"], 3, "abrir o túnel próprio")
+        a.click("##cp")
+        a.wait(lambda st: st["clipboard"].startswith("ngrok tcp ") or st["clipboard"].startswith("bore ") or st["clipboard"].startswith("ssh "), 3, "copiar um comando")
+        a.fill("##pub", "0.tcp.sa.ngrok.io:12345")
+        a.click(contains="Copiar convite##proprio")
+        a.wait(lambda st: st["clipboard"] == "telinha://0.tcp.sa.ngrok.io:12345#pw2", 3, "o convite do túnel próprio")
+
+
+@test
+def reconexao():
+    """Servidor dedicado cai e volta: o app reconecta sozinho; 'Tentar agora' e 'Sair' na tela de queda."""
+    import subprocess
+    from telinha_qa import SERVER
+    with Session("reconexao") as s:
+        p = port()
+        srv = s.spawn("srv", [SERVER, "-p", str(p), "-n", "Dedicado"], dict(os.environ))
+        time.sleep(0.5)
+        a = s.app("a", 91, ["--nome", "Ana", "--entrar", f"127.0.0.1:{p}"])
+        a.wait(lambda st: st["status"] == "connected", 10, "entrar")
+        s.stop_proc(srv)
+        a.wait(lambda st: st["reconnect"]["attempt"] >= 1, 10, "começar a reconectar")
+        a.click("Tentar agora")
+        a.wait(lambda st: st["reconnect"]["attempt"] >= 2, 10, "tentar de novo na hora")
+        s.spawn("srv2", [SERVER, "-p", str(p), "-n", "Dedicado"], dict(os.environ))
+        a.wait(lambda st: st["status"] == "connected" and st["reconnect"]["attempt"] == 0, 30, "reconectar sozinho")
+        a.toasted("Reconectado")
+        # cai de novo e a pessoa desiste
+        for name, pr in list(s.procs):
+            if name == "srv2":
+                s.stop_proc(pr)
+        a.wait(lambda st: st["reconnect"]["waiting"], 10, "esperar a próxima tentativa")
+        a.click("Sair")
+        a.wait(lambda st: st["screen"] == "home", 5, "voltar pro início")
+
+
+@test
+def conectando_cancelar():
+    """'Conectando...' numa sala que não responde: Cancelar volta pro início."""
+    import socket
+    with Session("conectando") as s:
+        p = port()
+        ls = socket.socket()
+        ls.bind(("127.0.0.1", p))
+        ls.listen(5)  # aceita a conexão e nunca responde
+        try:
+            a = s.app("a", 91, ["--nome", "Ana", "--entrar", f"127.0.0.1:{p}"])
+            a.wait(lambda st: st["status"] == "connecting", 5, "ficar conectando")
+            time.sleep(1)
+            a.click("Cancelar")
+            a.wait(lambda st: st["screen"] == "home", 5, "cancelar")
+        finally:
+            ls.close()
+
+
+@test
+def microfone():
+    """Microfone (no áudio privado, entrada de mentira): botão, Ctrl+M, Ctrl+D, a sala vê o estado."""
+    with Session("microfone", audio=True) as s:
+        s.fake_mic()
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)])
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}"])
+        aid = a.wait(lambda st: st["status"] == "connected", 10, "entrar")["my_id"]
+        b.wait(lambda st: st["status"] == "connected", 10, "o Bruno entrar")
+        a.click("##mic")
+        a.wait(lambda st: st["mic"], 5, "ligar o microfone")
+        b.wait(lambda st: any(m["id"] == aid and m["flags"] & 8 for m in st["members"]), 5, "a sala ver o microfone ligado")
+        a.key("m", ctrl=True)
+        a.wait(lambda st: not st["mic"], 3, "Ctrl+M desligar")
+        a.key("m", ctrl=True)
+        a.wait(lambda st: st["mic"], 3, "Ctrl+M ligar")
+        a.key("d", ctrl=True)
+        a.wait(lambda st: st["deaf"] and not st["mic"], 3, "Ctrl+D surdo (desliga o microfone)")
+        a.click("##mic")
+        a.wait(lambda st: not st["deaf"] and st["mic"], 3, "ligar o microfone tira o surdo")
+
+
 # ---------------------------------------------------------------------------
 
 

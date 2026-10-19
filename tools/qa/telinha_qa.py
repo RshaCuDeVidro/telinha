@@ -185,6 +185,14 @@ class Session:
             w.writeframes(bytes(frames))
         return self.spawn(name, ["pw-play", path], self.audio_env({}))
 
+    def fake_mic(self, name="mic-mudo"):
+        """Um microfone de mentira (fonte virtual silenciosa) no áudio privado."""
+        subprocess.run(["pw-cli", "create-node", "adapter",
+                        f"{{ factory.name=support.null-audio-sink node.name={name} node.description=\"Microfone de teste\" "
+                        "media.class=Audio/Source/Virtual object.linger=true audio.position=[MONO] }"],
+                       env=self.audio_env({}), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        time.sleep(0.5)
+
     def fake_camera(self, name="camfake", desc="Camera de teste"):
         """Uma câmera de mentira (padrão de teste do PipeWire) no áudio privado."""
         r = subprocess.run(["pw-cli", "create-node", "adapter",
@@ -239,9 +247,15 @@ class App:
             base = self.s.audio_env({})
         else:
             base = {k: os.environ[k] for k in ("HOME", "PATH", "USER", "LANG") if k in os.environ}
+        # ALSA sem dispositivo de verdade: se algum caminho cair pro ALSA
+        # direto (sem PulseAudio), ele acha um "default" nulo, nunca o
+        # microfone ou a caixa de som da máquina
+        alsa = os.path.join(self.dir, "alsa.conf")
+        with open(alsa, "w") as f:
+            f.write("pcm.!default { type null }\nctl.!default { type hw card 999 }\n")
         base.update({
             "DISPLAY": f":{self.num}", "XDG_SESSION_TYPE": "x11", "TELINHA_QA": self.qa_dir,
-            "XDG_CONFIG_HOME": self.cfg, "TELINHA_SEM_SOM": "1",
+            "XDG_CONFIG_HOME": self.cfg, "TELINHA_SEM_SOM": "1", "ALSA_CONFIG_PATH": alsa,
         })
         if not self.audio:
             # sem áudio isolado: o app não pode achar o PipeWire de verdade
@@ -483,6 +497,17 @@ class App:
             self.d.sync()
             time.sleep(0.03)
         time.sleep(0.1)
+
+    def fill(self, label, text):
+        """Clica num campo de texto, apaga o que tinha e digita."""
+        self.click(label)
+        self.key("a", ctrl=True)
+        self.key("BackSpace")
+        if text:
+            self.type(text)
+
+    def toasted(self, text, timeout=5.0):
+        return self.wait(lambda st: any(text in t for t in st["toasts"]), timeout, f"o aviso '{text}'")
 
     def screenshot(self, path):
         env = dict(os.environ, DISPLAY=f":{self.num}")

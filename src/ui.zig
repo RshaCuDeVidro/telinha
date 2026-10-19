@@ -1325,7 +1325,7 @@ pub const App = struct {
                 if (textField("##tok", "deixe vazio se não souber o que é", &a.cfg.admin_token, inner, true)) go = true;
             }
             c.igDummy(v2(0, S(14)));
-            if (primaryButton("Entrar", v2(inner, S(44)), col.blurple, col.blurple_hover, col.blurple_active)) go = true;
+            if (primaryButton("Entrar##go", v2(inner, S(44)), col.blurple, col.blurple_hover, col.blurple_active)) go = true;
             if (go) a.joinRoom();
         } else {
             fieldLabel("NOME DA SALA");
@@ -1342,7 +1342,7 @@ pub const App = struct {
             if (textField("##hpass", "vazio = sem senha", &a.cfg.host_pass, half, true)) go = true;
             c.igSetCursorScreenPos(after);
             c.igDummy(v2(0, S(18)));
-            if (primaryButton("Criar sala", v2(inner, S(44)), col.green, rgb(0x1A8B4C), rgb(0x15703D))) go = true;
+            if (primaryButton("Criar sala##go", v2(inner, S(44)), col.green, rgb(0x1A8B4C), rgb(0x15703D))) go = true;
             c.igDummy(v2(0, S(10)));
             c.igPushTextWrapPos(c.igGetCursorPosX() + inner);
             pushFont(font_regular, 13);
@@ -2898,6 +2898,22 @@ pub const App = struct {
         try w.print(",\"mic\":{},\"deaf\":{},\"share_modal\":{},\"settings_modal\":{},\"theater\":{},\"fullscreen\":{}", .{ a.mic != null, a.deaf, a.share_modal, a.settings_modal, a.theater, a.fullscreen });
         if (a.focused) |f| try w.print(",\"focused\":{d}", .{f}) else try w.writeAll(",\"focused\":null");
         try w.print(",\"reconnect\":{{\"attempt\":{d},\"waiting\":{}}}", .{ a.reconnect.attempt, a.reconnect.waiting });
+        try w.print(",\"home_tab\":{d},\"show_advanced\":{},\"own_tunnel_open\":{},\"chat_visible\":{},\"side_visible\":{},\"chat_unread\":{d}", .{
+            a.home_tab, a.show_advanced, a.own_tunnel_open, a.chat_visible, a.side_visible, a.chat_unread,
+        });
+        const cf = &a.cfg;
+        try w.print(",\"cfg\":{{\"name\":{f},\"join_addr\":{f},\"join_pass\":{f},\"room_name\":{f},\"host_pass\":{f},\"port\":{f},\"public_addr\":{f}", .{
+            s(config.getStr(&cf.name)), s(config.getStr(&cf.join_addr)), s(config.getStr(&cf.join_pass)), s(config.getStr(&cf.room_name)),
+            s(config.getStr(&cf.host_pass)), s(std.mem.sliceTo(&a.port_buf, 0)), s(config.getStr(&cf.public_addr)),
+        });
+        try w.print(",\"fps\":{d},\"quality\":{d},\"mode\":{d},\"resolution\":{d},\"cursor\":{},\"audio\":{},\"hardware\":{},\"stats_always\":{},\"show_chat\":{}", .{
+            cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.stats_always, cf.show_chat,
+        });
+        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d}}}", .{
+            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res,
+        });
+        const clip: [*c]const u8 = c.glfwGetClipboardString(a.window);
+        try w.print(",\"clipboard\":{f},\"chat_input\":{f}", .{ s(if (clip != null) std.mem.span(clip) else ""), s(std.mem.sliceTo(&a.chat_input, 0)) });
         try w.print(",\"hosting\":{},\"leave_confirm\":{},\"admin_muted\":{}", .{ a.server != null, a.leave_confirm, a.admin_muted });
         if (a.camera) |cam| {
             cam.mutex.lock();
@@ -2962,8 +2978,9 @@ pub const App = struct {
             try w.writeAll(",\"members\":[");
             for (cl.members.items, 0..) |*m, i| {
                 if (i > 0) try w.writeByte(',');
-                try w.print("{{\"id\":{d},\"name\":{f},\"flags\":{d},\"streaming\":{},\"camera\":{},\"admin\":{},\"owner\":{},\"muted\":{},\"route\":{d},\"audio\":{},\"w\":{d},\"h\":{d},\"watching\":[", .{
-                    m.id, s(m.nameSlice()), m.flags, m.streaming, m.camera(), m.admin, m.owner, m.muted(), m.route, m.audio, m.w, m.h,
+                const vv = cl.voice_volumes.get(m.id) orelse 1.0;
+                try w.print("{{\"id\":{d},\"name\":{f},\"flags\":{d},\"streaming\":{},\"camera\":{},\"admin\":{},\"owner\":{},\"muted\":{},\"route\":{d},\"audio\":{},\"w\":{d},\"h\":{d},\"voice_volume\":{d:.2},\"watching\":[", .{
+                    m.id, s(m.nameSlice()), m.flags, m.streaming, m.camera(), m.admin, m.owner, m.muted(), m.route, m.audio, m.w, m.h, vv,
                 });
                 for (m.watching[0..m.n_watching], 0..) |id, k| {
                     if (k > 0) try w.writeByte(',');
