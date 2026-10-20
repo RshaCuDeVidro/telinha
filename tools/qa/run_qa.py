@@ -1136,6 +1136,51 @@ def temas():
 
 
 @test
+def qualidade_automatica():
+    """PC lento (encoder de mentira lento): a transmissão desce a resolução sozinha até dar conta do fps e avisa; desligando nas configurações, volta pra escolhida."""
+    with Session("autoq") as s:
+        p = port()
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"], extra_env={"TELINHA_ENCODE_LENTO": "100"})
+        bia = s.app("bia", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        aid = bia.member_id("Ana")
+        bia.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "a Bia ver a Ana")
+        st = ana.wait(lambda st: st["sharer"] and st["sharer"]["auto_cap"] == 540 and st["sharer"]["h"] == 540, 40, "a resolução descer até 540p")
+        ana.toasted("transmitindo em")
+        log(f"transmitindo: {st['sharer']['w']}x{st['sharer']['h']} a {st['sharer']['fps']} q/s")
+        bia.wait(lambda st: any(v["stream"] == aid and v["h"] == 540 for v in st["views"]), 10, "a Bia ver em 540p")
+        # em 540p o encode cabe no tempo de um quadro: para de descer
+        # (o fps aqui não serve de medida: a tela de teste só muda a 15 q/s)
+        time.sleep(8)
+        st = ana.state()["sharer"]
+        expect(st["auto_cap"] == 540 and st["h"] == 540, f"não ficou em 540p: {st}")
+        # desliga a qualidade automática: volta pra resolução da tela
+        ana.click("##gear")
+        ana.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        ana.click("##cfg-desempenho")
+        ana.click("##autoq")
+        ana.wait(lambda st: not st["cfg"]["auto_quality"], 3, "desligar a qualidade automática")
+        settings_click(ana, "Fechar")
+        ana.wait(lambda st: st["sharer"]["auto_cap"] == 0 and st["sharer"]["h"] > 540, 15, "voltar pra resolução original")
+
+
+@test
+def testar_pc():
+    """Testar meu PC (Configurações → Desempenho): roda, mostra o resultado e 'Usar a sugestão' muda a configuração da transmissão."""
+    with Session("pctest") as s:
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(port())], config={"resolution": "0", "fps": "60", "name": "Ana"})
+        a.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
+        a.click("##gear")
+        a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        a.click("##cfg-desempenho")
+        a.click("##pctest")
+        a.wait(lambda st: st["pctest"] == "done", 60, "o teste do PC terminar")
+        settings_click(a, "##pcuse")
+        st = a.wait(lambda st: st["cfg"]["resolution_idx"] != 0, 3, "usar a sugestão")
+        log(f"sugestão aplicada: resolução {st['cfg']['resolution_idx']}, {st['cfg']['fps']} q/s, placa={st['cfg']['hardware']}")
+        a.toasted("próxima transmissão")
+
+
+@test
 def windows_exe():
     """O telinha.exe (wine isolado): entra, assiste, lista janelas, compartilha só uma janela e a câmera avisa que não tem."""
     import subprocess

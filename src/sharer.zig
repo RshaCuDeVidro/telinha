@@ -84,6 +84,7 @@ pub const Settings = struct {
     audio_pid: u32 = 0, // ou desse processo e filhos (a janela compartilhada)
     audio_exclude: [512]u8 = [_]u8{0} ** 512, // "tudo" menos esses programas (nomes separados por \n)
     clips: bool = true, // guarda os últimos 30 s (clipe da própria transmissão)
+    auto_quality: bool = true, // baixa a resolução sozinho se o PC não der conta do fps
     kind: u8 = proto.kind_screen, // tela ou câmera (não muda com a transmissão rolando)
 };
 
@@ -96,6 +97,25 @@ pub fn targetBitrate(w: u32, h: u32, fps: u32, quality: u8) u32 {
 }
 
 /// Tamanho de saída respeitando o limite de altura (dimensões pares).
+const autoq = @import("autoq.zig");
+
+/// Teste (TELINHA_ENCODE_LENTO=ms): o encode demora esses ms a mais num
+/// quadro 1080p (proporcional aos pixels), como num PC fraco.
+fn slowEncodeUs(w: u32, h: u32) ?u64 {
+    const S = struct {
+        var ms: ?u64 = null;
+        var read = false;
+    };
+    if (!S.read) {
+        S.read = true;
+        if (std.c.getenv("TELINHA_ENCODE_LENTO")) |v| S.ms = std.fmt.parseInt(u64, std.mem.span(v), 10) catch null;
+    }
+    const ms = S.ms orelse return null;
+    return ms * 1000 * w * h / (1920 * 1080);
+}
+pub const effectiveHeight = autoq.effectiveHeight;
+pub const AutoQuality = autoq.AutoQuality;
+
 pub fn outputSize(sw: u32, sh: u32, max_height: u32) struct { w: u32, h: u32 } {
     var ow = sw;
     var oh = sh;
@@ -198,6 +218,10 @@ pub const Sharer = struct {
     /// Ninguém assistindo e sem gravação: o encoder está parado (a captura
     /// cai pra 5 q/s, só pra prévia e pra ter quadro na hora que alguém entrar).
     idle: std.atomic.Value(bool) = .init(false),
+    /// Qualidade automática: altura máxima que ela impôs (0 = nenhuma) e de
+    /// quanto era antes (pra avisar quem transmite).
+    auto_cap: std.atomic.Value(u32) = .init(0),
+    auto_from: std.atomic.Value(u32) = .init(0),
     preview_tex: u32 = 0, // só a UI mexe
     /// Os últimos ~30 s do que codificamos (clipe) e a gravação. null = sem clipes.
     clip: ?*clip.Buffer = null,
@@ -353,6 +377,9 @@ const Pipeline = struct {
     /// Tempo médio de um encode (µs): a captura não vai mais rápido que isso
     /// (quadro capturado e convertido que o encoder não pega é trabalho jogado fora).
     enc_ema_us: std.atomic.Value(u64) = .init(0),
+    ing_ema_us: u64 = 0, // conversão/escala por quadro (µs), só a thread de captura
+    src_h: u32 = 0, // altura da fonte (o último quadro capturado)
+    auto: AutoQuality = .{},
     /// Encoder em hardware em uso? Decidido no início; vira false se o NVENC falhar.
     use_hw: std.atomic.Value(bool) = .init(false),
     hevc_ok: bool = false, // a placa codifica HEVC (testado no começo)
@@ -364,6 +391,23 @@ const Pipeline = struct {
     fps: u32 = 30,
     quality: u8 = 60,
     mode: codec.Mode = .screen,
+
+    fn autoQuality(p: *Pipeline, now: u64) void {
+        const s = p.s;
+        if (!p.settings.auto_quality or s.idle.load(.acquire) or p.h == 0) {
+            if (p.auto.cap != 0 and !p.settings.auto_quality) {
+                p.auto.cap = 0;
+                s.auto_cap.store(0, .release);
+            }
+            return;
+        }
+        const before = p.auto.cap;
+        const load = @max(p.enc_ema_us.load(.monotonic), p.ing_ema_us);
+        if (!p.auto.step(now, load, p.settings.fps, p.h, p.settings.max_height, p.src_h)) return;
+        s.auto_from.store(if (before != 0) before else p.h, .release);
+        s.auto_cap.store(p.auto.cap, .release);
+        if (debugEnabled()) std.debug.print("[telinha] qualidade automática: {d}p -> {s}{d} (encode {d:.1} ms, captura {d:.1} ms, fps {d})\n", .{ p.h, if (p.auto.cap == 0) "sem teto, " else "", p.auto.cap, @as(f32, @floatFromInt(p.enc_ema_us.load(.monotonic))) / 1000, @as(f32, @floatFromInt(p.ing_ema_us)) / 1000, p.settings.fps });
+    }
 
     fn errSlice(p: *Pipeline) []const u8 {
         return std.mem.sliceTo(&p.err, 0);
@@ -533,7 +577,11 @@ const Pipeline = struct {
             const t_ing = sync.nowUs();
             try p.ingest(&f);
             _ = p.timing.capture.fetchAdd(t_ing - t_cap, .monotonic);
-            _ = p.timing.ingest.fetchAdd(sync.nowUs() - t_ing, .monotonic);
+            const t_end = sync.nowUs();
+            _ = p.timing.ingest.fetchAdd(t_end - t_ing, .monotonic);
+            const ing = t_end - t_ing; // só a conversão: a espera pelo quadro (compositor) não é trabalho
+            p.ing_ema_us = if (p.ing_ema_us == 0) ing else (p.ing_ema_us * 7 + ing) / 8;
+            p.autoQuality(t_end);
             _ = p.timing.captured.fetchAdd(1, .monotonic);
             if (!p.event_driven) {
                 // captura por polling: pula quadro idêntico ao anterior
@@ -694,7 +742,7 @@ const Pipeline = struct {
     fn ingest(p: *Pipeline, f: *const c.cap_frame) !void {
         const sw: u32 = @intCast(f.width);
         const sh: u32 = @intCast(f.height);
-        const size = outputSize(sw, sh, p.settings.max_height);
+        const size = outputSize(sw, sh, effectiveHeight(p.settings.max_height, p.auto.cap));
         // sem escala e altura/largura ímpar: corta 1 linha/coluna (o H.264 quer pares)
         const exact = size.h == (sh & ~@as(u32, 1)) and size.w == (sw & ~@as(u32, 1));
         const ow = size.w;
@@ -716,6 +764,7 @@ const Pipeline = struct {
         p.fmt = fmt;
         p.w = ow;
         p.h = oh;
+        p.src_h = sh;
 
         const bands: u32 = @intCast(@max(1, @min(sync.pool.threads + 1, 16)));
         const ctx: ScaleCtx = .{
@@ -896,6 +945,7 @@ const Pipeline = struct {
             if (bw.takeChange()) |b| enc.?.setBitrate(b);
 
             const t0 = sync.nowUs();
+            if (slowEncodeUs(sl.w, sl.h)) |us| sync.sleepMs(@intCast(us / 1000)); // teste: PC lento
             out.clearRetainingCapacity();
             const is_key = enc.?.encode(sl, key, &out) catch |e| blk: {
                 if (enc.? != .hw) return e;

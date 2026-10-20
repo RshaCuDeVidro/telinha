@@ -532,6 +532,31 @@ const table = [_][2][]const u8{
     .{ "telinha {s}", "telinha {s}" },
     .{ "protocolo v{d} · vídeo H.264 (NVENC/NVDEC, Media Foundation ou openh264) · voz Opus + RNNoise + SpeexDSP · criptografia X25519 + ChaCha20-Poly1305", "protocol v{d} · H.264 video (NVENC/NVDEC, Media Foundation or openh264) · Opus voice + RNNoise + SpeexDSP · X25519 + ChaCha20-Poly1305 encryption" },
 
+    // qualidade automática e teste do PC
+    .{ "O PC não estava dando conta de {d}p no fps escolhido: transmitindo em {d}p (volta sozinho quando folgar).", "Your PC couldn't keep up with {d}p at the chosen fps: streaming at {d}p (goes back up on its own when there's headroom)." },
+    .{ "Folgou: a transmissão voltou pra resolução escolhida.", "Headroom is back: the stream returned to the chosen resolution." },
+
+    .{ "Desempenho", "Performance" },
+    .{ "Qualidade automática: baixa a resolução sozinho se o PC não der conta do fps", "Automatic quality: lowers the resolution by itself if the PC can't keep up with the fps" },
+    .{ "Quando a transmissão não consegue manter o fps escolhido, desce um degrau (1080p → 900p → 720p...) e volta sozinha quando sobrar folga.", "When the stream can't keep the chosen fps, it steps down (1080p → 900p → 720p...) and goes back up on its own when there's headroom." },
+    .{ "TESTAR MEU PC", "TEST MY PC" },
+    .{ "Uns segundos medindo quanto esse computador aguenta pra transmitir e pra assistir, e a configuração sugerida.", "A few seconds measuring how much this computer handles for streaming and watching, plus the suggested settings." },
+    .{ "{s}  Testar meu PC", "{s}  Test my PC" },
+    .{ "Pare de transmitir pra testar (o teste usa o processador todo por uns segundos).", "Stop streaming to run the test (it uses the whole processor for a few seconds)." },
+    .{ "Testando... {d}%", "Testing... {d}%" },
+    .{ "O teste não conseguiu rodar.", "The test couldn't run." },
+    .{ "Transmitir na CPU (openh264): 1080p {d:.1} ms por quadro · 720p {d:.1} ms", "Streaming on the CPU (openh264): 1080p {d:.1} ms per frame · 720p {d:.1} ms" },
+    .{ "Transmitir na placa ({s}): 1080p {d:.1} ms por quadro", "Streaming on the GPU ({s}): 1080p {d:.1} ms per frame" },
+    .{ "Transmitir na placa: esse PC não tem encoder de vídeo que o telinha use.", "Streaming on the GPU: this PC has no video encoder telinha can use." },
+    .{ "Assistir 1080p: CPU {d:.1} ms por quadro · placa ({s}) {d:.1} ms", "Watching 1080p: CPU {d:.1} ms per frame · GPU ({s}) {d:.1} ms" },
+    .{ "Assistir 1080p: CPU {d:.1} ms por quadro", "Watching 1080p: CPU {d:.1} ms per frame" },
+    .{ "Sugestão: transmitir em {d}p a {d} q/s ({s})", "Suggestion: stream at {d}p, {d} fps ({s})" },
+    .{ "na placa de vídeo", "on the GPU" },
+    .{ "na CPU", "on the CPU" },
+    .{ "Pra assistir, esse PC decodifica uns {d} q/s em 1080p.", "For watching, this PC decodes about {d} fps at 1080p." },
+    .{ "Usar a sugestão", "Use the suggestion" },
+    .{ "Pronto: a próxima transmissão sai em {d}p a {d} q/s.", "Done: the next stream goes out at {d}p, {d} fps." },
+
     // temas
     .{ "TEMA", "THEME" },
     .{ "Escuro", "Dark" },

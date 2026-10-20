@@ -27,6 +27,7 @@ const chatimg = @import("chatimg.zig");
 const chatsend = @import("chatsend.zig");
 const debuglog = @import("debuglog.zig");
 const theme = @import("theme.zig");
+const pctest = @import("pctest.zig");
 const i18n = @import("i18n.zig");
 const tr = i18n.tr;
 const build_options = @import("build_options");
@@ -64,6 +65,10 @@ fn iconArr(comptime cp: u21) [3:0]u8 {
 }
 const ic = struct {
     const desktop = &iconArr(0xF390);
+    const bug = &iconArr(0xF188);
+    const gauge = &iconArr(0xF625);
+    const palette = &iconArr(0xF53F);
+    const info = &iconArr(0xF05A);
     const tv = &iconArr(0xF26C);
     const gear = &iconArr(0xF013);
     const leave = &iconArr(0xF2F5);
@@ -368,7 +373,7 @@ fn segmented(id: [:0]const u8, comptime options: []const [:0]const u8, current: 
 // ---------------------------------------------------------------------------
 // Estado do app
 
-const SettingsPage = enum { geral, aparencia, voz, camera, depuracao, sobre };
+const SettingsPage = enum { geral, aparencia, voz, camera, desempenho, depuracao, sobre };
 
 const Toast = struct { text: [256]u8, len: usize, until: f64, err: bool };
 
@@ -499,6 +504,8 @@ pub const App = struct {
     pips: [4]?*pip.Pip = [_]?*pip.Pip{null} ** 4, // janelas flutuantes
     iconified: bool = false, // janela principal minimizada (o main.zig avisa)
     settings_page: SettingsPage = .geral,
+    auto_cap_seen: u32 = 0, // último teto da qualidade automática avisado
+    pctest_logged: bool = true, // resultado do teste do PC já foi pro log
     last_saved: [512]u8 = undefined, // último clipe/gravação salvo (modo de testes)
     last_saved_len: usize = 0,
     /// Transmissão com o ponteiro "olha aqui" ligado (o mouse vira o ponteiro).
@@ -1429,6 +1436,7 @@ pub const App = struct {
             .hardware = a.cfg.hardware,
             .audio = a.cfg.audio,
             .clips = a.cfg.clips,
+            .auto_quality = a.cfg.auto_quality,
         };
         const cur = config.getStr(&a.cfg.audio_app);
         if (std.mem.eql(u8, cur, "*janela")) {
@@ -1541,6 +1549,7 @@ pub const App = struct {
             a.trim_at = c.igGetTime() + 2;
         }
         a.sharer = null;
+        a.auto_cap_seen = 0;
         if (a.focused == 0) a.focused = null;
     }
 
@@ -1751,6 +1760,16 @@ pub const App = struct {
             // captura que escuta o próprio app (Linux sem PipeWire, Windows antigo):
             // silencia o que você assiste, senão quem assiste ouviria eco
             audio.mixer.self_mute.store(hears_self, .monotonic);
+            // qualidade automática mudou a resolução: avisa quem transmite
+            const cap = s.auto_cap.load(.acquire);
+            if (cap != a.auto_cap_seen) {
+                const from = s.auto_from.load(.acquire);
+                if (cap != 0) {
+                    a.toast("O PC não estava dando conta de {d}p no fps escolhido: transmitindo em {d}p (volta sozinho quando folgar).", .{ from, cap }, false);
+                } else a.toast("Folgou: a transmissão voltou pra resolução escolhida.", .{}, false);
+                debuglog.line("qualidade automática: {d}p -> {d}p (0 = a escolhida)", .{ from, cap });
+                a.auto_cap_seen = cap;
+            }
             if (!a.audio_err_shown and audio_err[0] != 0) {
                 a.audio_err_shown = true;
                 var eb: [300]u8 = undefined;
@@ -4326,11 +4345,12 @@ pub const App = struct {
         var nav_y = S(62);
         const pages = [_]struct { page: SettingsPage, icon: []const u8, name: [:0]const u8 }{
             .{ .page = .geral, .icon = ic.gear, .name = tr("Geral") },
-            .{ .page = .aparencia, .icon = ic.image, .name = tr("Aparência") },
+            .{ .page = .aparencia, .icon = ic.palette, .name = tr("Aparência") },
             .{ .page = .voz, .icon = ic.mic, .name = tr("Voz") },
             .{ .page = .camera, .icon = ic.video, .name = tr("Câmera") },
-            .{ .page = .depuracao, .icon = ic.signal, .name = tr("Depuração") },
-            .{ .page = .sobre, .icon = ic.desktop, .name = tr("Sobre") },
+            .{ .page = .desempenho, .icon = ic.gauge, .name = tr("Desempenho") },
+            .{ .page = .depuracao, .icon = ic.bug, .name = tr("Depuração") },
+            .{ .page = .sobre, .icon = ic.info, .name = tr("Sobre") },
         };
         for (pages) |pg| {
             c.igSetCursorPos(v2(S(10), nav_y));
@@ -4370,6 +4390,7 @@ pub const App = struct {
                 .aparencia => a.settingsAppearance(w),
                 .voz => a.settingsVoice(w),
                 .camera => a.settingsCamera(w),
+                .desempenho => a.settingsPerformance(w),
                 .depuracao => a.drawDebug(w),
                 .sobre => a.settingsAbout(w),
             }
@@ -4520,6 +4541,91 @@ pub const App = struct {
             c.igPopStyleColor(1);
             // câmera ligada: troca na hora, sem derrubar quem assiste
             if (changed) if (a.camera) |cam| cam.update(a.cameraSettings());
+        }
+    }
+
+    fn settingsPerformance(a: *App, w: f32) void {
+        c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
+        if (c.igCheckbox(tr("Qualidade automática: baixa a resolução sozinho se o PC não der conta do fps###autoq"), &a.cfg.auto_quality)) {
+            config.save(&a.cfg);
+            if (a.sharer) |s| s.update(a.shareSettings());
+        }
+        c.igPopStyleColor(1);
+        c.igPushTextWrapPos(c.igGetCursorPosX() + w);
+        pushFont(font_regular, 12.5);
+        textColored(col.faint, tr("Quando a transmissão não consegue manter o fps escolhido, desce um degrau (1080p → 900p → 720p...) e volta sozinha quando sobrar folga."));
+        popFont();
+        c.igDummy(v2(0, S(18)));
+
+        fieldLabel("TESTAR MEU PC");
+        pushFont(font_regular, 12.5);
+        textColored(col.faint, tr("Uns segundos medindo quanto esse computador aguenta pra transmitir e pra assistir, e a configuração sugerida."));
+        popFont();
+        c.igPopTextWrapPos();
+        c.igDummy(v2(0, S(4)));
+        const st = pctest.getState();
+        const busy = st == .running or a.sharer != null;
+        if (busy) c.igBeginDisabled(true);
+        if (primaryButton(fmtZ("{s}  Testar meu PC###pctest", .{ic.gauge}), v2(S(200), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) {
+            if (pctest.start()) {
+                a.pctest_logged = false;
+                debuglog.line("teste do PC começou", .{});
+            }
+        }
+        if (busy) c.igEndDisabled();
+        c.igPushTextWrapPos(c.igGetCursorPosX() + w);
+        defer c.igPopTextWrapPos();
+        if (a.sharer != null and st != .running) {
+            pushFont(font_regular, 12.5);
+            textColored(col.muted, tr("Pare de transmitir pra testar (o teste usa o processador todo por uns segundos)."));
+            popFont();
+        }
+        c.igDummy(v2(0, S(6)));
+        switch (st) {
+            .idle => {},
+            .running => {
+                textColored(col.muted, fmtZ("Testando... {d}%", .{pctest.getProgress()}));
+                redrawIn(0.2);
+            },
+            .failed => textColored(col.red, tr("O teste não conseguiu rodar.")),
+            .done => {
+                const r = pctest.getResult();
+                const sug = pctest.suggest(&r);
+                if (!a.pctest_logged) {
+                    a.pctest_logged = true;
+                    debuglog.line("teste do PC: CPU 1080p {d:.1} ms, 720p {d:.1} ms, conversão {d:.1} ms | placa {s} {d:.1} ms | decode CPU {d:.1} ms, {s} {d:.1} ms | sugestão {d}p {d} q/s placa={} (assistir até {d} q/s)", .{ r.sw1080_ms, r.sw720_ms, r.conv_ms, r.hwName(), r.hw1080_ms, r.dec_sw_ms, r.decHwName(), r.dec_hw_ms, sug.height, sug.fps, sug.hardware, sug.watch_fps });
+                }
+                pushFont(font_regular, 13);
+                textColored(col.text, fmtZ("Transmitir na CPU (openh264): 1080p {d:.1} ms por quadro · 720p {d:.1} ms", .{ r.sw1080_ms, r.sw720_ms }));
+                if (r.hw1080_ms > 0)
+                    textColored(col.text, fmtZ("Transmitir na placa ({s}): 1080p {d:.1} ms por quadro", .{ r.hwName(), r.hw1080_ms }))
+                else
+                    textColored(col.text, tr("Transmitir na placa: esse PC não tem encoder de vídeo que o telinha use."));
+                if (r.dec_hw_ms > 0)
+                    textColored(col.text, fmtZ("Assistir 1080p: CPU {d:.1} ms por quadro · placa ({s}) {d:.1} ms", .{ r.dec_sw_ms, r.decHwName(), r.dec_hw_ms }))
+                else
+                    textColored(col.text, fmtZ("Assistir 1080p: CPU {d:.1} ms por quadro", .{r.dec_sw_ms}));
+                popFont();
+                c.igDummy(v2(0, S(6)));
+                pushFont(font_semibold, 14);
+                textColored(col.green, fmtZ("Sugestão: transmitir em {d}p a {d} q/s ({s})", .{ sug.height, sug.fps, if (sug.hardware) tr("na placa de vídeo") else tr("na CPU") }));
+                popFont();
+                pushFont(font_regular, 13);
+                textColored(col.muted, fmtZ("Pra assistir, esse PC decodifica uns {d} q/s em 1080p.", .{sug.watch_fps}));
+                popFont();
+                c.igDummy(v2(0, S(4)));
+                if (secondaryButton(tr("Usar a sugestão###pcuse"), v2(S(200), S(34)))) {
+                    a.cfg.resolution = switch (sug.height) {
+                        1080 => 1,
+                        720 => 2,
+                        else => 3,
+                    };
+                    a.cfg.fps = @intCast(sug.fps);
+                    a.cfg.hardware = sug.hardware;
+                    config.save(&a.cfg);
+                    a.toast("Pronto: a próxima transmissão sai em {d}p a {d} q/s.", .{ sug.height, sug.fps }, false);
+                }
+            },
         }
     }
 
@@ -4762,8 +4868,8 @@ pub const App = struct {
         try w.print(",\"fps\":{d},\"quality\":{d},\"mode\":{d},\"resolution\":{d},\"cursor\":{},\"audio\":{},\"hardware\":{},\"stats_always\":{},\"show_chat\":{}", .{
             cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.stats_always, cf.show_chat,
         });
-        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_exclude\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f},\"theme\":{f}}}", .{
-            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), s(config.getStr(&cf.audio_exclude)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)), s(config.getStr(&cf.theme)),
+        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_exclude\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f},\"theme\":{f},\"auto_quality\":{},\"resolution_idx\":{d}}}", .{
+            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), s(config.getStr(&cf.audio_exclude)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)), s(config.getStr(&cf.theme)), cf.auto_quality, cf.resolution,
         });
         try w.print(",\"lang\":{f}", .{s(@tagName(i18n.get()))});
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);
@@ -4791,6 +4897,7 @@ pub const App = struct {
         try w.writeAll("]");
         var ub: [32]u8 = undefined;
         try w.print(",\"opened\":{f},\"update\":{f},\"update_latest\":{f}", .{ s(qa_opened[0..qa_opened_len]), s(@tagName(update.getState())), s(update.latest(&ub)) });
+        try w.print(",\"pctest\":{f}", .{s(@tagName(pctest.getState()))});
         var dlb: [512]u8 = undefined;
         try w.print(",\"debug_on\":{},\"debug_size\":{d},\"debug_send\":{f},\"debug_result\":{f}", .{ debuglog.on(), debuglog.fileSize(), s(@tagName(debuglog.sendState())), s(debuglog.sendResult(&dlb)) });
         try w.print(",\"last_saved\":{f},\"clip_jobs\":{d}", .{ s(a.last_saved[0..a.last_saved_len]), blk: {
@@ -4822,7 +4929,7 @@ pub const App = struct {
             defer sh.mutex.unlock();
             const audio_on = sh.audio_on;
             const aerr: [160]u8 = sh.audio_err;
-            try w.print(",\"sharer\":{{\"state\":{f},\"w\":{d},\"h\":{d},\"fps\":{d:.1},\"backend\":{f},\"encoder\":{f},\"audio\":{},\"audio_err\":{f}}}", .{ s(@tagName(sh.state)), sh.w, sh.h, sh.fps, s(sh.backendSlice()), s(sh.encoder_name), audio_on, s(std.mem.sliceTo(&aerr, 0)) });
+            try w.print(",\"sharer\":{{\"state\":{f},\"w\":{d},\"h\":{d},\"fps\":{d:.1},\"backend\":{f},\"encoder\":{f},\"audio\":{},\"audio_err\":{f},\"auto_cap\":{d}}}", .{ s(@tagName(sh.state)), sh.w, sh.h, sh.fps, s(sh.backendSlice()), s(sh.encoder_name), audio_on, s(std.mem.sliceTo(&aerr, 0)), sh.auto_cap.load(.acquire) });
         } else try w.writeAll(",\"sharer\":null");
         // avisos na tela
         try w.writeAll(",\"toasts\":[");

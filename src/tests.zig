@@ -15,6 +15,8 @@ test {
     _ = @import("udp.zig");
     _ = @import("debuglog.zig");
     _ = @import("theme.zig");
+    _ = @import("autoq.zig");
+    _ = @import("pctest.zig");
 }
 
 fn initPool() void {
