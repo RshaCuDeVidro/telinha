@@ -453,6 +453,22 @@ def microfone():
 
 
 @test
+def ctrl_m_como_atalho():
+    """Ctrl+M configurado também como atalho do microfone: um aperto liga uma vez só (o atalho e o Ctrl+M de sempre não se desfazem)."""
+    with Session("ctrlm", audio=True) as s:
+        s.fake_mic()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(port())], config={"hk_mic": "77,0,-1,1"})
+        a.wait(lambda st: st["status"] == "connected", 10, "entrar")
+        expect(a.state()["cfg"]["hk_mic"] == 77, "o atalho Ctrl+M não foi lido da configuração")
+        time.sleep(0.6)
+        for quer in (True, False, True):
+            a.key("m", ctrl=True)
+            a.wait(lambda st: st["mic"] == quer, 3, f"Ctrl+M {'ligar' if quer else 'desligar'}")
+            time.sleep(0.8)
+            expect(a.state()["mic"] == quer, "o mesmo aperto ligou e desligou o microfone")
+
+
+@test
 def apertar_pra_falar():
     """Apertar pra falar: escolhe a tecla nas configurações; segurando, a voz sai (mesmo com o microfone em silêncio); soltando, para."""
     with Session("ptt", audio=True) as s:
@@ -813,15 +829,16 @@ def atalhos_globais():
         settings_click(a, "##deafkey")
         time.sleep(0.3)
         a.key("d")
-        time.sleep(0.4)
+        a.wait(lambda st: st["cfg"]["hk_deaf"] == 68, 3, "escolher D pro surdo")
         settings_click(a, "##togglekey")
         time.sleep(0.3)
         a.key("t")
-        time.sleep(0.4)
+        a.wait(lambda st: st["cfg"]["hk_toggle"] == 84, 3, "escolher T pro liga/desliga")
         settings_click(a, "Fechar")
         a.wait(lambda st: not st["settings_modal"], 3, "fechar as configurações")
         ini = open(os.path.join(a.cfg, "telinha", "config.ini")).read()
-        expect("hk_mic=75," in ini and "hk_deaf=68," in ini and "hk_toggle=84," in ini, f"atalhos não salvos: {ini}")
+        hk = " ".join(l for l in ini.splitlines() if l.startswith("hk_"))
+        expect("hk_mic=75," in ini and "hk_deaf=68," in ini and "hk_toggle=84," in ini, f"atalhos não salvos: {hk}")
         # sem foco (o jogo na frente): D deixa surdo
         a.d.set_input_focus(XX.NONE, XX.RevertToNone, XX.CurrentTime)
         a.d.sync()
@@ -1549,14 +1566,40 @@ def tema_arquivo_css():
         a.click("##gear")
         a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
         a.click("##cfg-aparencia")
-        settings_find(a, "##csspath")
-        a.fill("##csspath", css)
-        settings_click(a, "##cssfile")
-        a.wait(lambda st: st["cfg"]["css_status"] == "ok" and st["cfg"]["custom_theme"].startswith("050505,0a050f,9333ea"), 5, "ler o arquivo")
+        lido = lambda st: st["cfg"]["css_status"] == "ok" and st["cfg"]["custom_theme"].startswith("050505,0a050f,9333ea")
+        # digitar um caminho comprido com a máquina ocupada às vezes perde tecla:
+        # se não leu, digita de novo uma vez (e mostra o que o app viu)
+        for tentativa in range(2):
+            # um clique atrasado da tentativa anterior pode ter chegado agora: aí o
+            # botão já virou "Parar" e clicar de novo desligaria o arquivo
+            if a.state()["cfg"]["css_status"] != "off":
+                break
+            settings_find(a, "##csspath")
+            a.fill("##csspath", css)
+            # o caminho é comprido: espera o app terminar de ler o que foi digitado
+            try:
+                a.wait(lambda st: st["cfg"]["custom_css"] == css, 8, "o caminho inteiro no campo")
+            except QAError:
+                if tentativa == 1:
+                    raise
+                continue
+            settings_click(a, "##cssfile")
+            try:
+                a.wait(lambda st: st["cfg"]["css_status"] != "off", 4, "ler o arquivo")
+                break
+            except QAError:
+                cf = a.state()["cfg"]
+                log(f"tentativa {tentativa + 1}: custom_css={cf['custom_css']!r} css_status={cf['css_status']} custom_theme={cf['custom_theme'][:24]}")
+                if tentativa == 1:
+                    raise
+        a.wait(lido, 4, "ler o arquivo")
         write("#101820")
         a.wait(lambda st: st["cfg"]["custom_theme"].startswith("101820,"), 6, "acompanhar o arquivo salvo de novo")
-        ini = open(os.path.join(a.cfg, "telinha", "config.ini")).read()
-        expect(f"custom_css={css}" in ini, "o caminho não foi salvo")
+        ini_path = os.path.join(a.cfg, "telinha", "config.ini")
+        t0 = time.time()
+        while f"custom_css={css}" not in open(ini_path).read() and time.time() - t0 < 3:
+            time.sleep(0.1)
+        expect(f"custom_css={css}" in open(ini_path).read(), f"o caminho não foi salvo (estado: {a.state()['cfg']['custom_css']!r})")
         os.remove(css)
         a.wait(lambda st: st["cfg"]["css_status"] == "missing", 6, "avisar que o arquivo sumiu")
 

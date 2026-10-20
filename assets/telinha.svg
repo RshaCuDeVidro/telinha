@@ -5,19 +5,23 @@
       <path d="M16 0 H0 V16" fill="none" stroke="#9333ea" stroke-opacity="0.16" stroke-width="1"/>
     </pattern>
     <pattern id="linhas" width="4" height="4" patternUnits="userSpaceOnUse">
-      <rect width="4" height="2" fill="#000" fill-opacity="0.28"/>
+      <rect width="4" height="2" fill="#000" fill-opacity="0.22"/>
     </pattern>
     <filter id="neon" x="-20%" y="-20%" width="140%" height="140%">
       <feGaussianBlur stdDeviation="3.2" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
-    <filter id="neonforte" x="-30%" y="-30%" width="160%" height="160%">
-      <feGaussianBlur stdDeviation="5" result="b"/>
+    <filter id="neonforte" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="4" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
     <linearGradient id="borda" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#d946ef"/>
       <stop offset="1" stop-color="#9333ea"/>
+    </linearGradient>
+    <linearGradient id="capuz" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3b2f52"/>
+      <stop offset="1" stop-color="#231b33"/>
     </linearGradient>
     <clipPath id="fundo"><rect x="8" y="8" width="240" height="240" rx="52"/></clipPath>
   </defs>
@@ -25,59 +29,73 @@
   <g clip-path="url(#fundo)">
     <rect x="8" y="8" width="240" height="240" fill="#050505"/>
     <rect x="8" y="8" width="240" height="240" fill="url(#grade)"/>
-    <!-- brilho roxo atrás da cabeça -->
-    <circle cx="128" cy="104" r="86" fill="#9333ea" fill-opacity="0.13"/>
+    <circle cx="128" cy="100" r="92" fill="#9333ea" fill-opacity="0.14"/>
 
-    <!-- cabeça: contorno neon (com o "glitch" ciano/fúcsia deslocado) -->
+    <!-- cabeça (capuz escuro), com orelhas largas de pontas arredondadas -->
+    <path id="cabeca" d="M58 152 C50 132 50 110 60 92 L62 44 Q63 26 80 32 L112 62 Q128 57 144 62 L176 32 Q193 26 194 44 L196 92 C206 110 206 132 198 152 Z" fill="url(#capuz)"/>
+    <!-- contorno neon com glitch -->
     <g fill="none" stroke-linejoin="round" stroke-linecap="round">
-      <path d="M58 150 C56 112 66 92 80 82 L72 32 L114 66 Q128 62 142 66 L184 32 L176 82 C190 92 200 112 198 150" stroke="#06b6d4" stroke-opacity="0.55" stroke-width="5" transform="translate(-3 1)"/>
-      <path d="M58 150 C56 112 66 92 80 82 L72 32 L114 66 Q128 62 142 66 L184 32 L176 82 C190 92 200 112 198 150" stroke="#f472b6" stroke-opacity="0.45" stroke-width="5" transform="translate(3 -1)"/>
-      <path d="M58 150 C56 112 66 92 80 82 L72 32 L114 66 Q128 62 142 66 L184 32 L176 82 C190 92 200 112 198 150" stroke="url(#borda)" stroke-width="6" filter="url(#neon)"/>
-      <!-- dentro das orelhas -->
-      <path d="M84 72 L80 48 L102 66" stroke="#d946ef" stroke-opacity="0.7" stroke-width="3"/>
-      <path d="M172 72 L176 48 L154 66" stroke="#d946ef" stroke-opacity="0.7" stroke-width="3"/>
-      <!-- a máscara do husky (onde o branco começa) e a listra da testa -->
-      <path d="M70 140 C72 120 84 106 102 106 C114 106 122 112 128 124 C134 112 142 106 154 106 C172 106 184 120 186 140 Z" fill="#e5e7eb" fill-opacity="0.07" stroke="none"/>
-      <path d="M70 140 C72 120 84 106 102 106 C114 106 122 112 128 124 C134 112 142 106 154 106 C172 106 184 120 186 140" stroke="#e5e7eb" stroke-opacity="0.85" stroke-width="3"/>
-      <path d="M128 72 V114" stroke="#e5e7eb" stroke-opacity="0.85" stroke-width="3"/>
+      <use href="#cabeca" stroke="#06b6d4" stroke-opacity="0.5" stroke-width="5" transform="translate(-3 1)"/>
+      <use href="#cabeca" stroke="#f472b6" stroke-opacity="0.4" stroke-width="5" transform="translate(3 -1)"/>
+      <use href="#cabeca" stroke="url(#borda)" stroke-width="5.5" filter="url(#neon)"/>
     </g>
+    <!-- pelo branco dentro das orelhas -->
+    <path d="M70 48 Q71 38 80 42 L102 63 Q88 67 72 80 Z" fill="#ece8f2" fill-opacity="0.9"/>
+    <path d="M186 48 Q185 38 176 42 L154 63 Q168 67 184 80 Z" fill="#ece8f2" fill-opacity="0.9"/>
 
-    <!-- olhos: um ciano, um castanho -->
+    <!-- máscara branca: sobrancelhas em arco e a ponta escura do capuz descendo entre os olhos -->
+    <path d="M56 152 L58 118 C62 98 80 84 100 84 C113 84 121 94 128 108 C135 94 143 84 156 84 C176 84 194 98 198 118 L200 152 Z" fill="#ece8f2"/>
+    <!-- tufos de pelo nas bochechas -->
+    <path d="M58 118 L48 124 L57 128 L46 136 L56 139 L47 147 L58 150 Z" fill="#ece8f2"/>
+    <path d="M198 118 L208 124 L199 128 L210 136 L200 139 L209 147 L198 150 Z" fill="#ece8f2"/>
+    <!-- a ponta do capuz (V) mais marcada -->
+    <path d="M118 90 Q128 96 128 108 Q128 96 138 90" fill="none" stroke="#231b33" stroke-width="3" stroke-linecap="round"/>
+
+    <!-- olhos amendoados (puxados pra cima nos cantos de fora), contorno escuro e o risco até a têmpora -->
+    <g stroke="#231b33" stroke-width="3.2" stroke-linecap="round" fill="none">
+      <path d="M84 104 L72 96"/>
+      <path d="M172 104 L184 96"/>
+    </g>
+    <path d="M84 104 Q99 94 116 106 Q99 117 84 104 Z" fill="#231b33"/>
+    <path d="M172 104 Q157 94 140 106 Q157 117 172 104 Z" fill="#231b33"/>
     <g filter="url(#neonforte)">
-      <path d="M88 124 Q101 112 114 124 Q101 133 88 124 Z" fill="#06b6d4"/>
-      <path d="M142 124 Q155 112 168 124 Q155 133 142 124 Z" fill="#a8652e"/>
+      <circle cx="101" cy="106" r="6.6" fill="#38bdf8"/>
+      <circle cx="155" cy="106" r="6.6" fill="#b8732f"/>
     </g>
-    <circle cx="101.5" cy="123.5" r="4.4" fill="#050505"/>
-    <circle cx="155.5" cy="123.5" r="4.4" fill="#050505"/>
-    <circle cx="98.5" cy="120.5" r="1.7" fill="#ffffff"/>
-    <circle cx="152.5" cy="120.5" r="1.7" fill="#ffffff"/>
+    <circle cx="101" cy="106" r="3.3" fill="#050505"/>
+    <circle cx="155" cy="106" r="3.3" fill="#050505"/>
+    <circle cx="99" cy="103.6" r="1.5" fill="#ffffff"/>
+    <circle cx="153" cy="103.6" r="1.5" fill="#ffffff"/>
 
-    <!-- focinho -->
-    <path d="M117 136 Q128 130 139 136 Q137 144 128 146 Q119 144 117 136 Z" fill="#d946ef" filter="url(#neon)"/>
+    <!-- focinho: o contorno do focinho comprido, o nariz grande e a boca -->
+    <!-- as laterais do focinho (cara comprida de lobo, não redonda de gato) -->
+    <path d="M114 110 Q110 120 106 130 Q112 140 122 143" fill="none" stroke="#cfc8da" stroke-width="2" stroke-linecap="round"/>
+    <path d="M142 110 Q146 120 150 130 Q144 140 134 143" fill="none" stroke="#cfc8da" stroke-width="2" stroke-linecap="round"/>
+    <path d="M113 126 Q128 117 143 126 Q142 137 128 140 Q114 137 113 126 Z" fill="#14101c"/>
+    <path d="M113 126 Q128 117 143 126 Q142 137 128 140 Q114 137 113 126 Z" fill="none" stroke="#d946ef" stroke-width="2" stroke-opacity="0.8" filter="url(#neon)"/>
+    <ellipse cx="122" cy="125" rx="4" ry="2" fill="#ffffff" fill-opacity="0.75"/>
+    <path d="M128 140 V145 M128 145 Q120 150 112 145 M128 145 Q136 150 144 145" fill="none" stroke="#231b33" stroke-width="2.6" stroke-linecap="round"/>
 
     <!-- o terminal -->
-    <rect x="30" y="148" width="196" height="76" rx="10" fill="#0a050f"/>
-    <rect x="30" y="148" width="196" height="76" rx="10" fill="none" stroke="#9333ea" stroke-width="5" filter="url(#neon)"/>
-    <!-- >_ em verde de terminal -->
+    <rect x="30" y="150" width="196" height="76" rx="10" fill="#0a050f"/>
+    <rect x="30" y="150" width="196" height="76" rx="10" fill="none" stroke="#9333ea" stroke-width="5" filter="url(#neon)"/>
     <g filter="url(#neon)" stroke="#22c55e" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none">
-      <path d="M58 170 L76 184 L58 198"/>
+      <path d="M58 172 L76 186 L58 200"/>
     </g>
-    <rect x="86" y="194" width="30" height="7" rx="2" fill="#22c55e" filter="url(#neon)"/>
-    <!-- "ao vivo" -->
-    <circle cx="204" cy="166" r="5" fill="#f43f5e" filter="url(#neon)"/>
+    <rect x="86" y="196" width="30" height="7" rx="2" fill="#22c55e" filter="url(#neon)"/>
+    <circle cx="204" cy="168" r="5" fill="#f43f5e" filter="url(#neon)"/>
 
-    <!-- patinhas na borda -->
-    <g fill="#e5e7eb" filter="url(#neon)">
-      <rect x="66" y="139" width="38" height="19" rx="9.5"/>
-      <rect x="152" y="139" width="38" height="19" rx="9.5"/>
+    <!-- patinhas brancas na borda -->
+    <g fill="#ece8f2" stroke="#231b33" stroke-width="2">
+      <rect x="64" y="141" width="40" height="20" rx="10"/>
+      <rect x="152" y="141" width="40" height="20" rx="10"/>
     </g>
-    <path d="M78 148 V157 M91 148 V157 M164 148 V157 M177 148 V157" stroke="#0a050f" stroke-width="2.6" stroke-linecap="round"/>
+    <path d="M77 151 V160 M90 151 V160 M165 151 V160 M178 151 V160" stroke="#231b33" stroke-width="2.6" stroke-linecap="round"/>
 
-    <!-- glitch: uma fatia deslocada -->
-    <rect x="40" y="98" width="70" height="3" fill="#06b6d4" fill-opacity="0.55"/>
-    <rect x="150" y="108" width="54" height="2" fill="#f472b6" fill-opacity="0.5"/>
+    <!-- glitch -->
+    <rect x="34" y="78" width="62" height="3" fill="#06b6d4" fill-opacity="0.5"/>
+    <rect x="164" y="128" width="48" height="2" fill="#f472b6" fill-opacity="0.45"/>
 
-    <!-- linhas de tela antiga -->
     <rect x="8" y="8" width="240" height="240" fill="url(#linhas)"/>
   </g>
   <rect x="9.5" y="9.5" width="237" height="237" rx="51" fill="none" stroke="#9333ea" stroke-opacity="0.45" stroke-width="3"/>

@@ -133,6 +133,12 @@ Conversa com a 3.0 (os campos novos são opcionais).
   laterais do mouse, e vale com o jogo em foco (Windows e X11; no Wayland só
   com o telinha em foco).
 - **Duração do clipe livre** (5 s a 10 min), além dos botões de 15 s a 3 min.
+- Ctrl+M (Ctrl+D) configurado também como atalho do microfone (surdo): um
+  aperto não liga e desliga ao mesmo tempo (o Ctrl+M de sempre dá lugar ao
+  atalho).
+- No inglês, os botões "30 q/s"/"60 q/s" saem como "30 fps"/"60 fps".
+- Ícone novo (um husky neon espiando por cima de um terminal) e README em
+  inglês, com a versão em português em `README.pt.md` e prints novos.
 - **Menos placa de vídeo pra assistir**: a conversão de cor do vídeo sai no
   tamanho em que ele aparece na tela (um 1080p num quadradinho não converte
   1080p), e quem não está aparecendo (outro em destaque, minimizado) não

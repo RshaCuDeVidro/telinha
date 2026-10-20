@@ -119,10 +119,12 @@ fn translate(comptime pt: []const u8) [:0]const u8 {
         const cut = std.mem.indexOf(u8, pt, "##") orelse pt.len;
         const text = pt[0..cut];
         const id = pt[cut..];
-        if (!hasWords(text)) return std.fmt.comptimePrint("{s}", .{pt});
+        // procura sempre (ex.: "30 q/s" → "30 fps" não tem duas letras
+        // seguidas, mas tem tradução); só exige entrada quando tem palavra
         for (table) |p| {
             if (std.mem.eql(u8, p[0], text)) return std.fmt.comptimePrint("{s}{s}", .{ p[1], id });
         }
+        if (!hasWords(text)) return std.fmt.comptimePrint("{s}", .{pt});
         @compileError("i18n: falta a tradução em src/i18n.zig: .{ \"" ++ text ++ "\", \"...\" },");
     }
 }

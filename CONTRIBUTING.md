@@ -3,7 +3,7 @@
 ## Ambiente
 
 - Zig **0.16.0** exatamente (a std muda bastante entre versões).
-- Linux: as libs listadas no README. Windows é cross-compilado do Linux (`zig build` gera o `.exe`).
+- Linux: as libs listadas no README.pt.md (seção "Compilar"). Windows é cross-compilado do Linux (`zig build` gera o `.exe`).
 - Opcional: `nasm` no sistema (senão o build compila um).
 
 ## Antes de mandar um PR

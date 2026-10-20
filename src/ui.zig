@@ -2057,8 +2057,11 @@ pub const App = struct {
         // atalhos de voz (fora de campo de texto): Ctrl+M microfone, Ctrl+D surdo
         const io = c.igGetIO_Nil();
         if (a.screen == .room and io.*.KeyCtrl and !io.*.WantTextInput) {
-            if (c.igIsKeyPressed_Bool(c.ImGuiKey_M, false)) a.toggleMic();
-            if (c.igIsKeyPressed_Bool(c.ImGuiKey_D, false)) a.toggleDeaf();
+            // se alguém pôs exatamente Ctrl+M (Ctrl+D) como atalho dessa mesma
+            // ação, quem cuida é o atalho: os dois juntos ligariam e desligariam
+            // no mesmo aperto
+            if (c.igIsKeyPressed_Bool(c.ImGuiKey_M, false) and !a.hotkeyIsCtrl(.mic, c.GLFW_KEY_M)) a.toggleMic();
+            if (c.igIsKeyPressed_Bool(c.ImGuiKey_D, false) and !a.hotkeyIsCtrl(.deaf, c.GLFW_KEY_D)) a.toggleDeaf();
         }
         // Esc com uma janela aberta (configurações, recorte) é dela: não sai da tela cheia
         if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and !a.share_modal and !a.settings_modal and a.crop_tile == null) {
@@ -5227,6 +5230,12 @@ pub const App = struct {
     }
 
     /// O que cada atalho faz.
+    /// O atalho `id` está ligado e é exatamente Ctrl + `key`?
+    fn hotkeyIsCtrl(a: *const App, id: config.HotkeyId, key: c_int) bool {
+        const hk = a.cfg.hk[@intFromEnum(id)];
+        return a.cfg.hotkeys_on and hk.mouse < 0 and hk.key == key and hk.mods == config.mod_ctrl;
+    }
+
     fn runHotkey(a: *App, id: config.HotkeyId) void {
         const now = c.igGetTime();
         switch (id) {
@@ -6184,8 +6193,8 @@ pub const App = struct {
         try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_exclude\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f},\"theme\":{f},\"custom_theme\":{f},\"custom_css\":{f},\"css_status\":{f},\"auto_quality\":{},\"resolution_idx\":{d},\"ui_zoom\":{d},\"crt\":{},\"voice_ptt\":{},\"ptt_key\":{d},\"ptt_mouse\":{d},\"clip_key\":{d}", .{
             cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), s(config.getStr(&cf.audio_exclude)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)), s(config.getStr(&cf.theme)), s(config.getStr(&cf.custom_theme)), s(config.getStr(&cf.custom_css)), s(@tagName(cssfile.getStatus())), cf.auto_quality, cf.resolution, cf.ui_zoom, cf.crt, cf.voice_ptt, cf.ptt_key, cf.ptt_mouse, cf.hk[@intFromEnum(config.HotkeyId.clip)].key,
         });
-        try w.print(",\"hotkeys_on\":{},\"hk_mic\":{d},\"hk_mic_mods\":{d},\"clip_secs\":{d}}}", .{
-            cf.hotkeys_on, cf.hk[@intFromEnum(config.HotkeyId.mic)].key, cf.hk[@intFromEnum(config.HotkeyId.mic)].mods, cf.clip_secs,
+        try w.print(",\"hotkeys_on\":{},\"hk_mic\":{d},\"hk_mic_mods\":{d},\"hk_deaf\":{d},\"hk_toggle\":{d},\"clip_secs\":{d}}}", .{
+            cf.hotkeys_on, cf.hk[@intFromEnum(config.HotkeyId.mic)].key, cf.hk[@intFromEnum(config.HotkeyId.mic)].mods, cf.hk[@intFromEnum(config.HotkeyId.deaf)].key, cf.hk[@intFromEnum(config.HotkeyId.toggle)].key, cf.clip_secs,
         });
         try w.print(",\"lang\":{f}", .{s(@tagName(i18n.get()))});
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);
