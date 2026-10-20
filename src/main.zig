@@ -113,7 +113,10 @@ pub fn main(init: std.process.Init) !void {
         // e o que anima pede o próximo redesenho (ui.redrawIn)
         const iconified = c.glfwGetWindowAttrib(win, c.GLFW_ICONIFIED) != 0;
         if (idle_frames > 3) {
-            var timeout: f64 = if (qa.enabled()) 0.05 else if (iconified) 1.0 else if (io.*.WantTextInput) 0.25 else 0.5;
+            // sem foco (o jogo na frente): o redesenho "de segurança" fica raro;
+            // rede, vídeo e eventos acordam o laço na hora do mesmo jeito
+            const unfocused = c.glfwGetWindowAttrib(win, c.GLFW_FOCUSED) == 0;
+            var timeout: f64 = if (qa.enabled()) 0.05 else if (iconified) 1.0 else if (unfocused) 2.0 else if (io.*.WantTextInput) 0.25 else 0.5;
             if (ui.redraw_at != std.math.inf(f64)) timeout = @min(timeout, @max(0.0, ui.redraw_at - c.igGetTime()));
             if (timeout > 0) c.glfwWaitEventsTimeout(timeout) else c.glfwPollEvents();
         } else c.glfwPollEvents();

@@ -430,11 +430,57 @@ const gpa_ui = std.heap.c_allocator;
 
 const ImgTex = struct {
     id: u32 = 0, // mensagem (0 = livre)
-    tex: u32 = 0,
+    tex: u32 = 0, // 0 = ainda decodificando (job) ou falhou
     w: u16 = 0,
     h: u16 = 0,
     failed: bool = false,
     used: u64 = 0, // último quadro em que apareceu
+    job: ?*ImgJob = null,
+};
+
+/// Decodifica a imagem do chat e faz a miniatura numa thread (o primeiro
+/// aparecimento de uma imagem não engasga a interface).
+const ImgJob = struct {
+    refs: std.atomic.Value(u8) = .init(2), // a thread + o cache
+    done: std.atomic.Value(bool) = .init(false),
+    data: []u8, // o H.264 da imagem (cópia)
+    w: u16,
+    h: u16,
+    px: []u8 = &.{}, // miniatura RGBA (vazio = falhou)
+    tw: u32 = 0,
+    th: u32 = 0,
+
+    fn run(j: *ImgJob) void {
+        defer {
+            j.done.store(true, .release);
+            wakeUi();
+            j.release();
+        }
+        const full = chatimg.decode(j.data, j.w, j.h) catch return;
+        // no chat vai uma miniatura (até 480 px de largura): a imagem inteira
+        // só pra quem abrir em tela cheia (1600 px em RGBA = 10 MB de textura)
+        const tw: usize = @min(j.w, 480);
+        if (tw == j.w) {
+            j.px = full;
+            j.tw = j.w;
+            j.th = j.h;
+            return;
+        }
+        defer std.heap.c_allocator.free(full);
+        const th: usize = @max(1, @as(usize, j.h) * tw / j.w);
+        const small = std.heap.c_allocator.alloc(u8, tw * th * 4) catch return;
+        chatimg.resample(full, j.w, j.h, small, tw, th);
+        j.px = small;
+        j.tw = @intCast(tw);
+        j.th = @intCast(th);
+    }
+
+    fn release(j: *ImgJob) void {
+        if (j.refs.fetchSub(1, .acq_rel) != 1) return;
+        std.heap.c_allocator.free(j.data);
+        if (j.px.len > 0) std.heap.c_allocator.free(j.px);
+        std.heap.c_allocator.destroy(j);
+    }
 };
 
 pub const App = struct {
@@ -4162,12 +4208,18 @@ pub const App = struct {
     }
 
     /// Textura da imagem da mensagem (decodifica na primeira vez). null = não deu.
+    /// A imagem da mensagem: pronta (tex != 0), decodificando (tex == 0) ou null (com defeito).
     fn chatImageTex(a: *App, line: *const client_mod.ChatLine) ?*ImgTex {
         var free_i: usize = 0;
         var oldest: u64 = std.math.maxInt(u64);
         for (&a.img_cache, 0..) |*e, i| {
             if (e.id == line.id and e.id != 0) {
                 e.used = a.frame_no;
+                if (e.job) |jb| if (jb.done.load(.acquire)) {
+                    if (jb.px.len > 0) gl.upload(&e.tex, jb.px, jb.tw, jb.th, gl.RGBA) else e.failed = true;
+                    jb.release();
+                    e.job = null;
+                };
                 return if (e.failed) null else e;
             }
             if (e.used < oldest) {
@@ -4177,31 +4229,28 @@ pub const App = struct {
         }
         const e = &a.img_cache[free_i];
         gl.delete(&e.tex);
+        if (e.job) |jb| jb.release(); // a thread termina e solta sozinha
         e.* = .{ .id = line.id, .used = a.frame_no, .w = line.img_w, .h = line.img_h };
         const data = line.img orelse {
             e.failed = true;
             return null;
         };
-        const px = chatimg.decode(data, line.img_w, line.img_h) catch {
+        const jb = std.heap.c_allocator.create(ImgJob) catch {
             e.failed = true;
             return null;
         };
-        defer std.heap.c_allocator.free(px);
-        // no chat vai uma miniatura (até 480 px de largura): a imagem inteira
-        // só pra quem abrir em tela cheia (1600 px em RGBA = 10 MB de textura)
-        const tw: usize = @min(line.img_w, 480);
-        if (tw == line.img_w) {
-            gl.upload(&e.tex, px, line.img_w, line.img_h, gl.RGBA);
-        } else {
-            const th: usize = @max(1, @as(usize, line.img_h) * tw / line.img_w);
-            const small = std.heap.c_allocator.alloc(u8, tw * th * 4) catch {
-                e.failed = true;
-                return null;
-            };
-            defer std.heap.c_allocator.free(small);
-            chatimg.resample(px, line.img_w, line.img_h, small, tw, th);
-            gl.upload(&e.tex, small, @intCast(tw), @intCast(th), gl.RGBA);
-        }
+        jb.* = .{ .data = std.heap.c_allocator.dupe(u8, data) catch {
+            std.heap.c_allocator.destroy(jb);
+            e.failed = true;
+            return null;
+        }, .w = line.img_w, .h = line.img_h };
+        sync.spawn(ImgJob.run, .{jb}) catch {
+            jb.refs.store(1, .monotonic);
+            jb.release();
+            e.failed = true;
+            return null;
+        };
+        e.job = jb;
         return e;
     }
 
@@ -4227,6 +4276,7 @@ pub const App = struct {
     fn clearChatImages(a: *App) void {
         for (&a.img_cache) |*e| {
             gl.delete(&e.tex);
+            if (e.job) |jb| jb.release();
             e.* = .{};
         }
         a.img_view = null;
@@ -4330,6 +4380,11 @@ pub const App = struct {
         c.igSetNextItemAllowOverlap(); // a barra de reações fica por cima
         if (c.igInvisibleButton(fmtZ("##img{d}", .{line.id}).ptr, v2(w, h), 0)) a.img_view = line.id;
         if (c.igIsItemHovered(0)) c.igSetMouseCursor(c.ImGuiMouseCursor_Hand);
+        if (e.tex == 0) {
+            // ainda decodificando: o espaço dela já fica reservado (nada pula quando chega)
+            rectFill(drawList(), p.x, p.y, p.x + w, p.y + h, withAlpha(col.text, 18), S(6));
+            return;
+        }
         c.ImDrawList_AddImageRounded(drawList(), .{ ._TexData = null, ._TexID = e.tex }, p, v2(p.x + w, p.y + h), v2(0, 0), v2(1, 1), 0xFFFFFFFF, S(6) * col.round, 0);
     }
 

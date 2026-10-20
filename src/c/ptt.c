@@ -1,8 +1,9 @@
 // Apertar pra falar: a tecla vale mesmo com outro programa em foco (o jogo).
 //   Windows: GetAsyncKeyState (teclado e botões laterais do mouse).
-//   Linux X11: XQueryKeymap numa conexão própria com o servidor X (uma por
-//   thread: a do microfone e a do atalho de clipe). Wayland nativo: o compositor não deixa ler
-//   o teclado de fora; aí só vale com o telinha em foco (ver ptt.zig).
+//   Linux X11: XQueryKeymap numa conexão própria com o servidor X (uma só,
+//   com trava: a thread do microfone e a do atalho de clipe usam). Wayland
+//   nativo: o compositor não deixa ler o teclado de fora; aí só vale com o
+//   telinha em foco (ver ptt.zig).
 #include "ptt.h"
 
 #ifdef _WIN32
@@ -26,22 +27,32 @@ int ptt_global_supported(void) {
 }
 #else
 #include <X11/Xlib.h>
+#include <pthread.h>
 #include <stdlib.h>
 
-// uma conexão por thread (o Xlib não pode ser usado de duas threads na mesma)
-static _Thread_local Display *dpy;
-static _Thread_local int tried;
+// Uma conexão só com o servidor X, usada por mais de uma thread (microfone,
+// atalho de clipe): a trava garante uma de cada vez (o Xlib não aguenta duas
+// juntas sem XInitThreads), e a conexão não se multiplica a cada thread nova.
+static Display *dpy;
+static int tried;
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 int ptt_global_down(int x11_keycode, int mouse_button) {
     (void)mouse_button; // botões laterais (8/9) não aparecem na máscara do X
+    if (x11_keycode < 8 || x11_keycode > 255) return 0;
+    pthread_mutex_lock(&lock);
     if (!tried) {
         tried = 1;
         if (getenv("DISPLAY")) dpy = XOpenDisplay(NULL);
     }
-    if (!dpy || x11_keycode < 8 || x11_keycode > 255) return 0;
-    char keys[32];
-    XQueryKeymap(dpy, keys);
-    return (keys[x11_keycode / 8] & (1 << (x11_keycode % 8))) != 0;
+    int down = 0;
+    if (dpy) {
+        char keys[32];
+        XQueryKeymap(dpy, keys);
+        down = (keys[x11_keycode / 8] & (1 << (x11_keycode % 8))) != 0;
+    }
+    pthread_mutex_unlock(&lock);
+    return down;
 }
 
 int ptt_global_supported(void) {
