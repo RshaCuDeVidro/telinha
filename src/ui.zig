@@ -3772,7 +3772,7 @@ pub const App = struct {
 
     fn stopRecording(a: *App, cb: *clip.Buffer, who: []const u8) void {
         _ = who;
-        const ms = cb.stopRecording();
+        const ms = cb.stopRecording(if (a.client) |cl| cl.serverNowUs() else 0);
         if (ms == 0) {
             a.toast("Gravação cancelada (não chegou nenhum quadro completo).", .{}, true);
             return;

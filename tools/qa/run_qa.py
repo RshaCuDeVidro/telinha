@@ -1323,6 +1323,7 @@ def temas():
         a.wait(lambda st: st["cfg"]["crt"], 3, "ligar o CRT")
         settings_click(a, "100%")
         a.wait(lambda st: st["cfg"]["ui_zoom"] == 100, 3, "zoom de volta")
+        settings_top(a)
         settings_click(a, "##tema-pwnd")
         a.wait(lambda st: st["cfg"]["theme"] == "pwnd", 3, "voltar pro pwnd")
         settings_click(a, "Fechar")

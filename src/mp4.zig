@@ -653,6 +653,7 @@ pub const Recorder = struct {
     audio_toc: u8 = 0,
     audio_next_us: u64 = 0,
     last_video_us: u64 = 0,
+    end_us: u64 = 0, // hora em que mandou parar (o último quadro dura até lá; 0 = 1/30 s)
     frames: u64 = 0,
     bytes: u64 = 0,
 
@@ -717,7 +718,11 @@ pub const Recorder = struct {
         if (n_video == 0) return;
         var vt: Track = .{};
         defer vt.deinit();
-        const until_us = if (final) r.video.items[n_video - 1].ts_us + 33_333 else r.video.items[n_video].ts_us;
+        // no fim: o último quadro dura até a hora de parar (tela parada não
+        // manda quadro novo; sem isso o vídeo acabaria antes da gravação)
+        const last_ts = r.video.items[n_video - 1].ts_us;
+        const last_end = if (final and r.end_us > last_ts + 33_333) @min(r.end_us, last_ts + 60_000_000) else last_ts + 33_333;
+        const until_us = if (final) last_end else r.video.items[n_video].ts_us;
         // durações: até o próximo quadro (no fim, 1/30 s)
         for (r.video.items[0..n_video], 0..) |s, i| {
             const before = vt.data.items.len;
@@ -726,7 +731,7 @@ pub const Recorder = struct {
             if (size == 0) continue;
             try vt.sizes.append(gpa, @intCast(size));
             try vt.keys.append(gpa, s.key);
-            const next_us = if (i + 1 < r.video.items.len) r.video.items[i + 1].ts_us else s.ts_us + 33_333;
+            const next_us = if (i + 1 < r.video.items.len) r.video.items[i + 1].ts_us else last_end;
             const a = usToTicks(s.ts_us -| r.start_us, video_timescale);
             const b2 = usToTicks(@max(next_us, s.ts_us + 1000) -| r.start_us, video_timescale);
             try vt.durations.append(gpa, @intCast(@max(b2 - a, 1)));
@@ -827,6 +832,12 @@ pub const Recorder = struct {
     }
 
     /// Escreve o resto e fecha o arquivo.
+    /// Termina com o último quadro durando até `end_us` (a hora de parar, no relógio dos quadros).
+    pub fn finishAt(r: *Recorder, end_us: u64) void {
+        r.end_us = end_us;
+        r.finish();
+    }
+
     pub fn finish(r: *Recorder) void {
         r.flush(true) catch {};
         _ = cio.fclose(r.file);

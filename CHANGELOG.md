@@ -65,6 +65,9 @@ Conversa com a 3.0 (os campos novos são opcionais).
   (Windows e X11; no Wayland, com o telinha em foco).
 - **Print de uma transmissão** (botão no quadro): PNG na resolução cheia,
   na pasta dos clipes.
+- Gravação com a tela parada no fim não sai mais curta: o último quadro dura
+  até a hora em que você parou (e o som vai até lá). Se o pedido de quadro
+  completo pra começar a gravação se perder, é pedido de novo.
 - **Duração do clipe** escolhível (15 s, 30 s, 1, 2 ou 3 min). Com clipe
   curto, quem assiste pede um quadro completo mais seguido, pro clipe começar
   perto do tempo pedido.

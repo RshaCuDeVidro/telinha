@@ -301,6 +301,12 @@ pub const View = struct {
                     v.clip_req_us = now;
                     v.client.sendKeyreqReason(v.stream, proto.keyreq_record);
                 }
+                // gravação esperando o quadro completo: se o pedido se perdeu (o
+                // servidor junta pedidos próximos), pede de novo
+                if (!key and now - v.clip_req_us > 1_500_000 and cb.recState().waiting) {
+                    v.clip_req_us = now;
+                    v.client.sendKeyreqReason(v.stream, proto.keyreq_record);
+                }
             }
         }
         v.qmutex.lock();

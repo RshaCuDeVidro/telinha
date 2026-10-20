@@ -46,7 +46,7 @@ pub const Buffer = struct {
     }
 
     pub fn destroy(b: *Buffer) void {
-        _ = b.stopRecording();
+        _ = b.stopRecording(0);
         for (b.frames.items) |f| gpa.free(f.data);
         for (b.packets.items) |p| gpa.free(p.data);
         b.frames.deinit(gpa);
@@ -249,13 +249,15 @@ pub const Buffer = struct {
     }
 
     /// Termina a gravação. Retorna a duração (ms), 0 se não tinha nada.
-    pub fn stopRecording(b: *Buffer) u64 {
+    /// `end_us`: a hora de parar, no relógio dos quadros (o da sala); 0 = no último quadro.
+    pub fn stopRecording(b: *Buffer, end_us: u64) u64 {
         b.mutex.lock();
         defer b.mutex.unlock();
         b.rec_waiting = false;
         const r = b.recorder orelse return 0;
-        const ms = r.durationMs();
-        r.finish();
+        const end = if (end_us > r.last_video_us) end_us else 0;
+        const ms = if (end > 0) (end - r.start_us) / 1000 else r.durationMs();
+        r.finishAt(end);
         b.recorder = null;
         return ms;
     }
