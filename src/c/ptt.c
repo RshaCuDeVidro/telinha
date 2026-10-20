@@ -1,7 +1,7 @@
 // Apertar pra falar: a tecla vale mesmo com outro programa em foco (o jogo).
 //   Windows: GetAsyncKeyState (teclado e botões laterais do mouse).
-//   Linux X11: XQueryKeymap numa conexão própria com o servidor X (só quem
-//   chama é a thread do microfone). Wayland nativo: o compositor não deixa ler
+//   Linux X11: XQueryKeymap numa conexão própria com o servidor X (uma por
+//   thread: a do microfone e a do atalho de clipe). Wayland nativo: o compositor não deixa ler
 //   o teclado de fora; aí só vale com o telinha em foco (ver ptt.zig).
 #include "ptt.h"
 
@@ -28,8 +28,9 @@ int ptt_global_supported(void) {
 #include <X11/Xlib.h>
 #include <stdlib.h>
 
-static Display *dpy;
-static int tried;
+// uma conexão por thread (o Xlib não pode ser usado de duas threads na mesma)
+static _Thread_local Display *dpy;
+static _Thread_local int tried;
 
 int ptt_global_down(int x11_keycode, int mouse_button) {
     (void)mouse_button; // botões laterais (8/9) não aparecem na máscara do X

@@ -60,6 +60,9 @@ Conversa com a 3.0 (os campos novos são opcionais).
   (salvou o arquivo, o tema muda; uma thread olha a cada 1,5 s e só monta o
   tema se o conteúdo mudou). Fira Code nos temas pwnd, **tamanho da interface** (80% a
   150%) e **efeito CRT** opcional (linhas de tela antiga, sem cobrir o vídeo).
+- **Atalho global pra salvar clipe** (Geral → Clipes): uma tecla ou botão do
+  mouse que salva o clipe da transmissão em destaque com o jogo em foco
+  (Windows e X11; no Wayland, com o telinha em foco).
 - **Print de uma transmissão** (botão no quadro): PNG na resolução cheia,
   na pasta dos clipes.
 - **Duração do clipe** escolhível (15 s, 30 s, 1, 2 ou 3 min). Com clipe

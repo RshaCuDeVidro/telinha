@@ -33,6 +33,7 @@ const pctest = @import("pctest.zig");
 const crash = @import("crash.zig");
 const ptt = @import("ptt.zig");
 const cssfile = @import("cssfile.zig");
+const hotkey = @import("hotkey.zig");
 const i18n = @import("i18n.zig");
 const tr = i18n.tr;
 const build_options = @import("build_options");
@@ -543,6 +544,9 @@ pub const App = struct {
     crash_prompt: bool = false, // travou da última vez: pergunta se manda o relatório
     crash_sending: bool = false, // mandando o relatório pelo aviso (avisa quando acabar)
     ptt_capture: bool = false, // esperando a tecla nova do apertar pra falar
+    clip_key_capture: bool = false, // esperando a tecla do atalho de clipe
+    clip_key_last: f64 = -10,
+    clip_key_prev: bool = false, // a tecla estava apertada no quadro passado (com o telinha em foco)
     last_saved: [512]u8 = undefined, // último clipe/gravação salvo (modo de testes)
     last_saved_len: usize = 0,
     /// Transmissão com o ponteiro "olha aqui" ligado (o mouse vira o ponteiro).
@@ -609,6 +613,8 @@ pub const App = struct {
         _ = a.takeCssFile();
         a.applyTheme();
         a.applyPtt();
+        hotkey.on_press = wakeUi;
+        a.applyClipKey();
         clip.keep_secs.store(@intCast(std.math.clamp(a.cfg.clip_secs, 10, 300)), .release);
         frame_cap_fps = @intCast(@max(0, a.cfg.ui_fps_cap));
         codec.setHwEffort(@intCast(a.cfg.hw_effort));
@@ -1905,6 +1911,7 @@ pub const App = struct {
         audio.mixer.housekeep(); // saída de som parada depois de 5 s de silêncio
         if (debuglog.on()) a.debugTick();
         a.pollPttKey();
+        a.pollClipKey();
         if (a.takeCssFile()) a.applyTheme();
         if (a.client) |cl| if (c.igGetTime() > a.draw_prune_at) {
             a.draw_prune_at = c.igGetTime() + 2;
@@ -4886,6 +4893,21 @@ pub const App = struct {
             pushFont(font_regular, 12);
             textColored(col.faint, fmtZ("Usa até ~{d} MB de memória por transmissão assistida (depende da qualidade).", .{@divTrunc(a.cfg.clip_secs * 3, 4) + 4}));
             popFont();
+            c.igDummy(v2(0, S(6)));
+            fieldLabel("ATALHO PRA SALVAR CLIPE (vale com o jogo em foco)");
+            if (a.clip_key_capture) a.captureClipKey();
+            var kb: [32]u8 = undefined;
+            const bw = (w - S(8)) * 0.7;
+            const label = if (a.clip_key_capture) fmtZ("{s}###clipkey", .{tr("Aperte a tecla (ou um botão lateral do mouse)...")}) else fmtZ("{s}  {s}###clipkey", .{ tr("Tecla:"), keyName(a.cfg.clip_key, a.cfg.clip_scancode, a.cfg.clip_mouse, &kb) });
+            if (secondaryButton(label, v2(bw, S(34)))) a.clip_key_capture = true;
+            c.igSameLine(0, S(8));
+            if (secondaryButton(tr("Sem atalho###clipkeyoff"), v2(w - bw - S(8), S(34)))) {
+                a.cfg.clip_key = 0;
+                a.cfg.clip_mouse = -1;
+                a.clip_key_capture = false;
+                a.applyClipKey();
+                config.save(&a.cfg);
+            }
         }
     }
 
@@ -4955,6 +4977,19 @@ pub const App = struct {
         ptt.configure(key, -1);
     }
 
+    /// Atalho de clipe: a thread (de fora) ou a própria janela (com foco; o Wayland só deixa assim).
+    fn pollClipKey(a: *App) void {
+        if (hotkey.pressed.swap(false, .acq_rel)) a.clipHotkey();
+        if (a.clip_key_capture or (a.cfg.clip_key <= 0 and a.cfg.clip_mouse < 0)) return;
+        const focused = c.glfwGetWindowAttrib(a.window, c.GLFW_FOCUSED) != 0;
+        const down = focused and !c.igGetIO_Nil().*.WantTextInput and if (a.cfg.clip_mouse >= 0)
+            c.glfwGetMouseButton(a.window, a.cfg.clip_mouse) == c.GLFW_PRESS
+        else
+            c.glfwGetKey(a.window, a.cfg.clip_key) == c.GLFW_PRESS;
+        if (down and !a.clip_key_prev) a.clipHotkey();
+        a.clip_key_prev = down;
+    }
+
     /// Com o telinha em foco, a interface também vê a tecla (o Wayland só deixa assim).
     fn pollPttKey(a: *App) void {
         if (!a.cfg.voice_ptt or a.ptt_capture) {
@@ -4971,9 +5006,13 @@ pub const App = struct {
 
     /// Nome da tecla pra mostrar ("V", "F5", "Mouse 4").
     fn pttKeyName(a: *App, buf: []u8) []const u8 {
-        if (a.cfg.ptt_mouse >= 0) return std.fmt.bufPrint(buf, "Mouse {d}", .{a.cfg.ptt_mouse + 1}) catch "?";
-        const k = a.cfg.ptt_key;
-        if (c.glfwGetKeyName(k, a.cfg.ptt_scancode)) |n| {
+        return keyName(a.cfg.ptt_key, a.cfg.ptt_scancode, a.cfg.ptt_mouse, buf);
+    }
+
+    fn keyName(k: i32, scancode: i32, mouse: i32, buf: []u8) []const u8 {
+        if (mouse >= 0) return std.fmt.bufPrint(buf, "Mouse {d}", .{mouse + 1}) catch "?";
+        if (k <= 0) return tr("nenhum");
+        if (c.glfwGetKeyName(k, scancode)) |n| {
             const name = std.mem.span(n);
             if (name.len == 1) return std.fmt.bufPrint(buf, "{c}", .{std.ascii.toUpper(name[0])}) catch "?";
             return std.fmt.bufPrint(buf, "{s}", .{name}) catch "?";
@@ -4994,31 +5033,97 @@ pub const App = struct {
     }
 
     /// Esperando a tecla nova: a primeira apertada (ou botão do meio/lateral do mouse).
-    fn capturePttKey(a: *App) void {
-        if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
-            a.ptt_capture = false;
-            return;
-        }
+    /// Uma tecla configurável (apertar pra falar, atalho de clipe).
+    const KeyRef = struct { key: *i32, scancode: *i32, mouse: *i32 };
+
+    /// Esperando a tecla nova: a primeira apertada (ou botão do meio/lateral do
+    /// mouse). true = pegou; false = Esc (cancelou); null = ainda esperando.
+    fn captureKey(a: *App, r: KeyRef) ?bool {
+        if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) return false;
         var k: c_int = c.GLFW_KEY_SPACE;
         while (k <= c.GLFW_KEY_LAST) : (k += 1) {
             if (k == c.GLFW_KEY_ESCAPE) continue;
             if (c.glfwGetKey(a.window, k) != c.GLFW_PRESS) continue;
-            a.cfg.ptt_key = k;
-            a.cfg.ptt_scancode = c.glfwGetKeyScancode(k);
-            a.cfg.ptt_mouse = -1;
-            a.ptt_capture = false;
-            break;
+            r.key.* = k;
+            r.scancode.* = c.glfwGetKeyScancode(k);
+            r.mouse.* = -1;
+            return true;
         }
         for ([_]c_int{ 2, 3, 4 }) |btn| {
-            if (a.ptt_capture and c.glfwGetMouseButton(a.window, btn) == c.GLFW_PRESS) {
-                a.cfg.ptt_mouse = btn;
-                a.ptt_capture = false;
+            if (c.glfwGetMouseButton(a.window, btn) == c.GLFW_PRESS) {
+                r.key.* = 0;
+                r.mouse.* = btn;
+                return true;
             }
         }
-        if (!a.ptt_capture) {
+        redrawIn(0.05);
+        return null;
+    }
+
+    fn capturePttKey(a: *App) void {
+        const got = a.captureKey(.{ .key = &a.cfg.ptt_key, .scancode = &a.cfg.ptt_scancode, .mouse = &a.cfg.ptt_mouse }) orelse return;
+        a.ptt_capture = false;
+        if (got) {
             a.applyPtt();
             config.save(&a.cfg);
-        } else redrawIn(0.05);
+        }
+    }
+
+    fn captureClipKey(a: *App) void {
+        const got = a.captureKey(.{ .key = &a.cfg.clip_key, .scancode = &a.cfg.clip_scancode, .mouse = &a.cfg.clip_mouse }) orelse return;
+        a.clip_key_capture = false;
+        if (got) {
+            a.applyClipKey();
+            config.save(&a.cfg);
+        }
+    }
+
+    /// Tecla no formato que o sistema lê de fora (scancode no Windows, keycode do X11).
+    fn globalKey(key: i32, scancode: i32) i32 {
+        var sc = scancode;
+        if (sc == 0 and key > 0) sc = c.glfwGetKeyScancode(key);
+        // Linux: o GLFW no Wayland dá o código do evdev; o X11 soma 8
+        return if (!sync.is_windows and c.glfwGetPlatform() == c.GLFW_PLATFORM_WAYLAND) sc + 8 else sc;
+    }
+
+    fn applyClipKey(a: *App) void {
+        if (a.cfg.clip_mouse >= 0) {
+            hotkey.configure(0, a.cfg.clip_mouse);
+        } else if (a.cfg.clip_key > 0) {
+            hotkey.configure(globalKey(a.cfg.clip_key, a.cfg.clip_scancode), -1);
+        } else hotkey.configure(0, -1);
+    }
+
+    /// Atalho de clipe: a transmissão em destaque (ou a primeira assistida, ou a minha).
+    fn clipHotkey(a: *App) void {
+        const now = c.igGetTime();
+        if (now - a.clip_key_last < 1.0) return; // o mesmo aperto visto de dois jeitos
+        a.clip_key_last = now;
+        var target: ?*View = null;
+        for (a.views.items) |v| {
+            if (v.clip == null) continue;
+            if (a.focused != null and a.focused.? == v.stream) {
+                target = v;
+                break;
+            }
+            if (target == null) target = v;
+        }
+        if (target) |v| {
+            var nb: [64]u8 = undefined;
+            var name: []const u8 = "";
+            if (a.client) |cl| {
+                cl.mutex.lock();
+                for (cl.members.items) |*m| if (m.id == v.member()) {
+                    const n = @min(m.name_len, nb.len);
+                    @memcpy(nb[0..n], m.nameSlice()[0..n]);
+                    name = nb[0..n];
+                };
+                cl.mutex.unlock();
+            }
+            a.saveClip(v.clip.?, name);
+        } else if (a.sharer) |sh| {
+            if (sh.clip) |cb| a.saveClip(cb, tr("minha_tela"));
+        } else a.toast("Nada pra clipar: assista alguém (ou transmita) com os clipes ligados.", .{}, true);
     }
 
     fn settingsVoice(a: *App, w: f32) void {
@@ -5644,8 +5749,8 @@ pub const App = struct {
         try w.print(",\"fps\":{d},\"quality\":{d},\"mode\":{d},\"resolution\":{d},\"cursor\":{},\"audio\":{},\"hardware\":{},\"stats_always\":{},\"show_chat\":{}", .{
             cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.stats_always, cf.show_chat,
         });
-        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_exclude\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f},\"theme\":{f},\"custom_theme\":{f},\"custom_css\":{f},\"css_status\":{f},\"auto_quality\":{},\"resolution_idx\":{d},\"ui_zoom\":{d},\"crt\":{},\"voice_ptt\":{},\"ptt_key\":{d},\"ptt_mouse\":{d}}}", .{
-            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), s(config.getStr(&cf.audio_exclude)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)), s(config.getStr(&cf.theme)), s(config.getStr(&cf.custom_theme)), s(config.getStr(&cf.custom_css)), s(@tagName(cssfile.getStatus())), cf.auto_quality, cf.resolution, cf.ui_zoom, cf.crt, cf.voice_ptt, cf.ptt_key, cf.ptt_mouse,
+        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_exclude\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f},\"theme\":{f},\"custom_theme\":{f},\"custom_css\":{f},\"css_status\":{f},\"auto_quality\":{},\"resolution_idx\":{d},\"ui_zoom\":{d},\"crt\":{},\"voice_ptt\":{},\"ptt_key\":{d},\"ptt_mouse\":{d},\"clip_key\":{d}}}", .{
+            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), s(config.getStr(&cf.audio_exclude)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)), s(config.getStr(&cf.theme)), s(config.getStr(&cf.custom_theme)), s(config.getStr(&cf.custom_css)), s(@tagName(cssfile.getStatus())), cf.auto_quality, cf.resolution, cf.ui_zoom, cf.crt, cf.voice_ptt, cf.ptt_key, cf.ptt_mouse, cf.clip_key,
         });
         try w.print(",\"lang\":{f}", .{s(@tagName(i18n.get()))});
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);

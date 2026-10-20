@@ -758,6 +758,34 @@ def print_da_transmissao():
 
 
 @test
+def atalho_de_clipe():
+    """Atalho global de clipe: escolhe a tecla nas configurações; apertando com outra janela em foco (o jogo), salva o clipe."""
+    from Xlib import X as XX
+    with Session("atalhoclipe") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"])
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        aid = b.member_id("Ana")
+        b.wait(lambda st: any(v["stream"] == aid and v["clip_secs"] >= 3 for v in st["views"]), 20, "guardar uns segundos")
+        b.click("##gear")
+        b.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        settings_click(b, "##clipkey")
+        time.sleep(0.3)
+        b.key("k")
+        b.wait(lambda st: st["cfg"]["clip_key"] == 75, 3, "escolher a tecla K")
+        settings_click(b, "Fechar")
+        b.wait(lambda st: not st["settings_modal"], 3, "fechar as configurações")
+        b.d.set_input_focus(XX.NONE, XX.RevertToNone, XX.CurrentTime)
+        b.d.sync()
+        time.sleep(0.5)
+        b.key("k")
+        st = b.wait(lambda st: st["last_saved"].endswith(".mp4") and st["clip_jobs"] == 0 and os.path.exists(st["last_saved"]), 10, "salvar o clipe pelo atalho")
+        frames, dur, _ = probe(st["last_saved"])
+        log(f"clipe pelo atalho: {frames} quadros, {dur:.1f} s")
+        expect(frames >= 10, "clipe vazio")
+
+
+@test
 def janela_flutuante():
     """Janela flutuante: abre pelo quadro, mostra o vídeo, fecha pelo sistema, pelo botão dela e sozinha quando a transmissão some."""
     S = os.environ.get("QA_SHOTS")

@@ -642,6 +642,12 @@ const table = [_][2][]const u8{
     .{ "Não consegui salvar o print em {s}", "Couldn't save the screenshot to {s}" },
     .{ "Print (PNG, na resolução da transmissão)", "Screenshot (PNG, at the stream's resolution)" },
 
+    .{ "nenhum", "none" },
+    .{ "minha_tela", "my_screen" },
+    .{ "Nada pra clipar: assista alguém (ou transmita) com os clipes ligados.", "Nothing to clip: watch someone (or stream) with clips on." },
+    .{ "ATALHO PRA SALVAR CLIPE (vale com o jogo em foco)", "SAVE CLIP SHORTCUT (works with the game focused)" },
+    .{ "Sem atalho", "No shortcut" },
+
     // temas
     .{ "TEMA", "THEME" },
     .{ "Escuro", "Dark" },
