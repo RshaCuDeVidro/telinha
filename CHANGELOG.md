@@ -58,6 +58,12 @@ Conversa com a 3.0 (os campos novos são opcionais).
   variáveis do `:root` (`--bg-dark`, `--neon-purple`...); dá pra copiar o
   tema como CSS. Fira Code nos temas pwnd, **tamanho da interface** (80% a
   150%) e **efeito CRT** opcional (linhas de tela antiga, sem cobrir o vídeo).
+- **Transmitir só um pedaço da tela**: no quadro da sua transmissão, o botão
+  de recortar deixa arrastar um retângulo em cima da própria tela (botão
+  direito volta pra tela inteira).
+- **Desenhar por cima da transmissão**: quem assiste (ou quem transmite) risca
+  em cima do vídeo, todo mundo que está vendo aquela tela vê, e o traço some
+  sozinho em alguns segundos (botão direito apaga os seus).
 - **Apertar pra falar** (Configurações → Voz): a voz só sai com a tecla (ou
   botão lateral do mouse) apertada, valendo com o jogo em foco no Windows e
   no X11; no Wayland, com o telinha em foco.

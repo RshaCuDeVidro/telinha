@@ -79,6 +79,8 @@ const ic = struct {
     const gauge = &iconArr(0xF625);
     const palette = &iconArr(0xF53F);
     const info = &iconArr(0xF05A);
+    const pen = &iconArr(0xF303);
+    const crop = &iconArr(0xF565);
     const tv = &iconArr(0xF26C);
     const gear = &iconArr(0xF013);
     const leave = &iconArr(0xF2F5);
@@ -540,6 +542,19 @@ pub const App = struct {
     last_saved_len: usize = 0,
     /// Transmissão com o ponteiro "olha aqui" ligado (o mouse vira o ponteiro).
     pointer_tile: ?u32 = null,
+    // desenhar por cima de uma transmissão
+    draw_tile: ?u32 = null,
+    draw_pts: [proto.draw_max_points][2]u16 = undefined,
+    draw_n: usize = 0,
+    draw_new: bool = false, // o próximo envio começa um traço
+    draw_active: bool = false, // mouse apertado desenhando
+    draw_sent_us: u64 = 0,
+    draw_prune_at: f64 = 0,
+    // transmitir só um pedaço da tela (normalizado: x0, y0, x1, y1)
+    crop: [4]f32 = .{ 0, 0, 1, 1 },
+    crop_saved: [4]f32 = .{ 0, 0, 1, 1 },
+    crop_tile: ?u32 = null, // escolhendo o pedaço nesse quadro
+    crop_from: ?[2]f32 = null,
     pointer_sent_us: u64 = 0,
     pointer_shown: bool = false, // mandamos um ponteiro visível (precisa esconder ao sair)
     pointer_stream_sent: u32 = 0,
@@ -1477,6 +1492,7 @@ pub const App = struct {
             if (a.chosenSource()) |src| st.audio_pid = src.pid;
         } else config.setStr(&st.audio_app, cur);
         config.setStr(&st.audio_exclude, config.getStr(&a.cfg.audio_exclude));
+        st.crop = a.crop;
         return st;
     }
 
@@ -1583,6 +1599,8 @@ pub const App = struct {
         }
         a.sharer = null;
         a.auto_cap_seen = 0;
+        a.crop = .{ 0, 0, 1, 1 };
+        a.crop_tile = null;
         if (a.focused == 0) a.focused = null;
     }
 
@@ -1845,6 +1863,10 @@ pub const App = struct {
         audio.mixer.housekeep(); // saída de som parada depois de 5 s de silêncio
         if (debuglog.on()) a.debugTick();
         a.pollPttKey();
+        if (a.client) |cl| if (c.igGetTime() > a.draw_prune_at) {
+            a.draw_prune_at = c.igGetTime() + 2;
+            cl.pruneStrokes(sync.nowUs(), stroke_life_us);
+        };
         a.checkClipJobs();
         a.checkChatImages();
         a.n_tile_rects = 0;
@@ -3140,7 +3162,8 @@ pub const App = struct {
             if (zm.z <= 1.001) zm.follow = false;
         }
         // arrastar com zoom: move a imagem (e para de seguir o cursor)
-        if (tile_active and zm.z > 1.001 and c.igIsMouseDragging(0, -1)) {
+        const tool_on = (a.draw_tile != null and a.draw_tile.? == t.stream) or (a.crop_tile != null and a.crop_tile.? == t.stream);
+        if (tile_active and zm.z > 1.001 and !tool_on and c.igIsMouseDragging(0, -1)) {
             const half0 = 0.5 / zm.z;
             zm.cx -= io.*.MouseDelta.x / iw * 2 * half0;
             zm.cy -= io.*.MouseDelta.y / ih * 2 * half0;
@@ -3172,6 +3195,13 @@ pub const App = struct {
         // o meu, quando o modo ponteiro está ligado nesse quadro
         const pointing = a.pointer_tile != null and a.pointer_tile.? == t.stream;
         if (pointing) a.updatePointer(t, over and in_img and on_tile, ix, iy, iw, ih, uv0, uv1, mouse);
+        // traços desenhados por cima (de todo mundo) e o meu, se estiver desenhando aqui
+        a.drawStrokes(t, ix, iy, iw, ih, uv0, uv1);
+        const drawing = a.draw_tile != null and a.draw_tile.? == t.stream;
+        if (drawing) a.updateDraw(t, over and in_img and on_tile, ix, iy, iw, ih, uv0, uv1, mouse);
+        const cropping = a.crop_tile != null and a.crop_tile.? == t.stream;
+        if (cropping) a.updateCrop(over and in_img and on_tile, ix, iy, iw, ih, uv0, uv1, mouse);
+        const tool = pointing or drawing or cropping; // o clique é da ferramenta, não do quadro
 
         // etiqueta com o nome
         const small = h < S(160);
@@ -3229,11 +3259,11 @@ pub const App = struct {
             const focused = a.focused != null and a.focused.? == t.stream;
             if (iconButton("##focus", if (focused) ic.compress else ic.expand, bs, col.white, withAlpha(col.blurple, 200), if (focused) tr("Voltar pra grade") else tr("Destacar (duplo clique: tela cheia)"))) {
                 a.focused = if (focused) null else t.stream;
-            } else if (dbl and !pointing) {
+            } else if (dbl and !tool) {
                 a.focused = t.stream;
                 a.theater = !a.theater;
                 if (a.theater != a.fullscreen) a.toggleFullscreen();
-            } else if (clicked and !big and !pointing) {
+            } else if (clicked and !big and !tool) {
                 // (com o ponteiro ligado, o clique é o "olha aqui", não destacar)
                 a.focused = t.stream;
             }
@@ -3244,11 +3274,37 @@ pub const App = struct {
                 rectFill(d, bx, by, bx + bs, by + bs, if (pointing) col.blurple else col.overlay, S(6));
                 if (iconButton("##pointer", ic.hand_pointer, bs, col.white, withAlpha(col.blurple, 200), if (pointing) tr("Desligar o ponteiro") else tr("Ponteiro: quem assiste vê onde você aponta (clique chama atenção)"))) {
                     if (pointing) a.stopPointer() else {
-                        a.stopPointer();
+                        a.stopTools();
                         a.pointer_tile = t.stream;
                     }
                 }
                 bx -= bs + S(6);
+                // desenhar por cima (todo mundo vê; some sozinho)
+                c.igSetCursorScreenPos(v2(bx, by));
+                rectFill(d, bx, by, bx + bs, by + bs, if (drawing) col.blurple else col.overlay, S(6));
+                if (iconButton("##draw", ic.pen, bs, col.white, withAlpha(col.blurple, 200), if (drawing) tr("Parar de desenhar (botão direito apaga os seus traços)") else tr("Desenhar por cima: quem assiste e quem transmite veem; some sozinho em alguns segundos"))) {
+                    if (drawing) a.draw_tile = null else {
+                        a.stopTools();
+                        a.draw_tile = t.stream;
+                    }
+                }
+                bx -= bs + S(6);
+                // a minha tela: transmitir só um pedaço
+                if (t.view == null and proto.kindOf(t.stream) == proto.kind_screen and a.sharer != null) {
+                    const cropped = a.crop[0] > 0 or a.crop[1] > 0 or a.crop[2] < 1 or a.crop[3] < 1;
+                    c.igSetCursorScreenPos(v2(bx, by));
+                    rectFill(d, bx, by, bx + bs, by + bs, if (cropping or cropped) col.blurple else col.overlay, S(6));
+                    if (iconButton("##crop", ic.crop, bs, col.white, withAlpha(col.blurple, 200), if (cropping) tr("Cancelar o recorte") else tr("Transmitir só um pedaço da tela"))) {
+                        if (cropping) a.cancelCrop() else {
+                            a.stopTools();
+                            a.crop_saved = a.crop;
+                            a.crop = .{ 0, 0, 1, 1 }; // a prévia mostra a tela inteira pra escolher
+                            a.crop_tile = t.stream;
+                            a.applyCrop();
+                        }
+                    }
+                    bx -= bs + S(6);
+                }
                 // janela flutuante (só transmissões de outras pessoas)
                 if (t.view != null) {
                     const open = a.findPip(t.stream) != null;
@@ -3621,6 +3677,144 @@ pub const App = struct {
         const dir = clip.folder(&buf);
         if (dir.len == 0) return;
         if (!openPath(dir)) a.toast("Pasta dos clipes: {s}", .{dir}, false);
+    }
+
+    /// Desliga ponteiro, desenho e recorte (um de cada vez).
+    fn stopTools(a: *App) void {
+        a.stopPointer();
+        a.draw_tile = null;
+        a.draw_active = false;
+        if (a.crop_tile != null) a.cancelCrop();
+    }
+
+    // -------------------------------------------- desenho por cima
+
+    const stroke_life_us: u64 = 6_000_000; // o traço some 6 s depois do último ponto
+
+    fn strokePoint(p: [2]u16, ix: f32, iy: f32, iw: f32, ih: f32, uv0: c.ImVec2_c, uv1: c.ImVec2_c) c.ImVec2_c {
+        const u = @as(f32, @floatFromInt(p[0])) / 65535.0;
+        const v = @as(f32, @floatFromInt(p[1])) / 65535.0;
+        return v2(ix + (u - uv0.x) / (uv1.x - uv0.x) * iw, iy + (v - uv0.y) / (uv1.y - uv0.y) * ih);
+    }
+
+    fn drawStrokes(a: *App, t: *const Tile, ix: f32, iy: f32, iw: f32, ih: f32, uv0: c.ImVec2_c, uv1: c.ImVec2_c) void {
+        const cl = a.client orelse return;
+        const d = drawList();
+        const now = sync.nowUs();
+        var next: f64 = std.math.inf(f64);
+        var pts: [client_mod.Stroke.max_points]c.ImVec2_c = undefined;
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        for (cl.strokes.items) |*st| {
+            if (st.stream != t.ptr_stream or st.n == 0) continue;
+            const age = now -| st.last_us;
+            if (age >= stroke_life_us) continue;
+            const fade_from = stroke_life_us - 1_000_000;
+            const alpha: u8 = if (age < fade_from) 230 else @intCast(230 * (stroke_life_us - age) / 1_000_000);
+            // redesenha quando começar a sumir (e durante o sumiço)
+            next = @min(next, if (age < fade_from) @as(f64, @floatFromInt(fade_from - age)) / 1e6 else 0.04);
+            for (st.pts[0..st.n], 0..) |p, i| pts[i] = strokePoint(p, ix, iy, iw, ih, uv0, uv1);
+            const color = withAlpha(avatarColor(st.from), alpha);
+            if (st.n == 1) {
+                c.ImDrawList_AddCircleFilled(d, pts[0], S(2.5), color, 0);
+            } else c.ImDrawList_AddPolyline(d, &pts, st.n, color, S(3), 0);
+        }
+        if (next != std.math.inf(f64)) redrawIn(next);
+    }
+
+    fn updateDraw(a: *App, t: *const Tile, inside: bool, ix: f32, iy: f32, iw: f32, ih: f32, uv0: c.ImVec2_c, uv1: c.ImVec2_c, mouse: c.ImVec2_c) void {
+        const cl = a.client orelse return;
+        const now = sync.nowUs();
+        // botão direito: apaga os meus traços nessa transmissão
+        if (inside and c.igIsMouseClicked_Bool(1, false)) {
+            cl.addDraw(cl.my_id, t.ptr_stream, proto.draw_clear, &.{});
+            cl.sendDraw(t.ptr_stream, proto.draw_clear, &.{});
+        }
+        const down = c.igIsMouseDown_Nil(0);
+        if (down and (a.draw_active or (inside and c.igIsMouseClicked_Bool(0, false)))) {
+            if (!a.draw_active) {
+                a.draw_active = true;
+                a.draw_n = 0;
+                a.draw_new = true;
+            }
+            const u = uv0.x + std.math.clamp((mouse.x - ix) / iw, 0, 1) * (uv1.x - uv0.x);
+            const v = uv0.y + std.math.clamp((mouse.y - iy) / ih, 0, 1) * (uv1.y - uv0.y);
+            const p = [2]u16{ @intFromFloat(std.math.clamp(u, 0, 1) * 65535), @intFromFloat(std.math.clamp(v, 0, 1) * 65535) };
+            const moved = a.draw_n == 0 or @abs(@as(i32, p[0]) - @as(i32, a.draw_pts[a.draw_n - 1][0])) + @abs(@as(i32, p[1]) - @as(i32, a.draw_pts[a.draw_n - 1][1])) > 80;
+            if (moved and a.draw_n < a.draw_pts.len) {
+                a.draw_pts[a.draw_n] = p;
+                a.draw_n += 1;
+            }
+        }
+        // manda em pedacinhos (quem assiste vê o traço nascendo)
+        if (a.draw_n > 0 and (a.draw_n == a.draw_pts.len or now - a.draw_sent_us > 33_000 or !down)) {
+            const flags: u8 = if (a.draw_new) proto.draw_new else 0;
+            cl.addDraw(cl.my_id, t.ptr_stream, flags, a.draw_pts[0..a.draw_n]);
+            cl.sendDraw(t.ptr_stream, flags, a.draw_pts[0..a.draw_n]);
+            // o próximo pedaço continua do último ponto (sem buraco no traço)
+            a.draw_pts[0] = a.draw_pts[a.draw_n - 1];
+            a.draw_n = if (down) 1 else 0;
+            a.draw_new = false;
+            a.draw_sent_us = now;
+        }
+        if (!down) a.draw_active = false;
+    }
+
+    // -------------------------------------------- recorte (um pedaço da tela)
+
+    fn applyCrop(a: *App) void {
+        if (a.sharer) |s| s.update(a.shareSettings());
+    }
+
+    fn cancelCrop(a: *App) void {
+        a.crop = a.crop_saved;
+        a.crop_tile = null;
+        a.crop_from = null;
+        a.applyCrop();
+    }
+
+    fn updateCrop(a: *App, inside: bool, ix: f32, iy: f32, iw: f32, ih: f32, uv0: c.ImVec2_c, uv1: c.ImVec2_c, mouse: c.ImVec2_c) void {
+        const d = drawList();
+        const norm = struct {
+            fn f(m: c.ImVec2_c, x0: f32, y0: f32, w: f32, h: f32, a0: c.ImVec2_c, a1: c.ImVec2_c) [2]f32 {
+                return .{
+                    std.math.clamp(a0.x + std.math.clamp((m.x - x0) / w, 0, 1) * (a1.x - a0.x), 0, 1),
+                    std.math.clamp(a0.y + std.math.clamp((m.y - y0) / h, 0, 1) * (a1.y - a0.y), 0, 1),
+                };
+            }
+        }.f;
+        rectFill(d, ix, iy, ix + iw, iy + ih, rgba(0x000000, 120), 0);
+        const msg = tr("Arraste pra escolher o pedaço · botão direito: tela inteira · Esc: cancelar");
+        const ms = textSizeF(font_semibold, 13, msg);
+        rectFill(d, ix + (iw - ms.x) / 2 - S(10), iy + S(10), ix + (iw + ms.x) / 2 + S(10), iy + S(18) + ms.y, col.overlay, S(6));
+        drawTextF(d, font_semibold, 13, v2(ix + (iw - ms.x) / 2, iy + S(14)), col.white, msg);
+        if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) return a.cancelCrop();
+        if (inside and c.igIsMouseClicked_Bool(1, false)) {
+            a.crop = .{ 0, 0, 1, 1 };
+            a.crop_tile = null;
+            a.crop_from = null;
+            return a.applyCrop();
+        }
+        if (inside and c.igIsMouseClicked_Bool(0, false)) a.crop_from = norm(mouse, ix, iy, iw, ih, uv0, uv1);
+        const from = a.crop_from orelse return;
+        const to = norm(mouse, ix, iy, iw, ih, uv0, uv1);
+        const r = [4]f32{ @min(from[0], to[0]), @min(from[1], to[1]), @max(from[0], to[0]), @max(from[1], to[1]) };
+        const p0 = strokePointF(r[0], r[1], ix, iy, iw, ih, uv0, uv1);
+        const p1 = strokePointF(r[2], r[3], ix, iy, iw, ih, uv0, uv1);
+        rectFill(d, p0.x, p0.y, p1.x, p1.y, withAlpha(col.blurple, 50), 0);
+        c.ImDrawList_AddRect(d, p0, p1, col.blurple, 0, S(2), 0);
+        if (!c.igIsMouseDown_Nil(0)) {
+            a.crop_from = null;
+            if (r[2] - r[0] >= 0.04 and r[3] - r[1] >= 0.04) {
+                a.crop = r;
+                a.crop_tile = null;
+                a.applyCrop();
+            }
+        }
+    }
+
+    fn strokePointF(u: f32, v: f32, ix: f32, iy: f32, iw: f32, ih: f32, uv0: c.ImVec2_c, uv1: c.ImVec2_c) c.ImVec2_c {
+        return v2(ix + (u - uv0.x) / (uv1.x - uv0.x) * iw, iy + (v - uv0.y) / (uv1.y - uv0.y) * ih);
     }
 
     fn stopPointer(a: *App) void {
@@ -5264,6 +5458,13 @@ pub const App = struct {
         var ub: [32]u8 = undefined;
         try w.print(",\"opened\":{f},\"update\":{f},\"update_latest\":{f}", .{ s(qa_opened[0..qa_opened_len]), s(@tagName(update.getState())), s(update.latest(&ub)) });
         try w.print(",\"speaking\":{}", .{if (a.mic) |m| m.speaking.load(.monotonic) else false});
+        try w.print(",\"crop\":[{d:.3},{d:.3},{d:.3},{d:.3}],\"strokes\":[", .{ a.crop[0], a.crop[1], a.crop[2], a.crop[3] });
+        if (a.client) |cl| {
+            cl.mutex.lock();
+            for (cl.strokes.items, 0..) |st, i| try w.print("{s}{{\"from\":{d},\"stream\":{d},\"n\":{d}}}", .{ if (i > 0) "," else "", st.from, st.stream, st.n });
+            cl.mutex.unlock();
+        }
+        try w.writeAll("]");
         try w.print(",\"pctest\":{f},\"crash_pending\":{},\"crash_prompt\":{}", .{ s(@tagName(pctest.getState())), crash.pending(), a.crash_prompt });
         var dlb: [512]u8 = undefined;
         try w.print(",\"debug_on\":{},\"debug_size\":{d},\"debug_send\":{f},\"debug_result\":{f}", .{ debuglog.on(), debuglog.fileSize(), s(@tagName(debuglog.sendState())), s(debuglog.sendResult(&dlb)) });

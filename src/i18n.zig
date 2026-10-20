@@ -607,6 +607,13 @@ const table = [_][2][]const u8{
     .{ "No Wayland a tecla só vale com o telinha em foco (o sistema não deixa ler o teclado de outro programa).", "On Wayland the key only works with telinha focused (the system doesn't let apps read the keyboard of other programs)." },
     .{ "Vale com qualquer programa em foco (no jogo também). Clique no botão pra trocar a tecla.", "Works with any program focused (in-game too). Click the button to change the key." },
 
+    // desenho e recorte
+    .{ "Parar de desenhar (botão direito apaga os seus traços)", "Stop drawing (right click erases your strokes)" },
+    .{ "Desenhar por cima: quem assiste e quem transmite veem; some sozinho em alguns segundos", "Draw on top: viewers and the streamer see it; fades away after a few seconds" },
+    .{ "Cancelar o recorte", "Cancel cropping" },
+    .{ "Transmitir só um pedaço da tela", "Stream only part of the screen" },
+    .{ "Arraste pra escolher o pedaço · botão direito: tela inteira · Esc: cancelar", "Drag to pick the area · right click: whole screen · Esc: cancel" },
+
     // temas
     .{ "TEMA", "THEME" },
     .{ "Escuro", "Dark" },

@@ -503,6 +503,58 @@ def apertar_pra_falar():
         expect("voice_ptt=1" in ini and "ptt_key=71" in ini, "não salvou o apertar pra falar")
 
 
+def drag_abs(app, x0, y0, x1, y1, steps=10):
+    """Arrasta de (x0, y0) até (x1, y1), coordenadas da janela."""
+    win, _ = app.items()
+    app.move(win[0] + x0, win[1] + y0)
+    app.press()
+    for i in range(1, steps + 1):
+        app.move(win[0] + x0 + (x1 - x0) * i / steps, win[1] + y0 + (y1 - y0) * i / steps)
+    app.release()
+
+
+@test
+def recorte_e_desenho():
+    """Transmitir só um pedaço da tela (arrastando na própria prévia) e desenhar por cima (quem assiste desenha, quem transmite vê)."""
+    with Session("recorte") as s:
+        p = port()
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"])
+        bia = s.app("bia", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        aid = bia.member_id("Ana")
+        bia.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "a Bia ver a Ana")
+        st = ana.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live" and st["sharer"]["w"] > 0, 10, "a Ana transmitindo")
+        full_w, full_h = st["sharer"]["w"], st["sharer"]["h"]
+        # recorte: a metade do meio
+        t = ana.tile(0)  # a própria prévia
+        ana.click("##crop", within=t, hover_first=center(t))
+        time.sleep(0.8)
+        t = ana.tile(0)
+        w, h = t[2] - t[0], t[3] - t[1]
+        drag_abs(ana, t[0] + w * 0.25, t[1] + h * 0.25, t[0] + w * 0.75, t[1] + h * 0.75)
+        st = ana.wait(lambda st: st["sharer"]["w"] < full_w * 0.6 and st["crop"][0] > 0.2, 10, "a transmissão virar só o pedaço")
+        log(f"recortado: {st['sharer']['w']}x{st['sharer']['h']} (era {full_w}x{full_h}), recorte {st['crop']}")
+        bia.wait(lambda st: any(v["stream"] == aid and v["w"] < full_w * 0.6 for v in st["views"]), 10, "a Bia ver só o pedaço")
+        # botão direito no modo recorte: tela inteira de novo
+        t = ana.tile(0)
+        ana.click("##crop", within=t, hover_first=center(t))
+        time.sleep(0.5)
+        t = ana.tile(0)
+        ana.click_rect(t, button=3)
+        ana.wait(lambda st: st["sharer"]["w"] == full_w and st["crop"] == [0, 0, 1, 1], 10, "voltar pra tela inteira")
+        # desenho: a Bia risca, a Ana vê o traço da Bia na transmissão dela
+        bid = ana.member_id("Bia")
+        t = bia.tile(aid)
+        bia.click("##draw", within=t, hover_first=center(t))
+        t = bia.tile(aid)
+        w, h = t[2] - t[0], t[3] - t[1]
+        drag_abs(bia, t[0] + w * 0.3, t[1] + h * 0.5, t[0] + w * 0.7, t[1] + h * 0.6, steps=16)
+        st = ana.wait(lambda st: any(x["from"] == bid and x["stream"] == aid and x["n"] >= 3 for x in st["strokes"]), 5, "a Ana ver o traço da Bia")
+        log(f"traços na Ana: {st['strokes']}")
+        bia.wait(lambda st: any(x["stream"] == aid for x in st["strokes"]), 2, "a Bia ver o próprio traço")
+        # some sozinho
+        ana.wait(lambda st: not st["strokes"], 10, "o traço sumir")
+
+
 @test
 def convite_colado():
     """Convite copiado (em outro app) já aparece preenchido em 'Entrar numa sala' ao abrir o telinha."""

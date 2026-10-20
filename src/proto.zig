@@ -46,6 +46,7 @@ pub const Type = enum(u8) {
     pointer = 21, // C→S u32 stream, u16 x, u16 y, u8 flags | S→C u32 de, u32 stream, u16 x, u16 y, u8 flags
     react = 22, // C→S u32 id_da_mensagem, u8 reação, u8 ligado | S→C u32 id, u32 de, u8 reação, u8 ligado
     codec = 23, // S→C u8 tipo (kind_*), u8 codecs (bits 1<<codec): o que todo mundo que assiste consegue decodificar
+    draw = 24, // C→S u32 stream, u8 flags (draw_*), u16 n, n × (u16 x, u16 y) | S→C u32 de + o mesmo (desenho por cima da transmissão)
     _,
 };
 
@@ -135,6 +136,10 @@ pub const watch_clips: u8 = 1; // guardando os últimos segundos pra clipe: quer
 /// pointer
 pub const pointer_visible: u8 = 1;
 pub const pointer_ping: u8 = 2; // clique: chama atenção pro ponto
+/// draw: começo de um traço novo / apagar os traços de quem mandou nessa transmissão
+pub const draw_new: u8 = 1;
+pub const draw_clear: u8 = 2;
+pub const draw_max_points = 64; // por mensagem
 /// Coordenada de ponteiro/cursor: 0..65534 = posição relativa no quadro, 0xFFFF = nenhum.
 pub const coord_none: u16 = 0xFFFF;
 
@@ -461,7 +466,7 @@ pub const SendQueue = struct {
     }
 
     fn isUrgent(t: Type) bool {
-        return t == .ack or t == .viewer_slow or t == .voice or t == .pointer or t == .audio;
+        return t == .ack or t == .viewer_slow or t == .voice or t == .pointer or t == .audio or t == .draw;
     }
 
     pub fn pushUrgentOwned(q: *SendQueue, m: *Msg) void {

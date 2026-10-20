@@ -85,6 +85,7 @@ pub const Settings = struct {
     audio_exclude: [512]u8 = [_]u8{0} ** 512, // "tudo" menos esses programas (nomes separados por \n)
     clips: bool = true, // guarda os últimos 30 s (clipe da própria transmissão)
     auto_quality: bool = true, // baixa a resolução sozinho se o PC não der conta do fps
+    crop: [4]f32 = .{ 0, 0, 1, 1 }, // só esse pedaço da tela (x0, y0, x1, y1 de 0 a 1)
     kind: u8 = proto.kind_screen, // tela ou câmera (não muda com a transmissão rolando)
 };
 
@@ -115,6 +116,26 @@ fn slowEncodeUs(w: u32, h: u32) ?u64 {
 }
 pub const effectiveHeight = autoq.effectiveHeight;
 pub const AutoQuality = autoq.AutoQuality;
+
+/// O retângulo do recorte em pixels da fonte (pares, pelo menos 64x64).
+pub fn cropRect(crop: [4]f32, fw: u32, fh: u32) struct { x: u32, y: u32, w: u32, h: u32 } {
+    if (crop[0] <= 0 and crop[1] <= 0 and crop[2] >= 1 and crop[3] >= 1) return .{ .x = 0, .y = 0, .w = fw, .h = fh };
+    const ffw: f32 = @floatFromInt(fw);
+    const ffh: f32 = @floatFromInt(fh);
+    var x0: u32 = @intFromFloat(std.math.clamp(crop[0], 0, 1) * ffw);
+    var y0: u32 = @intFromFloat(std.math.clamp(crop[1], 0, 1) * ffh);
+    const x1: u32 = @intFromFloat(std.math.clamp(crop[2], 0, 1) * ffw);
+    const y1: u32 = @intFromFloat(std.math.clamp(crop[3], 0, 1) * ffh);
+    x0 &= ~@as(u32, 1);
+    y0 &= ~@as(u32, 1);
+    var w = (x1 -| x0) & ~@as(u32, 1);
+    var h = (y1 -| y0) & ~@as(u32, 1);
+    w = @max(@min(64, fw), @min(w, fw -| x0));
+    h = @max(@min(64, fh), @min(h, fh -| y0));
+    if (x0 + w > fw) x0 = fw - w;
+    if (y0 + h > fh) y0 = fh - h;
+    return .{ .x = x0, .y = y0, .w = w, .h = h };
+}
 
 pub fn outputSize(sw: u32, sh: u32, max_height: u32) struct { w: u32, h: u32 } {
     var ow = sw;
@@ -740,8 +761,13 @@ const Pipeline = struct {
     }
 
     fn ingest(p: *Pipeline, f: *const c.cap_frame) !void {
-        const sw: u32 = @intCast(f.width);
-        const sh: u32 = @intCast(f.height);
+        // recorte: a fonte vira só o retângulo escolhido (alinhado em pares)
+        const fw: u32 = @intCast(f.width);
+        const fh: u32 = @intCast(f.height);
+        const cr = cropRect(p.settings.crop, fw, fh);
+        const sw: u32 = cr.w;
+        const sh: u32 = cr.h;
+        const src_ptr: [*]const u8 = f.data + @as(usize, cr.y) * @as(usize, @intCast(f.stride)) + @as(usize, cr.x) * 4;
         const size = outputSize(sw, sh, effectiveHeight(p.settings.max_height, p.auto.cap));
         // sem escala e altura/largura ímpar: corta 1 linha/coluna (o H.264 quer pares)
         const exact = size.h == (sh & ~@as(u32, 1)) and size.w == (sw & ~@as(u32, 1));
@@ -771,7 +797,7 @@ const Pipeline = struct {
             .dst = p.cur,
             .ow = ow,
             .oh = oh,
-            .src = f.data,
+            .src = src_ptr,
             .sw = if (exact) ow else sw,
             .sh = if (exact) oh else sh,
             .stride = @intCast(f.stride),
@@ -782,14 +808,18 @@ const Pipeline = struct {
         // ponta do cursor, relativa ao quadro (quem assiste dá zoom seguindo ela)
         p.cursor_x = proto.coord_none;
         p.cursor_y = proto.coord_none;
-        if (f.cursor_known != 0 and f.cursor_px >= 0 and f.cursor_py >= 0 and f.cursor_px < f.width and f.cursor_py < f.height) {
-            p.cursor_x = @intCast(@divTrunc(@as(i64, f.cursor_px) * 65534, @max(1, f.width - 1)));
-            p.cursor_y = @intCast(@divTrunc(@as(i64, f.cursor_py) * 65534, @max(1, f.height - 1)));
+        const cpx = f.cursor_px - @as(c_int, @intCast(cr.x));
+        const cpy = f.cursor_py - @as(c_int, @intCast(cr.y));
+        if (f.cursor_known != 0 and cpx >= 0 and cpy >= 0 and cpx < sw and cpy < sh) {
+            p.cursor_x = @intCast(@divTrunc(@as(i64, cpx) * 65534, @max(1, sw - 1)));
+            p.cursor_y = @intCast(@divTrunc(@as(i64, cpy) * 65534, @max(1, sh - 1)));
         }
         if (f.cursor_draw != 0) {
             const sx = @as(f32, @floatFromInt(ow)) / @as(f32, @floatFromInt(if (exact) ow else sw));
             const sy = @as(f32, @floatFromInt(oh)) / @as(f32, @floatFromInt(if (exact) oh else sh));
-            drawCursor(p.cur, ow, oh, @intFromFloat(@as(f32, @floatFromInt(f.cursor_x)) * sx), @intFromFloat(@as(f32, @floatFromInt(f.cursor_y)) * sy), f.cursor_scale * sx);
+            const cx = f.cursor_x - @as(c_int, @intCast(cr.x));
+            const cy = f.cursor_y - @as(c_int, @intCast(cr.y));
+            drawCursor(p.cur, ow, oh, @intFromFloat(@as(f32, @floatFromInt(cx)) * sx), @intFromFloat(@as(f32, @floatFromInt(cy)) * sy), f.cursor_scale * sx);
         }
     }
 

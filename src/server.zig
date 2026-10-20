@@ -46,6 +46,7 @@ pub const clip_key_interval_ms = 20_000;
 pub const chat_history_len = 50;
 /// Ponteiro: no máximo isso por segundo por pessoa.
 const pointer_rate = 40;
+const draw_rate = 60; // mensagens de desenho por segundo por pessoa
 
 /// Uma transmissão (tela ou câmera) de alguém.
 const StreamState = struct {
@@ -90,6 +91,8 @@ const Conn = struct {
     flows: std.ArrayList(Flow) = .empty, // frames a caminho, por stream assistido
     pointer_sec: u64 = 0, // limite do ponteiro: segundo atual e quantos já vieram
     pointer_count: u32 = 0,
+    draw_sec: u64 = 0, // o mesmo pro desenho
+    draw_count: u32 = 0,
     last_img_ms: u64 = 0, // última imagem no chat (limite)
     dismissed: bool = false, // já recebeu o aviso de saída (não manda outro)
     reader_done: std.atomic.Value(bool) = .init(false),
@@ -938,6 +941,7 @@ pub const Server = struct {
                 try s.adminAction(cn, action, target, value);
             },
             .pointer => try s.forwardPointer(cn, payload),
+            .draw => try s.forwardDraw(cn, payload),
             else => {},
         }
     }
@@ -1440,6 +1444,35 @@ pub const Server = struct {
         defer m.release();
         std.mem.writeInt(u32, m.payload()[0..4], cn.id, .little);
         @memcpy(m.payload()[4..13], payload[0..9]);
+        for (s.conns.items) |o| {
+            if (o == cn) continue;
+            if (o.id != owner and !contains(&o.watching, stream)) continue;
+            o.queue.pushUrgent(m);
+        }
+    }
+
+    /// Desenho por cima de uma transmissão: vai pra quem transmite e pra quem
+    /// assiste (como o ponteiro).
+    fn forwardDraw(s: *Server, cn: *Conn, payload: []const u8) !void {
+        if (payload.len < 7) return error.BadMessage;
+        const stream = std.mem.readInt(u32, payload[0..4], .little);
+        const n = std.mem.readInt(u16, payload[5..7], .little);
+        if (n > proto.draw_max_points or payload.len != 7 + @as(usize, n) * 4) return error.BadMessage;
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        const sec = sync.nowMs() / 1000;
+        if (sec != cn.draw_sec) {
+            cn.draw_sec = sec;
+            cn.draw_count = 0;
+        }
+        cn.draw_count += 1;
+        if (cn.draw_count > draw_rate) return;
+        const owner = proto.memberOf(stream);
+        if (owner != cn.id and !contains(&cn.watching, stream)) return;
+        const m = try proto.Msg.alloc(.draw, 4 + payload.len);
+        defer m.release();
+        std.mem.writeInt(u32, m.payload()[0..4], cn.id, .little);
+        @memcpy(m.payload()[4..], payload);
         for (s.conns.items) |o| {
             if (o == cn) continue;
             if (o.id != owner and !contains(&o.watching, stream)) continue;

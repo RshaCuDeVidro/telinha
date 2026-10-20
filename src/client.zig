@@ -178,6 +178,16 @@ pub const Pointer = struct {
     ping_us: u64, // último clique (anel que se expande)
 };
 
+/// Um traço desenhado por cima de uma transmissão (coordenadas 0..65535 no quadro).
+pub const Stroke = struct {
+    pub const max_points = 512;
+    from: u32,
+    stream: u32,
+    n: u16 = 0,
+    pts: [max_points][2]u16 = undefined,
+    last_us: u64 = 0, // último ponto (o traço some uns segundos depois)
+};
+
 pub const Status = enum { connecting, connected, failed };
 
 /// Uma transmissão que estamos assistindo. Uma thread própria decodifica o
@@ -583,6 +593,8 @@ pub const Client = struct {
     server_version_len: usize = 0,
     notices: std.ArrayList(Notice) = .empty,
     pointers: std.ArrayList(Pointer) = .empty,
+    /// Traços desenhados por cima das transmissões (somem sozinhos; ver ui.zig).
+    strokes: std.ArrayList(Stroke) = .empty,
     views: std.ArrayList(*View) = .empty,
     ping_ms: u32 = 0,
     /// Voz de cada pessoa da sala (criada quando chega o primeiro pacote).
@@ -649,6 +661,7 @@ pub const Client = struct {
             cl.chat.deinit(gpa);
             cl.notices.deinit(gpa);
             cl.pointers.deinit(gpa);
+            cl.strokes.deinit(gpa);
             cl.views.deinit(gpa);
             for (cl.voice_peers.items) |p| {
                 p.deinit();
@@ -1238,6 +1251,17 @@ pub const Client = struct {
                 defer cl.mutex.unlock();
                 if (cl.notices.items.len < 32) try cl.notices.append(gpa, n);
             },
+            .draw => {
+                const from = try r.u32_();
+                const stream = try r.u32_();
+                const flags = try r.u8_();
+                const n = try r.u16_();
+                if (n > proto.draw_max_points) return error.BadMessage;
+                var pts: [proto.draw_max_points][2]u16 = undefined;
+                for (pts[0..n]) |*p| p.* = .{ try r.u16_(), try r.u16_() };
+                cl.addDraw(from, stream, flags, pts[0..n]);
+                cl.wake();
+            },
             .pointer => {
                 const from = try r.u32_();
                 const stream = try r.u32_();
@@ -1336,6 +1360,72 @@ pub const Client = struct {
     }
 
     /// Ponteiro "olha aqui" sobre uma transmissão (x, y em 0..65534; proto.coord_none esconde).
+    /// Pontos de um traço (de quem quer que seja, inclusive os meus).
+    pub fn addDraw(cl: *Client, from: u32, stream: u32, flags: u8, pts: []const [2]u16) void {
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        if (flags & proto.draw_clear != 0) {
+            var i: usize = cl.strokes.items.len;
+            while (i > 0) {
+                i -= 1;
+                const st = &cl.strokes.items[i];
+                if (st.from == from and st.stream == stream) _ = cl.strokes.orderedRemove(i);
+            }
+            return;
+        }
+        const now = sync.nowUs();
+        // o traço aberto dessa pessoa nessa transmissão (o último dela)
+        var cur: ?*Stroke = null;
+        if (flags & proto.draw_new == 0) {
+            var i: usize = cl.strokes.items.len;
+            while (i > 0) {
+                i -= 1;
+                const st = &cl.strokes.items[i];
+                if (st.from == from and st.stream == stream) {
+                    cur = st;
+                    break;
+                }
+            }
+        }
+        if (cur == null or cur.?.n + pts.len > Stroke.max_points) {
+            if (cl.strokes.items.len >= 64) _ = cl.strokes.orderedRemove(0); // o mais velho sai
+            cl.strokes.append(gpa, .{ .from = from, .stream = stream }) catch return;
+            cur = &cl.strokes.items[cl.strokes.items.len - 1];
+        }
+        const st = cur.?;
+        for (pts) |p| {
+            if (st.n == Stroke.max_points) break;
+            st.pts[st.n] = p;
+            st.n += 1;
+        }
+        st.last_us = now;
+    }
+
+    pub fn sendDraw(cl: *Client, stream: u32, flags: u8, pts: []const [2]u16) void {
+        if (!cl.welcomed.load(.acquire) or pts.len > proto.draw_max_points) return;
+        const m = proto.Msg.alloc(.draw, 7 + pts.len * 4) catch return;
+        const pl = m.payload();
+        std.mem.writeInt(u32, pl[0..4], stream, .little);
+        pl[4] = flags;
+        std.mem.writeInt(u16, pl[5..7], @intCast(pts.len), .little);
+        for (pts, 0..) |p, i| {
+            std.mem.writeInt(u16, pl[7 + i * 4 ..][0..2], p[0], .little);
+            std.mem.writeInt(u16, pl[9 + i * 4 ..][0..2], p[1], .little);
+        }
+        cl.queue.pushUrgentOwned(m);
+    }
+
+    /// Tira os traços que já sumiram (mais velhos que `max_age_us`).
+    pub fn pruneStrokes(cl: *Client, now: u64, max_age_us: u64) void {
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        var i: usize = cl.strokes.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (now -| cl.strokes.items[i].last_us > max_age_us) _ = cl.strokes.orderedRemove(i);
+        }
+    }
+
     pub fn sendPointer(cl: *Client, stream: u32, x: u16, y: u16, flags: u8) void {
         if (!cl.welcomed.load(.acquire)) return;
         const m = proto.Msg.alloc(.pointer, 9) catch return;
