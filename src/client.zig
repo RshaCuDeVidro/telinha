@@ -75,7 +75,7 @@ pub const Member = struct {
     cam_w: u16,
     cam_h: u16,
     cam_fps: u8,
-    watching: [16]u32, // streams
+    watching: [64]u32, // streams (o servidor manda até 64)
     n_watching: usize,
 
     pub fn nameSlice(self: *const Member) []const u8 {
@@ -781,7 +781,12 @@ pub const Client = struct {
                 break;
             };
             cl.handle(typ, proto.payloadOf(&rb)) catch break;
-            cl.wake();
+            // quadro/som/voz não mudam a tela por si (o quadro acorda depois
+            // de decodificado; a voz, quando alguém começa a falar)
+            switch (typ) {
+                .frame, .audio, .voice, .ack => {},
+                else => cl.wake(),
+            }
         }
         cl.mutex.lock();
         const was = cl.status;
@@ -858,12 +863,25 @@ pub const Client = struct {
     fn deliverUdp(ctx: *anyopaque, typ: proto.Type, payload: []const u8) void {
         const cl: *Client = @ptrCast(@alignCast(ctx));
         switch (typ) {
-            .frame, .audio, .voice => {
-                cl.handle(typ, payload) catch {};
-                cl.wake();
-            },
+            .frame, .audio, .voice => cl.handle(typ, payload) catch {},
             else => {},
         }
+    }
+
+    /// Alguém (fora a gente) está assistindo esse stream? (lista de membros)
+    pub fn anyoneWatching(cl: *Client, stream: u32) bool {
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        for (cl.members.items) |*m| {
+            if (m.id != cl.my_id and m.isWatching(stream)) return true;
+        }
+        return false;
+    }
+
+    pub fn myId(cl: *Client) u32 {
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        return cl.my_id;
     }
 
     /// Vídeo/som estão indo por UDP agora?
@@ -1055,8 +1073,11 @@ pub const Client = struct {
                     peer = p;
                 }
                 cl.mutex.unlock();
+                // começou a falar: a interface acende a bolinha (parar ela vê sozinha)
+                const was = peer.?.speaking(sync.nowUs());
                 // só a thread de rede mexe na lista fora do lock (e ela está aqui)
                 peer.?.push(packet);
+                if (!was) cl.wake();
             },
             .chat => {
                 var line: ChatLine = undefined;

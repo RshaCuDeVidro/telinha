@@ -20,6 +20,9 @@ const bitrate = 40_000;
 /// Depois da última sílaba, o portão fica aberto mais esse tanto (blocos de 10 ms).
 const hangover_blocks = 25;
 
+/// Chamado (da thread do microfone) quando o portão abre ou fecha: a interface acorda.
+pub var on_speaking_change: ?*const fn () void = null;
+
 pub const Options = struct {
     /// Nome do microfone (vazio = padrão do sistema).
     device: []const u8 = "",
@@ -227,7 +230,8 @@ pub const Mic = struct {
             m.hang -= 1;
         }
         const gate_open = m.hang > 0;
-        m.speaking.store(gate_open, .monotonic);
+        // a interface só redesenha quando acende/apaga a bolinha
+        if (m.speaking.swap(gate_open, .monotonic) != gate_open) if (on_speaking_change) |f| f();
         if (!gate_open) {
             // fechado: nada vai pro Opus (nem os pacotes de silêncio do DTX)
             m.was_open = false;

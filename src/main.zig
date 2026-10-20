@@ -92,8 +92,15 @@ pub fn main(init: std.process.Init) !void {
     app.applyArgs(args);
     var idle_frames: u32 = 0;
     while (c.glfwWindowShouldClose(win) == 0) {
-        // dorme quando nada está acontecendo; rede e captura acordam o loop
-        if (idle_frames > 3) c.glfwWaitEventsTimeout(if (qa.enabled()) 0.05 else if (io.*.WantTextInput) 0.25 else 0.5) else c.glfwPollEvents();
+        // dorme quando nada está acontecendo; rede e captura acordam o loop,
+        // e o que anima pede o próximo redesenho (ui.redrawIn)
+        const iconified = c.glfwGetWindowAttrib(win, c.GLFW_ICONIFIED) != 0;
+        if (idle_frames > 3) {
+            var timeout: f64 = if (qa.enabled()) 0.05 else if (iconified) 1.0 else if (io.*.WantTextInput) 0.25 else 0.5;
+            if (ui.redraw_at != std.math.inf(f64)) timeout = @min(timeout, @max(0.0, ui.redraw_at - c.igGetTime()));
+            if (timeout > 0) c.glfwWaitEventsTimeout(timeout) else c.glfwPollEvents();
+        } else c.glfwPollEvents();
+        ui.redraw_at = std.math.inf(f64);
 
         c.ImGui_ImplOpenGL3_NewFrame();
         c.ImGui_ImplGlfw_NewFrame();
@@ -103,14 +110,17 @@ pub fn main(init: std.process.Init) !void {
         qa.endFrame(&app, win);
         c.igRender();
 
-        var fw: c_int = 0;
-        var fh: c_int = 0;
-        c.glfwGetFramebufferSize(win, &fw, &fh);
-        glViewport(0, 0, fw, fh);
-        glClearColor(0.12, 0.12, 0.13, 1);
-        glClear(0x4000);
-        c.ImGui_ImplOpenGL3_RenderDrawData(c.igGetDrawData());
-        c.glfwSwapBuffers(win);
+        // minimizado: a lógica roda (avisos, sons, janela flutuante), o desenho não
+        if (!iconified) {
+            var fw: c_int = 0;
+            var fh: c_int = 0;
+            c.glfwGetFramebufferSize(win, &fw, &fh);
+            glViewport(0, 0, fw, fh);
+            glClearColor(0.12, 0.12, 0.13, 1);
+            glClear(0x4000);
+            c.ImGui_ImplOpenGL3_RenderDrawData(c.igGetDrawData());
+            c.glfwSwapBuffers(win);
+        }
         app.drawPips(); // janelas flutuantes (cada uma com o contexto dela)
 
         const active = io.*.MouseDelta.x != 0 or io.*.MouseDelta.y != 0 or io.*.MouseWheel != 0 or

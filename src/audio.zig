@@ -62,13 +62,13 @@ pub const Ring = struct {
         return rg.volume;
     }
 
-    /// Nível recente e decai um pouco (a interface chama uma vez por quadro).
+    /// Nível recente (zero se nada chegou nos últimos 300 ms). Não depende de
+    /// quantos quadros a interface desenha (ela só redesenha quando precisa).
     pub fn takeLevel(rg: *Ring) f32 {
         rg.mutex.lock();
         defer rg.mutex.unlock();
-        const l = rg.level;
-        rg.level *= 0.92;
-        return l;
+        if (sync.nowUs() -| rg.last_write_us > 300_000) return 0;
+        return rg.level;
     }
 
     pub fn write(rg: *Ring, samples: []const f32) void {

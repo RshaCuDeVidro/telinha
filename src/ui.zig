@@ -531,6 +531,7 @@ pub const App = struct {
         var a: App = .{ .window = window, .cfg = config.load(), .volumes = config.VoiceVolumes.load() };
         _ = std.fmt.bufPrintZ(&a.port_buf, "{d}", .{a.cfg.host_port}) catch {};
         if (a.cfg.check_updates) update.checkAsync(build_options.repo, version_string);
+        voice.on_speaking_change = wakeUi;
         return a;
     }
 
@@ -1390,7 +1391,15 @@ pub const App = struct {
             s.mutex.lock();
             defer s.mutex.unlock();
             if (s.preview_new and s.preview.len > 0) {
-                gl.upload(&s.preview_tex, s.preview, s.preview_w, s.preview_h, if (s.preview_bgr) gl.BGRA else gl.RGBA);
+                const fmt = if (s.preview_bgr) gl.BGRA else gl.RGBA;
+                // mesmo tamanho: atualiza a textura no lugar (sem realocar na GPU)
+                if (s.preview_tex != 0 and s.preview_tex_w == s.preview_w and s.preview_tex_h == s.preview_h) {
+                    gl.uploadRect(s.preview_tex, s.preview, s.preview_w, 0, 0, s.preview_w, s.preview_h, fmt);
+                } else {
+                    gl.upload(&s.preview_tex, s.preview, s.preview_w, s.preview_h, fmt);
+                    s.preview_tex_w = s.preview_w;
+                    s.preview_tex_h = s.preview_h;
+                }
                 s.preview_new = false;
             }
         }
@@ -1816,7 +1825,7 @@ pub const App = struct {
         drawTextF(d, font_semibold, 18, v2((size.x - ts.x) / 2, size.y / 2), col.header, t);
         c.igSetCursorScreenPos(v2(size.x / 2 - S(60), size.y / 2 + S(40)));
         if (secondaryButton("Cancelar", v2(S(120), S(36)))) a.leaveRoom();
-        wakeUi(); // mantém a animação
+        redrawIn(0.05); // mantém a animação (20 q/s bastam)
     }
 
     fn drawDropped(a: *App, cl: *Client, size: c.ImVec2_c) void {
@@ -1837,7 +1846,7 @@ pub const App = struct {
             if (primaryButton("Tentar agora", v2(S(125), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.reconnect.at = 0;
             c.igSameLine(0, S(10));
             if (secondaryButton("Sair", v2(S(125), S(38)))) a.leaveRoom();
-            wakeUi(); // mantém a contagem andando
+            redrawIn(0.25); // mantém a contagem andando
             return;
         }
         cl.mutex.lock();
@@ -2109,6 +2118,7 @@ pub const App = struct {
             (if (a.mic) |mc| mc.speaking.load(.monotonic) else false)
         else if (a.client) |cl| cl.speaking(m.id) else false;
         drawAvatarSpeaking(d, v2(p.x + S(22), p.y + h / 2), S(15), m.id, m.nameSlice(), m.streaming, speaking);
+        if (speaking) redrawIn(0.15); // a bolinha apaga sozinha quando a pessoa para
         const name_col = if (m.id == my_id) col.header else col.text;
         drawTextF(d, font_semibold, 14.5, v2(p.x + S(46), p.y + (h - S(18)) / 2), name_col, m.nameSlice());
         const ns = textSizeF(font_semibold, 14.5, m.nameSlice());
@@ -2375,6 +2385,7 @@ pub const App = struct {
         const live = a.sharer != null;
         const me_speaking = if (a.mic) |m| m.speaking.load(.monotonic) else false;
         drawAvatarSpeaking(d, v2(p.x + S(26), p.y + size.y / 2), S(16), my_id, a.myName(), live, me_speaking);
+
         var name_buf: [32]u8 = undefined;
         const nm = a.myName();
         const shown = if (nm.len > 14) std.fmt.bufPrint(&name_buf, "{s}…", .{nm[0..12]}) catch nm else nm;
@@ -2642,6 +2653,11 @@ pub const App = struct {
     }
 
     fn drawTile(a: *App, t: *const Tile, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f32, big: bool) void {
+        // minha prévia na tela: a captura continua gerando a miniatura
+        if (t.view == null) {
+            const sh = if (proto.kindOf(t.stream) == proto.kind_camera) a.camera else a.sharer;
+            if (sh) |x| x.preview_wanted_ms.store(sync.nowMs(), .monotonic);
+        }
         const d = drawList();
         const io = c.igGetIO_Nil();
         // o quadro tem o formato do vídeo (sem faixas pretas dentro da célula)
@@ -2778,10 +2794,12 @@ pub const App = struct {
                 const rx0 = x + w - rts.x - S(28);
                 const ry0 = y + h - S(70);
                 rectFill(d, rx0, ry0, rx0 + rts.x + S(20), ry0 + rts.y + S(8), col.overlay, S(5));
-                const blink = @mod(c.igGetTime(), 1.0) < 0.6;
+                const phase = @mod(c.igGetTime(), 1.0);
+                const blink = phase < 0.6;
                 if (blink) c.ImDrawList_AddCircleFilled(d, v2(rx0 + S(8), ry0 + (rts.y + S(8)) / 2), S(4), col.red, 0);
                 drawTextF(d, font_bold, 11, v2(rx0 + S(15), ry0 + S(4)), col.white, rt);
-                wakeUi();
+                // próxima troca do pisca (e o tempo da gravação andando)
+                redrawIn(if (blink) 0.6 - phase else 1.0 - phase);
             }
         }
         if ((hovered or a.cfg.stats_always) and !small) {
@@ -2906,8 +2924,12 @@ pub const App = struct {
         const ring_level = if (t.ring) |rg| rg.takeLevel() else 0; // decai um pouco a cada quadro
         if (talking) {
             c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), col.green, round, S(3), 0);
+            redrawIn(0.2); // apaga quando parar
         } else if (t.ring) |rg| {
-            if (!rg.isMuted() and ring_level > 0.02) c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), rgba(0x23A55A, 160), round, S(2), 0);
+            if (!rg.isMuted() and ring_level > 0.02) {
+                c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), rgba(0x23A55A, 160), round, S(2), 0);
+                redrawIn(0.35);
+            }
         }
         if (pointing) c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), col.blurple, round, S(2), 0);
     }
@@ -2925,8 +2947,8 @@ pub const App = struct {
         if (ping_age_s >= 0 and ping_age_s < 0.9) {
             // clique: anel que cresce e some
             const k = ping_age_s / 0.9;
+            redrawIn(0.016); // o anel do "olha aqui" anima por 0,9 s
             c.ImDrawList_AddCircle(d, p, S(8) + S(34) * k, (color & 0x00FFFFFF) | (@as(u32, @intFromFloat((1 - k) * 230)) << 24), 0, S(3), 0);
-            wakeUi();
         }
         const tip = p;
         const pts = [_]c.ImVec2_c{ tip, v2(tip.x + S(4), tip.y + S(17)), v2(tip.x + S(8.5), tip.y + S(11.5)), v2(tip.x + S(15), tip.y + S(11)) };
@@ -2967,7 +2989,7 @@ pub const App = struct {
             const ping_age: f32 = if (p.ping_us != 0) @as(f32, @floatFromInt(now - p.ping_us)) / 1e6 else -1;
             drawPointerAt(d, at, avatarColor(p.from), names[i][0..name_lens[i]], ping_age);
         }
-        if (n > 0) wakeUi(); // some sozinho depois de parado
+        if (n > 0) redrawIn(0.25); // some sozinho depois de parado
     }
 
     /// Modo ponteiro ligado nesse quadro: manda a posição do mouse (até ~30x/s) e
@@ -4345,7 +4367,10 @@ pub const App = struct {
             drawTextF(d, font_semibold, 14, v2(x + S(22), y + S(11)), col.text, s);
             y -= S(10);
         }
-        wakeUi();
+        // redesenha quando o primeiro aviso vencer (não há animação)
+        var first = a.toasts[0].until;
+        for (a.toasts[0..a.n_toasts]) |t| first = @min(first, t.until);
+        redrawIn(@max(0.01, first - now) + 0.01);
     }
 };
 
@@ -4396,6 +4421,16 @@ fn openPath(path: []const u8) bool {
 /// HWND da janela no Windows (pra piscar na barra de tarefas); null no Linux.
 fn nativeWindow(w: *c.GLFWwindow) ?*anyopaque {
     return if (sync.is_windows) glfwGetWin32Window(w) else null;
+}
+
+/// Quando a interface precisa se redesenhar sozinha (animação, contagem,
+/// aviso sumindo), em segundos de igGetTime. O loop principal dorme até lá
+/// (ou até um evento) em vez de redesenhar todo quadro. Só a thread da UI mexe.
+pub var redraw_at: f64 = std.math.inf(f64);
+
+/// Pede um redesenho daqui a `secs` (o mais cedo dos pedidos vale).
+pub fn redrawIn(secs: f64) void {
+    redraw_at = @min(redraw_at, c.igGetTime() + secs);
 }
 
 /// Acorda o loop principal (chamado de qualquer thread).

@@ -28,6 +28,12 @@ const gpa = proto.gpa;
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 
 /// TELINHA_DEBUG=1 imprime o tempo de cada etapa do pipeline uma vez por segundo.
+/// Gravando a própria transmissão (precisa codificar mesmo sem ninguém assistindo).
+fn ownRecording(s: *Sharer) bool {
+    const cb = s.clip orelse return false;
+    return cb.recState().active;
+}
+
 fn debugEnabled() bool {
     const S = struct {
         var checked = false;
@@ -189,6 +195,14 @@ pub const Sharer = struct {
     preview_h: u32 = 0,
     preview_bgr: bool = true,
     preview_new: bool = false,
+    preview_tex_w: u32 = 0, // tamanho da textura (da UI) da prévia
+    preview_tex_h: u32 = 0,
+    /// Quando a interface mostrou a prévia pela última vez (ms): ninguém
+    /// olhando (outra tela, minimizado), não gasta gerando a miniatura.
+    preview_wanted_ms: std.atomic.Value(u64) = .init(0),
+    /// Ninguém assistindo e sem gravação: o encoder está parado (a captura
+    /// cai pra 5 q/s, só pra prévia e pra ter quadro na hora que alguém entrar).
+    idle: std.atomic.Value(bool) = .init(false),
     preview_tex: u32 = 0, // só a UI mexe
     /// Os últimos ~30 s do que codificamos (clipe) e a gravação. null = sem clipes.
     clip: ?*clip.Buffer = null,
@@ -481,8 +495,8 @@ const Pipeline = struct {
                 }
             }
 
-            // respeita o fps configurado
-            const interval_us: u64 = 1_000_000 / std.math.clamp(p.settings.fps, 1, 60);
+            // respeita o fps configurado (ninguém assistindo: 5 q/s, só pra prévia)
+            const interval_us: u64 = if (s.idle.load(.acquire)) 200_000 else 1_000_000 / std.math.clamp(p.settings.fps, 1, 60);
             const now = sync.nowUs();
             if (now < next_us) {
                 sync.sleepMs(@intCast(@max(1, (next_us - now) / 1000)));
@@ -575,7 +589,9 @@ const Pipeline = struct {
     fn updatePreview(p: *Pipeline, frame: []const u8) void {
         const s = p.s;
         const now = sync.nowUs();
-        if (now - p.last_preview_us < 33_000) return;
+        // miniatura: 15 q/s basta, e só se a interface estiver mostrando
+        if (now - p.last_preview_us < 66_000) return;
+        if (sync.nowMs() -| s.preview_wanted_ms.load(.monotonic) > 1000 and s.preview.len > 0) return;
         p.last_preview_us = now;
         const half = p.w > 1280;
         const pw = if (half) p.w / 2 else p.w;
@@ -754,6 +770,7 @@ const Pipeline = struct {
         // começa com IDR) — senão quem entra depois nunca vê nada
         var key_misses: u8 = 0;
         var hw_ignores_idr = false;
+        var watched_until_ms: u64 = sync.nowMs() + 3000; // começo: anuncia e manda o primeiro IDR
 
         while (true) {
             // espera um quadro novo (ou um pedido de IDR)
@@ -764,7 +781,7 @@ const Pipeline = struct {
                 return;
             }
             // clipe da própria transmissão: um IDR a cada 20 s (o clipe começa num)
-            if (s.clip != null and last_key_us != 0 and sync.nowUs() - last_key_us > 20_000_000) s.client.keyreq[kind].store(true, .release);
+            if (s.clip != null and !s.idle.load(.acquire) and last_key_us != 0 and sync.nowUs() - last_key_us > 20_000_000) s.client.keyreq[kind].store(true, .release);
             const key = s.client.keyreq[kind].swap(false, .acq_rel);
             const idx: ?usize = if (p.ready) |r| r else if (key) p.last else null;
             p.ready_was_null = p.ready == null;
@@ -858,6 +875,17 @@ const Pipeline = struct {
                 announce(s, kind, sl.w, sl.h, fps, p.audio_live.load(.acquire));
             } else if (p.reannounce.swap(false, .acq_rel)) {
                 announce(s, kind, sl.w, sl.h, fps, p.audio_live.load(.acquire));
+            }
+            // ninguém assistindo (e sem gravar a própria tela): não codifica nem
+            // manda nada. Quem entrar faz o servidor pedir um IDR (key), e
+            // depois disso segue codificando um tempo enquanto a lista de
+            // membros (que diz quem assiste) chega.
+            if (key) watched_until_ms = sync.nowMs() + 2000;
+            const watched = sync.nowMs() < watched_until_ms or s.client.anyoneWatching(proto.streamId(s.client.myId(), kind)) or ownRecording(s);
+            s.idle.store(!watched, .release);
+            if (!watched) {
+                p.doneWith(i, false);
+                continue;
             }
             bw.rampUp(sync.nowUs(), up.excess_us -| up.key_allowance_us);
             if (bw.takeChange()) |b| enc.?.setBitrate(b);

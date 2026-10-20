@@ -273,7 +273,8 @@ pub const Pool = struct {
         }
         var wg: WaitGroup = .{};
         wg.add(n);
-        var i: usize = 0;
+        // a parte 0 fica com quem chamou; o resto vai pra fila
+        var i: usize = 1;
         while (i < n) {
             self.mutex.lock();
             while (i < n and self.len < cap) : (i += 1) {
@@ -282,6 +283,23 @@ pub const Pool = struct {
             }
             self.cond.broadcast();
             self.mutex.unlock();
+        }
+        // quem chamou trabalha em vez de só esperar: a própria parte e o que
+        // ainda estiver na fila (menos uma ida e volta de dormir/acordar)
+        func(ctx, 0);
+        wg.done();
+        while (true) {
+            self.mutex.lock();
+            if (self.len == 0) {
+                self.mutex.unlock();
+                break;
+            }
+            const job = self.jobs[self.head];
+            self.head = (self.head + 1) % cap;
+            self.len -= 1;
+            self.mutex.unlock();
+            job.func(job.ctx, job.index);
+            job.wg.done();
         }
         wg.wait();
     }
