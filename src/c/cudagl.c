@@ -3,6 +3,7 @@
 // ponteiro de memória da placa vale pros três. Cada chamada empurra o contexto
 // na thread atual e tira ao sair (barato; nenhuma thread fica com ele preso).
 #include "cudagl.h"
+#include "cuda_scale_ptx.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,9 @@ struct cudagl {
     CudaFunctions *cu;
     CUdevice dev;
     CUcontext ctx;
+    CUmodule mod; // cuda_scale.c (carregado no primeiro uso)
+    CUfunction fn_scale;
+    int mod_failed;
 };
 
 cudagl *cudagl_open(void) {
@@ -34,6 +38,11 @@ cudagl *cudagl_open(void) {
 
 void cudagl_close(cudagl *g) {
     if (!g) return;
+    if (g->mod && g->cu->cuCtxPushCurrent(g->ctx) == CUDA_SUCCESS) {
+        CUcontext dummy;
+        g->cu->cuModuleUnload(g->mod);
+        g->cu->cuCtxPopCurrent(&dummy);
+    }
     g->cu->cuDevicePrimaryCtxRelease(g->dev);
     cuda_free_functions(&g->cu);
     free(g);
@@ -136,4 +145,57 @@ int cudagl_dev_to_host(cudagl *g, uint64_t src, int src_pitch, void *dst, int ds
     const int rc = g->cu->cuMemcpy2D(&m) == CUDA_SUCCESS ? 0 : -1;
     pop(g);
     return rc;
+}
+
+int cudagl_host_to_dev(cudagl *g, const void *src, int src_pitch, uint64_t dst, int dst_pitch, int width_bytes, int height) {
+    if (!g || !src || !dst || push(g) < 0) return -1;
+    CUDA_MEMCPY2D m;
+    memset(&m, 0, sizeof m);
+    m.srcMemoryType = CU_MEMORYTYPE_HOST;
+    m.srcHost = src;
+    m.srcPitch = (size_t)src_pitch;
+    m.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+    m.dstDevice = (CUdeviceptr)dst;
+    m.dstPitch = (size_t)dst_pitch;
+    m.WidthInBytes = (size_t)width_bytes;
+    m.Height = (size_t)height;
+    const int rc = g->cu->cuMemcpy2D(&m) == CUDA_SUCCESS ? 0 : -1;
+    pop(g);
+    return rc;
+}
+
+int cudagl_scale(cudagl *g, uint64_t src, int src_pitch, int cx, int cy, int cw, int ch,
+                 uint64_t dst, int dst_pitch, int ow, int oh) {
+    if (!g || !src || !dst || cw < 1 || ch < 1 || ow < 1 || oh < 1 || g->mod_failed || push(g) < 0) return -1;
+    if (!g->mod) {
+        if (g->cu->cuModuleLoadData(&g->mod, telinha_scale_ptx) != CUDA_SUCCESS ||
+            g->cu->cuModuleGetFunction(&g->fn_scale, g->mod, "telinha_scale") != CUDA_SUCCESS) {
+            g->mod = NULL;
+            g->mod_failed = 1;
+            pop(g);
+            return -1;
+        }
+    }
+    CUdeviceptr s_ = (CUdeviceptr)src, d_ = (CUdeviceptr)dst;
+    void *args[] = {&s_, &src_pitch, &cx, &cy, &cw, &ch, &d_, &dst_pitch, &ow, &oh};
+    const unsigned bx = 16, by = 16;
+    int rc = g->cu->cuLaunchKernel(g->fn_scale, ((unsigned)ow + bx - 1) / bx, ((unsigned)oh + by - 1) / by, 1, bx, by, 1, 0, NULL, args, NULL) == CUDA_SUCCESS ? 0 : -1;
+    // o NVENC lê logo em seguida (outra fila): espera o kernel acabar
+    if (rc == 0 && g->cu->cuStreamSynchronize(NULL) != CUDA_SUCCESS) rc = -1;
+    pop(g);
+    return rc;
+}
+
+void *cudagl_register_d3d11(cudagl *g, void *d3d11_texture) {
+#if defined(_WIN32)
+    if (!g || !d3d11_texture || push(g) < 0) return NULL;
+    CUgraphicsResource res = NULL;
+    if (g->cu->cuGraphicsD3D11RegisterResource(&res, d3d11_texture, CU_GRAPHICS_REGISTER_FLAGS_NONE) != CUDA_SUCCESS) res = NULL;
+    pop(g);
+    return res;
+#else
+    (void)g;
+    (void)d3d11_texture;
+    return NULL;
+#endif
 }

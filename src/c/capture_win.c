@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "capture.h"
+#include "cudagl.h"
 
 enum { KIND_DXGI = 1, KIND_GDI = 2, KIND_WGC = 3, KIND_PRINT = 4 };
 
@@ -25,6 +26,7 @@ static HWND g_windows[MAX_WINDOWS];
 static int g_n_windows;
 
 struct wgc_state; // Windows.Graphics.Capture (mais abaixo)
+struct gpu_path;  // DXGI → CUDA → NVENC (mais abaixo)
 
 typedef struct {
     RECT rc;
@@ -38,6 +40,7 @@ struct cap_ctx {
     int cursor_apart;
     int redeliver; // reentrega o quadro limpo (o anterior tinha o cursor pintado)
     int last_cx, last_cy, last_cshown;
+    struct gpu_path *gpu; // caminho pela placa (cap_gpu_enable); NULL = pela CPU
     HWND hwnd;              // janela (KIND_WGC / KIND_PRINT)
     struct wgc_state *wgc;
     RECT rc;
@@ -262,7 +265,10 @@ static int cursor_pos(struct cap_ctx *c, cap_frame *out) {
 // ---------------------------------------------------------------------------
 // DXGI
 
+static void gpu_release_d3d(struct cap_ctx *c);
+
 static void release_dxgi(struct cap_ctx *c) {
+    gpu_release_d3d(c); // a cópia registrada no CUDA é do device que vai embora
     if (c->have_frame && c->dupl) IDXGIOutputDuplication_ReleaseFrame(c->dupl);
     c->have_frame = 0;
     if (c->staging) ID3D11Texture2D_Release(c->staging);
@@ -312,7 +318,270 @@ static HRESULT open_dxgi(struct cap_ctx *c) {
     return IDXGIOutput1_DuplicateOutput(c->output, (IUnknown *)c->dev, &c->dupl);
 }
 
+// ---------------------------------------------------------------------------
+// Caminho pela placa (NVIDIA): a imagem da tela que o DXGI entrega já está na
+// placa (textura D3D11). Ela é copiada (na placa) pra uma textura nossa,
+// registrada no CUDA; dali vai pra memória linear, é recortada e escalada por
+// um kernel (cuda_scale.c) num dos slots, e o NVENC lê o slot. Nada passa
+// pela CPU. Só com o cursor fora do vídeo (o cursor pintado é coisa da CPU);
+// qualquer falha volta pro caminho pela CPU.
+
+#define N_GPU_SLOTS 4
+struct gpu_slot {
+    uint64_t dev;
+    int pitch, w, h;
+    volatile LONG held; // com o encoder (outra thread devolve com cap_gpu_release)
+    int src_w, src_h;
+};
+struct gpu_path {
+    cudagl *cg;
+    cap_rect_fn rect_fn;
+    int failed;
+    ID3D11Texture2D *tex; // cópia do quadro do DXGI, registrada no CUDA
+    int tex_w, tex_h;
+    void *res;
+    int have;        // tex tem um quadro
+    int retry;       // o último quadro não virou slot (todos ocupados): refaz na próxima
+    int clean_stale; // o c->clean (caminho pela CPU) ficou pra trás
+    uint64_t full;   // a tela inteira, linear
+    int full_pitch, full_w, full_h;
+    struct gpu_slot slots[N_GPU_SLOTS];
+    uint64_t retired[8]; // buffers de tamanho antigo (o encoder pode ter registrado): soltos no gc
+    int n_retired;
+    float crop[4], used_crop[4];
+    int max_h, used_max_h;
+    int want_preview, preview_max_w;
+    uint64_t prev_dev;
+    int prev_pitch, prev_w, prev_h;
+    uint8_t *prev_buf;
+    size_t prev_cap;
+    DWORD prev_last_ms;
+};
+
+static void gpu_fail(struct cap_ctx *c, const char *what) {
+    if (!c->gpu->failed && getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] captura pela placa falhou (%s); seguindo pela CPU\n", what);
+    c->gpu->failed = 1;
+}
+
+static void gpu_release_d3d(struct cap_ctx *c) {
+    struct gpu_path *g = c->gpu;
+    if (!g) return;
+    if (g->res) cudagl_unregister(g->cg, g->res);
+    g->res = NULL;
+    if (g->tex) ID3D11Texture2D_Release(g->tex);
+    g->tex = NULL;
+    g->have = 0;
+}
+
+static void gpu_retire(struct gpu_path *g, uint64_t dev) {
+    if (!dev) return;
+    if (g->n_retired == (int)(sizeof g->retired / sizeof g->retired[0])) {
+        cudagl_free(g->cg, g->retired[0]);
+        memmove(&g->retired[0], &g->retired[1], sizeof g->retired[0] * (size_t)(g->n_retired - 1));
+        g->n_retired--;
+    }
+    g->retired[g->n_retired++] = dev;
+}
+
+// Lê uma textura da placa pro c->clean (o caminho pela CPU continua de onde parou).
+static int copy_to_clean(struct cap_ctx *c, ID3D11Texture2D *tex) {
+    D3D11_TEXTURE2D_DESC desc;
+    ID3D11Texture2D_GetDesc(tex, &desc);
+    if (!c->staging || c->staging_w != (int)desc.Width || c->staging_h != (int)desc.Height) {
+        if (c->staging) ID3D11Texture2D_Release(c->staging);
+        c->staging = NULL;
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        desc.BindFlags = 0;
+        desc.MiscFlags = 0;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.SampleDesc.Count = 1;
+        ID3D11Device_CreateTexture2D(c->dev, &desc, NULL, &c->staging);
+        c->staging_w = (int)desc.Width;
+        c->staging_h = (int)desc.Height;
+    }
+    if (!c->staging) return 0;
+    ID3D11DeviceContext_CopyResource(c->ctx, (ID3D11Resource *)c->staging, (ID3D11Resource *)tex);
+    D3D11_MAPPED_SUBRESOURCE m;
+    if (FAILED(ID3D11DeviceContext_Map(c->ctx, (ID3D11Resource *)c->staging, 0, D3D11_MAP_READ, 0, &m))) return 0;
+    int w = c->staging_w < c->w ? c->staging_w : c->w;
+    int h = c->staging_h < c->h ? c->staging_h : c->h;
+    for (int y = 0; y < h; y++)
+        memcpy(c->clean + (size_t)y * c->w * 4, (uint8_t *)m.pData + (size_t)y * m.RowPitch, (size_t)w * 4);
+    ID3D11DeviceContext_Unmap(c->ctx, (ID3D11Resource *)c->staging, 0);
+    return 1;
+}
+
+// Copia o quadro do DXGI pra textura registrada (na placa).
+static int gpu_take_texture(struct cap_ctx *c, ID3D11Texture2D *src) {
+    struct gpu_path *g = c->gpu;
+    D3D11_TEXTURE2D_DESC desc;
+    ID3D11Texture2D_GetDesc(src, &desc);
+    if (desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM) {
+        gpu_fail(c, "formato da tela");
+        return 0;
+    }
+    if (!g->tex || g->tex_w != (int)desc.Width || g->tex_h != (int)desc.Height) {
+        gpu_release_d3d(c);
+        D3D11_TEXTURE2D_DESC d = desc;
+        d.Usage = D3D11_USAGE_DEFAULT;
+        d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        d.CPUAccessFlags = 0;
+        d.MiscFlags = 0;
+        d.MipLevels = 1;
+        d.ArraySize = 1;
+        d.SampleDesc.Count = 1;
+        d.SampleDesc.Quality = 0;
+        if (FAILED(ID3D11Device_CreateTexture2D(c->dev, &d, NULL, &g->tex)) || !g->tex) {
+            g->tex = NULL;
+            gpu_fail(c, "textura");
+            return 0;
+        }
+        g->res = cudagl_register_d3d11(g->cg, g->tex);
+        if (!g->res) {
+            gpu_fail(c, "registro no CUDA (a tela é de outra placa?)");
+            return 0;
+        }
+        g->tex_w = (int)desc.Width;
+        g->tex_h = (int)desc.Height;
+    }
+    ID3D11DeviceContext_CopyResource(c->ctx, (ID3D11Resource *)g->tex, (ID3D11Resource *)src);
+    g->have = 1;
+    g->clean_stale = 1;
+    return 1;
+}
+
+static struct gpu_slot *gpu_free_slot(struct gpu_path *g) {
+    for (int i = 0; i < N_GPU_SLOTS; i++)
+        if (!InterlockedCompareExchange(&g->slots[i].held, 0, 0)) return &g->slots[i];
+    return NULL;
+}
+
+// Da textura registrada até um slot pronto pro NVENC (e a prévia, se pedida).
+// 1 = quadro em *out; 0 = nada (slots ocupados ou falhou).
+static int gpu_produce(struct cap_ctx *c, cap_frame *out) {
+    struct gpu_path *g = c->gpu;
+    const int sw = g->tex_w < c->w ? g->tex_w : c->w, sh = g->tex_h < c->h ? g->tex_h : c->h;
+    if (!g->full || g->full_w != sw || g->full_h != sh) {
+        if (g->full) cudagl_free(g->cg, g->full);
+        g->full = cudagl_alloc(g->cg, sw * 4, sh, &g->full_pitch);
+        g->full_w = sw;
+        g->full_h = sh;
+        if (!g->full) {
+            gpu_fail(c, "memória da placa");
+            return 0;
+        }
+    }
+    if (cudagl_tex_to_dev(g->cg, g->res, g->full, g->full_pitch, sw * 4, sh) != 0) {
+        gpu_fail(c, "cópia D3D11 → CUDA");
+        return 0;
+    }
+    int x = 0, y = 0, w = sw, h = sh, ow = sw, oh = sh;
+    if (g->rect_fn) g->rect_fn(sw, sh, g->crop, g->max_h, &x, &y, &w, &h, &ow, &oh);
+    memcpy(g->used_crop, g->crop, sizeof g->crop);
+    g->used_max_h = g->max_h;
+    if (ow < 2 || oh < 2 || w < 1 || h < 1) return 0;
+    struct gpu_slot *sl = gpu_free_slot(g);
+    g->retry = sl == NULL;
+    if (!sl) return 0;
+    if (!sl->dev || sl->w != ow || sl->h != oh) {
+        gpu_retire(g, sl->dev);
+        sl->dev = cudagl_alloc(g->cg, ow * 4, oh, &sl->pitch);
+        sl->w = ow;
+        sl->h = oh;
+        if (!sl->dev) {
+            gpu_fail(c, "memória da placa");
+            return 0;
+        }
+    }
+    if (cudagl_scale(g->cg, g->full, g->full_pitch, x, y, w, h, sl->dev, sl->pitch, ow, oh) != 0) {
+        gpu_fail(c, "escala (kernel CUDA)");
+        return 0;
+    }
+    sl->src_w = w;
+    sl->src_h = h;
+    // prévia pequena pra própria tela (até 15 q/s)
+    out->preview = NULL;
+    const DWORD now = GetTickCount();
+    if (g->want_preview && now - g->prev_last_ms >= 66) {
+        g->prev_last_ms = now;
+        const int full = g->want_preview == 2;
+        const int fw = full ? sw : ow, fh = full ? sh : oh;
+        int pw = fw, ph = fh;
+        if (g->preview_max_w > 0 && pw > g->preview_max_w) {
+            pw = g->preview_max_w;
+            ph = (int)((long long)fh * pw / fw);
+        }
+        if (pw >= 2 && ph >= 2) {
+            if (!g->prev_dev || g->prev_w != pw || g->prev_h != ph) {
+                if (g->prev_dev) cudagl_free(g->cg, g->prev_dev);
+                g->prev_dev = cudagl_alloc(g->cg, pw * 4, ph, &g->prev_pitch);
+                g->prev_w = pw;
+                g->prev_h = ph;
+            }
+            const size_t need = (size_t)pw * ph * 4;
+            if (g->prev_cap < need) {
+                free(g->prev_buf);
+                g->prev_buf = malloc(need);
+                g->prev_cap = g->prev_buf ? need : 0;
+            }
+            const int ok = g->prev_dev && g->prev_buf &&
+                (full ? cudagl_scale(g->cg, g->full, g->full_pitch, 0, 0, sw, sh, g->prev_dev, g->prev_pitch, pw, ph)
+                      : cudagl_scale(g->cg, sl->dev, sl->pitch, 0, 0, ow, oh, g->prev_dev, g->prev_pitch, pw, ph)) == 0 &&
+                cudagl_dev_to_host(g->cg, g->prev_dev, g->prev_pitch, g->prev_buf, pw * 4, pw * 4, ph) == 0;
+            if (ok) {
+                // BGRA → RGBA (a prévia de quem chama é RGBA)
+                for (size_t i = 0; i < need; i += 4) {
+                    const uint8_t t = g->prev_buf[i];
+                    g->prev_buf[i] = g->prev_buf[i + 2];
+                    g->prev_buf[i + 2] = t;
+                }
+                out->preview = g->prev_buf;
+                out->preview_w = pw;
+                out->preview_h = ph;
+                out->preview_full = full;
+            }
+        }
+    }
+    InterlockedExchange(&sl->held, 1);
+    out->gpu = sl;
+    out->gpu_dev = sl->dev;
+    out->gpu_pitch = sl->pitch;
+    out->gpu_src_w = w;
+    out->gpu_src_h = h;
+    out->data = NULL;
+    out->width = ow;
+    out->height = oh;
+    out->stride = sl->pitch;
+    out->format = CAP_BGRX;
+    out->cursor_draw = 0;
+    // ponta do cursor (fora do vídeo), em pixels do quadro de saída
+    cap_frame pos = {0};
+    cursor_pos(c, &pos);
+    out->cursor_known = 0;
+    if (pos.cursor_known && pos.cursor_px >= x && pos.cursor_py >= y && pos.cursor_px < x + w && pos.cursor_py < y + h) {
+        out->cursor_known = 1;
+        out->cursor_px = (int)((long long)(pos.cursor_px - x) * ow / w);
+        out->cursor_py = (int)((long long)(pos.cursor_py - y) * oh / h);
+    }
+    return 1;
+}
+
+static int gpu_mode(struct cap_ctx *c) {
+    return c->gpu && !c->gpu->failed && (c->cursor_apart || !c->show_cursor);
+}
+
 static int next_dxgi(struct cap_ctx *c, cap_frame *out, int timeout_ms, char *err, int errlen) {
+    // caminho pela placa: recorte/tamanho novos (ou o cursor saiu do vídeo)
+    // com a tela parada → refaz a partir do último quadro, sem esperar
+    if (gpu_mode(c) && c->gpu->have) {
+        struct gpu_path *g = c->gpu;
+        if (c->redeliver || g->retry || memcmp(g->used_crop, g->crop, sizeof g->crop) != 0 || g->used_max_h != g->max_h) {
+            c->redeliver = 0;
+            if (gpu_produce(c, out)) return 1;
+        }
+    }
     if (c->have_frame) {
         IDXGIOutputDuplication_ReleaseFrame(c->dupl);
         c->have_frame = 0;
@@ -340,6 +609,38 @@ static int next_dxgi(struct cap_ctx *c, cap_frame *out, int timeout_ms, char *er
         return -1;
     }
     c->have_frame = 1;
+
+    if (gpu_mode(c)) {
+        int got_tex = 0;
+        if (fi.LastPresentTime.QuadPart != 0) {
+            ID3D11Texture2D *tex = NULL;
+            IDXGIResource_QueryInterface(res, &IID_ID3D11Texture2D, (void **)&tex);
+            if (tex) {
+                got_tex = gpu_take_texture(c, tex);
+                ID3D11Texture2D_Release(tex);
+            }
+        }
+        if (res) IDXGIResource_Release(res);
+        IDXGIOutputDuplication_ReleaseFrame(c->dupl);
+        c->have_frame = 0;
+        if (got_tex && gpu_produce(c, out)) return 1;
+        if (c->gpu->failed) {
+            // volta pra CPU com o último quadro que chegou na placa
+            c->redeliver = 1;
+            return 0;
+        }
+        // só o mouse mexeu: a posição (fora do vídeo)
+        const int moved = cursor_pos(c, out);
+        out->data = NULL;
+        out->width = c->w;
+        out->height = c->h;
+        return moved ? 2 : 0;
+    }
+    // pela CPU, depois de um tempo pela placa: o último quadro está lá, não no c->clean
+    if (c->gpu && c->gpu->clean_stale && c->gpu->tex && c->gpu->have) {
+        if (copy_to_clean(c, c->gpu->tex)) c->redeliver = 1;
+        c->gpu->clean_stale = 0;
+    }
 
     int changed = 0;
     if (fi.LastPresentTime.QuadPart != 0) {
@@ -947,9 +1248,12 @@ const char *cap_backend(cap_ctx *c) {
     }
 }
 
+static void gpu_free_all(struct cap_ctx *c);
+
 void cap_close(cap_ctx *c) {
     if (!c) return;
     wgc_close(c->wgc);
+    gpu_free_all(c);
     release_dxgi(c);
     close_gdi(c);
     if (c->cur_dib) DeleteObject(c->cur_dib);
@@ -959,18 +1263,67 @@ void cap_close(cap_ctx *c) {
     free(c);
 }
 
-// Caminho pela placa (capture.h): só no Linux por enquanto. No Windows o
-// quadro do DXGI ainda passa pela CPU até o encoder.
+// Caminho pela placa (capture.h): só o monitor inteiro (DXGI). Janela (WGC)
+// e GDI seguem pela CPU.
 int cap_gpu_enable(cap_ctx *c, void *cg, cap_rect_fn rect, cap_cursor_fn cursor) {
-    (void)c; (void)cg; (void)rect; (void)cursor;
-    return 0;
+    (void)cursor; // o cursor vai fora do vídeo (o pintado é pela CPU)
+    if (!c || !cg || c->kind != KIND_DXGI || getenv("TELINHA_SEM_GPU_CAPTURA")) return 0;
+    if (!c->gpu) {
+        c->gpu = calloc(1, sizeof *c->gpu);
+        if (!c->gpu) return 0;
+        c->gpu->crop[2] = c->gpu->crop[3] = 1;
+        c->gpu->used_crop[2] = c->gpu->used_crop[3] = 1;
+    }
+    c->gpu->cg = cg;
+    c->gpu->rect_fn = rect;
+    c->gpu->failed = 0;
+    if (getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] captura pela placa: ligada (DXGI → CUDA)\n");
+    return 1;
 }
-void cap_gpu_disable(cap_ctx *c) { (void)c; }
-void cap_gpu_set_output(cap_ctx *c, const float crop[4], int max_height) { (void)c; (void)crop; (void)max_height; }
-void cap_gpu_set_preview(cap_ctx *c, int want, int max_w) { (void)c; (void)want; (void)max_w; }
-void cap_gpu_release(cap_ctx *c, void *gpu) { (void)c; (void)gpu; }
-int cap_gpu_failed(cap_ctx *c) { (void)c; return 0; }
-void cap_gpu_gc(cap_ctx *c) { (void)c; }
+
+void cap_gpu_disable(cap_ctx *c) {
+    if (c && c->gpu) c->gpu->failed = 1; // daqui pra frente pela CPU
+}
+
+void cap_gpu_set_output(cap_ctx *c, const float crop[4], int max_height) {
+    if (!c || !c->gpu) return;
+    memcpy(c->gpu->crop, crop, sizeof c->gpu->crop);
+    c->gpu->max_h = max_height;
+}
+
+void cap_gpu_set_preview(cap_ctx *c, int want, int max_w) {
+    if (!c || !c->gpu) return;
+    c->gpu->want_preview = want;
+    c->gpu->preview_max_w = max_w;
+}
+
+void cap_gpu_release(cap_ctx *c, void *gpu) {
+    (void)c;
+    if (gpu) InterlockedExchange(&((struct gpu_slot *)gpu)->held, 0);
+}
+
+int cap_gpu_failed(cap_ctx *c) {
+    return c && c->gpu && c->gpu->failed;
+}
+
+void cap_gpu_gc(cap_ctx *c) {
+    if (!c || !c->gpu) return;
+    for (int i = 0; i < c->gpu->n_retired; i++) cudagl_free(c->gpu->cg, c->gpu->retired[i]);
+    c->gpu->n_retired = 0;
+}
+
+static void gpu_free_all(struct cap_ctx *c) {
+    struct gpu_path *g = c->gpu;
+    if (!g) return;
+    gpu_release_d3d(c);
+    cap_gpu_gc(c);
+    for (int i = 0; i < N_GPU_SLOTS; i++) cudagl_free(g->cg, g->slots[i].dev);
+    cudagl_free(g->cg, g->full);
+    cudagl_free(g->cg, g->prev_dev);
+    free(g->prev_buf);
+    free(g);
+    c->gpu = NULL;
+}
 
 int cap_set_cursor_apart(cap_ctx *c, int on) {
     if (!c || !c->show_cursor) return 0;

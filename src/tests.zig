@@ -1815,3 +1815,67 @@ test "NV12 vetorizado: igual bit a bit à conversão escalar antiga (pitch, larg
         }
     }
 }
+
+test "escala na placa (CUDA, caminho do Windows) igual à conta na CPU" {
+    const cg_c = @cImport(@cInclude("cudagl.h"));
+    const g = cg_c.cudagl_open() orelse return error.SkipZigTest; // sem NVIDIA
+    defer cg_c.cudagl_close(g);
+    const sw = 1920;
+    const sh = 1080;
+    var rng = std.Random.DefaultPrng.init(7);
+    const src = try std.testing.allocator.alloc(u8, sw * sh * 4);
+    defer std.testing.allocator.free(src);
+    rng.random().bytes(src);
+    var sp: c_int = 0;
+    const dsrc = cg_c.cudagl_alloc(g, sw * 4, sh, &sp);
+    defer cg_c.cudagl_free(g, dsrc);
+    try std.testing.expect(dsrc != 0);
+    try std.testing.expectEqual(@as(c_int, 0), cg_c.cudagl_host_to_dev(g, src.ptr, sw * 4, dsrc, sp, sw * 4, sh));
+    const Case = struct { cx: u32, cy: u32, cw: u32, ch: u32, ow: u32, oh: u32 };
+    for ([_]Case{
+        .{ .cx = 0, .cy = 0, .cw = sw, .ch = sh, .ow = 1280, .oh = 720 }, // escala
+        .{ .cx = 100, .cy = 50, .cw = 800, .ch = 600, .ow = 800, .oh = 600 }, // recorte sem escala
+        .{ .cx = 300, .cy = 200, .cw = 1000, .ch = 500, .ow = 640, .oh = 320 }, // recorte + escala
+    }) |k| {
+        var dp: c_int = 0;
+        const ddst = cg_c.cudagl_alloc(g, @intCast(k.ow * 4), @intCast(k.oh), &dp);
+        defer cg_c.cudagl_free(g, ddst);
+        try std.testing.expectEqual(@as(c_int, 0), cg_c.cudagl_scale(g, dsrc, sp, @intCast(k.cx), @intCast(k.cy), @intCast(k.cw), @intCast(k.ch), ddst, dp, @intCast(k.ow), @intCast(k.oh)));
+        const got = try std.testing.allocator.alloc(u8, k.ow * k.oh * 4);
+        defer std.testing.allocator.free(got);
+        try std.testing.expectEqual(@as(c_int, 0), cg_c.cudagl_dev_to_host(g, ddst, dp, got.ptr, @intCast(k.ow * 4), @intCast(k.ow * 4), @intCast(k.oh)));
+        // referência: a mesma conta do kernel (cuda_scale.c)
+        var worst: u32 = 0;
+        for (0..k.oh) |y| for (0..k.ow) |x| {
+            const o = (y * k.ow + x) * 4;
+            try std.testing.expectEqual(@as(u8, 255), got[o + 3]);
+            if (k.cw == k.ow and k.ch == k.oh) {
+                const s = ((k.cy + y) * sw + k.cx + x) * 4;
+                try std.testing.expectEqualSlices(u8, src[s..][0..3], got[o..][0..3]);
+                continue;
+            }
+            const fx = @max(0, (@as(f32, @floatFromInt(x)) + 0.5) * @as(f32, @floatFromInt(k.cw)) / @as(f32, @floatFromInt(k.ow)) - 0.5);
+            const fy = @max(0, (@as(f32, @floatFromInt(y)) + 0.5) * @as(f32, @floatFromInt(k.ch)) / @as(f32, @floatFromInt(k.oh)) - 0.5);
+            const x0: usize = @min(@as(usize, @intFromFloat(fx)), k.cw - 1);
+            const y0: usize = @min(@as(usize, @intFromFloat(fy)), k.ch - 1);
+            const x1 = @min(x0 + 1, k.cw - 1);
+            const y1 = @min(y0 + 1, k.ch - 1);
+            const wx: u32 = @intFromFloat((fx - @as(f32, @floatFromInt(x0))) * 256);
+            const wy: u32 = @intFromFloat((fy - @as(f32, @floatFromInt(y0))) * 256);
+            for (0..3) |ch| {
+                const p = struct {
+                    fn at(img: []const u8, xx: usize, yy: usize, c: usize) u32 {
+                        return img[(yy * sw + xx) * 4 + c];
+                    }
+                };
+                const top = p.at(src, k.cx + x0, k.cy + y0, ch) * (256 - wx) + p.at(src, k.cx + x1, k.cy + y0, ch) * wx;
+                const bot = p.at(src, k.cx + x0, k.cy + y1, ch) * (256 - wx) + p.at(src, k.cx + x1, k.cy + y1, ch) * wx;
+                const want: u32 = (top * (256 - wy) + bot * wy + 32768) >> 16;
+                const d: u32 = @intCast(@abs(@as(i32, @intCast(want)) - @as(i32, got[o + ch])));
+                worst = @max(worst, d);
+            }
+        };
+        // a GPU arredonda o float um pouco diferente: no máximo 1-2 níveis
+        try std.testing.expect(worst <= 2);
+    }
+}

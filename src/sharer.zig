@@ -764,7 +764,8 @@ const Pipeline = struct {
                 p.w = @intCast(f.width);
                 p.h = @intCast(f.height);
                 p.src_h = @intCast(@max(f.gpu_src_h, f.height));
-                p.fmt = .rgbx;
+                // Linux: saída do GL em RGBA; Windows: a imagem do DXGI, BGRA
+                p.fmt = if (f.format == c.CAP_RGBX) .rgbx else .bgrx;
                 p.cursor_x = proto.coord_none;
                 p.cursor_y = proto.coord_none;
                 if (f.cursor_known != 0 and f.cursor_px >= 0 and f.cursor_py >= 0 and f.cursor_px < f.width and f.cursor_py < f.height) {
@@ -824,7 +825,7 @@ const Pipeline = struct {
         const sl = &p.slots[idx];
         p.releaseGpu(sl);
         sl.ts = ts;
-        sl.fmt = .rgbx;
+        sl.fmt = p.fmt;
         sl.cursor_x = p.cursor_x;
         sl.cursor_y = p.cursor_y;
         sl.cursor_apart = p.cursor_apart;
