@@ -55,7 +55,10 @@ pub const Config = struct {
     camera_res: i32 = 1, // 0 = 480p, 1 = 720p, 2 = 1080p
     language: [8]u8 = zstr("auto", 8), // idioma: "auto" (o do sistema), "pt" ou "en"
     theme: [24]u8 = zstr("escuro", 24), // tema da interface (id em theme.zig)
+    custom_theme: [96]u8 = zstr("", 96), // cores do tema personalizado (theme.encodeBase)
     auto_quality: bool = true, // transmitindo: baixa a resolução sozinho se o PC não der conta
+    ui_zoom: i32 = 100, // tamanho da interface (%), por cima da escala da tela
+    crt: bool = false, // efeito de tela antiga (linhas) por cima da interface
 };
 
 fn zstr(comptime s: []const u8, comptime n: usize) [n]u8 {
@@ -198,8 +201,14 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         cfg.camera_res = std.math.clamp(int, 0, 2);
     } else if (std.mem.eql(u8, k, "language")) {
         setStr(&cfg.language, v);
+    } else if (std.mem.eql(u8, k, "ui_zoom")) {
+        cfg.ui_zoom = std.math.clamp(int, 80, 150);
+    } else if (std.mem.eql(u8, k, "crt")) {
+        cfg.crt = int != 0;
     } else if (std.mem.eql(u8, k, "auto_quality")) {
         cfg.auto_quality = int != 0;
+    } else if (std.mem.eql(u8, k, "custom_theme")) {
+        setStr(&cfg.custom_theme, v);
     } else if (std.mem.eql(u8, k, "theme")) {
         setStr(&cfg.theme, v);
     }
@@ -245,8 +254,8 @@ pub fn save(cfg: *const Config) void {
     }) catch return;
     _ = c.fwrite(s.ptr, 1, s.len, f);
     var more: [1280]u8 = undefined;
-    const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\ncheck_updates={d}\naudio_app={s}\nlanguage={s}\ntheme={s}\nauto_quality={d}\ndebug_log={d}\ndebug_send={d}\ndebug_webhook={s}\n", .{
-        cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res, @intFromBool(cfg.check_updates), getStr(&cfg.audio_app), getStr(&cfg.language), getStr(&cfg.theme), @intFromBool(cfg.auto_quality), @intFromBool(cfg.debug_log), cfg.debug_send, getStr(&cfg.debug_webhook),
+    const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\ncheck_updates={d}\naudio_app={s}\nlanguage={s}\ntheme={s}\ncustom_theme={s}\nauto_quality={d}\nui_zoom={d}\ncrt={d}\ndebug_log={d}\ndebug_send={d}\ndebug_webhook={s}\n", .{
+        cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res, @intFromBool(cfg.check_updates), getStr(&cfg.audio_app), getStr(&cfg.language), getStr(&cfg.theme), getStr(&cfg.custom_theme), @intFromBool(cfg.auto_quality), cfg.ui_zoom, @intFromBool(cfg.crt), @intFromBool(cfg.debug_log), cfg.debug_send, getStr(&cfg.debug_webhook),
     }) catch return;
     _ = c.fwrite(m.ptr, 1, m.len, f);
     var excl: [512]u8 = cfg.audio_exclude;

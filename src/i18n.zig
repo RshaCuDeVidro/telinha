@@ -573,6 +573,25 @@ const table = [_][2][]const u8{
     .{ "Nenhum travamento registrado.", "No crash recorded." },
     .{ "não consegui ler o relatório", "couldn't read the report" },
 
+    .{ "TAMANHO DA INTERFACE", "INTERFACE SIZE" },
+    .{ "Efeito CRT (linhas de tela antiga; o vídeo fica de fora)", "CRT effect (old-screen scanlines; video is left out)" },
+
+    .{ "Personalizado", "Custom" },
+    .{ "Fundo", "Background" },
+    .{ "Painéis", "Panels" },
+    .{ "Texto", "Text" },
+    .{ "Destaque", "Accent" },
+    .{ "Destaque (mouse em cima)", "Accent (hover)" },
+    .{ "Verde", "Green" },
+    .{ "Vermelho", "Red" },
+    .{ "Cantos retos", "Square corners" },
+    .{ "Fonte monoespaçada (Fira Code)", "Monospace font (Fira Code)" },
+    .{ "{s}  Colar CSS", "{s}  Paste CSS" },
+    .{ "{s}  Copiar como CSS", "{s}  Copy as CSS" },
+    .{ "Tema montado a partir do CSS.", "Theme built from the CSS." },
+    .{ "Não achei as cores no CSS copiado (precisa das variáveis do :root, tipo --bg: #050505).", "Couldn't find the colors in the copied CSS (it needs the :root variables, like --bg: #050505)." },
+    .{ "Tema copiado como CSS.", "Theme copied as CSS." },
+
     // temas
     .{ "TEMA", "THEME" },
     .{ "Escuro", "Dark" },

@@ -58,7 +58,8 @@ pub fn main(init: std.process.Init) !void {
     var xs: f32 = 1;
     var ys: f32 = 1;
     c.glfwGetWindowContentScale(win, &xs, &ys);
-    ui.scale = std.math.clamp(xs, 1.0, 3.0);
+    ui.dpi_scale = std.math.clamp(xs, 1.0, 3.0);
+    ui.scale = ui.dpi_scale;
 
     _ = c.igCreateContext(null);
     const io = c.igGetIO_Nil();
@@ -69,13 +70,10 @@ pub fn main(init: std.process.Init) !void {
     io.*.ConfigInputTextEnterKeepActive = true;
     qa.init(); // TELINHA_QA: modo de testes (posição dos botões + estado em arquivos)
     const base = 15 * ui.scale;
-    const fs = fonts.load(io.*.Fonts, base);
-    ui.font_regular = fs.regular;
-    ui.font_semibold = fs.semibold;
-    ui.font_bold = fs.bold;
-    io.*.FontDefault = ui.font_regular;
+    ui.fonts_sans = fonts.load(io.*.Fonts, base);
+    ui.fonts_mono = fonts.loadMono(io.*.Fonts, base);
+    ui.useFonts(ui.fonts_sans, 1.0);
     ui.applyStyle();
-    c.igGetStyle().*.FontSizeBase = base;
 
     _ = c.ImGui_ImplGlfw_InitForOpenGL(win, true);
     _ = c.ImGui_ImplOpenGL3_Init("#version 130");

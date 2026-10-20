@@ -27,6 +27,7 @@ const chatimg = @import("chatimg.zig");
 const chatsend = @import("chatsend.zig");
 const debuglog = @import("debuglog.zig");
 const theme = @import("theme.zig");
+const fonts_mod = @import("fonts.zig");
 const pctest = @import("pctest.zig");
 const crash = @import("crash.zig");
 const i18n = @import("i18n.zig");
@@ -48,6 +49,13 @@ pub var col: theme.Palette = theme.list[0].pal;
 const avatar_colors = [_]u32{ rgb(0x5865F2), rgb(0x3BA55C), rgb(0xFAA61A), rgb(0xED4245), rgb(0xEB459E), rgb(0x9B59B6), rgb(0x1ABC9C), rgb(0xE67E22) };
 
 pub var font_regular: *c.ImFont = undefined;
+pub var fonts_sans: fonts_mod.Set = undefined;
+pub var fonts_mono: fonts_mod.Set = undefined;
+/// A Fira Code é mais larga que a Inter: um pouco menor pra caber igual.
+var font_k: f32 = 1.0;
+/// Escala da tela (DPI) e o zoom escolhido nas configurações (scale = os dois).
+pub var dpi_scale: f32 = 1.0;
+var zoom: f32 = 1.0;
 const logo_rgba = @embedFile("assets/icon128.rgba");
 var logo_tex: u32 = 0;
 /// Conversão YUV→RGB na GPU (null = CPU converte).
@@ -133,7 +141,24 @@ fn add(a: c.ImVec2_c, b: c.ImVec2_c) c.ImVec2_c {
     return .{ .x = a.x + b.x, .y = a.y + b.y };
 }
 fn pushFont(f: *c.ImFont, size: f32) void {
-    c.igPushFont(f, S(size));
+    c.igPushFont(f, S(size) * font_k);
+}
+
+/// Troca as fontes da interface (as do tema).
+pub fn useFonts(set: fonts_mod.Set, k: f32) void {
+    font_regular = set.regular;
+    font_semibold = set.semibold;
+    font_bold = set.bold;
+    font_k = k;
+    c.igGetIO_Nil().*.FontDefault = set.regular;
+    c.igGetStyle().*.FontSizeBase = 15 * scale * k;
+}
+
+/// Tamanho da interface (0.8 a 1.5), por cima da escala da tela.
+pub fn setZoom(z: f32) void {
+    zoom = std.math.clamp(z, 0.8, 1.5);
+    scale = dpi_scale * zoom;
+    applyStyle();
 }
 fn popFont() void {
     c.igPopFont();
@@ -148,12 +173,12 @@ fn drawText(d: *c.ImDrawList, pos: c.ImVec2_c, color: u32, s: []const u8) void {
     c.ImDrawList_AddText_Vec2(d, pos, color, s.ptr, s.ptr + s.len);
 }
 fn drawTextF(d: *c.ImDrawList, f: *c.ImFont, size: f32, pos: c.ImVec2_c, color: u32, s: []const u8) void {
-    c.ImDrawList_AddText_FontPtr(d, f, S(size), pos, color, s.ptr, s.ptr + s.len, 0, null);
+    c.ImDrawList_AddText_FontPtr(d, f, S(size) * font_k, pos, color, s.ptr, s.ptr + s.len, 0, null);
 }
 
 /// Igual, quebrando linha em `wrap` pixels.
 fn drawTextWrapF(d: *c.ImDrawList, f: *c.ImFont, size: f32, pos: c.ImVec2_c, color: u32, s: []const u8, wrap: f32) void {
-    c.ImDrawList_AddText_FontPtr(d, f, S(size), pos, color, s.ptr, s.ptr + s.len, wrap, null);
+    c.ImDrawList_AddText_FontPtr(d, f, S(size) * font_k, pos, color, s.ptr, s.ptr + s.len, wrap, null);
 }
 fn textSizeF(f: *c.ImFont, size: f32, s: []const u8) c.ImVec2_c {
     pushFont(f, size);
@@ -557,7 +582,8 @@ pub const App = struct {
     pub fn init(window: *c.GLFWwindow) App {
         var a: App = .{ .window = window, .cfg = config.load(), .volumes = config.VoiceVolumes.load() };
         i18n.init(config.getStr(&a.cfg.language));
-        setTheme(config.getStr(&a.cfg.theme));
+        a.applyTheme();
+        if (a.cfg.ui_zoom != 100) setZoom(@as(f32, @floatFromInt(a.cfg.ui_zoom)) / 100);
         a.crash_prompt = crash.pending();
         _ = std.fmt.bufPrintZ(&a.port_buf, "{d}", .{a.cfg.host_port}) catch {};
         if (a.cfg.check_updates) update.checkAsync(build_options.repo, version_string);
@@ -1852,6 +1878,7 @@ pub const App = struct {
         if (a.crash_prompt and !a.settings_modal and !a.share_modal and !a.leave_confirm) a.drawCrashPrompt();
         a.watchCrashSend();
         a.drawToasts(vp.*.Size);
+        a.drawCrt(vp.*.Size);
         c.igEnd();
     }
 
@@ -4519,6 +4546,52 @@ pub const App = struct {
         fieldLabel("TEMA");
         c.igDummy(v2(0, S(2)));
         a.drawThemes(w);
+        c.igDummy(v2(0, S(14)));
+        fieldLabel("TAMANHO DA INTERFACE");
+        const zooms = [_]i32{ 80, 90, 100, 115, 130, 150 };
+        var zi: i32 = 2;
+        for (zooms, 0..) |z, i| {
+            if (z == a.cfg.ui_zoom) zi = @intCast(i);
+        }
+        if (segmented("zoom", &.{ "80%", "90%", "100%", "115%", "130%", "150%" }, &zi, w)) {
+            a.cfg.ui_zoom = zooms[@intCast(zi)];
+            setZoom(@as(f32, @floatFromInt(a.cfg.ui_zoom)) / 100);
+            config.save(&a.cfg);
+        }
+        c.igDummy(v2(0, S(14)));
+        c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
+        if (c.igCheckbox(tr("Efeito CRT (linhas de tela antiga; o vídeo fica de fora)###crt"), &a.cfg.crt)) config.save(&a.cfg);
+        c.igPopStyleColor(1);
+    }
+
+    /// Linhas de tela antiga por cima da interface (menos nas transmissões).
+    fn drawCrt(a: *App, size: c.ImVec2_c) void {
+        if (!a.cfg.crt) return;
+        const d = c.igGetForegroundDrawList_ViewportPtr(c.igGetMainViewport());
+        const dark = theme.luminance(col.bg_main) < 0.2;
+        const line = withAlpha(col.black, if (dark) 46 else 18);
+        const step = @max(2.0, S(3));
+        var y: f32 = 0;
+        while (y < size.y) : (y += step) {
+            // pula os pedaços em cima das transmissões
+            var x: f32 = 0;
+            while (x < size.x) {
+                var end = size.x;
+                var skip_to: ?f32 = null;
+                for (a.tile_rects[0..a.n_tile_rects]) |r| {
+                    if (y < r.y0 or y >= r.y1 or r.x1 <= x) continue;
+                    if (r.x0 <= x) {
+                        skip_to = @max(skip_to orelse 0, r.x1);
+                    } else end = @min(end, r.x0);
+                }
+                if (skip_to) |s| {
+                    x = s;
+                    continue;
+                }
+                c.ImDrawList_AddLine(d, v2(x, y), v2(end, y), line, 1, 0);
+                x = end;
+            }
+        }
     }
 
     fn settingsVoice(a: *App, w: f32) void {
@@ -4866,34 +4939,122 @@ pub const App = struct {
     }
     /// Tema: um cartãozinho com as cores de cada um (troca na hora).
     fn drawThemes(a: *App, w: f32) void {
-        const cur = theme.find(config.getStr(&a.cfg.theme));
+        const id = config.getStr(&a.cfg.theme);
+        const custom_on = std.mem.eql(u8, id, theme.custom_id);
+        const cur: usize = if (custom_on) theme.list.len else theme.find(id);
         const per_row = 3;
         const gap = S(8);
         const cw = (w - gap * (per_row - 1)) / per_row;
         const ch = S(54);
-        const d = drawList();
-        inline for (theme.list, 0..) |t, i| {
+        const custom_base = theme.decodeBase(config.getStr(&a.cfg.custom_theme));
+        inline for (0..theme.list.len + 1) |i| {
             if (i % per_row != 0) c.igSameLine(0, gap);
-            const p = c.igGetCursorScreenPos();
-            const clicked = c.igInvisibleButton("##tema-" ++ t.id, v2(cw, ch), 0);
-            const hov = c.igIsItemHovered(0);
-            // o cartão nas cores (e cantos) do próprio tema
-            const pal = t.pal;
-            const r = S(6) * pal.round;
-            c.ImDrawList_AddRectFilled(d, p, v2(p.x + cw, p.y + ch), pal.bg_side, r, 0);
-            c.ImDrawList_AddRectFilled(d, v2(p.x + S(16), p.y), v2(p.x + cw, p.y + ch), pal.bg_main, r, 0);
-            drawTextF(d, font_semibold, 13, v2(p.x + S(26), p.y + S(9)), pal.header, tr(t.name));
-            const by = p.y + ch - S(17);
-            c.ImDrawList_AddRectFilled(d, v2(p.x + S(26), by), v2(p.x + S(58), by + S(9)), pal.blurple, S(3) * pal.round, 0);
-            c.ImDrawList_AddRectFilled(d, v2(p.x + S(63), by), v2(p.x + S(77), by + S(9)), pal.green, S(3) * pal.round, 0);
-            c.ImDrawList_AddRectFilled(d, v2(p.x + S(82), by), v2(p.x + S(96), by + S(9)), pal.red, S(3) * pal.round, 0);
-            const border = if (i == cur) col.blurple else if (hov) col.muted else withAlpha(col.text, 40);
-            c.ImDrawList_AddRect(d, p, v2(p.x + cw, p.y + ch), border, r, if (i == cur) S(2) else S(1), 0);
-            if (clicked and i != cur) {
-                config.setStr(&a.cfg.theme, t.id);
-                setTheme(t.id);
+            const is_custom = i == theme.list.len;
+            const label = if (is_custom) "##tema-" ++ theme.custom_id else "##tema-" ++ theme.list[i].id;
+            const pal = if (is_custom) theme.derive(custom_base) else theme.list[i].pal;
+            const name = if (is_custom) tr("Personalizado") else tr(theme.list[i].name);
+            if (themeCard(label, pal, name, cw, ch, i == cur) and i != cur) {
+                const new_id = if (is_custom) theme.custom_id else theme.list[i].id;
+                config.setStr(&a.cfg.theme, new_id);
+                a.applyTheme();
                 config.save(&a.cfg);
             }
+        }
+        if (custom_on) a.drawCustomTheme(w);
+    }
+
+    /// Um cartãozinho nas cores (e cantos) do próprio tema. true = clicou.
+    fn themeCard(label: [:0]const u8, pal: theme.Palette, name: []const u8, cw: f32, ch: f32, selected: bool) bool {
+        const d = drawList();
+        const p = c.igGetCursorScreenPos();
+        const clicked = c.igInvisibleButton(label.ptr, v2(cw, ch), 0);
+        const hov = c.igIsItemHovered(0);
+        const r = S(6) * pal.round;
+        c.ImDrawList_AddRectFilled(d, p, v2(p.x + cw, p.y + ch), pal.bg_side, r, 0);
+        c.ImDrawList_AddRectFilled(d, v2(p.x + S(16), p.y), v2(p.x + cw, p.y + ch), pal.bg_main, r, 0);
+        drawTextF(d, font_semibold, 13, v2(p.x + S(26), p.y + S(9)), pal.header, name);
+        const by = p.y + ch - S(17);
+        c.ImDrawList_AddRectFilled(d, v2(p.x + S(26), by), v2(p.x + S(58), by + S(9)), pal.blurple, S(3) * pal.round, 0);
+        c.ImDrawList_AddRectFilled(d, v2(p.x + S(63), by), v2(p.x + S(77), by + S(9)), pal.green, S(3) * pal.round, 0);
+        c.ImDrawList_AddRectFilled(d, v2(p.x + S(82), by), v2(p.x + S(96), by + S(9)), pal.red, S(3) * pal.round, 0);
+        const border = if (selected) col.blurple else if (hov) col.muted else withAlpha(col.text, 40);
+        c.ImDrawList_AddRect(d, p, v2(p.x + cw, p.y + ch), border, r, if (selected) S(2) else S(1), 0);
+        return clicked;
+    }
+
+    fn applyTheme(a: *App) void {
+        setTheme(config.getStr(&a.cfg.theme), config.getStr(&a.cfg.custom_theme));
+    }
+
+    /// Tema personalizado: as cores base (o resto sai delas), colar um CSS
+    /// (as variáveis do :root) ou copiar o tema como CSS.
+    fn drawCustomTheme(a: *App, w: f32) void {
+        var b = theme.decodeBase(config.getStr(&a.cfg.custom_theme));
+        var changed = false;
+        c.igDummy(v2(0, S(8)));
+        const fields = [_]struct { v: *u24, name: [:0]const u8, id: [:0]const u8 }{
+            .{ .v = &b.bg, .name = tr("Fundo"), .id = "##cbg" },
+            .{ .v = &b.side, .name = tr("Painéis"), .id = "##cside" },
+            .{ .v = &b.accent, .name = tr("Destaque"), .id = "##caccent" },
+            .{ .v = &b.accent2, .name = tr("Destaque (mouse em cima)"), .id = "##caccent2" },
+            .{ .v = &b.text, .name = tr("Texto"), .id = "##ctext" },
+            .{ .v = &b.ok, .name = tr("Verde"), .id = "##cok" },
+            .{ .v = &b.danger, .name = tr("Vermelho"), .id = "##cdanger" },
+        };
+        const colw = (w - S(12)) / 2;
+        for (fields, 0..) |fld, i| {
+            if (i % 2 == 1) c.igSameLine(0, S(12));
+            var rgbf = [3]f32{
+                @as(f32, @floatFromInt((fld.v.* >> 16) & 0xff)) / 255,
+                @as(f32, @floatFromInt((fld.v.* >> 8) & 0xff)) / 255,
+                @as(f32, @floatFromInt(fld.v.* & 0xff)) / 255,
+            };
+            c.igBeginGroup();
+            if (c.igColorEdit3(fld.id.ptr, &rgbf, c.ImGuiColorEditFlags_NoInputs | c.ImGuiColorEditFlags_NoLabel)) {
+                var out: u24 = 0;
+                for (rgbf) |x| out = (out << 8) | @as(u24, @intFromFloat(std.math.clamp(@round(x * 255), 0, 255)));
+                fld.v.* = out;
+                changed = true;
+            }
+            c.igSameLine(0, S(8));
+            textColored(col.text, fld.name);
+            c.igEndGroup();
+            if (i % 2 == 0) {
+                // a outra coluna começa na metade
+                c.igSameLine(colw, 0);
+                c.igDummy(v2(0, 0));
+            }
+        }
+        c.igNewLine();
+        c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
+        changed = c.igCheckbox(tr("Cantos retos###csquare"), &b.square) or changed;
+        c.igSameLine(0, S(16));
+        changed = c.igCheckbox(tr("Fonte monoespaçada (Fira Code)###cmono"), &b.mono) or changed;
+        c.igPopStyleColor(1);
+        c.igDummy(v2(0, S(6)));
+        const bw = (w - S(8)) / 2;
+        if (secondaryButton(fmtZ("{s}  Colar CSS###csspaste", .{ic.copy}), v2(bw, S(34)))) {
+            const cb_text: [*c]const u8 = c.igGetClipboardText();
+            const text = if (cb_text != null) std.mem.span(cb_text) else "";
+            if (theme.parseCss(text)) |nb| {
+                b = nb;
+                changed = true;
+                a.toast("Tema montado a partir do CSS.", .{}, false);
+            } else a.toast("Não achei as cores no CSS copiado (precisa das variáveis do :root, tipo --bg: #050505).", .{}, true);
+        }
+        c.igSameLine(0, S(8));
+        if (secondaryButton(fmtZ("{s}  Copiar como CSS###csscopy", .{ic.copy}), v2(bw, S(34)))) {
+            var cb: [512:0]u8 = undefined;
+            const css = theme.toCss(b, cb[0..511]);
+            cb[css.len] = 0;
+            c.igSetClipboardText(&cb);
+            a.toast("Tema copiado como CSS.", .{}, false);
+        }
+        if (changed) {
+            var eb: [96]u8 = undefined;
+            config.setStr(&a.cfg.custom_theme, theme.encodeBase(b, &eb));
+            a.applyTheme();
+            config.save(&a.cfg);
         }
     }
 
@@ -4966,8 +5127,8 @@ pub const App = struct {
         try w.print(",\"fps\":{d},\"quality\":{d},\"mode\":{d},\"resolution\":{d},\"cursor\":{},\"audio\":{},\"hardware\":{},\"stats_always\":{},\"show_chat\":{}", .{
             cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.stats_always, cf.show_chat,
         });
-        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_exclude\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f},\"theme\":{f},\"auto_quality\":{},\"resolution_idx\":{d}}}", .{
-            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), s(config.getStr(&cf.audio_exclude)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)), s(config.getStr(&cf.theme)), cf.auto_quality, cf.resolution,
+        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_exclude\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f},\"theme\":{f},\"custom_theme\":{f},\"auto_quality\":{},\"resolution_idx\":{d},\"ui_zoom\":{d},\"crt\":{}}}", .{
+            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), s(config.getStr(&cf.audio_exclude)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)), s(config.getStr(&cf.theme)), s(config.getStr(&cf.custom_theme)), cf.auto_quality, cf.resolution, cf.ui_zoom, cf.crt,
         });
         try w.print(",\"lang\":{f}", .{s(@tagName(i18n.get()))});
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);
@@ -5232,6 +5393,10 @@ pub fn wakeUi() void {
 /// Tema base do ImGui (tamanhos; uma vez, na escala da tela) e as cores do tema.
 pub fn applyStyle() void {
     const style = c.igGetStyle();
+    // do zero: o ScaleAllSizes multiplica o que já está lá (zoom mudando)
+    const def = c.ImGuiStyle_ImGuiStyle();
+    style.* = def.*;
+    c.ImGuiStyle_destroy(def);
     c.igStyleColorsDark(style);
     style.*.WindowRounding = 0;
     style.*.ChildRounding = 0;
@@ -5242,12 +5407,23 @@ pub fn applyStyle() void {
     style.*.ItemSpacing = v2(8, 6);
     style.*.GrabMinSize = 14;
     ImGuiStyle_ScaleAllSizes(style, scale);
+    style.*.FontSizeBase = 15 * scale * font_k;
     applyThemeStyle();
 }
 
 /// Troca o tema (pelo id do config.ini; desconhecido = o primeiro).
-pub fn setTheme(id: []const u8) void {
-    col = theme.list[theme.find(id)].pal;
+pub fn setTheme(id: []const u8, custom: []const u8) void {
+    var mono = false;
+    if (std.mem.eql(u8, id, theme.custom_id)) {
+        const b = theme.decodeBase(custom);
+        col = theme.derive(b);
+        mono = b.mono;
+    } else {
+        const t = theme.list[theme.find(id)];
+        col = t.pal;
+        mono = t.mono;
+    }
+    if (mono) useFonts(fonts_mono, 0.9) else useFonts(fonts_sans, 1.0);
     applyThemeStyle();
 }
 

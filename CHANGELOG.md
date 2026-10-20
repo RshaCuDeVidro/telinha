@@ -53,6 +53,11 @@ Conversa com a 3.0 (os campos novos são opcionais).
   placa e o decoder, com a resolução/fps sugeridos e um botão pra usar.
 - **Relatório de travamento**: se o app cair, ele anota o motivo e a pilha;
   na próxima abertura pergunta se manda (gofile ou webhook, igual ao log).
+- **Tema personalizado**: escolha fundo, painéis, destaque, texto, verde e
+  vermelho (o resto sai delas), ou **cole um CSS** e o telinha lê as
+  variáveis do `:root` (`--bg-dark`, `--neon-purple`...); dá pra copiar o
+  tema como CSS. Fira Code nos temas pwnd, **tamanho da interface** (80% a
+  150%) e **efeito CRT** opcional (linhas de tela antiga, sem cobrir o vídeo).
 - **Temas** (Configurações → Tema, troca na hora): Escuro (o de sempre),
   Claro, pwnd (preto com fúcsia e roxo neon e verde de terminal, cantos quase
   retos), pwnd claro, Nord e Drácula. O texto dos botões escolhe sozinho entre

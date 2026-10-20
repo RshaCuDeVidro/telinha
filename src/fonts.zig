@@ -6,6 +6,10 @@ const inter_regular = @embedFile("assets/Inter-400.ttf");
 const inter_semibold = @embedFile("assets/Inter-600.ttf");
 const inter_bold = @embedFile("assets/Inter-700.ttf");
 const fa_solid = @embedFile("assets/fa-solid-900.ttf");
+// Fira Code (tema pwnd): instâncias fixas da variável, só o alfabeto latino
+const fira_regular = @embedFile("assets/FiraCode-400.ttf");
+const fira_semibold = @embedFile("assets/FiraCode-600.ttf");
+const fira_bold = @embedFile("assets/FiraCode-700.ttf");
 
 pub const Set = struct { regular: *c.ImFont, semibold: *c.ImFont, bold: *c.ImFont };
 
@@ -20,6 +24,15 @@ fn loadFont(atlas: *c.ImFontAtlas, data: []const u8, size: f32) *c.ImFont {
     cfg.*.GlyphOffset = .{ .x = 0, .y = size * 0.05 };
     _ = c.ImFontAtlas_AddFontFromMemoryTTF(atlas, @constCast(fa_solid.ptr), @intCast(fa_solid.len), size * 0.9, cfg, null);
     return font;
+}
+
+/// A versão monoespaçada (temas que pedem, como o pwnd).
+pub fn loadMono(atlas: *c.ImFontAtlas, size: f32) Set {
+    return .{
+        .regular = loadFont(atlas, fira_regular, size),
+        .semibold = loadFont(atlas, fira_semibold, size),
+        .bold = loadFont(atlas, fira_bold, size),
+    };
 }
 
 /// Carrega as três fontes no atlas do contexto atual.

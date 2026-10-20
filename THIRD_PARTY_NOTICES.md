@@ -17,6 +17,7 @@ O telinha é MIT (ver [LICENSE](LICENSE)). Ele usa estes projetos:
 | [libva](https://github.com/intel/libva) 2.22 | headers do VA-API (a libva e o driver vêm do sistema, carregados em runtime) | MIT | baixado pelo `build.zig.zon` |
 | [NASM](https://www.nasm.us) 2.16.03 | só no build: monta o assembly SIMD do openh264 | BSD 2-Clause | baixado pelo `build.zig.zon` |
 | [Inter](https://rsms.me/inter/) | fonte da interface | SIL Open Font License 1.1 | `src/assets/Inter-*.ttf` |
+| [Fira Code](https://github.com/tonsky/FiraCode) | fonte dos temas pwnd (instâncias 400/600/700 da variável, só o alfabeto latino) | SIL Open Font License 1.1 | `src/assets/FiraCode-*.ttf` |
 | [Font Awesome Free](https://fontawesome.com) 6.7 | ícones | fonte: SIL OFL 1.1; ícones: CC BY 4.0 | `src/assets/fa-solid-900.ttf` |
 
 No Linux o app também usa bibliotecas do sistema: libportal (LGPL-3.0), PipeWire
