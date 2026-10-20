@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- telinha: um husky espiando por cima da tela -->
+  <defs>
+    <linearGradient id="fundo" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6A74F7"/>
+      <stop offset="1" stop-color="#4A3FD1"/>
+    </linearGradient>
+    <linearGradient id="tela" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2C3E9E"/>
+      <stop offset="1" stop-color="#16204F"/>
+    </linearGradient>
+    <clipPath id="cabeca"><path d="M52 160 C52 96 84 62 128 62 C172 62 204 96 204 160 Z"/></clipPath>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="58" fill="url(#fundo)"/>
+
+  <!-- orelhas -->
+  <path d="M60 112 L68 34 Q71 24 79 30 L122 72 Z" fill="#2C2F36"/>
+  <path d="M196 112 L188 34 Q185 24 177 30 L134 72 Z" fill="#2C2F36"/>
+  <path d="M74 92 L78 48 L106 74 Z" fill="#EBDDE1"/>
+  <path d="M182 92 L178 48 L150 74 Z" fill="#EBDDE1"/>
+
+  <!-- cabeça: pelo escuro por cima, máscara branca embaixo -->
+  <g clip-path="url(#cabeca)">
+    <rect x="40" y="56" width="176" height="110" fill="#2C2F36"/>
+    <path d="M44 166 V128 C56 108 78 98 100 100 C114 101 123 108 128 120 C133 108 142 101 156 100 C178 98 200 108 212 128 V166 Z" fill="#F5F6F8"/>
+    <path d="M124.5 62 H131.5 L129.6 112 Q128 116 126.4 112 Z" fill="#F5F6F8"/>
+    <ellipse cx="98" cy="94" rx="8" ry="5" fill="#F5F6F8"/>
+    <ellipse cx="158" cy="94" rx="8" ry="5" fill="#F5F6F8"/>
+  </g>
+
+  <!-- olhos de cores diferentes: um azul e um castanho -->
+  <path d="M83 118 Q100 100 117 118 Q100 131 83 118 Z" fill="#45B4FF"/>
+  <path d="M139 118 Q156 100 173 118 Q156 131 139 118 Z" fill="#8F5A2C"/>
+  <circle cx="101" cy="117" r="5.6" fill="#15171B"/>
+  <circle cx="157" cy="117" r="5.6" fill="#15171B"/>
+  <circle cx="97.5" cy="113.5" r="2.3" fill="#FFFFFF"/>
+  <circle cx="153.5" cy="113.5" r="2.3" fill="#FFFFFF"/>
+
+  <!-- focinho (o queixo fica atrás da tela) -->
+  <path d="M114 130 Q128 123 142 130 Q140 139 128 141 Q116 139 114 130 Z" fill="#15171B"/>
+  <ellipse cx="123" cy="129" rx="3.2" ry="1.6" fill="#4A4E58"/>
+
+  <!-- a tela -->
+  <rect x="112" y="204" width="32" height="14" fill="#E9EAF0"/>
+  <rect x="80" y="214" width="96" height="12" rx="6" fill="#E9EAF0"/>
+  <rect x="30" y="144" width="196" height="66" rx="16" fill="#1C1E23"/>
+  <rect x="42" y="154" width="172" height="46" rx="8" fill="url(#tela)"/>
+  <path d="M150 154 H176 L146 200 H120 Z" fill="#FFFFFF" opacity="0.07"/>
+  <circle cx="56" cy="167" r="5" fill="#F23F43"/>
+
+  <!-- patinhas na borda -->
+  <rect x="70" y="132" width="38" height="26" rx="13" fill="#F5F6F8"/>
+  <rect x="148" y="132" width="38" height="26" rx="13" fill="#F5F6F8"/>
+  <path d="M83 147 V156 M95 147 V156 M161 147 V156 M173 147 V156" stroke="#C3C7D0" stroke-width="2.6" stroke-linecap="round"/>
+</svg>
