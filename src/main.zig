@@ -99,7 +99,16 @@ pub fn main(init: std.process.Init) !void {
     app.applyArgs(args);
     crash.testCrash();
     var idle_frames: u32 = 0;
+    var last_frame_us: u64 = 0;
     while (c.glfwWindowShouldClose(win) == 0) {
+        // limite de quadros da interface (mexer o mouse num monitor de 144 Hz
+        // não redesenha 144 vezes por segundo): espera o resto do intervalo
+        const cap = ui.frame_cap_fps;
+        if (cap > 0 and last_frame_us != 0) {
+            const min_us = 1_000_000 / cap;
+            const since = sync.nowUs() - last_frame_us;
+            if (since < min_us) sync.sleepMs(@intCast((min_us - since + 999) / 1000));
+        }
         // dorme quando nada está acontecendo; rede e captura acordam o loop,
         // e o que anima pede o próximo redesenho (ui.redrawIn)
         const iconified = c.glfwGetWindowAttrib(win, c.GLFW_ICONIFIED) != 0;
@@ -110,6 +119,7 @@ pub fn main(init: std.process.Init) !void {
         } else c.glfwPollEvents();
         ui.redraw_at = std.math.inf(f64);
         const t_frame = sync.nowUs();
+        last_frame_us = t_frame;
 
         c.ImGui_ImplOpenGL3_NewFrame();
         c.ImGui_ImplGlfw_NewFrame();

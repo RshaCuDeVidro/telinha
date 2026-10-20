@@ -202,8 +202,10 @@ pub const YuvRenderer = struct {
         tv: u32 = 0,
         out: u32 = 0,
         fbo: u32 = 0,
-        w: u32 = 0,
+        w: u32 = 0, // tamanho do vídeo (planos)
         h: u32 = 0,
+        ow: u32 = 0, // tamanho da textura convertida (o que aparece; nunca maior que o vídeo)
+        oh: u32 = 0,
         nv12: bool = false,
 
         pub fn deinit(t: *Target, r: *const YuvRenderer) void {
@@ -230,10 +232,11 @@ pub const YuvRenderer = struct {
         glTexSubImage2D(TEXTURE_2D, 0, 0, 0, @intCast(w), @intCast(h), format, UNSIGNED_BYTE, data);
     }
 
-    /// Sobe os planos e converte pra `t.out`. `planes` = Y (w*h) seguido de
-    /// UV intercalado (NV12) ou U e V separados (I420), sem padding.
-    pub fn render(r: *const YuvRenderer, t: *Target, planes: []const u8, w: u32, h: u32, nv12: bool) bool {
-        if (t.w != w or t.h != h or t.nv12 != nv12 or t.out == 0) {
+    /// Sobe os planos do vídeo. `planes` = Y (w*h) seguido de UV intercalado
+    /// (NV12) ou U e V separados (I420), sem padding.
+    pub fn upload(r: *const YuvRenderer, t: *Target, planes: []const u8, w: u32, h: u32, nv12: bool) void {
+        _ = r;
+        if (t.w != w or t.h != h or t.nv12 != nv12 or t.ty == 0) {
             planeTexture(&t.ty, R8, w, h, RED);
             if (nv12) {
                 planeTexture(&t.tu, RG8, w / 2, h / 2, RG);
@@ -241,17 +244,6 @@ pub const YuvRenderer = struct {
                 planeTexture(&t.tu, R8, w / 2, h / 2, RED);
                 planeTexture(&t.tv, R8, w / 2, h / 2, RED);
             }
-            planeTexture(&t.out, RGBA8, w, h, RGBA);
-            if (t.fbo == 0) {
-                var fb: [1]c_uint = undefined;
-                r.f.genFramebuffers(1, &fb);
-                t.fbo = fb[0];
-            }
-            r.f.bindFramebuffer(FRAMEBUFFER, t.fbo);
-            r.f.framebufferTexture2D(FRAMEBUFFER, COLOR_ATTACHMENT0, TEXTURE_2D, t.out, 0);
-            const ok = r.f.checkFramebufferStatus(FRAMEBUFFER) == FRAMEBUFFER_COMPLETE;
-            r.f.bindFramebuffer(FRAMEBUFFER, 0);
-            if (!ok) return false;
             t.w = w;
             t.h = h;
             t.nv12 = nv12;
@@ -267,10 +259,34 @@ pub const YuvRenderer = struct {
             uploadPlane(t.tv, planes.ptr + n + n / 4, w / 2, h / 2, RED);
         }
         glPixelStorei(UNPACK_ALIGNMENT, 4);
+    }
 
+    /// Converte os planos (já na placa) pra `t.out` em `ow` x `oh` — o tamanho
+    /// em que o vídeo aparece: um 1080p num quadradinho converte só o que se
+    /// vê. `vp` = a viewport do quadro (pra devolver).
+    pub fn convert(r: *const YuvRenderer, t: *Target, ow_in: u32, oh_in: u32, vp: [4]c_int) bool {
+        if (t.ty == 0) return false;
+        const ow = std.math.clamp(ow_in, 16, t.w);
+        const oh = std.math.clamp(oh_in, 16, t.h);
+        if (t.ow != ow or t.oh != oh or t.out == 0) {
+            planeTexture(&t.out, RGBA8, ow, oh, RGBA);
+            if (t.fbo == 0) {
+                var fb: [1]c_uint = undefined;
+                r.f.genFramebuffers(1, &fb);
+                t.fbo = fb[0];
+            }
+            r.f.bindFramebuffer(FRAMEBUFFER, t.fbo);
+            r.f.framebufferTexture2D(FRAMEBUFFER, COLOR_ATTACHMENT0, TEXTURE_2D, t.out, 0);
+            const ok = r.f.checkFramebufferStatus(FRAMEBUFFER) == FRAMEBUFFER_COMPLETE;
+            r.f.bindFramebuffer(FRAMEBUFFER, 0);
+            if (!ok) return false;
+            t.ow = ow;
+            t.oh = oh;
+        }
+        const nv12 = t.nv12;
+        const w = ow;
+        const h = oh;
         // desenha um triângulo que cobre a textura de saída
-        var vp: [4]c_int = undefined;
-        glGetIntegerv(VIEWPORT, &vp);
         r.f.bindFramebuffer(FRAMEBUFFER, t.fbo);
         glViewport(0, 0, @intCast(w), @intCast(h));
         glDisable(BLEND);

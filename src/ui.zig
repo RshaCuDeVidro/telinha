@@ -534,6 +534,7 @@ pub const App = struct {
     pips: [4]?*pip.Pip = [_]?*pip.Pip{null} ** 4, // janelas flutuantes
     iconified: bool = false, // janela principal minimizada (o main.zig avisa)
     settings_page: SettingsPage = .geral,
+    fb_viewport: [4]c_int = .{ 0, 0, 0, 0 },
     auto_cap_seen: u32 = 0, // último teto da qualidade automática avisado
     pctest_logged: bool = true, // resultado do teste do PC já foi pro log
     crash_prompt: bool = false, // travou da última vez: pergunta se manda o relatório
@@ -606,6 +607,7 @@ pub const App = struct {
         a.applyTheme();
         a.applyPtt();
         clip.keep_secs.store(@intCast(std.math.clamp(a.cfg.clip_secs, 10, 300)), .release);
+        frame_cap_fps = @intCast(@max(0, a.cfg.ui_fps_cap));
         if (a.cfg.ui_zoom != 100) setZoom(@as(f32, @floatFromInt(a.cfg.ui_zoom)) / 100);
         a.crash_prompt = crash.pending();
         _ = std.fmt.bufPrintZ(&a.port_buf, "{d}", .{a.cfg.host_port}) catch {};
@@ -1665,7 +1667,21 @@ pub const App = struct {
     }
 
     /// Sobe pra GPU o que mudou nas transmissões (antes de desenhar).
+    /// Latência de ponta a ponta: captura no transmissor → tela aqui.
+    fn noteLatency(a: *App, v: *View, f: *const client_mod.Pic) void {
+        const cl = a.client orelse return;
+        const now = cl.serverNowUs();
+        if (now > f.ts and f.ts > 0) {
+            const lat = @as(f32, @floatFromInt(now - f.ts)) / 1000.0;
+            if (lat < 10_000) v.latency_ms = if (v.latency_ms == 0) lat else v.latency_ms * 0.9 + lat * 0.1;
+        }
+    }
+
     fn uploadTextures(a: *App) void {
+        var fw: c_int = 0;
+        var fh: c_int = 0;
+        c.glfwGetFramebufferSize(a.window, &fw, &fh);
+        a.fb_viewport = .{ 0, 0, fw, fh };
         for (a.views.items) |v| {
             // minimizado: só o que aparece numa janela flutuante (o resto fica
             // marcado e sobe quando a janela voltar)
@@ -1677,18 +1693,42 @@ pub const App = struct {
             v.fresh = false;
             v.mutex.unlock();
             const f = &v.front;
+            // em que tamanho (pixels) o vídeo apareceu no quadro passado: 0 = não apareceu
+            const want_w = v.disp_px_w;
+            const want_h = v.disp_px_h;
+            v.disp_px_w = 0;
+            v.disp_px_h = 0;
             if (f.w == 0) continue;
-            if (!took and v.tex != 0) continue;
+            if (took) v.gl_stale = true;
             if (f.layout != .rgba) {
-                // planos YUV: a GPU converte
+                // planos YUV: a GPU converte, no tamanho em que aparece (um 1080p
+                // num quadradinho não converte 1080p); quem não aparece fica pra depois
                 const r = &(yuv_renderer orelse continue);
+                if (want_w == 0 and v.tex != 0) {
+                    if (took) a.noteLatency(v, f);
+                    continue;
+                }
+                const tw = @min(if (want_w == 0) f.w else want_w, f.w);
+                const th = @min(if (want_h == 0) f.h else want_h, f.h);
+                // cresceu (ou encolheu bastante) com a imagem parada: converte de novo sem subir nada
+                const resize = v.yuv.ow == 0 or tw > v.yuv.ow + v.yuv.ow / 16 or tw < v.yuv.ow * 3 / 4;
+                if (!v.gl_stale and !resize and v.tex != 0) continue;
+                if (v.gl_stale) {
+                    r.upload(&v.yuv, f.data, f.w, f.h, f.layout == .nv12);
+                    v.gl_stale = false;
+                }
                 if (v.tex != 0 and v.tex != v.yuv.out) gl.delete(&v.tex);
-                if (r.render(&v.yuv, f.data, f.w, f.h, f.layout == .nv12)) {
+                if (r.convert(&v.yuv, tw, th, a.fb_viewport)) {
                     v.tex = v.yuv.out;
                     v.tex_w = f.w;
                     v.tex_h = f.h;
                 }
-            } else if (f.w != v.tex_w or f.h != v.tex_h or v.tex == 0 or v.tex == v.yuv.out) {
+                if (took) a.noteLatency(v, f);
+                continue;
+            }
+            if (!took and v.tex != 0) continue;
+            v.gl_stale = false;
+            if (f.w != v.tex_w or f.h != v.tex_h or v.tex == 0 or v.tex == v.yuv.out) {
                 if (v.tex == v.yuv.out) v.tex = 0;
                 gl.upload(&v.tex, f.data, f.w, f.h, gl.RGBA);
                 v.tex_w = f.w;
@@ -1696,14 +1736,7 @@ pub const App = struct {
             } else {
                 gl.uploadRect(v.tex, f.data, f.w, 0, 0, f.w, f.h, gl.RGBA);
             }
-            // latência de ponta a ponta: captura no transmissor → tela aqui
-            if (a.client) |cl| {
-                const now = cl.serverNowUs();
-                if (now > f.ts and f.ts > 0) {
-                    const lat = @as(f32, @floatFromInt(now - f.ts)) / 1000.0;
-                    if (lat < 10_000) v.latency_ms = if (v.latency_ms == 0) lat else v.latency_ms * 0.9 + lat * 0.1;
-                }
-            }
+            a.noteLatency(v, f);
         }
         for ([_]?*Sharer{ a.sharer, a.camera }) |maybe| {
             const s = maybe orelse continue;
@@ -3138,6 +3171,12 @@ pub const App = struct {
         const ix = x + (w - iw) / 2;
         const iy = y + (h - ih) / 2;
         const zm = a.zoomFor(t.stream);
+        // o tamanho em que esse vídeo aparece (com o zoom): a conversão de cor sai nele
+        if (t.view) |vw| {
+            const fbs = io.*.DisplayFramebufferScale;
+            vw.disp_px_w = @max(vw.disp_px_w, @as(u32, @intFromFloat(iw * zm.z * fbs.x)));
+            vw.disp_px_h = @max(vw.disp_px_h, @as(u32, @intFromFloat(ih * zm.z * fbs.y)));
+        }
         if (zm.follow and zm.z > 1.001 and t.cur_x != proto.coord_none) {
             // segue a ponta do cursor de quem transmite, suave
             const tx = @as(f32, @floatFromInt(t.cur_x)) / 65534.0;
@@ -3637,6 +3676,12 @@ pub const App = struct {
                 };
                 cl.mutex.unlock();
             }
+            // a janela flutuante também conta no tamanho da conversão de cor
+            var pw: c_int = 0;
+            var ph: c_int = 0;
+            c.glfwGetFramebufferSize(p.win, &pw, &ph);
+            v.disp_px_w = @max(v.disp_px_w, @as(u32, @intCast(@max(0, pw))));
+            v.disp_px_h = @max(v.disp_px_h, @as(u32, @intCast(@max(0, ph))));
             switch (p.frame(a.window, v.tex, v.tex_w, v.tex_h, name, if (v.audio_registered) &v.audio_ring else null)) {
                 .none => {},
                 .close => {
@@ -5039,6 +5084,22 @@ pub const App = struct {
         popFont();
         c.igDummy(v2(0, S(18)));
 
+        fieldLabel("LIMITE DE QUADROS DA INTERFACE");
+        const caps = [_]i32{ 30, 60, 0 };
+        var ci: i32 = 1;
+        for (caps, 0..) |x, i| {
+            if (x == a.cfg.ui_fps_cap) ci = @intCast(i);
+        }
+        if (segmented("fpscap", &.{ "30 q/s", "60 q/s", "O do monitor" }, &ci, w)) {
+            a.cfg.ui_fps_cap = caps[@intCast(ci)];
+            frame_cap_fps = @intCast(a.cfg.ui_fps_cap);
+            config.save(&a.cfg);
+        }
+        pushFont(font_regular, 12.5);
+        textColored(col.faint, tr("A interface só redesenha quando algo muda; isso limita quando muda muito (mouse mexendo, vídeo). Menos quadros = menos placa de vídeo."));
+        popFont();
+        c.igDummy(v2(0, S(18)));
+
         fieldLabel("TESTAR MEU PC");
         pushFont(font_regular, 12.5);
         textColored(col.faint, tr("Uns segundos medindo quanto esse computador aguenta pra transmitir e pra assistir, e a configuração sugerida."));
@@ -5745,6 +5806,9 @@ fn nativeWindow(w: *c.GLFWwindow) ?*anyopaque {
 pub var frame_work_us: u64 = 0;
 pub var frame_count: u64 = 0;
 pub var frame_work_max_us: u64 = 0;
+
+/// Limite de quadros por segundo da interface (0 = o do monitor).
+pub var frame_cap_fps: u64 = 60;
 
 /// Quando a interface precisa se redesenhar sozinha (animação, contagem,
 /// aviso sumindo), em segundos de igGetTime. O loop principal dorme até lá

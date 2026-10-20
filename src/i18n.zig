@@ -622,6 +622,12 @@ const table = [_][2][]const u8{
     .{ "Não achei o arquivo.", "Couldn't find the file." },
     .{ "O arquivo não tem as cores (variáveis do :root, tipo --bg: #050505).", "The file has no colors (:root variables, like --bg: #050505)." },
 
+    .{ "LIMITE DE QUADROS DA INTERFACE", "INTERFACE FRAME LIMIT" },
+    .{ "30 q/s", "30 fps" },
+    .{ "60 q/s", "60 fps" },
+    .{ "O do monitor", "Monitor's" },
+    .{ "A interface só redesenha quando algo muda; isso limita quando muda muito (mouse mexendo, vídeo). Menos quadros = menos placa de vídeo.", "The interface only redraws when something changes; this caps it when a lot changes (mouse moving, video). Fewer frames = less GPU." },
+
     // temas
     .{ "TEMA", "THEME" },
     .{ "Escuro", "Dark" },

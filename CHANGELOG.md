@@ -93,6 +93,15 @@ Conversa com a 3.0 (os campos novos são opcionais).
 
 **Desempenho e memória** (medido antes/depois nos mesmos cenários):
 
+- **Menos placa de vídeo pra assistir**: a conversão de cor do vídeo sai no
+  tamanho em que ele aparece na tela (um 1080p num quadradinho não converte
+  1080p), e quem não está aparecendo (outro em destaque, minimizado) não
+  converte nada; se o quadro crescer com a imagem parada, reconverte dos
+  planos que já estão na placa. Duas transmissões em grade: 155% → 72% de
+  CPU no teste com OpenGL em software (no PC de verdade isso é trabalho da
+  placa).
+- **Limite de quadros da interface** (Desempenho; 60 por padrão): mexer o
+  mouse num monitor de 144 Hz não redesenha 144 vezes por segundo.
 - Som da transmissão fura a fila de envio (antes esperava atrás de um quadro
   inteiro: um IDR de 60 KB a 2 Mbit/s segurava ~240 ms de som no TCP).
 - Minimizado, as transmissões não sobem mais pra GPU (só a que está numa

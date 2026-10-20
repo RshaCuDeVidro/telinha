@@ -245,6 +245,9 @@ pub const View = struct {
 
     // GPU (só a thread da UI mexe)
     yuv: gl.YuvRenderer.Target = .{},
+    gl_stale: bool = false, // quadro novo que ainda não foi pra placa (não estava aparecendo)
+    disp_px_w: u32 = 0, // tamanho em que apareceu no último desenho (pixels; 0 = não apareceu)
+    disp_px_h: u32 = 0,
     tex: u32 = 0,
     tex_w: u32 = 0,
     tex_h: u32 = 0,
