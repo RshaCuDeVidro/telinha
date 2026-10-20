@@ -165,6 +165,16 @@ pub const Endpoint = struct {
         gpa.destroy(ep);
     }
 
+    /// Tem trabalho com prazo (pedaço faltando, mensagem esperando a vez)?
+    /// Sem isso, ninguém precisa acordar a cada 10 ms.
+    pub fn busy(ep: *Endpoint) bool {
+        ep.mutex.lock();
+        defer ep.mutex.unlock();
+        if (ep.partials.items.len > 0) return true;
+        for (ep.rx.items) |*ch| if (ch.held.items.len > 0) return true;
+        return false;
+    }
+
     pub fn rttMs(ep: *Endpoint) u64 {
         return ep.rtt_us.load(.monotonic) / 1000;
     }
@@ -699,6 +709,10 @@ fn testPair(drop_pct: u32) !struct { a: *Endpoint, b: *Endpoint, sa: net.Socket,
     const b = try Endpoint.create(7, kb, ka);
     a.drop_pct = drop_pct;
     b.drop_pct = drop_pct;
+    // máquina carregada (testes em paralelo) não pode parecer rede ruim:
+    // RTT "alto" dá folga pros prazos de desistência
+    a.rtt_us.store(100_000, .monotonic);
+    b.rtt_us.store(100_000, .monotonic);
     // dois sockets conectados um no outro (porta aleatória)
     var port: u16 = 0;
     var sa: net.Socket = undefined;

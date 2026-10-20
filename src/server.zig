@@ -344,10 +344,12 @@ pub const Server = struct {
     /// é), e a cada ~10 ms cuida dos reenvios e de quem parou de falar.
     fn udpLoop(s: *Server) void {
         const sock = s.udp_sock.?;
-        net.setRecvTimeout(sock, 10);
+        var timeout_ms: u32 = 500;
+        net.setRecvTimeout(sock, timeout_ms);
         var buf: [2048]u8 = undefined;
         var from: net.UdpAddr = .{};
         var last_tick: u64 = 0;
+        var any_busy = false;
         while (!s.stopped.load(.acquire)) {
             if (net.udpRecvFrom(sock, &buf, &from)) |n| {
                 if (udp.peekToken(buf[0..n])) |token| if (s.connByToken(token)) |cn| {
@@ -365,11 +367,19 @@ pub const Server = struct {
                             s.log("{s}: vídeo e som por UDP", .{cn.nameSlice()});
                         }
                     }
+                    // ficou pedaço faltando: volta pro ritmo de 10 ms já
+                    if (!any_busy and l.ep.busy()) {
+                        any_busy = true;
+                        timeout_ms = 10;
+                        net.setRecvTimeout(sock, timeout_ms);
+                    }
                 };
             }
             const now = sync.nowMs();
-            if (now - last_tick < 10) continue;
+            // sem reenvio pendente, a manutenção (quem sumiu) pode ser de 500 em 500 ms
+            if (now - last_tick < (if (any_busy) @as(u64, 10) else 500)) continue;
             last_tick = now;
+            any_busy = false;
             // reenvios, desistências e quem sumiu do UDP (volta pro TCP)
             var conns: [64]*Conn = undefined;
             var n_conns: usize = 0;
@@ -388,10 +398,16 @@ pub const Server = struct {
                 const l = o.udp.load(.acquire).?;
                 var a: net.UdpAddr = .{};
                 l.ep.tick(l.wire(&a), deliverUdp, o);
+                if (l.ep.busy()) any_busy = true;
                 if (now -| l.ep.last_rx_ms.load(.monotonic) > 6000) {
                     l.active.store(false, .release);
                     s.log("{s}: UDP parou de responder, voltando pro TCP", .{o.nameSlice()});
                 }
+            }
+            const want: u32 = if (any_busy) 10 else 500;
+            if (want != timeout_ms) {
+                timeout_ms = want;
+                net.setRecvTimeout(sock, timeout_ms);
             }
         }
         net.close(sock);

@@ -54,6 +54,16 @@ void audio_close(audio_dev *d) {
     free(d);
 }
 
+// Para/retoma o dispositivo sem fechar (saída parada quando ninguém toca nada:
+// a placa e o fone Bluetooth podem dormir). Nunca de dentro do callback.
+int audio_pause(audio_dev *d) {
+    return d && d->dev_ok ? (ma_device_stop(&d->dev) == MA_SUCCESS ? 0 : -1) : -1;
+}
+
+int audio_resume(audio_dev *d) {
+    return d && d->dev_ok ? (ma_device_start(&d->dev) == MA_SUCCESS ? 0 : -1) : -1;
+}
+
 static audio_dev *open_dev(ma_device_type type, const ma_backend *backends, int nbackends, char *err, int errlen) {
     struct audio_dev *d = calloc(1, sizeof *d);
     if (!d) return NULL;

@@ -208,6 +208,8 @@ pub const View = struct {
     cursor_y: std.atomic.Value(u16) = .init(proto.coord_none),
 
     qmutex: sync.Mutex = .{},
+    amutex: sync.Mutex = .{}, // som da transmissão (separado da fila de quadros: não disputam)
+    audio_stop: bool = false,
     qcond: sync.Cond = .{},
     frames: std.ArrayList([]u8) = .empty,
     arrivals: std.ArrayList(u64) = .empty, // hora (µs) em que cada quadro da fila chegou
@@ -324,16 +326,19 @@ pub const View = struct {
         v.stop = true;
         v.qcond.broadcast();
         v.qmutex.unlock();
-        // depois de `stop`, ninguém mais registra no mixer; tira se já estava
+        v.amutex.lock();
+        v.audio_stop = true;
+        v.amutex.unlock();
+        // depois de `audio_stop`, ninguém mais registra no mixer; tira se já estava
         audio.mixer.remove(&v.audio_ring);
     }
 
     /// Pacote Opus recebido (thread de rede), com a hora da captura.
     fn pushAudio(v: *View, packet: []const u8, ts_us: u64) void {
         if (v.clip) |cb| cb.addAudio(packet, ts_us);
-        v.qmutex.lock();
-        defer v.qmutex.unlock();
-        if (v.stop) return;
+        v.amutex.lock();
+        defer v.amutex.unlock();
+        if (v.audio_stop) return;
         if (v.audio_dec == null) v.audio_dec = audio.Decoder.init() catch return;
         const pcm = v.audio_dec.?.decode(packet) catch return;
         v.audio_ring.write(pcm);
@@ -823,7 +828,8 @@ pub const Client = struct {
     /// sala para de responder, volta pro TCP e continua tentando.
     fn udpLoop(cl: *Client, l: *udp.Link) void {
         defer cl.release();
-        net.setRecvTimeout(l.sock, 10);
+        var timeout_ms: u32 = 10;
+        net.setRecvTimeout(l.sock, timeout_ms);
         const wire: udp.Wire = .{ .sock = l.sock };
         var buf: [2048]u8 = undefined;
         var last_hello: u64 = 0;
@@ -855,9 +861,17 @@ pub const Client = struct {
                     if (debugEnabled()) std.debug.print("[telinha] vídeo e som por UDP (RTT {d} ms)\n", .{l.ep.rttMs()});
                 }
             }
-            if (now - last_tick >= 10) {
+            const busy = l.ep.busy();
+            if (busy and now - last_tick >= 10) {
                 last_tick = now;
                 l.ep.tick(wire, deliverUdp, cl);
+            }
+            // dorme até ter o que fazer: reenvio pendente (10 ms), próximo
+            // hello ou próximo ping — datagrama que chega acorda na hora
+            const want: u32 = if (busy) 10 else if (!l.isActive()) 250 else @intCast(std.math.clamp(1000 -| (sync.nowMs() -| last_ping), 10, 1000));
+            if (want != timeout_ms) {
+                timeout_ms = want;
+                net.setRecvTimeout(l.sock, timeout_ms);
             }
         }
     }
@@ -900,9 +914,11 @@ pub const Client = struct {
             std.mem.writeInt(u64, m.payload()[0..8], sync.nowUs(), .little);
             cl.queue.pushOwned(m);
             // os primeiros pings vêm rápido pra sincronizar o relógio logo
-            const wait: u32 = if (n < 5) 2 else 20;
+            // (em fatias de 500 ms: só pra perceber a saída da sala)
+            const wait: u32 = if (n < 5) 1 else 4;
+            const slice: u32 = if (n < 5) 200 else 500;
             var i: u32 = 0;
-            while (i < wait and !cl.closing.load(.acquire)) : (i += 1) sync.sleepMs(100);
+            while (i < wait and !cl.closing.load(.acquire)) : (i += 1) sync.sleepMs(slice);
         }
     }
 

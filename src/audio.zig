@@ -97,6 +97,8 @@ pub const Ring = struct {
         rg.len += src.len;
         rg.level = @max(peak, rg.level * 0.9);
         rg.last_write_us = sync.nowUs();
+        // a saída estava parada (silêncio longo): liga de novo
+        if (mixer.paused.load(.acquire)) mixer.wantResume();
     }
 
     /// Soma até `out.len` amostras em `out`.
@@ -135,6 +137,39 @@ pub const Mixer = struct {
     self_mute: std.atomic.Value(bool) = .init(false),
     /// "Surdo" (como no Discord): não toca nada da sala, nem voz nem transmissão.
     deaf: std.atomic.Value(bool) = .init(false),
+    /// Saída parada por silêncio (ver housekeep) e quando tocou algo por último.
+    paused: std.atomic.Value(bool) = .init(false),
+    last_sound_us: std.atomic.Value(u64) = .init(0),
+    pause_mutex: sync.Mutex = .{}, // parar/retomar não podem se cruzar
+
+    /// Uma vez por quadro da interface: 5 s sem nada pra tocar → para o
+    /// dispositivo (a saída aberta custa CPU e não deixa a placa/fone dormir).
+    pub fn housekeep(m: *Mixer) void {
+        if (m.paused.load(.acquire)) return;
+        const last = m.last_sound_us.load(.monotonic);
+        if (last == 0 or sync.nowUs() -| last < 5_000_000) return;
+        m.pause_mutex.lock();
+        defer m.pause_mutex.unlock();
+        m.mutex.lock();
+        const dev = m.dev;
+        m.mutex.unlock();
+        const d = dev orelse return;
+        if (c.audio_pause(d) == 0) m.paused.store(true, .release);
+    }
+
+    /// Chegou som com a saída parada: liga (fora do callback de áudio).
+    fn wantResume(m: *Mixer) void {
+        m.pause_mutex.lock();
+        defer m.pause_mutex.unlock();
+        if (!m.paused.load(.acquire)) return;
+        m.mutex.lock();
+        const dev = m.dev;
+        m.mutex.unlock();
+        const d = dev orelse return;
+        m.last_sound_us.store(sync.nowUs(), .monotonic);
+        _ = c.audio_resume(d);
+        m.paused.store(false, .release);
+    }
 
     pub fn add(m: *Mixer, rg: *Ring) void {
         m.mutex.lock();
@@ -144,14 +179,18 @@ pub const Mixer = struct {
         if (need_open) m.opening = true;
         if (std.mem.findScalar(*Ring, m.rings.items, rg) == null) m.rings.append(gpa, rg) catch {};
         m.mutex.unlock();
-        if (need_open) {
-            var err: [256]u8 = undefined;
-            const d = c.audio_output_open(onPlay, m, &err, err.len);
-            m.mutex.lock();
-            if (d) |dev| m.dev = dev else m.failed = true;
-            m.opening = false;
-            m.mutex.unlock();
-        }
+        // abrir a saída leva dezenas de ms: numa thread à parte (quem chama
+        // costuma ser a thread de rede, que não pode parar de receber)
+        if (need_open) sync.spawn(openOutput, .{m}) catch openOutput(m);
+    }
+
+    fn openOutput(m: *Mixer) void {
+        var err: [256]u8 = undefined;
+        const d = c.audio_output_open(onPlay, m, &err, err.len);
+        m.mutex.lock();
+        if (d) |dev| m.dev = dev else m.failed = true;
+        m.opening = false;
+        m.mutex.unlock();
     }
 
     pub fn remove(m: *Mixer, rg: *Ring) void {
@@ -168,11 +207,14 @@ pub const Mixer = struct {
         defer m.mutex.unlock();
         const self_mute = m.self_mute.load(.monotonic);
         const deaf = m.deaf.load(.monotonic);
+        var any = false;
         for (m.rings.items) |rg| {
+            if (rg.len > 0) any = true;
             // os avisos tocam mesmo surdo (é assim que se ouve o "surdo ligado")
             const gain: f32 = if (rg.muted or self_mute or (deaf and rg != &chime_ring)) 0 else rg.volume;
             rg.mixInto(out, gain);
         }
+        if (any or m.last_sound_us.load(.monotonic) == 0) m.last_sound_us.store(sync.nowUs(), .monotonic);
         for (out) |*v| v.* = std.math.clamp(v.*, -1.0, 1.0);
         // o que vai sair na caixa de som: referência pro cancelamento de eco
         aec.reference.pushStereo(out);

@@ -444,7 +444,7 @@ pub const Mapper = struct {
         // mantém aberta (renova antes do prazo) até largarem
         var since = sync.nowMs();
         while (!m.stopping.load(.acquire)) {
-            sync.sleepMs(200);
+            sync.sleepMs(500);
             if (mp.lease != 0 and sync.nowMs() - since >= renew_ms) {
                 _ = renew(&mp);
                 since = sync.nowMs();

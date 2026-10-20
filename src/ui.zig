@@ -411,6 +411,9 @@ const Reconnect = struct {
 };
 const max_reconnect = 6;
 
+const ChatH = struct { h: f32, header: bool, width: f32 };
+const gpa_ui = std.heap.c_allocator;
+
 const ImgTex = struct {
     id: u32 = 0, // mensagem (0 = livre)
     tex: u32 = 0,
@@ -477,6 +480,7 @@ pub const App = struct {
     mention_apply: [48]u8 = undefined, // nome escolhido (o callback da caixa aplica)
     mention_apply_len: usize = 0,
     react_hover: ?u32 = null, // mensagem com o mouse em cima (mostra as reações)
+    chat_h: std.AutoHashMapUnmanaged(u32, ChatH) = .empty, // altura medida de cada mensagem do chat
 
     share_modal: bool = false,
     sources: [48]c.cap_source = undefined, // monitores e, no Windows, janelas
@@ -1021,6 +1025,7 @@ pub const App = struct {
     fn leaveRoom(a: *App) void {
         a.closeModals();
         a.clearChatImages();
+        a.chat_h.clearRetainingCapacity();
         a.stopMic();
         a.mic_wanted = false;
         a.setDeaf(false);
@@ -1559,6 +1564,7 @@ pub const App = struct {
 
     pub fn frame(a: *App) void {
         a.frame_no += 1;
+        audio.mixer.housekeep(); // saída de som parada depois de 5 s de silêncio
         a.checkClipJobs();
         a.checkChatImages();
         a.n_tile_rects = 0;
@@ -3637,6 +3643,9 @@ pub const App = struct {
         }
         var last_from: u32 = 0xffffffff;
         var in_history = false;
+        const view_top = c.igGetScrollY();
+        const view_h = c.igGetWindowHeight();
+        if (a.chat_h.count() > 4000) a.chat_h.clearRetainingCapacity();
         const mdl = drawList();
         // fundo das menções atrás do texto: canal 0; o resto no 1
         c.ImDrawList_ChannelsSplit(mdl, 2);
@@ -3660,7 +3669,19 @@ pub const App = struct {
                 c.ImDrawList_AddLine(drawList(), v2(sp.x, sp.y), v2(sp.x + size.x - S(28), sp.y), rgba(0xFFFFFF, 30), S(1), 0);
                 last_from = 0xffffffff;
             }
+            // fora da área visível e já medida: só reserva o espaço (500 linhas
+            // com quebra de texto custavam ~2 ms por quadro, com o cliente travado)
+            const y0 = c.igGetCursorPosY();
+            const with_header = line.from != 0 and line.from != last_from;
+            if (a.chat_h.get(line.id)) |ch| if (ch.header == with_header and ch.width == size.x and
+                (y0 + ch.h < view_top - view_h or y0 > view_top + 2 * view_h))
+            {
+                c.igSetCursorPosY(y0 + ch.h);
+                last_from = line.from;
+                continue;
+            };
             if (line.from == 0) {
+                defer a.chat_h.put(gpa_ui, line.id, .{ .h = c.igGetCursorPosY() - y0, .header = false, .width = size.x }) catch {};
                 c.igDummy(v2(0, S(6)));
                 const p = c.igGetCursorScreenPos();
                 const dl = drawList();
@@ -3675,6 +3696,7 @@ pub const App = struct {
                 last_from = 0;
                 continue;
             }
+            defer a.chat_h.put(gpa_ui, line.id, .{ .h = c.igGetCursorPosY() - y0, .header = with_header, .width = size.x }) catch {};
             var top: f32 = 0;
             if (line.from != last_from) {
                 c.igDummy(v2(0, S(12)));

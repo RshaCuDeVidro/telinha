@@ -13,7 +13,7 @@ const codec = @import("codec.zig");
 const gpa = std.heap.c_allocator;
 
 pub const keep_us = 30_000_000;
-const max_bytes = 160 * 1024 * 1024; // teto por transmissão (vídeo pesado não come a RAM)
+const max_bytes = 96 * 1024 * 1024; // teto por transmissão (vídeo pesado não come a RAM)
 
 const Frame = struct { data: []u8, ts_us: u64, key: bool, w: u16, h: u16, hevc: bool };
 const Packet = struct { data: []u8, ts_us: u64 };
@@ -96,7 +96,13 @@ pub const Buffer = struct {
                 second = i;
                 break;
             };
-            const i = second orelse return;
+            const i = second orelse {
+                // um IDR só: se passou do teto (ou os IDRs pararam de vir e
+                // isso só cresce), joga tudo fora e recomeça no próximo IDR
+                const old_us = now_us -| b.frames.items[0].ts_us;
+                if (b.bytes > max_bytes or old_us > 3 * keep_us) b.dropBefore(b.frames.items.len);
+                return;
+            };
             const covers = now_us -| b.frames.items[i].ts_us >= keep_us;
             if (!covers and b.bytes <= max_bytes) return;
             b.dropBefore(i);

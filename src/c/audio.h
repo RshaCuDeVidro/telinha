@@ -52,6 +52,10 @@ void audio_close(audio_dev *d);
 // Aí quem transmite áudio precisa silenciar o que assiste, senão vira eco.
 int audio_capture_hears_self(audio_dev *d);
 
+// Para/retoma o dispositivo (sem fechar). Nunca de dentro do callback.
+int audio_pause(audio_dev *d);
+int audio_resume(audio_dev *d);
+
 #ifdef __cplusplus
 }
 #endif
