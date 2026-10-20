@@ -108,7 +108,14 @@ Conversa com a 3.0 (os campos novos são opcionais).
   de 8 MB pro encoder; medido em 1080p: 4,7 ms → 0,3 ms de CPU por quadro.
   A prévia da própria tela sai pequena, direto da placa. Se o encoder for
   outro (VA-API, software) ou o compositor mandar memória comum, continua
-  como antes.
+  como antes. A preparação da placa (shader, registro no CUDA, buffers) é
+  feita numa thread à parte com um contexto GL compartilhado: feita na
+  thread do PipeWire, ela segurava os buffers do portal por ~80 ms, o portal
+  desistia do DMA-BUF e a captura morria ou trocava de caminho no meio.
+  Se a captura muda de caminho no meio (a placa falhou, o compositor
+  renegociou o formato), o quadro da placa e o quadro pela CPU têm sinais
+  separados — antes, um quadro da placa podia ser lido como se estivesse na
+  memória, e o app caía (SIGSEGV na escala do quadro).
 - **Assistir sem passar pela CPU** (NVIDIA, Linux e Windows): o quadro do
   NVDEC vai direto pra textura que aparece (CUDA ↔ OpenGL), sem as duas
   cópias de 3 MB por quadro (placa → RAM → placa). Quem assiste 1080p60 com

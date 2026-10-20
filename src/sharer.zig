@@ -687,6 +687,8 @@ const Pipeline = struct {
                 try p.publishGpu(&f, ts);
                 continue;
             }
+            // quadro sem pixels (não deveria vir; a captura mudou de caminho no meio): pula
+            if (f.data == null) continue;
             try p.ingest(&f);
             _ = p.timing.capture.fetchAdd(t_ing - t_cap, .monotonic);
             const t_end = sync.nowUs();

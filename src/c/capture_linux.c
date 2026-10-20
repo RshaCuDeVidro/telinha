@@ -32,6 +32,11 @@
 #include <X11/extensions/Xfixes.h>
 
 enum { KIND_PIPEWIRE = 1, KIND_X11 = 2 };
+// O que tem de novo (cap_ctx.fresh). Quadro da placa e quadro pela CPU têm
+// sinais separados: se a captura muda de caminho no meio (a placa falhou, o
+// compositor renegociou o formato), um quadro da placa não pode ser lido
+// como se estivesse em `pending` (que nesse caso nem existe).
+enum { FRESH_GPU = 1, FRESH_PREVIEW = 2, FRESH_CPU = 4 };
 // Pixels que o compositor entrega: 32 bits (copia direto), 24 bits (BGR/RGB,
 // ganha o byte X), 10 bits por canal (monitor HDR/10 bits, vira 8 bits) ou
 // DMA-BUF (buffer da GPU, lido com EGL).
@@ -81,7 +86,8 @@ struct cap_ctx {
     uint8_t *pending; // último frame recebido (escrito pela thread do PipeWire)
     size_t pending_cap;
     int pending_w, pending_h, pending_fmt;
-    int fresh;
+    int fresh; // FRESH_*: o que tem de novo pra quem chama
+    int front_w, front_h, front_fmt; // tamanho/formato do que está em `front` (o `pending` pode mudar antes)
     int failed;
     char fail_msg[160];
     uint8_t *front; // frame entregue pro chamador
@@ -204,6 +210,7 @@ struct egl_state {
     void *lib;
     EGLDisplay dpy;
     EGLContext ctx;
+    EGLContext ctx_warm; // compartilha objetos com `ctx`: prepara a placa numa thread à parte
     int current; // contexto já ativado na thread do PipeWire
     int read_bgra;
     GLuint fbo;
@@ -297,6 +304,11 @@ struct gpu_path {
     GLuint copy_tex, copy_fbo; // cópia da fonte inteira (recorte novo com a tela parada)
     int copy_w, copy_h, have_copy;
     int output_dirty; // recorte/altura mudaram desde o último quadro
+    // preparação (shader, cursor, saída registrada no CUDA) numa thread à parte:
+    // na thread do PipeWire ela levava ~80 ms, o portal ficava sem buffer,
+    // desistia do DMA-BUF e a captura morria
+    pthread_t warm_thread;
+    int warm_started, warming, objects_ready;
     uint64_t retired[8]; // buffers de slots que mudaram de tamanho: soltos no cap_gpu_gc
     int n_retired;
     GLuint scene_tex, scene_fbo; // saída sem cursor (pra redesenhar só o cursor)
@@ -334,6 +346,7 @@ static int has_ext(const char *list, const char *name) {
 static void egl_destroy(struct egl_state *e) {
     if (!e) return;
     if (e->dpy) {
+        if (e->ctx_warm) e->DestroyContext(e->dpy, e->ctx_warm);
         if (e->ctx) e->DestroyContext(e->dpy, e->ctx);
         e->Terminate(e->dpy);
     }
@@ -387,6 +400,7 @@ static struct egl_state *egl_create(void) {
     static const EGLint ctx_attr[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
     e->ctx = e->CreateContext(e->dpy, NULL, NULL, ctx_attr);
     if (!e->ctx) goto fail;
+    e->ctx_warm = e->CreateContext(e->dpy, NULL, e->ctx, ctx_attr); // pode faltar: aí prepara na hora
 
     LOAD(GenTextures, "glGenTextures");
     LOAD(DeleteTextures, "glDeleteTextures");
@@ -601,13 +615,10 @@ static int gpu_fbo_for(struct egl_state *e, GLuint *fbo, GLuint tex) {
     return e->CheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE ? 0 : -1;
 }
 
-// Programa e cursor (uma vez, na thread do contexto).
-static int gpu_gl_init(struct egl_state *e, struct gpu_path *g) {
-    if (g->gl_ready) return 0;
-    if (egl_make_current(e) < 0) {
-        if (getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] captura pela placa: eglMakeCurrent falhou\n");
-        return -1;
-    }
+// Programa e textura do cursor: objetos compartilhados entre os contextos,
+// feitos uma vez (na thread de preparação ou, sem ela, na do PipeWire).
+static int gpu_build_objects(struct egl_state *e, struct gpu_path *g) {
+    if (g->objects_ready) return 0;
     while (e->GetError() != GL_NO_ERROR) {} // erro velho de outra etapa não é nosso
     // `rect` = pedaço da textura (fração) que cobre a área desenhada; `swap`
     // troca R e B (quadro BGRX subido da memória compartilhada)
@@ -640,11 +651,7 @@ static int gpu_gl_init(struct egl_state *e, struct gpu_path *g) {
     g->loc_alpha = e->GetUniformLocation(g->prog, "keep_alpha");
     g->loc_tex = e->GetUniformLocation(g->prog, "s");
     e->UseProgram(g->prog);
-    e->Uniform1i(g->loc_tex, 0);
-    GLint ap = e->GetAttribLocation(g->prog, "p");
-    static const GLfloat quad[] = {-1, -1, 1, -1, -1, 1, 1, 1};
-    e->EnableVertexAttribArray((GLuint)ap);
-    e->VertexAttribPointer((GLuint)ap, 2, GL_FLOAT, 0, 0, quad);
+    e->Uniform1i(g->loc_tex, 0); // estado do programa: vale em todos os contextos
     if (g->cursor_fn) {
         int cw = 0, ch = 0;
         const uint8_t *px = g->cursor_fn(&cw, &ch);
@@ -658,7 +665,26 @@ static int gpu_gl_init(struct egl_state *e, struct gpu_path *g) {
     }
     const GLenum err = e->GetError();
     if (err != GL_NO_ERROR && getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] captura pela placa: erro do GL na preparação: 0x%x\n", err);
-    g->gl_ready = err == GL_NO_ERROR;
+    g->objects_ready = err == GL_NO_ERROR;
+    return g->objects_ready ? 0 : -1;
+}
+
+// Pronto pra desenhar na thread do contexto principal: objetos (se ninguém
+// fez) + o estado que é de cada contexto (programa em uso, vértices).
+static int gpu_gl_init(struct egl_state *e, struct gpu_path *g) {
+    if (g->gl_ready) return 0;
+    if (egl_make_current(e) < 0) {
+        if (getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] captura pela placa: eglMakeCurrent falhou\n");
+        return -1;
+    }
+    if (gpu_build_objects(e, g) < 0) return -1;
+    while (e->GetError() != GL_NO_ERROR) {}
+    e->UseProgram(g->prog);
+    GLint ap = e->GetAttribLocation(g->prog, "p");
+    static const GLfloat quad[] = {-1, -1, 1, -1, -1, 1, 1, 1};
+    e->EnableVertexAttribArray((GLuint)ap);
+    e->VertexAttribPointer((GLuint)ap, 2, GL_FLOAT, 0, 0, quad);
+    g->gl_ready = e->GetError() == GL_NO_ERROR;
     return g->gl_ready ? 0 : -1;
 }
 
@@ -706,7 +732,12 @@ static void gpu_draw(struct egl_state *e, struct gpu_path *g, GLuint fbo, int vw
 
 // Texturas de saída no tamanho pedido (e o registro no CUDA).
 static int gpu_ensure_output(struct egl_state *e, struct gpu_path *g, int ow, int oh) {
-    if (g->out_w == ow && g->out_h == oh && g->out_res) return 0;
+    if (g->out_w == ow && g->out_h == oh && g->out_res) {
+        if (g->scene_fbo && g->out_fbo) return 0;
+        // texturas da preparação: os FBOs não são compartilhados, nascem aqui
+        if (gpu_fbo_for(e, &g->scene_fbo, g->scene_tex) < 0 || gpu_fbo_for(e, &g->out_fbo, g->out_tex) < 0) return -1;
+        return 0;
+    }
     if (g->out_res) cudagl_unregister(g->cg, g->out_res);
     g->out_res = NULL;
     gpu_tex_alloc(e, &g->scene_tex, ow, oh, NULL);
@@ -833,11 +864,12 @@ static int gpu_produce(struct cap_ctx *c, GLuint src_tex, int sw, int sh, int sw
     struct gpu_path *g = c->gpu;
     struct egl_state *e = c->egl;
     if (!g || g->failed) return 0;
+    const uint64_t t0 = now_us();
     if (gpu_gl_init(e, g) < 0) {
         gpu_fail(g, "GL");
         return 0;
     }
-    const uint64_t t0 = now_us();
+    const uint64_t t_init = now_us();
     pthread_mutex_lock(&c->lock);
     float crop[4];
     memcpy(crop, g->crop, sizeof crop);
@@ -856,6 +888,7 @@ static int gpu_produce(struct cap_ctx *c, GLuint src_tex, int sw, int sh, int sw
         gpu_unpick(c, sl);
         return 0;
     }
+    const uint64_t t_out = now_us();
     gpu_draw(e, g, g->scene_fbo, ow, oh, src_tex, (float)x / (float)sw, (float)y / (float)sh, (float)w / (float)sw, (float)h / (float)sh, swap);
     // cópia da fonte inteira (já com R/B certos): recorte ou altura novos com
     // a tela parada saem dela, sem esperar o compositor mandar outro quadro
@@ -865,6 +898,8 @@ static int gpu_produce(struct cap_ctx *c, GLuint src_tex, int sw, int sh, int sw
             if (gpu_fbo_for(e, &g->copy_fbo, g->copy_tex) < 0) g->copy_tex = 0;
             g->copy_w = sw;
             g->copy_h = sh;
+        } else if (!g->copy_fbo && gpu_fbo_for(e, &g->copy_fbo, g->copy_tex) < 0) {
+            g->copy_tex = 0; // textura da preparação: o FBO nasce aqui
         }
         if (g->copy_tex) {
             gpu_draw(e, g, g->copy_fbo, sw, sh, src_tex, 0, 0, 1, 1, swap);
@@ -911,6 +946,7 @@ static int gpu_produce(struct cap_ctx *c, GLuint src_tex, int sw, int sh, int sw
         gpu_fail(g, "GL");
     }
     g->work_us += now_us() - t0;
+    if (getenv("TELINHA_DEBUG") && (now_us() - t0 > 20000)) fprintf(stderr, "[telinha] quadro pela placa demorou %.1f ms (nº %llu: GL %.1f, saída %.1f)\n", (now_us() - t0) / 1000.0, (unsigned long long)g->work_n, (t_init - t0) / 1000.0, (t_out - t_init) / 1000.0);
     if (++g->work_n == 120 && getenv("TELINHA_DEBUG")) {
         fprintf(stderr, "[telinha] quadro pela placa: %.2f ms por quadro\n", (double)g->work_us / 120 / 1000.0);
         g->work_us = g->work_n = 0;
@@ -921,10 +957,12 @@ static int gpu_produce(struct cap_ctx *c, GLuint src_tex, int sw, int sh, int sw
             for (int i = 0; i < N_GPU_SLOTS; i++)
                 if (g->slots[i].state == SLOT_PENDING) g->slots[i].state = SLOT_FREE; // o mais novo vale
             sl->state = SLOT_PENDING;
-            c->pending_w = ow;
-            c->pending_h = oh;
-            c->pending_fmt = CAP_RGBX;
-            c->fresh |= 1;
+            c->fresh |= FRESH_GPU;
+            // teste: a placa "falha" logo depois de entregar o quadro N (o quadro
+            // fica pendente e a captura volta pra CPU no mesmo instante)
+            static int fail_after = -1, produced_n = 0;
+            if (fail_after < 0) fail_after = getenv("TELINHA_TESTE_PLACA_FALHA") ? atoi(getenv("TELINHA_TESTE_PLACA_FALHA")) : 0;
+            if (fail_after > 0 && ++produced_n == fail_after) gpu_fail(g, "teste");
         } else {
             sl->state = SLOT_FREE;
         }
@@ -940,7 +978,7 @@ static int gpu_produce(struct cap_ctx *c, GLuint src_tex, int sw, int sh, int sw
         g->prev_front_h = g->prev_back_h;
         g->prev_front_full = g->prev_back_full;
         g->prev_new = 0;
-        c->fresh |= 2; // prévia nova (mesmo sem slot: quem chama só pega a prévia)
+        c->fresh |= FRESH_PREVIEW; // prévia nova (mesmo sem slot: quem chama só pega a prévia)
     }
     pthread_cond_broadcast(&c->cond);
     pthread_mutex_unlock(&c->lock);
@@ -974,10 +1012,7 @@ static int gpu_recompose(struct cap_ctx *c, cap_frame *cur) {
                 sl->cursor_py = (int)((long long)py * g->out_h / g->scene_h);
             }
         }
-        c->pending_w = g->out_w;
-        c->pending_h = g->out_h;
-        c->pending_fmt = CAP_RGBX;
-        c->fresh |= 1;
+        c->fresh |= FRESH_GPU;
         pthread_cond_broadcast(&c->cond);
     } else {
         sl->state = SLOT_FREE;
@@ -991,7 +1026,7 @@ static int gpu_recompose(struct cap_ctx *c, cap_frame *cur) {
 static int gpu_take(struct cap_ctx *c, cap_frame *out) {
     struct gpu_path *g = c->gpu;
     out->preview = NULL;
-    if (g->prev_front && (c->fresh & 2)) {
+    if (g->prev_front && (c->fresh & FRESH_PREVIEW)) {
         // cópia de quem chama: a thread do PipeWire pode trocar/realocar a frente a qualquer hora
         const size_t need = (size_t)g->prev_front_w * (size_t)g->prev_front_h * 4;
         if (g->prev_out_cap < need) {
@@ -1010,6 +1045,8 @@ static int gpu_take(struct cap_ctx *c, cap_frame *out) {
     struct gpu_slot *sl = NULL;
     for (int i = 0; i < N_GPU_SLOTS; i++)
         if (g->slots[i].state == SLOT_PENDING) sl = &g->slots[i];
+    // tudo: um quadro pela CPU de antes de a placa ligar não vale mais, e se
+    // o sinal dele ficasse, a espera em cap_next voltaria na hora (laço girando)
     c->fresh = 0;
     if (!sl) return 0;
     sl->state = SLOT_HELD;
@@ -1139,22 +1176,27 @@ static void on_param_changed(void *data, uint32_t id, const struct spa_pod *para
     if (media_type != SPA_MEDIA_TYPE_video || media_subtype != SPA_MEDIA_SUBTYPE_raw) return;
     if (spa_format_video_raw_parse(param, &c->info) < 0) return;
 
-    c->src_kind = SRC_32;
+    // calculado à parte e trocado de uma vez sob a trava: quem pega quadros
+    // (gpu_producing) não pode ver um "SRC_32" de passagem no meio da troca
+    int kind = SRC_32;
     const int dmabuf = c->egl && !c->dmabuf_off && spa_pod_find_prop(param, NULL, SPA_FORMAT_VIDEO_modifier) != NULL;
     if (c->egl) egl_forget(c->egl, NULL);
     switch (c->info.format) {
     case SPA_VIDEO_FORMAT_RGBx:
     case SPA_VIDEO_FORMAT_RGBA: c->pw_format = CAP_RGBX; break;
-    case SPA_VIDEO_FORMAT_RGB: c->pw_format = CAP_RGBX; c->src_kind = SRC_24; break;
-    case SPA_VIDEO_FORMAT_BGR: c->pw_format = CAP_BGRX; c->src_kind = SRC_24; break;
+    case SPA_VIDEO_FORMAT_RGB: c->pw_format = CAP_RGBX; kind = SRC_24; break;
+    case SPA_VIDEO_FORMAT_BGR: c->pw_format = CAP_BGRX; kind = SRC_24; break;
     // 10 bits: palavra de 32 bits LE com o canal do byte 0 nos bits baixos
     case SPA_VIDEO_FORMAT_xRGB_210LE:
-    case SPA_VIDEO_FORMAT_ARGB_210LE: c->pw_format = CAP_BGRX; c->src_kind = SRC_30; break;
+    case SPA_VIDEO_FORMAT_ARGB_210LE: c->pw_format = CAP_BGRX; kind = SRC_30; break;
     case SPA_VIDEO_FORMAT_xBGR_210LE:
-    case SPA_VIDEO_FORMAT_ABGR_210LE: c->pw_format = CAP_RGBX; c->src_kind = SRC_30; break;
+    case SPA_VIDEO_FORMAT_ABGR_210LE: c->pw_format = CAP_RGBX; kind = SRC_30; break;
     default: c->pw_format = CAP_BGRX; break;
     }
-    if (dmabuf) c->src_kind = SRC_DMABUF;
+    if (dmabuf) kind = SRC_DMABUF;
+    pthread_mutex_lock(&c->lock);
+    c->src_kind = kind;
+    pthread_mutex_unlock(&c->lock);
     if (getenv("TELINHA_DEBUG"))
         fprintf(stderr, "[telinha] PipeWire: %ux%u, formato %s, %s\n", c->info.size.width, c->info.size.height,
                 spa_debug_type_find_short_name(spa_type_video_format, c->info.format),
@@ -1229,9 +1271,10 @@ static void on_process(void *data) {
     if (d->type == SPA_DATA_DmaBuf) {
         pthread_mutex_lock(&c->lock);
         const int gpu_on = c->gpu_on && c->gpu && !c->gpu->failed;
+        const int warming = gpu_on && c->gpu->warming;
         const int idle = consumer_idle(c) && !(gpu_on && c->gpu->want_preview);
         pthread_mutex_unlock(&c->lock);
-        if (idle) {
+        if (idle || warming) {
             // ninguém vai pegar: nem lê o quadro (pela CPU custava 3-5 ms cada)
             pw_stream_queue_buffer(c->stream, b);
             return;
@@ -1288,7 +1331,7 @@ static void on_process(void *data) {
             c->pending_w = w;
             c->pending_h = hgt;
             c->pending_fmt = fmt;
-            c->fresh = 1;
+            c->fresh |= FRESH_CPU;
             pthread_cond_broadcast(&c->cond);
             pthread_mutex_unlock(&c->lock);
         }
@@ -1344,7 +1387,7 @@ static void on_process(void *data) {
                 c->pending_w = w;
                 c->pending_h = hgt;
                 c->pending_fmt = c->pw_format;
-                c->fresh = 1;
+                c->fresh |= FRESH_CPU;
                 pthread_cond_broadcast(&c->cond);
             }
             pthread_mutex_unlock(&c->lock);
@@ -1455,6 +1498,10 @@ static void gpu_free(struct cap_ctx *c) {
 }
 
 static void close_pipewire(struct cap_ctx *c) {
+    if (c->gpu && c->gpu->warm_started) {
+        pthread_join(c->gpu->warm_thread, NULL);
+        c->gpu->warm_started = 0;
+    }
     if (c->loop) pw_thread_loop_lock(c->loop);
     if (c->cursor_timer && c->loop) pw_loop_destroy_source(pw_thread_loop_get_loop(c->loop), c->cursor_timer);
     c->cursor_timer = NULL;
@@ -1695,16 +1742,16 @@ static int next_pipewire(struct cap_ctx *c, cap_frame *out, int timeout_ms, char
         pthread_mutex_unlock(&c->lock);
         return got ? 1 : 0;
     }
-    if (!(c->fresh & 1)) {
+    if (!(c->fresh & FRESH_CPU) || !c->pending) {
         c->fresh = 0;
         pthread_mutex_unlock(&c->lock);
         // tela parada, mas o cursor mexeu: reentrega o último quadro com o cursor novo
-        if (c->soft_cursor && c->have_front) {
+        if (c->soft_cursor && c->have_front && c->front) {
             out->data = c->front;
-            out->width = c->pending_w;
-            out->height = c->pending_h;
-            out->stride = c->pending_w * 4;
-            out->format = c->pending_fmt;
+            out->width = c->front_w;
+            out->height = c->front_h;
+            out->stride = c->front_w * 4;
+            out->format = c->front_fmt;
             if (fill_cursor(c, out)) return 1;
         }
         return 0;
@@ -1718,11 +1765,14 @@ static int next_pipewire(struct cap_ctx *c, cap_frame *out, int timeout_ms, char
     c->pending_cap = tmp_cap;
     c->fresh = 0;
     c->last_take_us = now_us();
+    c->front_w = c->pending_w;
+    c->front_h = c->pending_h;
+    c->front_fmt = c->pending_fmt;
     out->data = c->front;
-    out->width = c->pending_w;
-    out->height = c->pending_h;
-    out->stride = c->pending_w * 4;
-    out->format = c->pending_fmt;
+    out->width = c->front_w;
+    out->height = c->front_h;
+    out->stride = c->front_w * 4;
+    out->format = c->front_fmt;
     c->have_front = 1;
     pthread_mutex_unlock(&c->lock);
     fill_cursor(c, out);
@@ -1889,6 +1939,10 @@ cap_ctx *cap_open(int source_id, int show_cursor, int fps, char *err, int errlen
 }
 
 int cap_next(cap_ctx *c, cap_frame *out, int timeout_ms, char *err, int errlen) {
+    // nada de lixo de chamada anterior (quadro pela CPU não tem slot da placa)
+    out->gpu = NULL;
+    out->gpu_dev = 0;
+    out->preview = NULL;
     if (c->kind == KIND_PIPEWIRE) return next_pipewire(c, out, timeout_ms, err, errlen);
     return next_x11(c, out, err, errlen);
 }
@@ -1911,6 +1965,57 @@ void cap_close(cap_ctx *c) {
 // ---------------------------------------------------------------------------
 // Caminho pela placa (API; ver capture.h)
 
+// Thread de preparação (contexto compartilhado): compila o shader, sobe o
+// cursor e já cria e registra no CUDA as texturas de saída no tamanho que a
+// tela tem agora. A thread do PipeWire pula os quadros até isso acabar.
+static void *gpu_warm_thread(void *arg) {
+    struct cap_ctx *c = arg;
+    struct egl_state *e = c->egl;
+    struct gpu_path *g = c->gpu;
+    const uint64_t t0 = now_us();
+    int ok = e->MakeCurrent(e->dpy, NULL, NULL, e->ctx_warm) && gpu_build_objects(e, g) == 0;
+    if (ok) {
+        pthread_mutex_lock(&c->lock);
+        const int sw = (int)c->info.size.width, sh = (int)c->info.size.height, max_h = g->max_h;
+        float crop[4];
+        memcpy(crop, g->crop, sizeof crop);
+        pthread_mutex_unlock(&c->lock);
+        int x = 0, y = 0, w = sw, h = sh, ow = sw, oh = sh;
+        if (sw > 0 && sh > 0 && g->rect_fn) g->rect_fn(sw, sh, crop, max_h, &x, &y, &w, &h, &ow, &oh);
+        if (ow >= 2 && oh >= 2) {
+            gpu_tex_alloc(e, &g->scene_tex, ow, oh, NULL);
+            gpu_tex_alloc(e, &g->out_tex, ow, oh, NULL);
+            gpu_tex_alloc(e, &g->copy_tex, sw, sh, NULL);
+            g->copy_w = sw;
+            g->copy_h = sh;
+            e->Finish(); // objetos prontos antes de outro contexto usar
+            g->out_res = cudagl_register(g->cg, g->out_tex, 0);
+            if (g->out_res) {
+                g->out_w = ow;
+                g->out_h = oh;
+                // buffers dos slots já no tamanho certo (alocar na hora custava ~30 ms
+                // no primeiro uso de cada um, na thread do PipeWire)
+                for (int i = 0; i < N_GPU_SLOTS; i++) {
+                    struct gpu_slot *sl = &g->slots[i];
+                    if (sl->dev) continue;
+                    sl->dev = cudagl_alloc(g->cg, ow * 4, oh, &sl->pitch);
+                    if (sl->dev) {
+                        sl->w = ow;
+                        sl->h = oh;
+                    }
+                }
+            }
+        }
+        e->Finish();
+    }
+    e->MakeCurrent(e->dpy, NULL, NULL, NULL);
+    if (getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] captura pela placa: preparada em %.0f ms%s\n", (now_us() - t0) / 1000.0, ok ? "" : " (falhou: prepara na hora)");
+    pthread_mutex_lock(&c->lock);
+    g->warming = 0;
+    pthread_mutex_unlock(&c->lock);
+    return NULL;
+}
+
 int cap_gpu_enable(cap_ctx *c, void *cg, cap_rect_fn rect, cap_cursor_fn cursor) {
     if (!c || !cg || getenv("TELINHA_SEM_GPU_CAPTURA")) return 0;
     if (c->kind == KIND_X11 && !gpu_upload_wanted()) return 0;
@@ -1930,6 +2035,12 @@ int cap_gpu_enable(cap_ctx *c, void *cg, cap_rect_fn rect, cap_cursor_fn cursor)
     c->gpu->cursor_fn = cursor;
     c->gpu->failed = 0;
     c->gpu_on = 1;
+    // PipeWire: prepara numa thread à parte (a do PipeWire não pode parar)
+    if (c->kind == KIND_PIPEWIRE && c->egl->ctx_warm && !c->gpu->warm_started) {
+        c->gpu->warming = 1;
+        c->gpu->warm_started = pthread_create(&c->gpu->warm_thread, NULL, gpu_warm_thread, c) == 0;
+        if (!c->gpu->warm_started) c->gpu->warming = 0;
+    }
     pthread_mutex_unlock(&c->lock);
     if (getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] captura pela placa: ligada\n");
     return 1;

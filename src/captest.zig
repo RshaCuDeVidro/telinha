@@ -5,7 +5,23 @@
 //! de verdade e quanto tempo cada quadro levou pra ficar pronto. Útil quando
 //! "a tela não aparece" ou "está lenta" numa máquina específica.
 const std = @import("std");
-const c = @cImport(@cInclude("capture.h"));
+const c = @cImport({
+    @cInclude("capture.h");
+    @cInclude("cudagl.h");
+});
+extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+
+/// Caminho pela placa (TELINHA_CAPTEST_PLACA=1): fonte inteira, sem escala.
+fn fullRect(fw: c_int, fh: c_int, crop: [*c]const f32, max_h: c_int, x: [*c]c_int, y: [*c]c_int, w: [*c]c_int, h: [*c]c_int, ow: [*c]c_int, oh: [*c]c_int) callconv(.c) void {
+    _ = crop;
+    _ = max_h;
+    x.* = 0;
+    y.* = 0;
+    w.* = fw & ~@as(c_int, 1);
+    h.* = fh & ~@as(c_int, 1);
+    ow.* = w.*;
+    oh.* = h.*;
+}
 extern "c" fn sleep(seconds: c_uint) c_uint;
 
 fn nowUs() u64 {
@@ -24,12 +40,24 @@ pub fn main(init: std.process.Init) !void {
 
     var err: [256]u8 = [_]u8{0} ** 256;
     const t_open = nowUs();
+    // o CUDA tem que viver mais que a captura (os buffers da placa são dele): o
+    // defer que fecha ele vem antes, então roda depois do cap_close
+    var cg: ?*c.cudagl = null;
+    defer if (cg) |g| c.cudagl_close(g);
     const cap = c.cap_open(0, 1, fps, &err, err.len) orelse {
         std.debug.print("FALHOU ao abrir a captura: {s}\n", .{std.mem.sliceTo(&err, 0)});
         std.process.exit(1);
     };
     defer c.cap_close(cap);
     std.debug.print("captura aberta em {d} ms: {s}\n", .{ (nowUs() - t_open) / 1000, std.mem.span(c.cap_backend(cap)) });
+    // TELINHA_CAPTEST_PLACA=1: liga o caminho pela placa (como o app com NVENC)
+    if (getenv("TELINHA_CAPTEST_PLACA") != null) {
+        cg = c.cudagl_open();
+        const on = cg != null and c.cap_gpu_enable(cap, cg, fullRect, null) != 0;
+        std.debug.print("caminho pela placa: {s}\n", .{if (on) "ligado" else "não deu"});
+    }
+    var gpu_frames: u32 = 0;
+    var cpu_frames: u32 = 0;
 
     var frames: u32 = 0;
     var cursor_only: u32 = 0;
@@ -42,7 +70,7 @@ pub fn main(init: std.process.Init) !void {
     const t0 = nowUs();
     var report_at = t0 + 1_000_000;
     while (nowUs() - t0 < seconds * 1_000_000) {
-        var f: c.cap_frame = undefined;
+        var f: c.cap_frame = std.mem.zeroes(c.cap_frame);
         const t = nowUs();
         const r = c.cap_next(cap, &f, 100, &err, err.len);
         if (r < 0) {
@@ -51,7 +79,18 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         }
         const now = nowUs();
-        if (r == 1) {
+        if (r == 1 and f.gpu != null) {
+            // quadro na placa: não tem pixel pra olhar aqui; devolve
+            c.cap_gpu_release(cap, f.gpu);
+            gpu_frames += 1;
+            frames += 1;
+            seen_first = true;
+        } else if (r == 1 and f.data == null) {
+            // era aqui que o app caía (memcpy do endereço 0 na escala do quadro)
+            std.debug.print("ERRO: quadro sem pixels (nem na placa, nem na memória)\n", .{});
+            std.process.exit(2);
+        } else if (r == 1) {
+            cpu_frames += 1;
             if (!seen_first) std.debug.print("primeiro quadro em {d} ms: {d}x{d}, stride {d}, {s}{s}\n", .{
                 (now - t0) / 1000,                              f.width,
                 f.height,                                       f.stride,
@@ -79,6 +118,9 @@ pub fn main(init: std.process.Init) !void {
                 @as(f64, @floatFromInt(max_gap)) / 1000,
                 if (cursor_only > 0) ", alguns só com o cursor mexendo" else "",
             });
+            if (gpu_frames + cpu_frames > 0 and cg != null) std.debug.print("    pela placa {d}, pela CPU {d}\n", .{ gpu_frames, cpu_frames });
+            gpu_frames = 0;
+            cpu_frames = 0;
             frames = 0;
             waits = 0;
             max_gap = 0;
