@@ -28,6 +28,7 @@ const chatsend = @import("chatsend.zig");
 const debuglog = @import("debuglog.zig");
 const theme = @import("theme.zig");
 const fonts_mod = @import("fonts.zig");
+const codec = @import("codec.zig");
 const pctest = @import("pctest.zig");
 const crash = @import("crash.zig");
 const ptt = @import("ptt.zig");
@@ -608,6 +609,7 @@ pub const App = struct {
         a.applyPtt();
         clip.keep_secs.store(@intCast(std.math.clamp(a.cfg.clip_secs, 10, 300)), .release);
         frame_cap_fps = @intCast(@max(0, a.cfg.ui_fps_cap));
+        codec.setHwEffort(@intCast(a.cfg.hw_effort));
         if (a.cfg.ui_zoom != 100) setZoom(@as(f32, @floatFromInt(a.cfg.ui_zoom)) / 100);
         a.crash_prompt = crash.pending();
         _ = std.fmt.bufPrintZ(&a.port_buf, "{d}", .{a.cfg.host_port}) catch {};
@@ -5097,6 +5099,18 @@ pub const App = struct {
         }
         pushFont(font_regular, 12.5);
         textColored(col.faint, tr("A interface só redesenha quando algo muda; isso limita quando muda muito (mouse mexendo, vídeo). Menos quadros = menos placa de vídeo."));
+        popFont();
+        c.igDummy(v2(0, S(18)));
+
+        fieldLabel("ENCODER DA PLACA DE VÍDEO (vale na próxima transmissão)");
+        var he: i32 = a.cfg.hw_effort;
+        if (segmented("hweffort", &.{ "Leve", "Equilibrado", "Qualidade" }, &he, w)) {
+            a.cfg.hw_effort = he;
+            codec.setHwEffort(@intCast(he));
+            config.save(&a.cfg);
+        }
+        pushFont(font_regular, 12.5);
+        textColored(col.faint, tr("Leve: menos trabalho na placa (bom pra jogar e transmitir junto), um pouco menos nítido. Qualidade: mais nítido, mais placa."));
         popFont();
         c.igDummy(v2(0, S(18)));
 

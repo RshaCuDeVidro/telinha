@@ -25,6 +25,10 @@ enum { HWENC_BGRX = 0, HWENC_RGBX = 1 };
 // (dá pra pular pra quem não dá conta).
 hwenc *hwenc_open(int codec, int width, int height, int fps, int bitrate, int screen_mode, int temporal_layers, char *err, int errlen);
 
+// Peso do encoder da placa (vale no próximo hwenc_open): 0 = leve (menos
+// trabalho na placa), 1 = equilibrado, 2 = qualidade.
+void hwenc_set_effort(int effort);
+
 // Codifica um quadro BGRX/RGBX. *out aponta pra um buffer interno válido até a
 // próxima chamada. Retorna 0 em sucesso.
 int hwenc_encode(hwenc *e, const uint8_t *pixels, int stride, int format, int force_idr,

@@ -93,6 +93,8 @@ void nvenc_close(nvenc *e) {
     free(e);
 }
 
+int hwenc_effort(void); // hwenc.c
+
 nvenc *nvenc_open(int codec, int width, int height, int fps, int bitrate, int screen_mode, int temporal_layers, char *err, int errlen) {
     if (codec != HW_CODEC_H264 && codec != HW_CODEC_HEVC) {
         set_err(err, errlen, "NVENC: codec não suportado", codec);
@@ -162,11 +164,15 @@ nvenc *nvenc_open(int codec, int width, int height, int fps, int bitrate, int sc
         return NULL;
     }
 
-    // P4 dá ~1 dB a mais que o P1 em texto pelo mesmo tempo até 1080p60 (a
-    // placa sobra); acima disso, P2. TELINHA_NVENC_PRESET=1..7 força um.
+    // Preset pelo peso escolhido (Configurações → Desempenho). Qualidade: P4
+    // dá ~1 dB a mais que o P1 em texto até 1080p60; equilibrado: P3; leve:
+    // P1 (e sem AQ, que roda nos núcleos CUDA — os mesmos do jogo). Acima de
+    // 1080p60, um degrau a menos. TELINHA_NVENC_PRESET=1..7 força um.
     static const GUID presets[7] = {NV_ENC_PRESET_P1_GUID, NV_ENC_PRESET_P2_GUID, NV_ENC_PRESET_P3_GUID, NV_ENC_PRESET_P4_GUID,
                                     NV_ENC_PRESET_P5_GUID, NV_ENC_PRESET_P6_GUID, NV_ENC_PRESET_P7_GUID};
-    int pidx = (int64_t)width * height * (fps > 0 ? fps : 30) <= 1920LL * 1080 * 60 ? 4 : 2;
+    const int effort = hwenc_effort();
+    const int big = (int64_t)width * height * (fps > 0 ? fps : 30) > 1920LL * 1080 * 60;
+    int pidx = effort == 0 ? 1 : effort == 1 ? (big ? 2 : 3) : (big ? 2 : 4);
     const char *penv = getenv("TELINHA_NVENC_PRESET");
     if (penv && *penv >= '1' && *penv <= '7') pidx = *penv - '0';
     const GUID preset = presets[pidx - 1];
@@ -207,7 +213,7 @@ nvenc *nvenc_open(int codec, int width, int height, int fps, int bitrate, int sc
         // texto: um pouco mais de qualidade nos detalhes
         e->cfg.rcParams.enableAQ = 0;
     } else {
-        e->cfg.rcParams.enableAQ = 1;
+        e->cfg.rcParams.enableAQ = hwenc_effort() > 0; // AQ usa CUDA: o leve fica sem
     }
     if (hevc) {
         NV_ENC_CONFIG_HEVC *h = &e->cfg.encodeCodecConfig.hevcConfig;

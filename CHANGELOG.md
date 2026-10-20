@@ -100,6 +100,9 @@ Conversa com a 3.0 (os campos novos são opcionais).
   planos que já estão na placa. Duas transmissões em grade: 155% → 72% de
   CPU no teste com OpenGL em software (no PC de verdade isso é trabalho da
   placa).
+- **Encoder da placa: leve, equilibrado ou qualidade** (Desempenho). O
+  padrão agora é o equilibrado (preset P3 do NVENC, antes P4); o leve usa P1
+  e desliga o AQ, que roda nos núcleos CUDA — os mesmos do jogo.
 - **Limite de quadros da interface** (Desempenho; 60 por padrão): mexer o
   mouse num monitor de 144 Hz não redesenha 144 vezes por segundo.
 - Som da transmissão fura a fila de envio (antes esperava atrás de um quadro

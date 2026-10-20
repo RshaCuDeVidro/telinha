@@ -38,6 +38,16 @@ struct hwenc {
     void *impl;
 };
 
+static volatile int g_effort = 1;
+
+void hwenc_set_effort(int effort) {
+    g_effort = effort < 0 ? 0 : effort > 2 ? 2 : effort;
+}
+
+int hwenc_effort(void) {
+    return g_effort;
+}
+
 hwenc *hwenc_open(int codec, int width, int height, int fps, int bitrate, int screen_mode, int temporal_layers, char *err, int errlen) {
     hwenc *h = calloc(1, sizeof *h);
     if (!h) return NULL;

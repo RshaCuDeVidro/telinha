@@ -507,6 +507,11 @@ pub const Encoder = struct {
 // ---------------------------------------------------------------------------
 // Encoder em hardware (NVENC): recebe BGRX/RGBX direto, sem conversão na CPU
 
+/// Peso do encoder da placa (0 = leve, 1 = equilibrado, 2 = qualidade); vale no próximo que abrir.
+pub fn setHwEffort(effort: u8) void {
+    hw.hwenc_set_effort(effort);
+}
+
 pub const HwEncoder = struct {
     h: *hw.hwenc,
     opts: EncoderOptions,

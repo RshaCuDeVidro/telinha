@@ -628,6 +628,12 @@ const table = [_][2][]const u8{
     .{ "O do monitor", "Monitor's" },
     .{ "A interface só redesenha quando algo muda; isso limita quando muda muito (mouse mexendo, vídeo). Menos quadros = menos placa de vídeo.", "The interface only redraws when something changes; this caps it when a lot changes (mouse moving, video). Fewer frames = less GPU." },
 
+    .{ "ENCODER DA PLACA DE VÍDEO (vale na próxima transmissão)", "GPU ENCODER (applies to the next stream)" },
+    .{ "Leve", "Light" },
+    .{ "Equilibrado", "Balanced" },
+    .{ "Qualidade", "Quality" },
+    .{ "Leve: menos trabalho na placa (bom pra jogar e transmitir junto), um pouco menos nítido. Qualidade: mais nítido, mais placa.", "Light: less GPU work (good for gaming while streaming), a bit less sharp. Quality: sharper, more GPU." },
+
     // temas
     .{ "TEMA", "THEME" },
     .{ "Escuro", "Dark" },
