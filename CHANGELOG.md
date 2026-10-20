@@ -58,6 +58,9 @@ Conversa com a 3.0 (os campos novos são opcionais).
   variáveis do `:root` (`--bg-dark`, `--neon-purple`...); dá pra copiar o
   tema como CSS. Fira Code nos temas pwnd, **tamanho da interface** (80% a
   150%) e **efeito CRT** opcional (linhas de tela antiga, sem cobrir o vídeo).
+- **Duração do clipe** escolhível (15 s, 30 s, 1, 2 ou 3 min). Com clipe
+  curto, quem assiste pede um quadro completo mais seguido, pro clipe começar
+  perto do tempo pedido.
 - **Transmitir só um pedaço da tela**: no quadro da sua transmissão, o botão
   de recortar deixa arrastar um retângulo em cima da própria tela (botão
   direito volta pra tela inteira).

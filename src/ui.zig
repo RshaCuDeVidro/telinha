@@ -601,6 +601,7 @@ pub const App = struct {
         i18n.init(config.getStr(&a.cfg.language));
         a.applyTheme();
         a.applyPtt();
+        clip.keep_secs.store(@intCast(std.math.clamp(a.cfg.clip_secs, 10, 300)), .release);
         if (a.cfg.ui_zoom != 100) setZoom(@as(f32, @floatFromInt(a.cfg.ui_zoom)) / 100);
         a.crash_prompt = crash.pending();
         _ = std.fmt.bufPrintZ(&a.port_buf, "{d}", .{a.cfg.host_port}) catch {};
@@ -3324,7 +3325,7 @@ pub const App = struct {
                     bx -= bs + S(6);
                     c.igSetCursorScreenPos(v2(bx, by));
                     rectFill(d, bx, by, bx + bs, by + bs, col.overlay, S(6));
-                    if (iconButton("##clip", ic.scissors, bs, col.white, withAlpha(col.blurple, 200), tr("Salvar clipe dos últimos 30 s"))) a.saveClip(cb, t.name);
+                    if (iconButton("##clip", ic.scissors, bs, col.white, withAlpha(col.blurple, 200), fmtZ("Salvar clipe dos últimos {d} s", .{clip.keep_secs.load(.monotonic)}))) a.saveClip(cb, t.name);
                     bx -= bs + S(6);
                 }
                 // zoom: seguir o cursor de quem transmite / voltar pro tamanho normal
@@ -3518,7 +3519,7 @@ pub const App = struct {
             snap.deinit();
             return;
         };
-        j.* = .{ .snap = snap, .secs = @min(secs, @as(f32, @floatFromInt(clip.keep_us / 1_000_000))) };
+        j.* = .{ .snap = snap, .secs = @min(secs, @as(f32, @floatFromInt(clip.keep_secs.load(.monotonic)))) };
         const path = clip.newPath(&j.path, if (who.len > 0) who else tr("clipe"), tr("_clipe")) catch {
             j.snap.deinit();
             std.heap.c_allocator.destroy(j);
@@ -4734,10 +4735,27 @@ pub const App = struct {
                 if (c.igSmallButton(tr("Baixar a nova##upd"))) openReleases();
             }
         }
-        if (c.igCheckbox(tr("Clipes: guardar os últimos 30 s do que você assiste###clips"), &a.cfg.clips)) a.applyClips();
+        if (c.igCheckbox(tr("Clipes: guardar o finalzinho do que você assiste (pra salvar um clipe na hora)###clips"), &a.cfg.clips)) a.applyClips();
         c.igSameLine(0, S(8));
         if (c.igSmallButton(tr("Abrir a pasta###clipsdir"))) a.openClipsFolder();
         c.igPopStyleColor(1);
+        if (a.cfg.clips) {
+            c.igDummy(v2(0, S(6)));
+            fieldLabel("DURAÇÃO DO CLIPE");
+            const secs = [_]i32{ 15, 30, 60, 120, 180 };
+            var si: i32 = 1;
+            for (secs, 0..) |x, i| {
+                if (x == a.cfg.clip_secs) si = @intCast(i);
+            }
+            if (segmented("clipsecs", &.{ "15 s", "30 s", "1 min", "2 min", "3 min" }, &si, w)) {
+                a.cfg.clip_secs = secs[@intCast(si)];
+                clip.keep_secs.store(@intCast(a.cfg.clip_secs), .release);
+                config.save(&a.cfg);
+            }
+            pushFont(font_regular, 12);
+            textColored(col.faint, fmtZ("Usa até ~{d} MB de memória por transmissão assistida (depende da qualidade).", .{@divTrunc(a.cfg.clip_secs * 3, 4) + 4}));
+            popFont();
+        }
     }
 
     fn settingsAppearance(a: *App, w: f32) void {

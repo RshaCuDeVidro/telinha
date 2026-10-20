@@ -1,4 +1,4 @@
-//! Os últimos ~30 s de uma transmissão (o H.264 e o Opus como chegam), pra
+//! Os últimos ~30 s (escolhível: 15 s a 3 min) de uma transmissão (o H.264 e o Opus como chegam), pra
 //! salvar um clipe na hora, e a gravação em andamento. Quem assiste guarda o
 //! que recebe; quem transmite guarda o que codifica.
 //!
@@ -12,8 +12,17 @@ const mp4 = @import("mp4.zig");
 const codec = @import("codec.zig");
 const gpa = std.heap.c_allocator;
 
-pub const keep_us = 30_000_000;
-const max_bytes = 96 * 1024 * 1024; // teto por transmissão (vídeo pesado não come a RAM)
+/// Duração do clipe (segundos), escolhida nas configurações.
+pub var keep_secs: std.atomic.Value(u32) = .init(30);
+
+fn keepUs() u64 {
+    return @as(u64, keep_secs.load(.monotonic)) * 1_000_000;
+}
+
+/// Teto por transmissão (vídeo pesado não come a RAM): ~3 MB por segundo guardado.
+fn maxBytes() usize {
+    return @max(32 * 1024 * 1024, @as(usize, keep_secs.load(.monotonic)) * 3 * 1024 * 1024);
+}
 
 const Frame = struct { data: []u8, ts_us: u64, key: bool, w: u16, h: u16, hevc: bool };
 const Packet = struct { data: []u8, ts_us: u64 };
@@ -100,11 +109,11 @@ pub const Buffer = struct {
                 // um IDR só: se passou do teto (ou os IDRs pararam de vir e
                 // isso só cresce), joga tudo fora e recomeça no próximo IDR
                 const old_us = now_us -| b.frames.items[0].ts_us;
-                if (b.bytes > max_bytes or old_us > 3 * keep_us) b.dropBefore(b.frames.items.len);
+                if (b.bytes > maxBytes() or old_us > 3 * keepUs()) b.dropBefore(b.frames.items.len);
                 return;
             };
-            const covers = now_us -| b.frames.items[i].ts_us >= keep_us;
-            if (!covers and b.bytes <= max_bytes) return;
+            const covers = now_us -| b.frames.items[i].ts_us >= keepUs();
+            if (!covers and b.bytes <= maxBytes()) return;
             b.dropBefore(i);
         }
     }
@@ -134,7 +143,7 @@ pub const Buffer = struct {
         defer b.mutex.unlock();
         if (b.frames.items.len < 2) return 0;
         const span = b.frames.items[b.frames.items.len - 1].ts_us - b.frames.items[0].ts_us;
-        return @as(f32, @floatFromInt(@min(span, keep_us + 30_000_000))) / 1e6;
+        return @as(f32, @floatFromInt(@min(span, keepUs() + 30_000_000))) / 1e6;
     }
 
     /// Cópia do que está guardado (pra escrever o arquivo fora do lock).
@@ -160,7 +169,7 @@ pub const Buffer = struct {
         const newest = b.frames.items[b.frames.items.len - 1].ts_us;
         var start: usize = 0;
         for (b.frames.items, 0..) |f, i| {
-            if (f.key and newest -| f.ts_us >= keep_us) start = i;
+            if (f.key and newest -| f.ts_us >= keepUs()) start = i;
         }
         const frames = b.frames.items[start..];
         var video = try gpa.alloc(mp4.VideoSample, frames.len);

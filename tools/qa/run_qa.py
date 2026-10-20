@@ -713,6 +713,28 @@ def clipes_e_gravacao():
 
 
 @test
+def clipe_curto():
+    """Duração do clipe escolhida (15 s): com mais tempo guardado que isso, o clipe sai com ~15 s, não 30."""
+    with Session("clipcurto") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"])
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}", "--assistir"], config={"clip_secs": "15", "name": "Bruno"})
+        aid = b.member_id("Ana")
+        b.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "ver a Ana")
+        time.sleep(25)  # mais que os 15 s: o buffer tem que ficar perto de 15, não crescer até 30
+        st = b.state()
+        held = next(v for v in st["views"] if v["stream"] == aid)["clip_secs"]
+        log(f"guardado depois de 25 s: {held:.1f} s")
+        expect(12 <= held <= 27, f"guardando {held:.1f} s com o clipe em 15 s")
+        tile = b.tile(aid)
+        b.click("##clip", within=tile, hover_first=center(tile))
+        st = b.wait(lambda st: st["last_saved"] and st["clip_jobs"] == 0 and os.path.exists(st["last_saved"]), 10, "salvar o clipe")
+        frames, dur, _ = probe(st["last_saved"])
+        log(f"clipe de 15 s: {frames} quadros, {dur:.1f} s")
+        expect(14 <= dur <= 26, f"duração errada: {dur:.1f} s")
+
+
+@test
 def janela_flutuante():
     """Janela flutuante: abre pelo quadro, mostra o vídeo, fecha pelo sistema, pelo botão dela e sozinha quando a transmissão some."""
     S = os.environ.get("QA_SHOTS")

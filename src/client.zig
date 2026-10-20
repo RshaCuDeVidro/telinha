@@ -235,6 +235,8 @@ pub const View = struct {
 
     /// Os últimos ~30 s (clipe) e a gravação. null = clipes desligados.
     clip: ?*clip.Buffer = null,
+    clip_key_us: u64 = 0, // último IDR que chegou (clipe curto pede mais)
+    clip_req_us: u64 = 0,
 
     // áudio (a thread de rede decodifica, o mixer toca)
     audio_ring: audio.Ring = .{},
@@ -285,7 +287,17 @@ pub const View = struct {
                 const ts = std.mem.readInt(u64, frame[5..13], .little);
                 const fw = std.mem.readInt(u16, frame[13..15], .little);
                 const fh = std.mem.readInt(u16, frame[15..17], .little);
-                cb.addVideo(frame[proto.frame_header_len..], ts, flags & proto.frame_key != 0, fw, fh, codec.Codec.fromFlags(flags));
+                const key = flags & proto.frame_key != 0;
+                cb.addVideo(frame[proto.frame_header_len..], ts, key, fw, fh, codec.Codec.fromFlags(flags));
+                // clipe curto (menos de 30 s): o servidor só pede IDR a cada
+                // 20 s; aqui pede um a cada metade da duração (o clipe começa num)
+                const now = sync.nowUs();
+                if (key) v.clip_key_us = now;
+                const half: u64 = @as(u64, clip.keep_secs.load(.monotonic)) * 500_000;
+                if (half < 15_000_000 and v.clip_key_us != 0 and now - v.clip_key_us > half and now - v.clip_req_us > half) {
+                    v.clip_req_us = now;
+                    v.client.sendKeyreqReason(v.stream, proto.keyreq_record);
+                }
             }
         }
         v.qmutex.lock();

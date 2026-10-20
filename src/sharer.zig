@@ -865,7 +865,8 @@ const Pipeline = struct {
                 return;
             }
             // clipe da própria transmissão: um IDR a cada 20 s (o clipe começa num)
-            if (s.clip != null and !s.idle.load(.acquire) and last_key_us != 0 and sync.nowUs() - last_key_us > 20_000_000) s.client.keyreq[kind].store(true, .release);
+            const clip_key_us = @min(20_000_000, @as(u64, clip.keep_secs.load(.monotonic)) * 500_000);
+            if (s.clip != null and !s.idle.load(.acquire) and last_key_us != 0 and sync.nowUs() - last_key_us > clip_key_us) s.client.keyreq[kind].store(true, .release);
             const key = s.client.keyreq[kind].swap(false, .acq_rel);
             const idx: ?usize = if (p.ready) |r| r else if (key) p.last else null;
             p.ready_was_null = p.ready == null;
