@@ -25,6 +25,11 @@ int ptt_global_down(int scancode, int mouse_button) {
 int ptt_global_supported(void) {
     return 1;
 }
+
+int ptt_global_button_supported(int mouse_button) {
+    (void)mouse_button;
+    return 1;
+}
 #else
 #include <X11/Xlib.h>
 #include <pthread.h>
@@ -38,21 +43,31 @@ static int tried;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 int ptt_global_down(int x11_keycode, int mouse_button) {
-    (void)mouse_button; // botões laterais (8/9) não aparecem na máscara do X
-    if (x11_keycode < 8 || x11_keycode > 255) return 0;
+    // botão do meio: na máscara do ponteiro; os laterais (8/9) o X não conta
+    if (mouse_button >= 0 && mouse_button != 2) return 0;
+    if (mouse_button < 0 && (x11_keycode < 8 || x11_keycode > 255)) return 0;
     pthread_mutex_lock(&lock);
     if (!tried) {
         tried = 1;
         if (getenv("DISPLAY")) dpy = XOpenDisplay(NULL);
     }
     int down = 0;
-    if (dpy) {
+    if (dpy && mouse_button == 2) {
+        Window root, child;
+        int rx, ry, wx, wy;
+        unsigned int mask = 0;
+        if (XQueryPointer(dpy, DefaultRootWindow(dpy), &root, &child, &rx, &ry, &wx, &wy, &mask)) down = (mask & Button2Mask) != 0;
+    } else if (dpy) {
         char keys[32];
         XQueryKeymap(dpy, keys);
         down = (keys[x11_keycode / 8] & (1 << (x11_keycode % 8))) != 0;
     }
     pthread_mutex_unlock(&lock);
     return down;
+}
+
+int ptt_global_button_supported(int mouse_button) {
+    return mouse_button == 2;
 }
 
 int ptt_global_supported(void) {

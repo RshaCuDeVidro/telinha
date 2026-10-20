@@ -159,9 +159,6 @@ extern "c" fn _exit(code: c_int) noreturn;
 extern "kernel32" fn TerminateProcess(process: ?*anyopaque, code: c_uint) callconv(.winapi) c_int;
 extern "kernel32" fn GetCurrentProcess() callconv(.winapi) ?*anyopaque;
 
-/// Termina o processo na hora, sem os destrutores das bibliotecas. O do
-/// NVDEC (libnvcuvid) e o do PipeWire travam esperando threads internas
-/// deles, e o app ficava vivo depois de fechar a janela.
 /// Depuração ligada (TELINHA_DEBUG no ambiente, ou o log de depuração das
 /// configurações, que liga e desliga com o app aberto).
 pub var debug_flag: std.atomic.Value(bool) = .init(false);
@@ -213,6 +210,9 @@ pub fn trimMemory() void {
     _ = malloc_trim(0);
 }
 
+/// Termina o processo na hora, sem os destrutores das bibliotecas. O do
+/// NVDEC (libnvcuvid) e o do PipeWire travam esperando threads internas
+/// deles, e o app ficava vivo depois de fechar a janela.
 pub fn hardExit(code: u8) noreturn {
     if (is_windows) {
         _ = TerminateProcess(GetCurrentProcess(), code);

@@ -10,6 +10,8 @@ extern "C" {
 int ptt_global_down(int key, int mouse_button);
 // 0 = não dá pra ler o teclado de fora (sem servidor X no Linux).
 int ptt_global_supported(void);
+// Esse botão do mouse dá pra ler de fora? (Linux/X11: só o do meio)
+int ptt_global_button_supported(int mouse_button);
 
 #ifdef __cplusplus
 }

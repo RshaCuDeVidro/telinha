@@ -1374,7 +1374,6 @@ pub const Client = struct {
         cl.queue.pushOwned(m);
     }
 
-    /// Ponteiro "olha aqui" sobre uma transmissão (x, y em 0..65534; proto.coord_none esconde).
     /// Pontos de um traço (de quem quer que seja, inclusive os meus).
     pub fn addDraw(cl: *Client, from: u32, stream: u32, flags: u8, pts: []const [2]u16) void {
         cl.mutex.lock();
@@ -1441,6 +1440,7 @@ pub const Client = struct {
         }
     }
 
+    /// Ponteiro "olha aqui" sobre uma transmissão (x, y em 0..65534; proto.coord_none esconde).
     pub fn sendPointer(cl: *Client, stream: u32, x: u16, y: u16, flags: u8) void {
         if (!cl.welcomed.load(.acquire)) return;
         const m = proto.Msg.alloc(.pointer, 9) catch return;

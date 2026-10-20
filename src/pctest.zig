@@ -186,12 +186,20 @@ fn measure(r: *Result) !void {
             var out: std.ArrayList(u8) = .empty;
             defer out.deinit(gpa);
             var t0: u64 = 0;
+            var timed: usize = 0;
+            var failed = false;
             for (0..frames + 12) |i| {
                 if (i == 3) t0 = sync.nowUs();
                 out.clearRetainingCapacity();
-                _ = enc.encode(imgs[i % 3].ptr, w1 * 4, .bgrx, i == 0, &out) catch break;
+                _ = enc.encode(imgs[i % 3].ptr, w1 * 4, .bgrx, i == 0, &out) catch {
+                    failed = true;
+                    break;
+                };
+                if (i >= 3) timed += 1;
             }
-            r.hw1080_ms = msPer(t0, frames + 9);
+            // encoder que falhou no meio não conta como "tem placa"
+            r.hw1080_ms = if (failed or timed < 3) 0 else msPer(t0, timed);
+            if (r.hw1080_ms == 0) r.hw_name[0] = 0;
         } else |_| {}
     }
     progress.store(75, .release);

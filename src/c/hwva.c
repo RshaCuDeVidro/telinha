@@ -1779,23 +1779,47 @@ static int enc_setup(vaenc *e, VAProfile prof, VAEntrypoint ep, char *why, int w
 // borda repetida até aw x ah (o encoder trabalha em macroblocos de 16).
 void telinha_to_nv12(const uint8_t *src, int stride, int w, int h, int format, uint8_t *y, int ys, uint8_t *uv, int uvs);
 
+// Y/U/V de um pixel/bloco da fonte (a mesma conta do codec.zig).
+static uint8_t y_of(const uint8_t *p, int ri, int bi) {
+    const int y = ((66 * p[ri] + 129 * p[1] + 25 * p[bi] + 128) >> 8) + 16;
+    return (uint8_t)(y > 255 ? 255 : y);
+}
+
+static void uv_of(const uint8_t *a, const uint8_t *b, int ri, int bi, uint8_t *u, uint8_t *v) {
+    const int r = (a[ri] + a[4 + ri] + b[ri] + b[4 + ri] + 2) >> 2;
+    const int g = (a[1] + a[5] + b[1] + b[5] + 2) >> 2;
+    const int bb = (a[bi] + a[4 + bi] + b[bi] + b[4 + bi] + 2) >> 2;
+    const int uu = ((-38 * r - 74 * g + 112 * bb + 128) >> 8) + 128;
+    const int vv = ((112 * r - 94 * g - 18 * bb + 128) >> 8) + 128;
+    *u = (uint8_t)(uu < 0 ? 0 : uu > 255 ? 255 : uu);
+    *v = (uint8_t)(vv < 0 ? 0 : vv > 255 ? 255 : vv);
+}
+
+// Borda à direita de um par de linhas (a partir dos pixels da fonte: a
+// memória do driver pode ser lenta pra ler de volta).
+static void pad_right(const uint8_t *r0, const uint8_t *r1, int format, int w, int aw, uint8_t *y0, uint8_t *y1, uint8_t *uvr) {
+    const int ri = format == HWENC_RGBX ? 0 : 2, bi = format == HWENC_RGBX ? 2 : 0;
+    memset(y0 + w, y_of(r0 + (size_t)(w - 1) * 4, ri, bi), (size_t)(aw - w));
+    memset(y1 + w, y_of(r1 + (size_t)(w - 1) * 4, ri, bi), (size_t)(aw - w));
+    uint8_t u, v;
+    uv_of(r0 + (size_t)(w - 2) * 4, r1 + (size_t)(w - 2) * 4, ri, bi, &u, &v);
+    for (int x = w; x < aw; x += 2) {
+        uvr[x] = u;
+        uvr[x + 1] = v;
+    }
+}
+
 static void fill_nv12(const uint8_t *pixels, int stride, int format, int w, int h, int aw, int ah, uint8_t *y, int ys, uint8_t *uv, int uvs) {
     telinha_to_nv12(pixels, stride, w, h, format, y, ys, uv, uvs);
-    if (aw > w) {
-        for (int r = 0; r < h; r++) {
-            uint8_t *row = y + (size_t)r * ys;
-            memset(row + w, row[w - 1], (size_t)(aw - w));
-        }
-        for (int r = 0; r < h / 2; r++) {
-            uint8_t *row = uv + (size_t)r * uvs;
-            for (int x = w; x < aw; x += 2) {
-                row[x] = row[w - 2];
-                row[x + 1] = row[w - 1];
-            }
-        }
+    if (aw > w)
+        for (int r = 0; r < h; r += 2)
+            pad_right(pixels + (size_t)r * stride, pixels + (size_t)(r + 1) * stride, format, w, aw, y + (size_t)r * ys, y + (size_t)(r + 1) * ys, uv + (size_t)(r / 2) * uvs);
+    // embaixo: as duas últimas linhas da fonte de novo (sem ler a memória do driver)
+    const uint8_t *last = pixels + (size_t)(h - 2) * stride;
+    for (int r = h; r + 1 < ah; r += 2) {
+        telinha_to_nv12(last, stride, w, 2, format, y + (size_t)r * ys, ys, uv + (size_t)(r / 2) * uvs, uvs);
+        if (aw > w) pad_right(last, last + stride, format, w, aw, y + (size_t)r * ys, y + (size_t)(r + 1) * ys, uv + (size_t)(r / 2) * uvs);
     }
-    for (int r = h; r < ah; r++) memcpy(y + (size_t)r * ys, y + (size_t)(h - 1) * ys, (size_t)aw);
-    for (int r = h / 2; r < ah / 2; r++) memcpy(uv + (size_t)r * uvs, uv + (size_t)(h / 2 - 1) * uvs, (size_t)aw);
 }
 
 static int upload(vaenc *e, const uint8_t *pixels, int stride, int format) {

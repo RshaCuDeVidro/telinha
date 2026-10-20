@@ -19,7 +19,8 @@ typedef struct dbg_stats {
 int dbg_redirect_stderr(const char *path_utf8);
 // Volta a saída de erro pra onde estava antes do primeiro desvio.
 int dbg_restore_stderr(void);
-// Liga/desliga TELINHA_DEBUG pro processo (o C lê na hora).
+// Liga TELINHA_DEBUG pro processo (o C lê na hora). Uma vez só; desligar não
+// mexe no ambiente (ver debugsys.c).
 void dbg_set_env(int on);
 // Windows: CPU e memória do processo e do sistema. Linux: zerado (é /proc).
 int dbg_proc_stats(dbg_stats *s);

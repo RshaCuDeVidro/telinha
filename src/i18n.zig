@@ -381,7 +381,6 @@ const table = [_][2][]const u8{
     .{ "câmera · {d}x{d} · {d:.0} fps · {d} kbit/s · {s} · {s}", "camera · {d}x{d} · {d:.0} fps · {d} kbit/s · {s} · {s}" },
     .{ "tela parada", "screen not changing" },
     .{ "atraso {d:.0} ms · {s} ({s}) {d:.1} ms", "delay {d:.0} ms · {s} ({s}) {d:.1} ms" },
-    .{ "nenhum", "none" },
     .{ "Carregando...", "Loading..." },
     .{ "REC (esperando quadro completo)", "REC (waiting for a full frame)" },
     .{ "REC {d:0>2}:{d:0>2}", "REC {d:0>2}:{d:0>2}" },
@@ -597,6 +596,7 @@ const table = [_][2][]const u8{
     .{ "Apertar pra falar", "Push to talk" },
     .{ "Aperte a tecla (ou um botão lateral do mouse)...", "Press the key (or a mouse side button)..." },
     .{ "Tecla:", "Key:" },
+    .{ "Botão lateral do mouse no Linux só vale com o telinha em foco (o X não informa ele pra outros programas).", "A mouse side button on Linux only works with telinha focused (X doesn't report it to other programs)." },
     .{ "Espaço", "Space" },
     .{ "Ctrl esq.", "Left Ctrl" },
     .{ "Ctrl dir.", "Right Ctrl" },
@@ -615,7 +615,6 @@ const table = [_][2][]const u8{
 
     .{ "ARQUIVO CSS (atualiza sozinho quando você salva o arquivo)", "CSS FILE (updates by itself when you save the file)" },
     .{ "/caminho/do/tema.css", "/path/to/theme.css" },
-    .{ "Parar", "Stop" },
     .{ "Usar", "Use" },
     .{ "Cole o caminho de um .css com variáveis no :root (--bg, --accent...).", "Paste the path of a .css with :root variables (--bg, --accent...)." },
     .{ "Usando o arquivo: salvou, mudou aqui.", "Using the file: save it and it changes here." },

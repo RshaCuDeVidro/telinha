@@ -95,7 +95,29 @@ fn openFile(write: bool) ?*c.FILE {
 /// Arquivo na pasta de configuração do telinha (criada se faltar).
 /// TELINHA_PASTA_CONFIG troca a pasta inteira (testes; telinha "portátil").
 /// Pasta de configuração (criada se faltar), em UTF-8: `buf` + nome de arquivo.
+/// A pasta não muda com o app aberto: guardada uma vez (sem mkdir a cada
+/// chamada — a página de Depuração pede a cada quadro).
+var dir_cache: [512]u8 = undefined;
+var dir_cache_len: std.atomic.Value(usize) = .init(0);
+
+/// Descobre a pasta agora (chamado ao abrir, antes das outras threads).
+pub fn initDir() void {
+    var b: [512]u8 = undefined;
+    const d = dirPathUncached(&b) orelse return;
+    @memcpy(dir_cache[0..d.len], d);
+    dir_cache_len.store(d.len, .release);
+}
+
 pub fn dirPath(buf: []u8) ?[]const u8 {
+    const n = dir_cache_len.load(.acquire);
+    if (n > 0 and buf.len >= n) {
+        @memcpy(buf[0..n], dir_cache[0..n]);
+        return buf[0..n];
+    }
+    return dirPathUncached(buf);
+}
+
+fn dirPathUncached(buf: []u8) ?[]const u8 {
     if (is_windows) {
         var dir: [600]u16 = undefined;
         var n = c.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("TELINHA_PASTA_CONFIG"), &dir, 500);
@@ -173,7 +195,7 @@ fn loadFile() Config {
     var cfg: Config = .{};
     const f = openFile(false) orelse return cfg;
     defer _ = c.fclose(f);
-    var line: [512]u8 = undefined;
+    var line: [1024]u8 = undefined; // webhook, exclusões e caminho do CSS chegam a ~530
     while (c.fgets(&line, line.len, f) != null) {
         const l = std.mem.trimEnd(u8, std.mem.sliceTo(&line, 0), "\r\n");
         const eq = std.mem.findScalar(u8, l, '=') orelse continue;
@@ -217,17 +239,20 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
     } else if (std.mem.eql(u8, k, "ui_fps_cap")) {
         cfg.ui_fps_cap = std.math.clamp(int, 0, 240);
     } else if (std.mem.eql(u8, k, "clip_key")) {
-        cfg.clip_key = int;
+        cfg.clip_key = if (int >= 32 and int <= 348) int else 0; // GLFW_KEY_SPACE..GLFW_KEY_LAST
     } else if (std.mem.eql(u8, k, "clip_scancode")) {
         cfg.clip_scancode = int;
     } else if (std.mem.eql(u8, k, "clip_mouse")) {
         cfg.clip_mouse = std.math.clamp(int, -1, 7);
     } else if (std.mem.eql(u8, k, "clip_secs")) {
-        cfg.clip_secs = std.math.clamp(int, 10, 300);
+        // só os que a tela oferece
+        cfg.clip_secs = for ([_]i32{ 15, 30, 60, 120, 180 }) |x| {
+            if (int <= x) break x;
+        } else 180;
     } else if (std.mem.eql(u8, k, "voice_ptt")) {
         cfg.voice_ptt = int != 0;
     } else if (std.mem.eql(u8, k, "ptt_key")) {
-        cfg.ptt_key = int;
+        cfg.ptt_key = if (int >= 32 and int <= 348) int else 86;
     } else if (std.mem.eql(u8, k, "ptt_scancode")) {
         cfg.ptt_scancode = int;
     } else if (std.mem.eql(u8, k, "ptt_mouse")) {

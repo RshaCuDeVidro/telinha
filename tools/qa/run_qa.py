@@ -537,7 +537,11 @@ def recorte_e_desenho():
         # botão direito no modo recorte: tela inteira de novo
         t = ana.tile(0)
         ana.click("##crop", within=t, hover_first=center(t))
-        time.sleep(0.5)
+        time.sleep(1.5)
+        # escolhendo de novo: a prévia da Ana mostra tudo, mas quem assiste continua só com o pedaço
+        st = bia.state()
+        vw = next(v for v in st["views"] if v["stream"] == aid)["w"]
+        expect(vw < full_w * 0.6, f"a Bia viu a tela inteira enquanto a Ana escolhia o recorte: {vw}")
         t = ana.tile(0)
         ana.click_rect(t, button=3)
         ana.wait(lambda st: st["sharer"]["w"] == full_w and st["crop"] == [0, 0, 1, 1], 10, "voltar pra tela inteira")

@@ -386,7 +386,7 @@ pub fn parseColor(v: []const u8) ?u24 {
     }
     if (std.mem.startsWith(u8, t, "rgb")) {
         const a = std.mem.indexOfScalar(u8, t, '(') orelse return null;
-        const z = std.mem.indexOfScalar(u8, t, ')') orelse return null;
+        const z = std.mem.indexOfScalarPos(u8, t, a, ')') orelse return null; // ")" antes do "(" = lixo
         var it = std.mem.tokenizeAny(u8, t[a + 1 .. z], ", /");
         var out: u24 = 0;
         for (0..3) |_| {
@@ -568,4 +568,6 @@ test "tema do CSS: as variáveis do pwnd.blog viram um tema legível" {
     try std.testing.expectEqual(@as(?u24, 0xaabbcc), parseColor(" #abc"));
     try std.testing.expectEqual(@as(?u24, 0x0a0b0c), parseColor("rgb(10, 11, 12)"));
     try std.testing.expect(parseCss("body { color: red; }") == null);
+    try std.testing.expect(parseColor("rgb)(") == null); // malformado não quebra
+    try std.testing.expect(parseCss(":root { --bg: rgb)(; --accent: #fff; }") == null);
 }

@@ -585,6 +585,9 @@ pub const App = struct {
     iconified: bool = false, // janela principal minimizada (o main.zig avisa)
     settings_page: SettingsPage = .geral,
     fb_viewport: [4]c_int = .{ 0, 0, 0, 0 },
+    theme_dirty: bool = false, // tema mudou: aplica no começo do próximo quadro
+    zoom_dirty: bool = false,
+    save_at: f64 = 0, // salvar a configuração quando der essa hora (0 = nada pendente)
     auto_cap_seen: u32 = 0, // último teto da qualidade automática avisado
     pctest_logged: bool = true, // resultado do teste do PC já foi pro log
     crash_prompt: bool = false, // travou da última vez: pergunta se manda o relatório
@@ -607,7 +610,7 @@ pub const App = struct {
     draw_prune_at: f64 = 0,
     // transmitir só um pedaço da tela (normalizado: x0, y0, x1, y1)
     crop: [4]f32 = .{ 0, 0, 1, 1 },
-    crop_saved: [4]f32 = .{ 0, 0, 1, 1 },
+    crop_seen_frame: u64 = 0, // último quadro em que a escolha do recorte apareceu
     crop_tile: ?u32 = null, // escolhendo o pedaço nesse quadro
     crop_from: ?[2]f32 = null,
     pointer_sent_us: u64 = 0,
@@ -1448,10 +1451,11 @@ pub const App = struct {
         }
         if (n > 0) {
             pushFont(font_regular, 12);
-            const names = std.mem.replaceOwned(u8, std.heap.c_allocator, list, "\n", ", ") catch null;
-            defer if (names) |x| std.heap.c_allocator.free(x);
+            var nb: [1024]u8 = undefined;
+            const nn = std.mem.replace(u8, list, "\n", ", ", &nb);
+            const names = nb[0 .. list.len + nn];
             c.igPushTextWrapPos(c.igGetCursorPosX() + w);
-            textColored(col.faint, fmtZ("Fora do som: {s}", .{names orelse list}));
+            textColored(col.faint, fmtZ("Fora do som: {s}", .{names}));
             c.igPopTextWrapPos();
             popFont();
         }
@@ -1948,6 +1952,8 @@ pub const App = struct {
 
     pub fn frame(a: *App) void {
         a.frame_no += 1;
+        // escolhendo o recorte mas o quadro sumiu (outra transmissão em destaque, foi pra outra tela): cancela
+        if (a.crop_tile != null and a.frame_no > a.crop_seen_frame + 2) a.cancelCrop();
         // algo grande parou (transmissão, câmera, sala, transmissão assistida):
         // a memória livre volta pro sistema
         if (a.trim_at > 0 and c.igGetTime() >= a.trim_at) {
@@ -1958,7 +1964,23 @@ pub const App = struct {
         if (debuglog.on()) a.debugTick();
         a.pollPttKey();
         a.pollClipKey();
-        if (a.takeCssFile()) a.applyTheme();
+        // tema/zoom mudados (configurações, arquivo CSS): aplica aqui, antes de
+        // qualquer janela empilhar estilo (senão o Pop devolveria o antigo)
+        if (a.takeCssFile()) a.theme_dirty = true;
+        if (a.theme_dirty) {
+            a.theme_dirty = false;
+            a.applyTheme();
+            a.chat_h.clearRetainingCapacity(); // fonte nova: as alturas das mensagens mudam
+        }
+        if (a.zoom_dirty) {
+            a.zoom_dirty = false;
+            setZoom(@as(f32, @floatFromInt(a.cfg.ui_zoom)) / 100);
+            a.chat_h.clearRetainingCapacity();
+        }
+        if (a.save_at != 0 and c.igGetTime() >= a.save_at) {
+            a.save_at = 0;
+            config.save(&a.cfg);
+        }
         if (a.client) |cl| if (c.igGetTime() > a.draw_prune_at) {
             a.draw_prune_at = c.igGetTime() + 2;
             cl.pruneStrokes(sync.nowUs(), stroke_life_us);
@@ -1979,7 +2001,8 @@ pub const App = struct {
             if (c.igIsKeyPressed_Bool(c.ImGuiKey_M, false)) a.toggleMic();
             if (c.igIsKeyPressed_Bool(c.ImGuiKey_D, false)) a.toggleDeaf();
         }
-        if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and !a.share_modal) {
+        // Esc com uma janela aberta (configurações, recorte) é dela: não sai da tela cheia
+        if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and !a.share_modal and !a.settings_modal and a.crop_tile == null) {
             if (a.fullscreen) a.toggleFullscreen();
             a.theater = false;
         }
@@ -2186,6 +2209,8 @@ pub const App = struct {
 
     fn closeModals(a: *App) void {
         if (a.settings_modal) config.save(&a.cfg); // o que o "Fechar" faria
+        a.ptt_capture = false;
+        a.clip_key_capture = false;
         a.settings_modal = false;
         a.share_modal = false;
         a.leave_confirm = false;
@@ -3400,10 +3425,11 @@ pub const App = struct {
                     if (iconButton("##crop", ic.crop, bs, col.white, withAlpha(col.blurple, 200), if (cropping) tr("Cancelar o recorte") else tr("Transmitir só um pedaço da tela"))) {
                         if (cropping) a.cancelCrop() else {
                             a.stopTools();
-                            a.crop_saved = a.crop;
-                            a.crop = .{ 0, 0, 1, 1 }; // a prévia mostra a tela inteira pra escolher
+                            // a prévia (só aqui) mostra a tela inteira pra escolher; quem
+                            // assiste continua vendo o recorte de antes até confirmar
                             a.crop_tile = t.stream;
-                            a.applyCrop();
+                            a.crop_seen_frame = a.frame_no;
+                            if (a.sharer) |sh| sh.preview_full.store(true, .release);
                         }
                     }
                     bx -= bs + S(6);
@@ -3952,9 +3978,15 @@ pub const App = struct {
     }
 
     fn cancelCrop(a: *App) void {
-        a.crop = a.crop_saved;
         a.crop_tile = null;
         a.crop_from = null;
+        if (a.sharer) |sh| sh.preview_full.store(false, .release);
+    }
+
+    /// Escolheu: a transmissão passa a sair com esse recorte.
+    fn finishCrop(a: *App, r: [4]f32) void {
+        a.crop = r;
+        a.cancelCrop();
         a.applyCrop();
     }
 
@@ -3973,13 +4005,9 @@ pub const App = struct {
         const ms = textSizeF(font_semibold, 13, msg);
         rectFill(d, ix + (iw - ms.x) / 2 - S(10), iy + S(10), ix + (iw + ms.x) / 2 + S(10), iy + S(18) + ms.y, col.overlay, S(6));
         drawTextF(d, font_semibold, 13, v2(ix + (iw - ms.x) / 2, iy + S(14)), col.white, msg);
+        a.crop_seen_frame = a.frame_no;
         if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) return a.cancelCrop();
-        if (inside and c.igIsMouseClicked_Bool(1, false)) {
-            a.crop = .{ 0, 0, 1, 1 };
-            a.crop_tile = null;
-            a.crop_from = null;
-            return a.applyCrop();
-        }
+        if (inside and c.igIsMouseClicked_Bool(1, false)) return a.finishCrop(.{ 0, 0, 1, 1 });
         if (inside and c.igIsMouseClicked_Bool(0, false)) a.crop_from = norm(mouse, ix, iy, iw, ih, uv0, uv1);
         const from = a.crop_from orelse return;
         const to = norm(mouse, ix, iy, iw, ih, uv0, uv1);
@@ -3990,11 +4018,7 @@ pub const App = struct {
         c.ImDrawList_AddRect(d, p0, p1, col.blurple, 0, S(2), 0);
         if (!c.igIsMouseDown_Nil(0)) {
             a.crop_from = null;
-            if (r[2] - r[0] >= 0.04 and r[3] - r[1] >= 0.04) {
-                a.crop = r;
-                a.crop_tile = null;
-                a.applyCrop();
-            }
+            if (r[2] - r[0] >= 0.04 and r[3] - r[1] >= 0.04) a.finishCrop(r);
         }
     }
 
@@ -4870,12 +4894,19 @@ pub const App = struct {
             const tcol = if (sel) col.header else col.muted;
             drawTextF(d, font_regular, 14, v2(p.x + S(12), p.y + S(10)), tcol, pg.icon);
             drawTextF(d, font_semibold, 14, v2(p.x + S(40), p.y + S(9)), tcol, pg.name);
-            if (clicked) a.settings_page = pg.page;
+            if (clicked and a.settings_page != pg.page) {
+                a.settings_page = pg.page;
+                // trocou de página: nenhuma captura de tecla fica pendurada
+                a.ptt_capture = false;
+                a.clip_key_capture = false;
+            }
         }
         // Fechar no pé da barra
         c.igSetCursorPos(v2(S(10), mh - S(56)));
         var close = primaryButton(tr("Fechar###fecharconfig"), v2(nav_w - S(20), S(40)), col.blurple, col.blurple_hover, col.blurple_active);
-        close = close or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false);
+        // esperando uma tecla (apertar pra falar, atalho de clipe): o Esc só cancela isso
+        const capturing = a.ptt_capture or a.clip_key_capture;
+        close = close or (!capturing and c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false));
 
         // a página escolhida (rola sozinha)
         c.igSetCursorPos(v2(nav_w, 0));
@@ -4906,6 +4937,8 @@ pub const App = struct {
         if (close) {
             config.save(&a.cfg);
             a.settings_modal = false;
+            a.ptt_capture = false;
+            a.clip_key_capture = false;
             c.igCloseCurrentPopup();
         }
     }
@@ -4979,7 +5012,7 @@ pub const App = struct {
         }
         if (segmented("zoom", &.{ "80%", "90%", "100%", "115%", "130%", "150%" }, &zi, w)) {
             a.cfg.ui_zoom = zooms[@intCast(zi)];
-            setZoom(@as(f32, @floatFromInt(a.cfg.ui_zoom)) / 100);
+            a.zoom_dirty = true;
             config.save(&a.cfg);
         }
         c.igDummy(v2(0, S(14)));
@@ -5199,6 +5232,8 @@ pub const App = struct {
             c.igPushTextWrapPos(c.igGetCursorPosX() + w);
             if (!sync.is_windows and c.glfwGetPlatform() == c.GLFW_PLATFORM_WAYLAND)
                 textColored(col.yellow, tr("No Wayland a tecla só vale com o telinha em foco (o sistema não deixa ler o teclado de outro programa)."))
+            else if (!sync.is_windows and a.cfg.ptt_mouse >= 3)
+                textColored(col.yellow, tr("Botão lateral do mouse no Linux só vale com o telinha em foco (o X não informa ele pra outros programas)."))
             else
                 textColored(col.faint, tr("Vale com qualquer programa em foco (no jogo também). Clique no botão pra trocar a tecla."));
             c.igPopTextWrapPos();
@@ -5594,7 +5629,7 @@ pub const App = struct {
             if (themeCard(label, pal, name, cw, ch, i == cur) and i != cur) {
                 const new_id = if (is_custom) theme.custom_id else theme.list[i].id;
                 config.setStr(&a.cfg.theme, new_id);
-                a.applyTheme();
+                a.theme_dirty = true; // aplica no começo do próximo quadro (fora das janelas abertas)
                 config.save(&a.cfg);
             }
         }
@@ -5618,6 +5653,12 @@ pub const App = struct {
         const border = if (selected) col.blurple else if (hov) col.muted else withAlpha(col.text, 40);
         c.ImDrawList_AddRect(d, p, v2(p.x + cw, p.y + ch), border, r, if (selected) S(2) else S(1), 0);
         return clicked;
+    }
+
+    /// Salva daqui a pouco (mudança contínua, tipo arrastar uma cor: uma escrita só no fim).
+    fn saveSoon(a: *App) void {
+        a.save_at = c.igGetTime() + 0.8;
+        redrawIn(0.85);
     }
 
     /// O arquivo CSS do tema mudou: as cores novas vão pro tema personalizado.
@@ -5700,8 +5741,8 @@ pub const App = struct {
         if (changed) {
             var eb: [96]u8 = undefined;
             config.setStr(&a.cfg.custom_theme, theme.encodeBase(b, &eb));
-            a.applyTheme();
-            config.save(&a.cfg);
+            a.theme_dirty = true;
+            a.saveSoon(); // arrastando a cor muda a cada quadro: salva quando parar
         }
 
         // arquivo CSS: as cores vêm dele e acompanham quando ele é salvo
@@ -5723,7 +5764,7 @@ pub const App = struct {
             config.setStr(&a.cfg.custom_css, pb2[0..p.len]);
             config.save(&a.cfg);
             cssfile.watch(pb2[0..p.len]);
-            if (a.takeCssFile()) a.applyTheme();
+            if (a.takeCssFile()) a.theme_dirty = true;
         }
         pushFont(font_regular, 12.5);
         switch (cssfile.getStatus()) {

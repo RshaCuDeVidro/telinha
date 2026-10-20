@@ -66,13 +66,18 @@ int dbg_redirect_stderr(const char *path) {
 #endif
 }
 
+// Mexer no ambiente com outras threads lendo (getenv no encoder, no
+// PipeWire...) não é seguro: liga uma vez só na vida do processo e nunca
+// desliga (desligado o log, o que o C imprime volta pra saída de erro de
+// antes, sem fazer mal).
 void dbg_set_env(int on) {
+    static int done = 0;
+    if (!on || done || getenv("TELINHA_DEBUG")) return;
+    done = 1;
 #ifdef _WIN32
-    _putenv_s("TELINHA_DEBUG", on ? "1" : "");
-    SetEnvironmentVariableA("TELINHA_DEBUG", on ? "1" : NULL);
+    _putenv_s("TELINHA_DEBUG", "1");
 #else
-    if (on) setenv("TELINHA_DEBUG", "1", 1);
-    else unsetenv("TELINHA_DEBUG");
+    setenv("TELINHA_DEBUG", "1", 1);
 #endif
 }
 
@@ -259,7 +264,11 @@ int dbg_http_post_file(const char *url, const char *path, const char *field, con
     argv[a++] = url;
     argv[a] = NULL;
     int pfd[2];
+    // fecha no exec: um processo que outra thread abrir agora não herda a
+    // ponta de escrita (senão a leitura daqui nunca veria o fim)
     if (pipe(pfd) != 0) return -1;
+    fcntl(pfd[0], F_SETFD, FD_CLOEXEC);
+    fcntl(pfd[1], F_SETFD, FD_CLOEXEC); // o adddup2 do spawn tira isso no stdout do curl
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     posix_spawn_file_actions_adddup2(&fa, pfd[1], 1);

@@ -38,6 +38,11 @@ int audio_list_apps(audio_app *out, int max);
 // uma captura por programa). NULL ou "" = nenhum.
 audio_dev *audio_capture_open(audio_capture_fn fn, void *user, const char *app, uint32_t pid, const char *exclude, char *err, int errlen);
 
+// Windows, "tudo menos os excluídos": os processos com som que dá pra
+// capturar um por um sem pegar o telinha, um excluído ou outra sessão junto
+// (a captura de um processo pega a árvore dele). Retorna quantos.
+int audio_mix_pids(const char *exclude, uint32_t *out, int max);
+
 // 1 se dá pra capturar o som de um processo só (Windows 10 2004+); Linux: 0.
 int audio_process_loopback_ok(void);
 

@@ -236,6 +236,9 @@ pub const Sharer = struct {
     /// Quando a interface mostrou a prévia pela última vez (ms): ninguém
     /// olhando (outra tela, minimizado), não gasta gerando a miniatura.
     preview_wanted_ms: std.atomic.Value(u64) = .init(0),
+    /// Escolhendo o recorte: a prévia (só na tela de quem transmite) mostra a
+    /// tela inteira; a transmissão continua com o recorte de antes.
+    preview_full: std.atomic.Value(bool) = .init(false),
     /// Ninguém assistindo e sem gravação: o encoder está parado (a captura
     /// cai pra 5 q/s, só pra prévia e pra ter quadro na hora que alguém entrar).
     idle: std.atomic.Value(bool) = .init(false),
@@ -612,7 +615,7 @@ const Pipeline = struct {
             }
             const frame = if (p.event_driven) p.cur else p.prev;
             // a prévia sai antes de entregar o quadro (no hardware o buffer troca de dono)
-            p.updatePreview(frame);
+            if (s.preview_full.load(.acquire)) p.updatePreviewFull(&f) else p.updatePreview(frame);
             try p.publish(frame, ts);
         }
     }
@@ -660,6 +663,46 @@ const Pipeline = struct {
     /// Prévia pra própria tela (até 30x por segundo), sem segurar o lock da UI.
     /// Acima de 1280 px de largura vai em meia resolução (média 2x2): a prévia
     /// aparece num card, e a UI copia 4x menos pra GPU.
+    /// Prévia da fonte inteira (sem o recorte), pra escolher o recorte novo:
+    /// amostra simples, já que é só pra ver onde arrastar.
+    fn updatePreviewFull(p: *Pipeline, f: *const c.cap_frame) void {
+        const s = p.s;
+        const now = sync.nowUs();
+        if (now - p.last_preview_us < 66_000) return;
+        p.last_preview_us = now;
+        const fw: usize = @intCast(f.width);
+        const fh: usize = @intCast(f.height);
+        const k: usize = @max(1, (fw + 1279) / 1280);
+        const pw = fw / k;
+        const ph = fh / k;
+        const need = pw * ph * 4;
+        if (p.preview_back.len != need) {
+            gpa.free(p.preview_back);
+            p.preview_back = gpa.alloc(u8, need) catch &.{};
+            if (p.preview_back.len != need) return;
+        }
+        const stride: usize = @intCast(f.stride);
+        for (0..ph) |y| {
+            const src = f.data + y * k * stride;
+            const d = p.preview_back[y * pw * 4 ..][0 .. pw * 4];
+            if (k == 1) {
+                @memcpy(d, src[0 .. pw * 4]);
+            } else for (0..pw) |x| {
+                @memcpy(d[x * 4 ..][0..4], src[x * k * 4 ..][0..4]);
+            }
+            var x: usize = 3;
+            while (x < d.len) : (x += 4) d[x] = 255;
+        }
+        s.mutex.lock();
+        std.mem.swap([]u8, &s.preview, &p.preview_back);
+        s.preview_w = @intCast(pw);
+        s.preview_h = @intCast(ph);
+        s.preview_bgr = f.format != c.CAP_RGBX;
+        s.preview_new = true;
+        s.mutex.unlock();
+        s.client.wake();
+    }
+
     fn updatePreview(p: *Pipeline, frame: []const u8) void {
         const s = p.s;
         const now = sync.nowUs();

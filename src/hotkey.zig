@@ -18,6 +18,8 @@ pub fn configure(k: i32, m: i32) void {
     key.store(k, .release);
     mouse.store(m, .release);
     const g = gen.fetchAdd(1, .acq_rel) + 1;
+    // botão que o sistema não deixa ler de fora (laterais no X11): sem thread à toa
+    if (m >= 0 and c.ptt_global_button_supported(m) == 0) return;
     if (k > 0 or m >= 0) sync.spawn(loop, .{g}) catch {};
 }
 

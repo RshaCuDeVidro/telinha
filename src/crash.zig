@@ -52,8 +52,19 @@ pub fn note(msg: []const u8) void {
     c.crash_note(z.ptr);
 }
 
+var pending_cache: std.atomic.Value(u8) = .init(2); // 0 não, 1 sim, 2 não sabe ainda
+
 /// Tem relatório de um travamento que ainda não foi mandado nem dispensado?
+/// (lido do arquivo uma vez; mandar ou dispensar atualiza)
 pub fn pending() bool {
+    const v = pending_cache.load(.acquire);
+    if (v != 2) return v == 1;
+    const p = pendingFile();
+    pending_cache.store(@intFromBool(p), .release);
+    return p;
+}
+
+fn pendingFile() bool {
     var pb: [600]u8 = undefined;
     const p = path(&pb) orelse return false;
     var st: [1]u8 = undefined;
@@ -81,6 +92,7 @@ pub fn dismiss() void {
         }
     }
     if (mp4.openFile(p, "wb")) |f| _ = cio.fclose(f);
+    pending_cache.store(0, .release);
 }
 
 /// Teste (TELINHA_TESTE_TRAVAR): "1" = falha de memória, "panic" = panic do Zig.

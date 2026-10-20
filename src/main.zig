@@ -8,9 +8,11 @@ const gl = @import("gl.zig");
 const client_mod = @import("client.zig");
 const qa = @import("qa.zig");
 const crash = @import("crash.zig");
+const config = @import("config.zig");
 
 /// Panic do Zig: anota no relatório de travamento antes do padrão (que
-/// imprime a pilha e aborta; o abort também cai no relatório).
+/// imprime a pilha e aborta). No Linux o abort também cai no relatório (com a
+/// pilha); no Windows a pilha vai junto da mensagem (crash.c).
 pub const panic = std.debug.FullPanic(onPanic);
 fn onPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
     crash.note(msg);
@@ -27,6 +29,39 @@ const fonts = @import("fonts.zig");
 const icon64 = @embedFile("assets/icon64.rgba");
 
 
+/// Quantos vsyncs por quadro pro limite de `cap` q/s (0 = sem limite) no
+/// monitor onde a janela está.
+fn swapIntervalFor(win: *c.GLFWwindow, cap: u64) c_int {
+    if (cap == 0) return 1;
+    var wx: c_int = 0;
+    var wy: c_int = 0;
+    var ww: c_int = 0;
+    var wh: c_int = 0;
+    c.glfwGetWindowPos(win, &wx, &wy);
+    c.glfwGetWindowSize(win, &ww, &wh);
+    const cx = wx + @divTrunc(ww, 2);
+    const cy = wy + @divTrunc(wh, 2);
+    var n: c_int = 0;
+    const mons = c.glfwGetMonitors(&n);
+    var refresh: c_int = 60;
+    var i: usize = 0;
+    while (mons != null and i < @as(usize, @intCast(n))) : (i += 1) {
+        const mon = mons[i];
+        var mx: c_int = 0;
+        var my: c_int = 0;
+        c.glfwGetMonitorPos(mon, &mx, &my);
+        const mode = c.glfwGetVideoMode(mon) orelse continue;
+        if (i == 0) refresh = mode.*.refreshRate;
+        if (cx >= mx and cx < mx + mode.*.width and cy >= my and cy < my + mode.*.height) {
+            refresh = mode.*.refreshRate;
+            break;
+        }
+    }
+    if (refresh <= 0) return 1;
+    const ratio = @as(f64, @floatFromInt(refresh)) / @as(f64, @floatFromInt(cap));
+    return @intCast(std.math.clamp(@as(i64, @intFromFloat(@round(ratio))), 1, 4));
+}
+
 fn onGlfwError(code: c_int, desc: [*c]const u8) callconv(.c) void {
     _ = code;
     _ = desc;
@@ -34,6 +69,7 @@ fn onGlfwError(code: c_int, desc: [*c]const u8) callconv(.c) void {
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
+    config.initDir();
     crash.install();
     sync.tuneMalloc();
     net.init();
@@ -99,15 +135,20 @@ pub fn main(init: std.process.Init) !void {
     app.applyArgs(args);
     crash.testCrash();
     var idle_frames: u32 = 0;
-    var last_frame_us: u64 = 0;
+    var swap_interval: c_int = 1;
+    var pacing_check_at: f64 = 0;
     while (c.glfwWindowShouldClose(win) == 0) {
         // limite de quadros da interface (mexer o mouse num monitor de 144 Hz
-        // não redesenha 144 vezes por segundo): espera o resto do intervalo
-        const cap = ui.frame_cap_fps;
-        if (cap > 0 and last_frame_us != 0) {
-            const min_us = 1_000_000 / cap;
-            const since = sync.nowUs() - last_frame_us;
-            if (since < min_us) sync.sleepMs(@intCast((min_us - since + 999) / 1000));
+        // não redesenha 144 vezes por segundo): o vsync faz o ritmo, pulando
+        // vsyncs (144 Hz com limite 60 = um quadro a cada 2), sem dormir no
+        // meio (o Sleep do Windows perderia o vsync e o vídeo tremeria)
+        if (c.glfwGetTime() >= pacing_check_at) {
+            pacing_check_at = c.glfwGetTime() + 2;
+            const want = swapIntervalFor(win, ui.frame_cap_fps);
+            if (want != swap_interval) {
+                swap_interval = want;
+                c.glfwSwapInterval(want);
+            }
         }
         // dorme quando nada está acontecendo; rede e captura acordam o loop,
         // e o que anima pede o próximo redesenho (ui.redrawIn)
@@ -122,7 +163,6 @@ pub fn main(init: std.process.Init) !void {
         } else c.glfwPollEvents();
         ui.redraw_at = std.math.inf(f64);
         const t_frame = sync.nowUs();
-        last_frame_us = t_frame;
 
         c.ImGui_ImplOpenGL3_NewFrame();
         c.ImGui_ImplGlfw_NewFrame();

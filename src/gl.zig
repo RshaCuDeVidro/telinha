@@ -266,8 +266,9 @@ pub const YuvRenderer = struct {
     /// vê. `vp` = a viewport do quadro (pra devolver).
     pub fn convert(r: *const YuvRenderer, t: *Target, ow_in: u32, oh_in: u32, vp: [4]c_int) bool {
         if (t.ty == 0) return false;
-        const ow = std.math.clamp(ow_in, 16, t.w);
-        const oh = std.math.clamp(oh_in, 16, t.h);
+        // (um vídeo menor que 16 px não pode quebrar a conta)
+        const ow = @max(@min(ow_in, t.w), @min(16, t.w));
+        const oh = @max(@min(oh_in, t.h), @min(16, t.h));
         if (t.ow != ow or t.oh != oh or t.out == 0) {
             planeTexture(&t.out, RGBA8, ow, oh, RGBA);
             if (t.fbo == 0) {

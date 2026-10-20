@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <audiopolicy.h>
+#include <tlhelp32.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -34,7 +35,8 @@ static int process_name(DWORD pid, char *out, int cap) {
     return WideCharToMultiByte(CP_UTF8, 0, base, -1, out, cap, NULL, NULL) > 0;
 }
 
-int audio_list_apps(audio_app *out, int max) {
+// Sessões de áudio tocando agora (sem o telinha). dedup = um por nome.
+static int list_sessions(audio_app *out, int max, int dedup) {
     int n = 0;
     const HRESULT init = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     IMMDeviceEnumerator *en = NULL;
@@ -63,7 +65,7 @@ int audio_list_apps(audio_app *out, int max) {
                 if (process_name(pid, name, sizeof name)) {
                     int dup = 0;
                     for (int j = 0; j < n; j++)
-                        if (_stricmp(out[j].name, name) == 0) dup = 1;
+                        if (dedup ? _stricmp(out[j].name, name) == 0 : out[j].pid == pid) dup = 1;
                     if (!dup) {
                         snprintf(out[n].name, sizeof out[n].name, "%s", name);
                         out[n].pid = pid;
@@ -81,6 +83,90 @@ done:
     if (dev) IMMDevice_Release(dev);
     if (en) IMMDeviceEnumerator_Release(en);
     if (SUCCEEDED(init)) CoUninitialize();
+    return n;
+}
+
+int audio_list_apps(audio_app *out, int max) {
+    return list_sessions(out, max, 1);
+}
+
+// `name` está na lista (nomes separados por \n, sem diferença de maiúscula)?
+static int in_list(const char *list, const char *name) {
+    if (!list || !name || !*name) return 0;
+    const size_t n = strlen(name);
+    for (const char *p = list; *p;) {
+        const char *e = strchr(p, '\n');
+        const size_t len = e ? (size_t)(e - p) : strlen(p);
+        if (len == n && !_strnicmp(p, name, n)) return 1;
+        if (!e) break;
+        p = e + 1;
+    }
+    return 0;
+}
+
+#define MAX_PROCS 4096
+
+// Quais processos com som dá pra capturar um por um ("tudo menos os
+// excluídos"). A captura de um processo pega a árvore dele inteira: um pai
+// cuja árvore contém o telinha, um excluído ou outra sessão (o explorer, um
+// launcher) não entra — senão o excluído (ou o próprio telinha, em eco)
+// voltaria por ele, ou o som sairia em dobro.
+int audio_mix_pids(const char *exclude, uint32_t *out, int max) {
+    audio_app sess[64];
+    const int ns = list_sessions(sess, 64, 0);
+    // processos: pai de cada um e os excluídos (com ou sem sessão de áudio)
+    static DWORD pids[MAX_PROCS], parents[MAX_PROCS];
+    static unsigned char excluded[MAX_PROCS];
+    int np = 0;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W pe;
+        pe.dwSize = sizeof pe;
+        for (BOOL ok = Process32FirstW(snap, &pe); ok && np < MAX_PROCS; ok = Process32NextW(snap, &pe)) {
+            char name[260];
+            if (WideCharToMultiByte(CP_UTF8, 0, pe.szExeFile, -1, name, sizeof name, NULL, NULL) <= 0) name[0] = 0;
+            char *dot = strrchr(name, '.');
+            if (dot && !_stricmp(dot, ".exe")) *dot = 0;
+            pids[np] = pe.th32ProcessID;
+            parents[np] = pe.th32ParentProcessID;
+            excluded[np] = (unsigned char)in_list(exclude, name);
+            np++;
+        }
+        CloseHandle(snap);
+    }
+    const DWORD self = GetCurrentProcessId();
+    int n = 0;
+    for (int i = 0; i < ns && n < max; i++) {
+        const DWORD cand = sess[i].pid;
+        if (in_list(exclude, sess[i].name)) continue;
+        // alguém "protegido" (telinha, excluído, outra sessão) descende de cand?
+        int blocked = 0;
+        for (int k = 0; k < np && !blocked; k++) {
+            const DWORD g = pids[k];
+            if (g == cand) continue;
+            int guard = g == self || excluded[k];
+            for (int j = 0; j < ns && !guard; j++)
+                if (sess[j].pid == g) guard = 1;
+            if (!guard) continue;
+            // sobe a árvore de g procurando cand
+            DWORD cur = g;
+            for (int steps = 0; steps < 64; steps++) {
+                DWORD par = 0;
+                for (int m = 0; m < np; m++)
+                    if (pids[m] == cur) {
+                        par = parents[m];
+                        break;
+                    }
+                if (par == 0 || par == cur) break;
+                if (par == cand) {
+                    blocked = 1;
+                    break;
+                }
+                cur = par;
+            }
+        }
+        if (!blocked) out[n++] = cand;
+    }
     return n;
 }
 

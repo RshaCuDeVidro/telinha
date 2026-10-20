@@ -5,7 +5,9 @@
 // abertura o app oferece mandar (ver crash.zig).
 //
 // Linux: tratadores de sinal numa pilha alternativa (estouro de pilha também
-// cai aqui), só funções seguras dentro de sinal. Windows: filtro de exceção
+// cai aqui), só funções seguras dentro de sinal. A pilha alternativa é da
+// thread principal: um estouro de pilha numa outra thread pode fechar sem
+// relatório (o resto — falha de memória, abort — sai de qualquer thread). Windows: filtro de exceção
 // não tratada, pilha desenrolada a partir do contexto da falha.
 #ifndef _WIN32
 #define _GNU_SOURCE // gettid
@@ -125,6 +127,9 @@ static LONG WINAPI on_exception(EXCEPTION_POINTERS *ep) {
 void crash_install(const char *path_utf8, const char *info) {
     strncpy(g_path, path_utf8, sizeof g_path - 1);
     strncpy(g_info, info ? info : "", sizeof g_info - 1);
+    // estouro de pilha: sobra espaço pro filtro escrever o relatório (thread principal)
+    ULONG guarantee = 64 * 1024;
+    SetThreadStackGuarantee(&guarantee);
     SetUnhandledExceptionFilter(on_exception);
 }
 
@@ -136,7 +141,15 @@ void crash_note(const char *msg) {
     put(h, msg);
     put(h, "\r\n");
     put(h, g_info);
-    put(h, "\r\n");
+    // no Windows o panic termina sem exceção (o filtro não vê): a pilha vai daqui
+    put(h, "\r\npilha:\r\n");
+    void *frames[48];
+    const USHORT n = RtlCaptureStackBackTrace(1, 48, frames, NULL);
+    for (USHORT i = 0; i < n; i++) {
+        put(h, "  ");
+        put_addr(h, (DWORD64)(ULONG_PTR)frames[i]);
+        put(h, "\r\n");
+    }
     CloseHandle(h);
 }
 

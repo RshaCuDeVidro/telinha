@@ -440,15 +440,23 @@ pub const MixSource = struct {
             avail = mix_prebuffer;
         }
         const want = out.len / channels;
-        const take = @min(avail, want);
-        for (0..take) |k| {
-            const at = ((s.r + k) % mix_ring) * channels;
+        // acabou o que tinha: silêncio e junta de novo (nada de meio quadro, que estala)
+        if (avail < want) {
+            s.primed = false;
+            return false;
+        }
+        // o relógio da placa e o daqui nunca batem: mantém ~20 ms guardados.
+        // Sobrando, lê uma amostra a mais (pula uma); faltando, uma a menos
+        // (repete uma). Inaudível, e a latência não anda.
+        const after = avail - want;
+        const src: usize = if (after > mix_prebuffer * 2) want + 1 else if (after < mix_prebuffer / 2) want - 1 else want;
+        for (0..want) |k| {
+            const at = ((s.r + k * src / want) % mix_ring) * channels;
             out[k * 2] += s.buf[at];
             out[k * 2 + 1] += s.buf[at + 1];
         }
-        s.r += take;
-        if (take < want) s.primed = false; // acabou o que tinha: junta de novo
-        return take > 0;
+        s.r += src;
+        return true;
     }
 
     fn onCapture(user: ?*anyopaque, samples: [*c]const f32, frames: c_int) callconv(.c) void {
@@ -523,14 +531,15 @@ pub const MixCapture = struct {
     /// Abre a captura de quem começou a tocar (e não está excluído) e fecha a
     /// de quem sumiu da lista faz 3 s.
     fn refresh(m: *MixCapture) void {
-        var apps: [24]c.audio_app = undefined;
-        const n = listApps(&apps);
+        var excl_z: [513]u8 = undefined;
+        @memcpy(excl_z[0..m.exclude_len], m.exclude[0..m.exclude_len]);
+        excl_z[m.exclude_len] = 0;
+        var pids: [32]u32 = undefined;
+        const n: usize = @intCast(@max(0, c.audio_mix_pids(&excl_z, &pids, pids.len)));
         var seen = [_]bool{false} ** mix_max;
-        for (apps[0..n]) |*ap| {
-            const name = std.mem.sliceTo(&ap.name, 0);
-            if (inList(m.exclude[0..m.exclude_len], name)) continue;
+        for (pids[0..n]) |pid| {
             const have = for (m.sources, 0..) |maybe, i| {
-                if (maybe) |s| if (s.pid == ap.pid) break i;
+                if (maybe) |s| if (s.pid == pid) break i;
             } else null;
             if (have) |i| {
                 seen[i] = true;
@@ -540,11 +549,11 @@ pub const MixCapture = struct {
                 if (maybe == null) break i;
             } else continue;
             const s = gpa.create(MixSource) catch continue;
-            s.* = .{ .pid = ap.pid };
+            s.* = .{ .pid = pid };
             var err: [128]u8 = [_]u8{0} ** 128;
-            s.dev = c.audio_capture_open(MixSource.onCapture, s, "", ap.pid, null, &err, err.len);
+            s.dev = c.audio_capture_open(MixSource.onCapture, s, "", pid, null, &err, err.len);
             if (s.dev == null) {
-                if (sync.debugOn()) std.debug.print("[telinha] som de {s} (pid {d}): {s}\n", .{ name, ap.pid, std.mem.sliceTo(&err, 0) });
+                if (sync.debugOn()) std.debug.print("[telinha] som do pid {d}: {s}\n", .{ pid, std.mem.sliceTo(&err, 0) });
                 gpa.destroy(s);
                 continue;
             }
@@ -604,4 +613,19 @@ test "mistura do som por programa: espera juntar, soma, pula pra frente quando a
     @memset(&out, 0);
     try std.testing.expect(b.mixInto(&out));
     try std.testing.expectEqual(mix_prebuffer - frame_len, b.w.load(.monotonic) - b.r);
+    // acabando: repete uma amostra (sobra pouco) e depois silêncio inteiro, sem meio quadro
+    @memset(&out, 0);
+    try std.testing.expect(b.mixInto(&out)); // 480 guardados → lê 479
+    try std.testing.expectEqual(@as(usize, 1), b.w.load(.monotonic) - b.r);
+    @memset(&out, 0);
+    try std.testing.expect(!b.mixInto(&out));
+    try std.testing.expectEqual(@as(f32, 0), out[0]);
+    // sobrando (placa adiantada): lê uma a mais por quadro
+    const c2 = try gpa.create(MixSource);
+    defer gpa.destroy(c2);
+    c2.* = .{};
+    for (0..6) |_| c2.push(&chunk); // 60 ms
+    @memset(&out, 0);
+    try std.testing.expect(c2.mixInto(&out));
+    try std.testing.expectEqual(@as(usize, frame_len + 1), c2.r);
 }
