@@ -14,6 +14,7 @@ test {
     _ = @import("i18n.zig");
     _ = @import("udp.zig");
     _ = @import("debuglog.zig");
+    _ = @import("theme.zig");
 }
 
 fn initPool() void {
@@ -1734,4 +1735,78 @@ fn untranslated(name: []const u8, src: []const u8) usize {
 test "idioma: todo texto da interface passa pela tradução" {
     const bad = untranslated("src/ui.zig", @embedFile("ui.zig")) + untranslated("src/pip.zig", @embedFile("pip.zig"));
     try testing.expectEqual(@as(usize, 0), bad);
+}
+
+/// A conversão escalar que o hwva.c e o hwenc_mf.c faziam antes (referência).
+fn nv12Escalar(src: []const u8, stride: usize, w: usize, h: usize, rgbx: bool, y: []u8, ys: usize, uv: []u8, uvs: usize) void {
+    const ri: usize = if (rgbx) 0 else 2;
+    const bi: usize = if (rgbx) 2 else 0;
+    var row: usize = 0;
+    while (row < h) : (row += 2) {
+        var x: usize = 0;
+        while (x < w) : (x += 2) {
+            var rs: i32 = 0;
+            var gs: i32 = 0;
+            var bs: i32 = 0;
+            for (0..4) |k| {
+                const ry = row + k / 2;
+                const px = src[ry * stride + (x + k % 2) * 4 ..];
+                const r: i32 = px[ri];
+                const g: i32 = px[1];
+                const b: i32 = px[bi];
+                const yy = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+                y[ry * ys + x + k % 2] = @intCast(@min(yy, 255));
+                rs += r;
+                gs += g;
+                bs += b;
+            }
+            rs = @divTrunc(rs + 2, 4);
+            gs = @divTrunc(gs + 2, 4);
+            bs = @divTrunc(bs + 2, 4);
+            const u = ((-38 * rs - 74 * gs + 112 * bs + 128) >> 8) + 128;
+            const v = ((112 * rs - 94 * gs - 18 * bs + 128) >> 8) + 128;
+            uv[row / 2 * uvs + x] = @intCast(std.math.clamp(u, 0, 255));
+            uv[row / 2 * uvs + x + 1] = @intCast(std.math.clamp(v, 0, 255));
+        }
+    }
+}
+
+test "NV12 vetorizado: igual bit a bit à conversão escalar antiga (pitch, largura quebrada, BGRX e RGBX)" {
+    const sizes = [_][2]usize{ .{ 50, 34 }, .{ 64, 48 }, .{ 1280, 720 }, .{ 2, 2 } };
+    for (sizes) |sz| {
+        const w = sz[0];
+        const h = sz[1];
+        const stride = w * 4 + 12;
+        const ys = w + 6;
+        const uvs = w + 10;
+        const gpa = std.testing.allocator;
+        const src = try gpa.alloc(u8, stride * h);
+        defer gpa.free(src);
+        var seed: u32 = @intCast(w * 31 + h);
+        for (src) |*b| {
+            seed = seed *% 1103515245 +% 12345;
+            b.* = @truncate(seed >> 16);
+        }
+        // cantos extremos (preto e branco puros) no começo
+        @memset(src[0..8], 0);
+        @memset(src[stride .. stride + 8], 255);
+        for ([_]bool{ false, true }) |rgbx| {
+            const y1 = try gpa.alloc(u8, ys * h);
+            defer gpa.free(y1);
+            const y2 = try gpa.alloc(u8, ys * h);
+            defer gpa.free(y2);
+            const uv1 = try gpa.alloc(u8, uvs * h / 2);
+            defer gpa.free(uv1);
+            const uv2 = try gpa.alloc(u8, uvs * h / 2);
+            defer gpa.free(uv2);
+            @memset(y1, 0xAA);
+            @memset(y2, 0xAA);
+            @memset(uv1, 0xAA);
+            @memset(uv2, 0xAA);
+            nv12Escalar(src, stride, w, h, rgbx, y1, ys, uv1, uvs);
+            codec.toNV12(src.ptr, stride, w, h, if (rgbx) .rgbx else .bgrx, y2, ys, uv2, uvs);
+            try std.testing.expectEqualSlices(u8, y1, y2); // inclusive o que fica fora da largura (intocado)
+            try std.testing.expectEqualSlices(u8, uv1, uv2);
+        }
+    }
 }

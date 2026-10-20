@@ -1662,7 +1662,7 @@ struct vaenc {
     enc_hdr hdr;
     uint32_t frames, since_idr;
     int idr_id, cur;
-    uint8_t *nv12; // quadro convertido (aw x ah), também a referência do autoteste
+    uint8_t *nv12; // referência do autoteste (aw x ah)
     uint8_t *out;
     size_t out_cap;
     VAImage up;
@@ -1775,46 +1775,30 @@ static int enc_setup(vaenc *e, VAProfile prof, VAEntrypoint ep, char *why, int w
     return 0;
 }
 
-// BGRX/RGBX -> NV12 (BT.601 faixa limitada, a mesma conta do openh264/hwenc_mf),
-// com as bordas até o múltiplo de 16 repetindo o último pixel.
-static void to_nv12(const uint8_t *src, int stride, int w, int h, int format, uint8_t *dst, int aw, int ah) {
-    const int ri = format == HWENC_RGBX ? 0 : 2, bi = format == HWENC_RGBX ? 2 : 0;
-    uint8_t *uv = dst + (size_t)aw * ah;
-    for (int y = 0; y < h; y += 2) {
-        const uint8_t *r0 = src + (size_t)y * stride, *r1 = r0 + stride;
-        uint8_t *y0 = dst + (size_t)y * aw, *y1 = y0 + aw;
-        uint8_t *uvr = uv + (size_t)(y / 2) * aw;
-        for (int x = 0; x < w; x += 2) {
-            int R = 0, G = 0, B = 0;
-            for (int k = 0; k < 4; k++) {
-                const uint8_t *p = (k < 2 ? r0 : r1) + (size_t)(x + (k & 1)) * 4;
-                const int r = p[ri], g = p[1], b = p[bi];
-                const int yy = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-                (k < 2 ? y0 : y1)[x + (k & 1)] = (uint8_t)(yy > 255 ? 255 : yy);
-                R += r;
-                G += g;
-                B += b;
-            }
-            R = (R + 2) / 4;
-            G = (G + 2) / 4;
-            B = (B + 2) / 4;
-            const int u = ((-38 * R - 74 * G + 112 * B + 128) >> 8) + 128;
-            const int v = ((112 * R - 94 * G - 18 * B + 128) >> 8) + 128;
-            uvr[x] = (uint8_t)(u < 0 ? 0 : u > 255 ? 255 : u);
-            uvr[x + 1] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+// BGRX/RGBX → NV12 (vetorizado, em Zig: codec.zig) direto em `y`/`uv` e a
+// borda repetida até aw x ah (o encoder trabalha em macroblocos de 16).
+void telinha_to_nv12(const uint8_t *src, int stride, int w, int h, int format, uint8_t *y, int ys, uint8_t *uv, int uvs);
+
+static void fill_nv12(const uint8_t *pixels, int stride, int format, int w, int h, int aw, int ah, uint8_t *y, int ys, uint8_t *uv, int uvs) {
+    telinha_to_nv12(pixels, stride, w, h, format, y, ys, uv, uvs);
+    if (aw > w) {
+        for (int r = 0; r < h; r++) {
+            uint8_t *row = y + (size_t)r * ys;
+            memset(row + w, row[w - 1], (size_t)(aw - w));
         }
-        for (int x = w; x < aw; x += 2) {
-            y0[x] = y0[x + 1] = y0[w - 1];
-            y1[x] = y1[x + 1] = y1[w - 1];
-            uvr[x] = uvr[w - 2];
-            uvr[x + 1] = uvr[w - 1];
+        for (int r = 0; r < h / 2; r++) {
+            uint8_t *row = uv + (size_t)r * uvs;
+            for (int x = w; x < aw; x += 2) {
+                row[x] = row[w - 2];
+                row[x + 1] = row[w - 1];
+            }
         }
     }
-    for (int y = h; y < ah; y++) memcpy(dst + (size_t)y * aw, dst + (size_t)(h - 1) * aw, (size_t)aw);
-    for (int y = h / 2; y < ah / 2; y++) memcpy(uv + (size_t)y * aw, uv + (size_t)(h / 2 - 1) * aw, (size_t)aw);
+    for (int r = h; r < ah; r++) memcpy(y + (size_t)r * ys, y + (size_t)(h - 1) * ys, (size_t)aw);
+    for (int r = h / 2; r < ah / 2; r++) memcpy(uv + (size_t)r * uvs, uv + (size_t)(h / 2 - 1) * uvs, (size_t)aw);
 }
 
-static int upload(vaenc *e) {
+static int upload(vaenc *e, const uint8_t *pixels, int stride, int format) {
     VADisplay dpy = e->dev.dpy;
     const VASurfaceID surf = e->surf[0];
     VAImage img;
@@ -1844,9 +1828,7 @@ static int upload(vaenc *e) {
     int rc = -1;
     if (va.MapBuffer(dpy, img.buf, &ptr) == VA_STATUS_SUCCESS) {
         uint8_t *base = ptr;
-        const uint8_t *uv = e->nv12 + (size_t)e->aw * e->ah;
-        for (int y = 0; y < e->ah; y++) memcpy(base + img.offsets[0] + (size_t)y * img.pitches[0], e->nv12 + (size_t)y * e->aw, (size_t)e->aw);
-        for (int y = 0; y < e->ah / 2; y++) memcpy(base + img.offsets[1] + (size_t)y * img.pitches[1], uv + (size_t)y * e->aw, (size_t)e->aw);
+        fill_nv12(pixels, stride, format, e->w, e->h, e->aw, e->ah, base + img.offsets[0], (int)img.pitches[0], base + img.offsets[1], (int)img.pitches[1]);
         va.UnmapBuffer(dpy, img.buf);
         rc = 0;
     }
@@ -1883,8 +1865,7 @@ static int packed_buffers(vaenc *e, int type, const uint8_t *data, int bytes, VA
 int vaenc_encode(vaenc *e, const uint8_t *pixels, int stride, int format, int force_idr, const uint8_t **out, int *out_len, int *is_idr) {
     VADisplay dpy = e->dev.dpy;
     const int idr = force_idr || e->frames == 0;
-    to_nv12(pixels, stride, e->w, e->h, format, e->nv12, e->aw, e->ah);
-    if (upload(e) < 0) return -1;
+    if (upload(e, pixels, stride, format) < 0) return -1;
     if (idr) {
         e->since_idr = 0;
         e->idr_id = (e->idr_id + 1) & 0xffff; // dois IDRs seguidos não podem ter o mesmo idr_pic_id
@@ -2095,6 +2076,8 @@ static int selftest(vaenc *e, char *why, int whylen) {
             rc = -1;
             break;
         }
+        // referência: o mesmo quadro convertido aqui (o encoder converteu direto na memória do driver)
+        fill_nv12(img, e->w * 4, HWENC_BGRX, e->w, e->h, e->aw, e->ah, e->nv12, e->aw, e->nv12 + (size_t)e->aw * e->ah, e->aw);
         const uint32_t types = nal_types(bits, len);
         const uint32_t want = f == 0 ? (1u << 7 | 1u << 8 | 1u << 5) : 1u << 1;
         if (idr != (f == 0) || (types & want) != want || (f > 0 && (types & (1u << 5)))) {

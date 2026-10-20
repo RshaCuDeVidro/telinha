@@ -512,6 +512,15 @@ const table = [_][2][]const u8{
     .{ "Aplicar", "Apply" },
     .{ "{s}   Ao vivo", "{s}   Go live" },
 
+    // temas
+    .{ "TEMA", "THEME" },
+    .{ "Escuro", "Dark" },
+    .{ "Claro", "Light" },
+    .{ "pwnd", "pwnd" },
+    .{ "pwnd claro", "pwnd light" },
+    .{ "Nord", "Nord" },
+    .{ "Drácula", "Dracula" },
+
     // depuração (log pra mandar)
     .{ "{s}  Depuração", "{s}  Debugging" },
     .{ "Gravar log de depuração (desempenho, rede, vídeo, erros: tudo)", "Record a debug log (performance, network, video, errors: everything)" },

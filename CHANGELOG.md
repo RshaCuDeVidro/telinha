@@ -37,6 +37,10 @@ Conversa com a 3.0 (os campos novos são opcionais).
 - **Interface em inglês** (automático pelo idioma do sistema, ou escolhido nas
   configurações). Os textos que vêm do servidor (avisos do chat, motivos de
   recusa) também são traduzidos.
+- **Temas** (Configurações → Tema, troca na hora): Escuro (o de sempre),
+  Claro, pwnd (preto com fúcsia e roxo neon e verde de terminal, cantos quase
+  retos), pwnd claro, Nord e Drácula. O texto dos botões escolhe sozinho entre
+  branco e escuro pelo contraste.
 - **Log de depuração** (Configurações → Depuração): grava num arquivo tudo que
   ajuda a achar um problema de desempenho — sistema, processador, memória,
   placas de vídeo, driver, OpenGL, monitores, configurações (sem senhas) e, a
@@ -51,6 +55,20 @@ Conversa com a 3.0 (os campos novos são opcionais).
   passar de 24 MB.
 
 **Desempenho e memória** (medido antes/depois nos mesmos cenários):
+
+- Som da transmissão fura a fila de envio (antes esperava atrás de um quadro
+  inteiro: um IDR de 60 KB a 2 Mbit/s segurava ~240 ms de som no TCP).
+- Minimizado, as transmissões não sobem mais pra GPU (só a que está numa
+  janela flutuante).
+- Encoders de placa Intel/AMD (VA-API no Linux, Media Foundation no
+  Windows): a conversão pra NV12 agora é vetorizada e dividida entre os
+  núcleos (era C escalar numa thread só), e no VA-API vai direto pra memória
+  do driver, sem o buffer intermediário. 1080p no i5-2400S: 3,5 → 2,5 ms por
+  quadro (essa CPU já está perto do limite da memória; em CPU mais nova o
+  ganho é maior), mais a cópia de ~3 MB que sumiu.
+- Quem assiste: o decode converte o quadro sem trava e a interface sobe pra
+  GPU sem segurar o decode (buffer triplo), sem engasgos de um esperando o
+  outro.
 
 - Transmitindo sem ninguém assistindo: nada é codificado nem enviado (a
   captura cai pra 5 q/s, só pra prévia) — de ~312% pra ~23% de CPU no teste.

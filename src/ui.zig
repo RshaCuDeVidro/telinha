@@ -26,6 +26,7 @@ const update = @import("update.zig");
 const chatimg = @import("chatimg.zig");
 const chatsend = @import("chatsend.zig");
 const debuglog = @import("debuglog.zig");
+const theme = @import("theme.zig");
 const i18n = @import("i18n.zig");
 const tr = i18n.tr;
 const build_options = @import("build_options");
@@ -35,42 +36,12 @@ const Sharer = sharer_mod.Sharer;
 // ---------------------------------------------------------------------------
 // Cores e fontes
 
-fn rgba(comptime hex: u24, comptime a: u8) u32 {
-    const r: u32 = (hex >> 16) & 0xff;
-    const g: u32 = (hex >> 8) & 0xff;
-    const b: u32 = hex & 0xff;
-    return (@as(u32, a) << 24) | (b << 16) | (g << 8) | r;
-}
-fn rgb(comptime hex: u24) u32 {
-    return rgba(hex, 255);
-}
+const rgba = theme.rgba;
+const rgb = theme.rgb;
+const withAlpha = theme.withAlpha;
 
-pub const col = struct {
-    pub const bg_dark = rgb(0x1E1F22);
-    pub const bg_side = rgb(0x2B2D31);
-    pub const bg_main = rgb(0x313338);
-    pub const bg_user = rgb(0x232428);
-    pub const bg_float = rgb(0x111214);
-    pub const input = rgb(0x1E1F22);
-    pub const chat_input = rgb(0x383A40);
-    pub const hover = rgb(0x35373C);
-    pub const selected = rgb(0x404249);
-    pub const text = rgb(0xDBDEE1);
-    pub const muted = rgb(0x949BA4);
-    pub const faint = rgb(0x6D6F78);
-    pub const header = rgb(0xF2F3F5);
-    pub const blurple = rgb(0x5865F2);
-    pub const blurple_hover = rgb(0x4752C4);
-    pub const blurple_active = rgb(0x3C45A5);
-    pub const green = rgb(0x23A55A);
-    pub const red = rgb(0xF23F43);
-    pub const red_hover = rgb(0xDA373C);
-    pub const yellow = rgb(0xF0B232);
-    pub const black = rgb(0x000000);
-    pub const white = rgb(0xFFFFFF);
-    pub const shadow = rgba(0x000000, 140);
-    pub const overlay = rgba(0x000000, 170);
-};
+/// Cores do tema em uso (troca na hora: ver `setTheme` e theme.zig).
+pub var col: theme.Palette = theme.list[0].pal;
 
 const avatar_colors = [_]u32{ rgb(0x5865F2), rgb(0x3BA55C), rgb(0xFAA61A), rgb(0xED4245), rgb(0xEB459E), rgb(0x9B59B6), rgb(0x1ABC9C), rgb(0xE67E22) };
 
@@ -182,7 +153,7 @@ fn textSizeF(f: *c.ImFont, size: f32, s: []const u8) c.ImVec2_c {
     return textSize(s);
 }
 fn rectFill(d: *c.ImDrawList, x0: f32, y0: f32, x1: f32, y1: f32, color: u32, rounding: f32) void {
-    c.ImDrawList_AddRectFilled(d, v2(x0, y0), v2(x1, y1), color, rounding, 0);
+    c.ImDrawList_AddRectFilled(d, v2(x0, y0), v2(x1, y1), color, rounding * col.round, 0);
 }
 fn textColored(color: u32, s: []const u8) void {
     c.igPushStyleColor_U32(c.ImGuiCol_Text, color);
@@ -311,7 +282,7 @@ fn primaryButton(label: [:0]const u8, size: c.ImVec2_c, color: u32, hover: u32, 
     c.igPushStyleColor_U32(c.ImGuiCol_Button, color);
     c.igPushStyleColor_U32(c.ImGuiCol_ButtonHovered, hover);
     c.igPushStyleColor_U32(c.ImGuiCol_ButtonActive, active);
-    c.igPushStyleColor_U32(c.ImGuiCol_Text, col.white);
+    c.igPushStyleColor_U32(c.ImGuiCol_Text, theme.textOn(color));
     pushFont(font_semibold, 15);
     const r = c.igButton(label.ptr, size);
     popFont();
@@ -320,7 +291,7 @@ fn primaryButton(label: [:0]const u8, size: c.ImVec2_c, color: u32, hover: u32, 
 }
 
 fn secondaryButton(label: [:0]const u8, size: c.ImVec2_c) bool {
-    return primaryButton(label, size, rgb(0x4E5058), rgb(0x6D6F78), rgb(0x80848E));
+    return primaryButton(label, size, col.button, col.button_hover, col.button_active);
 }
 
 /// Botão de ícone redondinho (barra do usuário, topo das transmissões).
@@ -571,6 +542,7 @@ pub const App = struct {
     pub fn init(window: *c.GLFWwindow) App {
         var a: App = .{ .window = window, .cfg = config.load(), .volumes = config.VoiceVolumes.load() };
         i18n.init(config.getStr(&a.cfg.language));
+        setTheme(config.getStr(&a.cfg.theme));
         _ = std.fmt.bufPrintZ(&a.port_buf, "{d}", .{a.cfg.host_port}) catch {};
         if (a.cfg.check_updates) update.checkAsync(build_options.repo, version_string);
         voice.on_speaking_change = wakeUi;
@@ -1770,7 +1742,7 @@ pub const App = struct {
         a.pasteInvite();
         const d = drawList();
         // fundo com um brilho sutil
-        c.ImDrawList_AddRectFilledMultiColor(d, v2(0, 0), size, rgb(0x1E1F22), rgb(0x232436), rgb(0x1E1F22), rgb(0x1A1B1E));
+        c.ImDrawList_AddRectFilledMultiColor(d, v2(0, 0), size, col.home_grad[0], col.home_grad[1], col.home_grad[2], col.home_grad[3]);
 
         const card_w = S(460);
         const card_h = a.home_card_h + S(60);
@@ -1850,7 +1822,7 @@ pub const App = struct {
             if (textField("##hpass", "vazio = sem senha", &a.cfg.host_pass, half, true)) go = true;
             c.igSetCursorScreenPos(after);
             c.igDummy(v2(0, S(18)));
-            if (primaryButton(tr("Criar sala##go"), v2(inner, S(44)), col.green, rgb(0x1A8B4C), rgb(0x15703D))) go = true;
+            if (primaryButton(tr("Criar sala##go"), v2(inner, S(44)), col.green, col.green_hover, col.green_active)) go = true;
             c.igDummy(v2(0, S(10)));
             c.igPushTextWrapPos(c.igGetCursorPosX() + inner);
             pushFont(font_regular, 13);
@@ -1931,7 +1903,7 @@ pub const App = struct {
         c.igSetNextWindowPos(v2(vp.*.Pos.x + vp.*.Size.x / 2, vp.*.Pos.y + vp.*.Size.y / 2), c.ImGuiCond_Always, v2(0.5, 0.5));
         c.igSetNextWindowSize(v2(S(400), 0), c.ImGuiCond_Always);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(24), S(22)));
-        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, S(10));
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, S(10) * col.round);
         c.igPushStyleColor_U32(c.ImGuiCol_PopupBg, col.bg_main);
         c.igPushStyleColor_U32(c.ImGuiCol_ModalWindowDimBg, rgba(0x000000, 170));
         defer {
@@ -1981,7 +1953,7 @@ pub const App = struct {
     }
 
     fn drawConnecting(a: *App, size: c.ImVec2_c) void {
-        const d = beginOverlay("##connecting", size, rgba(0x1E1F22, 240));
+        const d = beginOverlay("##connecting", size, withAlpha(col.bg_dark, 240));
         defer c.igEnd();
         const t = if (a.reconnect.attempt > 0)
             fmtZ("Reconectando em {s}... (tentativa {d} de {d})", .{ a.connect_label[0..a.connect_label_len], a.reconnect.attempt, max_reconnect })
@@ -2002,7 +1974,7 @@ pub const App = struct {
     }
 
     fn drawDropped(a: *App, cl: *Client, size: c.ImVec2_c) void {
-        const d = beginOverlay("##dropped", size, rgba(0x1E1F22, 225));
+        const d = beginOverlay("##dropped", size, withAlpha(col.bg_dark, 225));
         defer c.igEnd();
         var eb: [400]u8 = undefined;
         const t = i18n.dynamic(cl.errSlice(), &eb);
@@ -2164,18 +2136,18 @@ pub const App = struct {
         c.igSetCursorScreenPos(v2(p.x + S(8), p.y + (size.y - bh) / 2));
         const lbl = if (live) fmtZ("{s}  Ao vivo (configurar)##share", .{ic.desktop}) else fmtZ("{s}  Compartilhar tela##share", .{ic.desktop});
         if (if (live)
-            primaryButton(lbl, v2(share_w, bh), col.red, rgb(0xC03537), rgb(0xA12828))
+            primaryButton(lbl, v2(share_w, bh), col.red, col.red_hover, col.red_active)
         else
             secondaryButton(lbl, v2(share_w, bh))) a.openShareModal();
         c.igSameLine(0, S(8));
         const cam_on = a.camera != null;
         if (if (cam_on)
-            primaryButton(fmtZ("{s}##camera", .{ic.video}), v2(cam_w, bh), col.red, rgb(0xC03537), rgb(0xA12828))
+            primaryButton(fmtZ("{s}##camera", .{ic.video}), v2(cam_w, bh), col.red, col.red_hover, col.red_active)
         else
             secondaryButton(fmtZ("{s}##camera", .{ic.video}), v2(cam_w, bh))) a.toggleCamera();
         if (c.igIsItemHovered(0)) tooltipText(if (cam_on) tr("Desligar a câmera") else tr("Ligar a câmera"));
         c.igSameLine(0, S(8));
-        if (primaryButton(fmtZ("{s}##leave", .{ic.leave}), v2(leave_w, bh), rgb(0x3F2A2F), col.red, rgb(0xA12828))) a.askLeave();
+        if (primaryButton(fmtZ("{s}##leave", .{ic.leave}), v2(leave_w, bh), col.leave, col.red, col.red_active)) a.askLeave();
         if (c.igIsItemHovered(0)) tooltipText(if (a.server != null) tr("Fechar a sala") else tr("Sair da sala"));
         c.igSetCursorScreenPos(v2(p.x, p.y + size.y));
     }
@@ -2845,7 +2817,7 @@ pub const App = struct {
         }
         const x = cell_x + (cell_w - w) / 2;
         const y = cell_y + (cell_h - h) / 2;
-        const round = if (a.theater and big) 0 else S(8);
+        const round = if (a.theater and big) 0 else S(8) * col.round;
         c.igPushID_Int(@bitCast(t.stream));
         defer c.igPopID();
         if (a.n_tile_rects < a.tile_rects.len) {
@@ -2992,7 +2964,7 @@ pub const App = struct {
             if (proto.memberOf(t.stream) != 0) {
                 c.igSetCursorScreenPos(v2(bx, by));
                 rectFill(d, bx, by, bx + bs, by + bs, col.overlay, S(6));
-                if (iconButton("##close", ic.xmark, bs, col.white, rgba(0xED4245, 200), tr("Parar de assistir"))) {
+                if (iconButton("##close", ic.xmark, bs, col.white, withAlpha(col.red, 200), tr("Parar de assistir"))) {
                     a.unwatch(t.stream);
                     return;
                 }
@@ -3001,7 +2973,7 @@ pub const App = struct {
             c.igSetCursorScreenPos(v2(bx, by));
             rectFill(d, bx, by, bx + bs, by + bs, col.overlay, S(6));
             const focused = a.focused != null and a.focused.? == t.stream;
-            if (iconButton("##focus", if (focused) ic.compress else ic.expand, bs, col.white, rgba(0x5865F2, 200), if (focused) tr("Voltar pra grade") else tr("Destacar (duplo clique: tela cheia)"))) {
+            if (iconButton("##focus", if (focused) ic.compress else ic.expand, bs, col.white, withAlpha(col.blurple, 200), if (focused) tr("Voltar pra grade") else tr("Destacar (duplo clique: tela cheia)"))) {
                 a.focused = if (focused) null else t.stream;
             } else if (dbl and !pointing) {
                 a.focused = t.stream;
@@ -3016,7 +2988,7 @@ pub const App = struct {
                 // ponteiro "olha aqui"
                 c.igSetCursorScreenPos(v2(bx, by));
                 rectFill(d, bx, by, bx + bs, by + bs, if (pointing) col.blurple else col.overlay, S(6));
-                if (iconButton("##pointer", ic.hand_pointer, bs, col.white, rgba(0x5865F2, 200), if (pointing) tr("Desligar o ponteiro") else tr("Ponteiro: quem assiste vê onde você aponta (clique chama atenção)"))) {
+                if (iconButton("##pointer", ic.hand_pointer, bs, col.white, withAlpha(col.blurple, 200), if (pointing) tr("Desligar o ponteiro") else tr("Ponteiro: quem assiste vê onde você aponta (clique chama atenção)"))) {
                     if (pointing) a.stopPointer() else {
                         a.stopPointer();
                         a.pointer_tile = t.stream;
@@ -3028,7 +3000,7 @@ pub const App = struct {
                     const open = a.findPip(t.stream) != null;
                     c.igSetCursorScreenPos(v2(bx, by));
                     rectFill(d, bx, by, bx + bs, by + bs, if (open) col.blurple else col.overlay, S(6));
-                    if (iconButton("##pip", ic.window_restore, bs, col.white, rgba(0x5865F2, 200), if (open) tr("Fechar a janela flutuante") else tr("Abrir numa janela flutuante (por cima das outras)"))) a.togglePip(t.stream, t.name);
+                    if (iconButton("##pip", ic.window_restore, bs, col.white, withAlpha(col.blurple, 200), if (open) tr("Fechar a janela flutuante") else tr("Abrir numa janela flutuante (por cima das outras)"))) a.togglePip(t.stream, t.name);
                     bx -= bs + S(6);
                 }
                 // clipe (últimos 30 s) e gravação
@@ -3036,13 +3008,13 @@ pub const App = struct {
                     const rs = cb.recState();
                     c.igSetCursorScreenPos(v2(bx, by));
                     rectFill(d, bx, by, bx + bs, by + bs, if (rs.active) col.red else col.overlay, S(6));
-                    if (iconButton("##rec", ic.record, bs, col.white, rgba(0xED4245, 200), if (rs.active) tr("Parar de gravar (salva o arquivo)") else tr("Gravar (MP4, com o som da transmissão, a partir de agora)"))) {
+                    if (iconButton("##rec", ic.record, bs, col.white, withAlpha(col.red, 200), if (rs.active) tr("Parar de gravar (salva o arquivo)") else tr("Gravar (MP4, com o som da transmissão, a partir de agora)"))) {
                         if (rs.active) a.stopRecording(cb, t.name) else a.startRecording(cb, t.name);
                     }
                     bx -= bs + S(6);
                     c.igSetCursorScreenPos(v2(bx, by));
                     rectFill(d, bx, by, bx + bs, by + bs, col.overlay, S(6));
-                    if (iconButton("##clip", ic.scissors, bs, col.white, rgba(0x5865F2, 200), tr("Salvar clipe dos últimos 30 s"))) a.saveClip(cb, t.name);
+                    if (iconButton("##clip", ic.scissors, bs, col.white, withAlpha(col.blurple, 200), tr("Salvar clipe dos últimos 30 s"))) a.saveClip(cb, t.name);
                     bx -= bs + S(6);
                 }
                 // zoom: seguir o cursor de quem transmite / voltar pro tamanho normal
@@ -3050,7 +3022,7 @@ pub const App = struct {
                     c.igSetCursorScreenPos(v2(bx, by));
                     rectFill(d, bx, by, bx + bs, by + bs, if (zm.follow) col.blurple else col.overlay, S(6));
                     const can_follow = t.cur_x != proto.coord_none;
-                    if (iconButton("##follow", ic.crosshairs, bs, if (can_follow) col.white else col.faint, rgba(0x5865F2, 200), if (zm.follow) tr("Parar de seguir o cursor") else if (can_follow) tr("Zoom seguindo o cursor de quem transmite (rodinha: aproximar)") else tr("Seguir o cursor (quem transmite está sem cursor)"))) {
+                    if (iconButton("##follow", ic.crosshairs, bs, if (can_follow) col.white else col.faint, withAlpha(col.blurple, 200), if (zm.follow) tr("Parar de seguir o cursor") else if (can_follow) tr("Zoom seguindo o cursor de quem transmite (rodinha: aproximar)") else tr("Seguir o cursor (quem transmite está sem cursor)"))) {
                         zm.follow = !zm.follow and can_follow;
                         if (zm.follow and zm.z < 2) zm.z = 2;
                     }
@@ -3059,7 +3031,7 @@ pub const App = struct {
                 if (zm.z > 1.001) {
                     c.igSetCursorScreenPos(v2(bx, by));
                     rectFill(d, bx, by, bx + bs, by + bs, col.overlay, S(6));
-                    if (iconButton("##zoomreset", ic.compress, bs, col.white, rgba(0x5865F2, 200), tr("Voltar pro tamanho normal (sem zoom)"))) {
+                    if (iconButton("##zoomreset", ic.compress, bs, col.white, withAlpha(col.blurple, 200), tr("Voltar pro tamanho normal (sem zoom)"))) {
                         zm.* = .{ .stream = t.stream, .used = true };
                     }
                     bx -= bs + S(6);
@@ -3103,7 +3075,7 @@ pub const App = struct {
             redrawIn(0.2); // apaga quando parar
         } else if (t.ring) |rg| {
             if (!rg.isMuted() and ring_level > 0.02) {
-                c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), rgba(0x23A55A, 160), round, S(2), 0);
+                c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), withAlpha(col.green, 160), round, S(2), 0);
                 redrawIn(0.35);
             }
         }
@@ -3381,11 +3353,11 @@ pub const App = struct {
         const d = drawList();
         const p = c.igGetCursorScreenPos();
         const h = S(40);
-        rectFill(d, p.x, p.y, p.x + w, p.y + h, rgba(0x23A55A, 40), S(8));
+        rectFill(d, p.x, p.y, p.x + w, p.y + h, withAlpha(col.green, 40), S(8));
         drawTextF(d, font_semibold, 14, v2(p.x + S(12), p.y + S(11)), col.header, fmtZ("{s}  telinha {s} saiu (você tem o {s})", .{ ic.arrow_right, v, version_string }));
         const bw = S(78);
         c.igSetCursorScreenPos(v2(p.x + w - bw - S(6), p.y + S(6)));
-        if (primaryButton(tr("Baixar##update"), v2(bw, h - S(12)), col.green, rgb(0x1F8B4C), rgb(0x1A7340))) openReleases();
+        if (primaryButton(tr("Baixar##update"), v2(bw, h - S(12)), col.green, col.green_hover, col.green_active)) openReleases();
         c.igSetCursorScreenPos(v2(p.x, p.y + h));
         c.igDummy(v2(w, S(12)));
     }
@@ -3693,8 +3665,8 @@ pub const App = struct {
             const clicked = c.igInvisibleButton(fmtZ("##chip{d}_{d}", .{ line.id, e }).ptr, v2(w, h), 0);
             const hov = c.igIsItemHovered(0);
             const d = drawList();
-            rectFill(d, p.x, p.y, p.x + w, p.y + h, if (rc.mine) rgba(0x5865F2, 70) else if (hov) col.hover else rgba(0x000000, 60), S(8));
-            if (rc.mine) c.ImDrawList_AddRect(d, p, v2(p.x + w, p.y + h), rgb(0x5865F2), S(8), S(1), 0);
+            rectFill(d, p.x, p.y, p.x + w, p.y + h, if (rc.mine) withAlpha(col.blurple, 70) else if (hov) col.hover else rgba(0x000000, 60), S(8));
+            if (rc.mine) c.ImDrawList_AddRect(d, p, v2(p.x + w, p.y + h), col.blurple, S(8) * col.round, S(1), 0);
             drawTextF(d, font_regular, 12.5, v2(p.x + S(8), p.y + S(4)), reaction_colors[e], reaction_icons[e]);
             drawTextF(d, font_semibold, 12.5, v2(p.x + S(26), p.y + S(3)), col.text, label);
             if (hov) tooltipText(reactionName(e));
@@ -3771,7 +3743,7 @@ pub const App = struct {
         c.igSetNextItemAllowOverlap(); // a barra de reações fica por cima
         if (c.igInvisibleButton(fmtZ("##img{d}", .{line.id}).ptr, v2(w, h), 0)) a.img_view = line.id;
         if (c.igIsItemHovered(0)) c.igSetMouseCursor(c.ImGuiMouseCursor_Hand);
-        c.ImDrawList_AddImageRounded(drawList(), .{ ._TexData = null, ._TexID = e.tex }, p, v2(p.x + w, p.y + h), v2(0, 0), v2(1, 1), 0xFFFFFFFF, S(6), 0);
+        c.ImDrawList_AddImageRounded(drawList(), .{ ._TexData = null, ._TexID = e.tex }, p, v2(p.x + w, p.y + h), v2(0, 0), v2(1, 1), 0xFFFFFFFF, S(6) * col.round, 0);
     }
 
     fn pickMention(a: *App, i: usize) void {
@@ -3841,7 +3813,7 @@ pub const App = struct {
                 in_history = false;
                 c.igDummy(v2(0, S(8)));
                 const sp = c.igGetCursorScreenPos();
-                c.ImDrawList_AddLine(drawList(), v2(sp.x, sp.y), v2(sp.x + size.x - S(28), sp.y), rgba(0xFFFFFF, 30), S(1), 0);
+                c.ImDrawList_AddLine(drawList(), v2(sp.x, sp.y), v2(sp.x + size.x - S(28), sp.y), withAlpha(col.text, 30), S(1), 0);
                 last_from = 0xffffffff;
             }
             // fora da área visível e já medida: só reserva o espaço (500 linhas
@@ -3912,8 +3884,8 @@ pub const App = struct {
             if (line.from != me and mentions(text, my_name)) {
                 c.ImDrawList_ChannelsSetCurrent(mdl, 0);
                 const wx = c.igGetWindowPos().x;
-                rectFill(mdl, wx, top - S(2), wx + size.x, bottom + S(2), rgba(0xF0B232, 26), 0);
-                rectFill(mdl, wx, top - S(2), wx + S(3), bottom + S(2), rgb(0xF0B232), 0);
+                rectFill(mdl, wx, top - S(2), wx + size.x, bottom + S(2), withAlpha(col.yellow, 26), 0);
+                rectFill(mdl, wx, top - S(2), wx + S(3), bottom + S(2), col.yellow, 0);
                 c.ImDrawList_ChannelsSetCurrent(mdl, 1);
             }
             // mouse em cima: barra de reações no canto da mensagem
@@ -3924,7 +3896,7 @@ pub const App = struct {
                 const by0 = top - S(12);
                 const back = c.igGetCursorScreenPos();
                 rectFill(mdl, bx0 - S(4), by0 - S(3), bx0 + bs * proto.reactions + S(4), by0 + bs + S(3), col.bg_main, S(6));
-                c.ImDrawList_AddRect(mdl, v2(bx0 - S(4), by0 - S(3)), v2(bx0 + bs * proto.reactions + S(4), by0 + bs + S(3)), rgba(0x000000, 90), S(6), S(1), 0);
+                c.ImDrawList_AddRect(mdl, v2(bx0 - S(4), by0 - S(3)), v2(bx0 + bs * proto.reactions + S(4), by0 + bs + S(3)), rgba(0x000000, 90), S(6) * col.round, S(1), 0);
                 for (0..proto.reactions) |e| {
                     c.igSetCursorScreenPos(v2(bx0 + bs * @as(f32, @floatFromInt(e)), by0));
                     const mine = line.reactCount(@intCast(e), me).mine;
@@ -3982,7 +3954,7 @@ pub const App = struct {
             const hgt = row * @as(f32, @floatFromInt(a.n_mention_sugg)) + S(8);
             const sy = by - hgt - S(6);
             rectFill(d, bx, sy, bx + bw, sy + hgt, col.bg_main, S(8));
-            c.ImDrawList_AddRect(d, v2(bx, sy), v2(bx + bw, sy + hgt), rgba(0x000000, 90), S(8), S(1), 0);
+            c.ImDrawList_AddRect(d, v2(bx, sy), v2(bx + bw, sy + hgt), rgba(0x000000, 90), S(8) * col.round, S(1), 0);
             const back = c.igGetCursorScreenPos();
             for (0..a.n_mention_sugg) |i| {
                 const ry = sy + S(4) + row * @as(f32, @floatFromInt(i));
@@ -3992,7 +3964,7 @@ pub const App = struct {
                     a.pickMention(i);
                     a.focus_chat = true;
                 }
-                if (c.igIsItemHovered(0) or i == 0) rectFill(d, bx + S(4), ry, bx + bw - S(4), ry + row, if (c.igIsItemHovered(0)) col.hover else rgba(0xFFFFFF, 10), S(5));
+                if (c.igIsItemHovered(0) or i == 0) rectFill(d, bx + S(4), ry, bx + bw - S(4), ry + row, if (c.igIsItemHovered(0)) col.hover else withAlpha(col.text, 10), S(5));
                 drawTextF(d, font_semibold, 14, v2(bx + S(14), ry + S(6)), col.text, fmtZ("@{s}", .{name}));
                 if (i == 0) drawTextF(d, font_regular, 12, v2(bx + bw - S(60), ry + S(8)), col.faint, tr("Tab"));
             }
@@ -4074,7 +4046,7 @@ pub const App = struct {
         // janela baixa: rola em vez de cortar o botão de ir ao vivo
         c.igSetNextWindowSizeConstraints(v2(S(480), 0), v2(S(480), @max(S(200), vp.*.Size.y - S(24))), null, null);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(24), S(22)));
-        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, S(10));
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, S(10) * col.round);
         c.igPushStyleColor_U32(c.ImGuiCol_PopupBg, col.bg_main);
         c.igPushStyleColor_U32(c.ImGuiCol_ModalWindowDimBg, rgba(0x000000, 170));
         defer {
@@ -4213,7 +4185,7 @@ pub const App = struct {
         // janela baixa: rola em vez de cortar o fim
         c.igSetNextWindowSizeConstraints(v2(S(460), 0), v2(S(460), @max(S(200), vp.*.Size.y - S(24))), null, null);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(24), S(22)));
-        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, S(10));
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, S(10) * col.round);
         c.igPushStyleColor_U32(c.ImGuiCol_PopupBg, col.bg_main);
         c.igPushStyleColor_U32(c.ImGuiCol_ModalWindowDimBg, rgba(0x000000, 170));
         defer {
@@ -4237,6 +4209,10 @@ pub const App = struct {
 
         fieldLabel("SEU NOME (vale na próxima vez que entrar numa sala)");
         _ = textField("##sname", "como a galera vai te ver", a.cfg.name[0 .. a.cfg.name.len - 1], w, false);
+        c.igDummy(v2(0, S(10)));
+        fieldLabel("TEMA");
+        c.igDummy(v2(0, S(2)));
+        a.drawThemes(w);
         c.igDummy(v2(0, S(10)));
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         _ = c.igCheckbox(tr("Mostrar estatísticas sempre (não só com o mouse em cima)###stats"), &a.cfg.stats_always);
@@ -4512,6 +4488,39 @@ pub const App = struct {
         c.igPopTextWrapPos();
     }
 
+    /// Tema: um cartãozinho com as cores de cada um (troca na hora).
+    fn drawThemes(a: *App, w: f32) void {
+        const cur = theme.find(config.getStr(&a.cfg.theme));
+        const per_row = 3;
+        const gap = S(8);
+        const cw = (w - gap * (per_row - 1)) / per_row;
+        const ch = S(54);
+        const d = drawList();
+        inline for (theme.list, 0..) |t, i| {
+            if (i % per_row != 0) c.igSameLine(0, gap);
+            const p = c.igGetCursorScreenPos();
+            const clicked = c.igInvisibleButton("##tema-" ++ t.id, v2(cw, ch), 0);
+            const hov = c.igIsItemHovered(0);
+            // o cartão nas cores (e cantos) do próprio tema
+            const pal = t.pal;
+            const r = S(6) * pal.round;
+            c.ImDrawList_AddRectFilled(d, p, v2(p.x + cw, p.y + ch), pal.bg_side, r, 0);
+            c.ImDrawList_AddRectFilled(d, v2(p.x + S(16), p.y), v2(p.x + cw, p.y + ch), pal.bg_main, r, 0);
+            drawTextF(d, font_semibold, 13, v2(p.x + S(26), p.y + S(9)), pal.header, tr(t.name));
+            const by = p.y + ch - S(17);
+            c.ImDrawList_AddRectFilled(d, v2(p.x + S(26), by), v2(p.x + S(58), by + S(9)), pal.blurple, S(3) * pal.round, 0);
+            c.ImDrawList_AddRectFilled(d, v2(p.x + S(63), by), v2(p.x + S(77), by + S(9)), pal.green, S(3) * pal.round, 0);
+            c.ImDrawList_AddRectFilled(d, v2(p.x + S(82), by), v2(p.x + S(96), by + S(9)), pal.red, S(3) * pal.round, 0);
+            const border = if (i == cur) col.blurple else if (hov) col.muted else withAlpha(col.text, 40);
+            c.ImDrawList_AddRect(d, p, v2(p.x + cw, p.y + ch), border, r, if (i == cur) S(2) else S(1), 0);
+            if (clicked and i != cur) {
+                config.setStr(&a.cfg.theme, t.id);
+                setTheme(t.id);
+                config.save(&a.cfg);
+            }
+        }
+    }
+
     /// Idioma da interface (troca na hora).
     fn drawLanguage(a: *App, w: f32) void {
         const cur = config.getStr(&a.cfg.language);
@@ -4581,8 +4590,8 @@ pub const App = struct {
         try w.print(",\"fps\":{d},\"quality\":{d},\"mode\":{d},\"resolution\":{d},\"cursor\":{},\"audio\":{},\"hardware\":{},\"stats_always\":{},\"show_chat\":{}", .{
             cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.stats_always, cf.show_chat,
         });
-        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f}}}", .{
-            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)),
+        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f},\"theme\":{f}}}", .{
+            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)), s(config.getStr(&cf.theme)),
         });
         try w.print(",\"lang\":{f}", .{s(@tagName(i18n.get()))});
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);
@@ -4843,16 +4852,12 @@ pub fn wakeUi() void {
     c.glfwPostEmptyEvent();
 }
 
-/// Tema base do ImGui.
+/// Tema base do ImGui (tamanhos; uma vez, na escala da tela) e as cores do tema.
 pub fn applyStyle() void {
     const style = c.igGetStyle();
     c.igStyleColorsDark(style);
     style.*.WindowRounding = 0;
     style.*.ChildRounding = 0;
-    style.*.FrameRounding = 5;
-    style.*.PopupRounding = 8;
-    style.*.GrabRounding = 4;
-    style.*.ScrollbarRounding = 8;
     style.*.ScrollbarSize = 8;
     style.*.FrameBorderSize = 0;
     style.*.WindowBorderSize = 0;
@@ -4860,36 +4865,55 @@ pub fn applyStyle() void {
     style.*.ItemSpacing = v2(8, 6);
     style.*.GrabMinSize = 14;
     ImGuiStyle_ScaleAllSizes(style, scale);
+    applyThemeStyle();
+}
+
+/// Troca o tema (pelo id do config.ini; desconhecido = o primeiro).
+pub fn setTheme(id: []const u8) void {
+    col = theme.list[theme.find(id)].pal;
+    applyThemeStyle();
+}
+
+/// Cores e cantos do ImGui a partir de `col`.
+fn applyThemeStyle() void {
+    const style = c.igGetStyle();
+    style.*.FrameRounding = S(5) * col.round;
+    style.*.PopupRounding = S(8) * col.round;
+    style.*.GrabRounding = S(4) * col.round;
+    style.*.ScrollbarRounding = S(8) * col.round;
     const colors: *[c.ImGuiCol_COUNT]c.ImVec4_c = @ptrCast(&style.*.Colors);
     const f = struct {
-        fn v(comptime hex: u24, a: f32) c.ImVec4_c {
-            return .{ .x = @as(f32, @floatFromInt((hex >> 16) & 0xff)) / 255.0, .y = @as(f32, @floatFromInt((hex >> 8) & 0xff)) / 255.0, .z = @as(f32, @floatFromInt(hex & 0xff)) / 255.0, .w = a };
+        fn v(color: u32, a: f32) c.ImVec4_c {
+            var r = c.igColorConvertU32ToFloat4(color);
+            r.w = a;
+            return r;
         }
     }.v;
-    colors[c.ImGuiCol_Text] = f(0xDBDEE1, 1);
-    colors[c.ImGuiCol_TextDisabled] = f(0x949BA4, 1);
-    colors[c.ImGuiCol_WindowBg] = f(0x313338, 1);
-    colors[c.ImGuiCol_ChildBg] = f(0x313338, 0);
-    colors[c.ImGuiCol_PopupBg] = f(0x111214, 1);
-    colors[c.ImGuiCol_FrameBg] = f(0x1E1F22, 1);
-    colors[c.ImGuiCol_FrameBgHovered] = f(0x232428, 1);
-    colors[c.ImGuiCol_FrameBgActive] = f(0x232428, 1);
-    colors[c.ImGuiCol_Button] = f(0x4E5058, 1);
-    colors[c.ImGuiCol_ButtonHovered] = f(0x6D6F78, 1);
-    colors[c.ImGuiCol_ButtonActive] = f(0x80848E, 1);
-    colors[c.ImGuiCol_Header] = f(0x404249, 1);
-    colors[c.ImGuiCol_HeaderHovered] = f(0x35373C, 1);
-    colors[c.ImGuiCol_HeaderActive] = f(0x404249, 1);
-    colors[c.ImGuiCol_ScrollbarBg] = f(0x2B2D31, 0);
-    colors[c.ImGuiCol_ScrollbarGrab] = f(0x1A1B1E, 1);
-    colors[c.ImGuiCol_ScrollbarGrabHovered] = f(0x111214, 1);
-    colors[c.ImGuiCol_ScrollbarGrabActive] = f(0x111214, 1);
-    colors[c.ImGuiCol_CheckMark] = f(0xFFFFFF, 1);
-    colors[c.ImGuiCol_SliderGrab] = f(0x5865F2, 1);
-    colors[c.ImGuiCol_SliderGrabActive] = f(0x4752C4, 1);
-    colors[c.ImGuiCol_TextSelectedBg] = f(0x5865F2, 0.45);
-    colors[c.ImGuiCol_Border] = f(0x000000, 0);
-    colors[c.ImGuiCol_NavCursor] = f(0x5865F2, 1);
+    colors[c.ImGuiCol_Text] = f(col.text, 1);
+    colors[c.ImGuiCol_TextDisabled] = f(col.muted, 1);
+    colors[c.ImGuiCol_WindowBg] = f(col.bg_main, 1);
+    colors[c.ImGuiCol_ChildBg] = f(col.bg_main, 0);
+    colors[c.ImGuiCol_PopupBg] = f(col.bg_float, 1);
+    colors[c.ImGuiCol_FrameBg] = f(col.input, 1);
+    colors[c.ImGuiCol_FrameBgHovered] = f(col.bg_user, 1);
+    colors[c.ImGuiCol_FrameBgActive] = f(col.bg_user, 1);
+    colors[c.ImGuiCol_Button] = f(col.button, 1);
+    colors[c.ImGuiCol_ButtonHovered] = f(col.button_hover, 1);
+    colors[c.ImGuiCol_ButtonActive] = f(col.button_active, 1);
+    colors[c.ImGuiCol_Header] = f(col.selected, 1);
+    colors[c.ImGuiCol_HeaderHovered] = f(col.hover, 1);
+    colors[c.ImGuiCol_HeaderActive] = f(col.selected, 1);
+    colors[c.ImGuiCol_ScrollbarBg] = f(col.bg_side, 0);
+    colors[c.ImGuiCol_ScrollbarGrab] = f(col.scroll, 1);
+    colors[c.ImGuiCol_ScrollbarGrabHovered] = f(col.scroll_hover, 1);
+    colors[c.ImGuiCol_ScrollbarGrabActive] = f(col.scroll_hover, 1);
+    colors[c.ImGuiCol_CheckMark] = f(col.check, 1);
+    colors[c.ImGuiCol_CheckboxSelectedBg] = f(col.input, 1);
+    colors[c.ImGuiCol_SliderGrab] = f(col.blurple, 1);
+    colors[c.ImGuiCol_SliderGrabActive] = f(col.blurple_hover, 1);
+    colors[c.ImGuiCol_TextSelectedBg] = f(col.blurple, 0.45);
+    colors[c.ImGuiCol_Border] = f(col.black, 0);
+    colors[c.ImGuiCol_NavCursor] = f(col.blurple, 1);
 }
 
 const ImGuiStyle_ScaleAllSizes = c.ImGuiStyle_ScaleAllSizes;

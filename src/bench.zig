@@ -123,9 +123,27 @@ pub fn main(init: std.process.Init) !void {
     try run("texto rolando (modo tela)", w, h, .screen, .text);
     try run("movimento (modo tela)", w, h, .screen, .motion);
     try run("movimento (modo jogo)", w, h, .motion, .motion);
+    try convNV12(w, h);
     try runHw("NVENC: texto rolando", w, h, .screen, .text);
     try runHw("NVENC: movimento", w, h, .motion, .motion);
     if (std.c.getenv("TELINHA_BENCH_QUALIDADE") != null) try quality(w, h, 6_000_000);
+}
+
+/// A conversão que os encoders VA-API e Media Foundation usam.
+fn convNV12(w: u32, h: u32) !void {
+    const img = try gpa.alloc(u8, @as(usize, w) * h * 4);
+    defer gpa.free(img);
+    const nv = try gpa.alloc(u8, @as(usize, w) * h * 3 / 2);
+    defer gpa.free(nv);
+    fillText(img, w, h, 1);
+    var t: u64 = 0;
+    const frames = 60;
+    for (0..frames + 5) |f| {
+        const a = sync.nowUs();
+        codec.toNV12(img.ptr, @as(usize, w) * 4, w, h, .bgrx, nv[0 .. @as(usize, w) * h], w, nv[@as(usize, w) * h ..], w);
+        if (f >= 5) t += sync.nowUs() - a;
+    }
+    std.debug.print("{s:<28} conv {d:>5.1} ms (BGRX → NV12, pros encoders VA-API e Media Foundation)\n", .{ "NV12", @as(f64, @floatFromInt(t)) / frames / 1000 });
 }
 
 fn runHw(name: []const u8, w: u32, h: u32, mode: codec.Mode, scene: enum { text, motion }) !void {

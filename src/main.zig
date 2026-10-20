@@ -117,7 +117,8 @@ pub fn main(init: std.process.Init) !void {
             var fh: c_int = 0;
             c.glfwGetFramebufferSize(win, &fw, &fh);
             glViewport(0, 0, fw, fh);
-            glClearColor(0.12, 0.12, 0.13, 1);
+            const bg = c.igColorConvertU32ToFloat4(ui.col.bg_dark);
+            glClearColor(bg.x, bg.y, bg.z, 1);
             glClear(0x4000);
             c.ImGui_ImplOpenGL3_RenderDrawData(c.igGetDrawData());
             c.glfwSwapBuffers(win);

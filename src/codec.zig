@@ -50,10 +50,23 @@ const ToYuvCtx = struct {
     h: usize,
     fmt: PixelFormat,
     y: []u8,
-    u: []u8,
-    v: []u8,
+    u: []u8, // NV12: U e V intercalados
+    v: []u8, // NV12: não usado
+    ys: usize, // bytes por linha de Y
+    uvs: usize, // bytes por linha de U/V (NV12: da linha UV)
+    nv12: bool = false,
     bands: usize,
 };
+
+/// Intercala 8 U com 8 V (U0 V0 U1 V1 ...).
+fn uvMask() @Vector(16, i32) {
+    var m: [16]i32 = undefined;
+    for (0..8) |i| {
+        m[i * 2] = @intCast(i);
+        m[i * 2 + 1] = ~@as(i32, @intCast(i));
+    }
+    return m;
+}
 
 fn evenMask() @Vector(8, i32) {
     var m: [8]i32 = undefined;
@@ -96,10 +109,10 @@ fn toYuvBand(ctx: *const ToYuvCtx, band: usize) void {
         const y0 = p * 2;
         const row0 = ctx.src + y0 * ctx.stride;
         const row1 = row0 + ctx.stride;
-        const yo0 = ctx.y[y0 * w ..][0..w];
-        const yo1 = ctx.y[(y0 + 1) * w ..][0..w];
-        const uo = ctx.u[p * cw ..][0..cw];
-        const vo = ctx.v[p * cw ..][0..cw];
+        const yo0 = ctx.y[y0 * ctx.ys ..][0..w];
+        const yo1 = ctx.y[(y0 + 1) * ctx.ys ..][0..w];
+        const uo = ctx.u[p * ctx.uvs ..][0..if (ctx.nv12) w else cw];
+        const vo = if (ctx.nv12) uo else ctx.v[p * ctx.uvs ..][0..cw];
         // 2 linhas x 16 pixels por vez: 32 Y + 8 U + 8 V
         var x: usize = 0;
         while (x + 16 <= w) : (x += 16) {
@@ -120,8 +133,12 @@ fn toYuvBand(ctx: *const ToYuvCtx, band: usize) void {
             const half: V8 = @splat(128);
             const uu = ((r * @as(V8, @splat(-38)) - g * @as(V8, @splat(74)) + bb * @as(V8, @splat(112)) + half) >> @splat(8)) + half;
             const vv = ((r * @as(V8, @splat(112)) - g * @as(V8, @splat(94)) - bb * @as(V8, @splat(18)) + half) >> @splat(8)) + half;
-            uo[x / 2 ..][0..8].* = clamp8x8(uu);
-            vo[x / 2 ..][0..8].* = clamp8x8(vv);
+            if (ctx.nv12) {
+                uo[x..][0..16].* = @shuffle(u8, clamp8x8(uu), clamp8x8(vv), uvMask());
+            } else {
+                uo[x / 2 ..][0..8].* = clamp8x8(uu);
+                vo[x / 2 ..][0..8].* = clamp8x8(vv);
+            }
         }
         // resto (largura não múltipla de 16)
         while (x < w) : (x += 2) {
@@ -145,8 +162,15 @@ fn toYuvBand(ctx: *const ToYuvCtx, band: usize) void {
             rs = (rs + 2) >> 2;
             gs = (gs + 2) >> 2;
             bs = (bs + 2) >> 2;
-            uo[x / 2] = @intCast(std.math.clamp(((-38 * rs - 74 * gs + 112 * bs + 128) >> 8) + 128, 0, 255));
-            vo[x / 2] = @intCast(std.math.clamp(((112 * rs - 94 * gs - 18 * bs + 128) >> 8) + 128, 0, 255));
+            const uu: u8 = @intCast(std.math.clamp(((-38 * rs - 74 * gs + 112 * bs + 128) >> 8) + 128, 0, 255));
+            const vv: u8 = @intCast(std.math.clamp(((112 * rs - 94 * gs - 18 * bs + 128) >> 8) + 128, 0, 255));
+            if (ctx.nv12) {
+                uo[x] = uu;
+                uo[x + 1] = vv;
+            } else {
+                uo[x / 2] = uu;
+                vo[x / 2] = vv;
+            }
         }
     }
 }
@@ -155,8 +179,27 @@ fn toYuvBand(ctx: *const ToYuvCtx, band: usize) void {
 pub fn toI420(src: [*]const u8, stride: usize, w: usize, h: usize, fmt: PixelFormat, y: []u8, u: []u8, v: []u8) void {
     std.debug.assert(w % 2 == 0 and h % 2 == 0);
     const bands = @max(1, @min(sync.pool.threads + 1, h / 32));
-    const ctx: ToYuvCtx = .{ .src = src, .stride = stride, .w = w, .h = h, .fmt = fmt, .y = y, .u = u, .v = v, .bands = bands };
+    const ctx: ToYuvCtx = .{ .src = src, .stride = stride, .w = w, .h = h, .fmt = fmt, .y = y, .u = u, .v = v, .ys = w, .uvs = w / 2, .bands = bands };
     sync.pool.run(bands, &ctx, toYuvBand);
+}
+
+/// BGRX/RGBX (largura e altura pares) → NV12, com o pitch de cada plano
+/// (escreve direto na memória do encoder). Mesma conta do toI420.
+pub fn toNV12(src: [*]const u8, stride: usize, w: usize, h: usize, fmt: PixelFormat, y: []u8, ys: usize, uv: []u8, uvs: usize) void {
+    std.debug.assert(w % 2 == 0 and h % 2 == 0 and ys >= w and uvs >= w);
+    const bands = @max(1, @min(sync.pool.threads + 1, h / 32));
+    const ctx: ToYuvCtx = .{ .src = src, .stride = stride, .w = w, .h = h, .fmt = fmt, .y = y, .u = uv, .v = uv, .ys = ys, .uvs = uvs, .nv12 = true, .bands = bands };
+    sync.pool.run(bands, &ctx, toYuvBand);
+}
+
+/// toNV12 pros encoders em C (VA-API, Media Foundation); `format` é o
+/// HWENC_BGRX/HWENC_RGBX do hwenc.h.
+export fn telinha_to_nv12(src: [*]const u8, stride: c_int, w: c_int, h: c_int, format: c_int, y: [*]u8, ys: c_int, uv: [*]u8, uvs: c_int) void {
+    const W: usize = @intCast(w);
+    const H: usize = @intCast(h);
+    const YS: usize = @intCast(ys);
+    const UVS: usize = @intCast(uvs);
+    toNV12(src, @intCast(stride), W, H, if (format == 1) .rgbx else .bgrx, y[0 .. YS * (H - 1) + W], YS, uv[0 .. UVS * (H / 2 - 1) + W], UVS);
 }
 
 const ToRgbCtx = struct {

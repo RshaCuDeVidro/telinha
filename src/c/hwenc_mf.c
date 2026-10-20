@@ -243,35 +243,8 @@ struct mfenc *mfenc_open(int codec, int width, int height, int fps, int bitrate,
     return e;
 }
 
-// BGRX/RGBX → NV12 (BT.601 faixa limitada, igual ao openh264 do app).
-static void to_nv12(const uint8_t *src, int stride, int w, int h, int format, uint8_t *dst) {
-    const int ri = format == HWENC_RGBX ? 0 : 2, bi = format == HWENC_RGBX ? 2 : 0;
-    uint8_t *uv = dst + (size_t)w * h;
-    for (int y = 0; y < h; y += 2) {
-        const uint8_t *r0 = src + (size_t)y * stride, *r1 = r0 + stride;
-        uint8_t *y0 = dst + (size_t)y * w, *y1 = y0 + w;
-        uint8_t *uvr = uv + (size_t)(y / 2) * w;
-        for (int x = 0; x < w; x += 2) {
-            int R = 0, G = 0, B = 0;
-            for (int k = 0; k < 4; k++) {
-                const uint8_t *p = (k < 2 ? r0 : r1) + (size_t)(x + (k & 1)) * 4;
-                const int r = p[ri], g = p[1], b = p[bi];
-                const int yy = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-                (k < 2 ? y0 : y1)[x + (k & 1)] = (uint8_t)(yy > 255 ? 255 : yy);
-                R += r;
-                G += g;
-                B += b;
-            }
-            R = (R + 2) / 4;
-            G = (G + 2) / 4;
-            B = (B + 2) / 4;
-            const int u = ((-38 * R - 74 * G + 112 * B + 128) >> 8) + 128;
-            const int v = ((112 * R - 94 * G - 18 * B + 128) >> 8) + 128;
-            uvr[x] = (uint8_t)(u < 0 ? 0 : u > 255 ? 255 : u);
-            uvr[x + 1] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
-        }
-    }
-}
+// BGRX/RGBX → NV12 (vetorizado, em Zig: codec.zig).
+void telinha_to_nv12(const uint8_t *src, int stride, int w, int h, int format, uint8_t *y, int ys, uint8_t *uv, int uvs);
 
 // Tem fatia IDR (NAL tipo 5) no Annex B? Nem todo encoder marca a amostra.
 static int has_idr(const uint8_t *d, size_t n) {
@@ -386,7 +359,7 @@ int mfenc_encode(struct mfenc *e, const uint8_t *pixels, int stride, int format,
         IMFMediaBuffer_Release(buf);
         return -1;
     }
-    to_nv12(pixels, stride, e->w, e->h, format, p);
+    telinha_to_nv12(pixels, stride, e->w, e->h, format, p, e->w, p + (size_t)e->w * e->h, e->w);
     IMFMediaBuffer_Unlock(buf);
     IMFMediaBuffer_SetCurrentLength(buf, size);
     if (FAILED(mf.CreateSample(&sample))) {

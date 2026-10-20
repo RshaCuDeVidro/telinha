@@ -175,6 +175,7 @@ def camera():
         # configurações: a câmera aparece na lista; trocar a resolução com ela ligada reinicia
         dono.click("##gear")
         dono.wait(lambda st: st["cfg"]["cameras"] >= 1, 5, "a lista de câmeras ter a de teste")
+        settings_find(dono, "##camres")
         dono.click("##camdev")
         dono.click(contains="Camera de teste", window="##Combo")
         dono.wait(lambda st: st["cfg"]["camera_device"] != "", 5, "escolher a câmera de teste")
@@ -1058,6 +1059,32 @@ def log_depuracao():
         size = os.path.getsize(logf)
         time.sleep(2.5)
         expect(os.path.getsize(logf) == size, "continuou gravando depois de desligar")
+
+
+@test
+def temas():
+    """Temas: troca nas configurações na hora (claro, pwnd...), fica salvo e volta igual ao abrir de novo."""
+    with Session("temas") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)])
+        st = a.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
+        expect(st["cfg"]["theme"] == "escuro", f"tema inicial: {st['cfg']['theme']}")
+        a.click("##gear")
+        a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        for t in ["claro", "pwnd", "pwnd-claro", "nord", "dracula", "pwnd"]:
+            a.click(f"##tema-{t}", window="###configuracoes")
+            a.wait(lambda st: st["cfg"]["theme"] == t, 3, f"trocar pro tema {t}")
+        ini = open(os.path.join(a.cfg, "telinha", "config.ini")).read()
+        expect("theme=pwnd" in ini, "o tema não foi salvo")
+        settings_click(a, "Fechar")
+        a.wait(lambda st: not st["settings_modal"], 3, "fechar as configurações")
+        a.stop()
+        b = s.app("b", 92, ["--nome", "Ana"], config={"theme": "pwnd"})
+        st = b.wait(lambda st: st["screen"] == "home", 10, "abrir de novo")
+        expect(st["cfg"]["theme"] == "pwnd", f"tema depois de abrir de novo: {st['cfg']['theme']}")
+        # id desconhecido (config de versão futura): cai no padrão sem quebrar
+        c2 = s.app("c", 93, ["--nome", "Ana"], config={"theme": "nao-existe"})
+        c2.wait(lambda st: st["screen"] == "home", 10, "abrir com tema desconhecido")
 
 
 @test

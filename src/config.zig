@@ -53,6 +53,7 @@ pub const Config = struct {
     camera_device: [160]u8 = zstr("", 160), // vazio = a primeira câmera
     camera_res: i32 = 1, // 0 = 480p, 1 = 720p, 2 = 1080p
     language: [8]u8 = zstr("auto", 8), // idioma: "auto" (o do sistema), "pt" ou "en"
+    theme: [24]u8 = zstr("escuro", 24), // tema da interface (id em theme.zig)
 };
 
 fn zstr(comptime s: []const u8, comptime n: usize) [n]u8 {
@@ -191,6 +192,8 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         cfg.camera_res = std.math.clamp(int, 0, 2);
     } else if (std.mem.eql(u8, k, "language")) {
         setStr(&cfg.language, v);
+    } else if (std.mem.eql(u8, k, "theme")) {
+        setStr(&cfg.theme, v);
     }
 }
 
@@ -234,8 +237,8 @@ pub fn save(cfg: *const Config) void {
     }) catch return;
     _ = c.fwrite(s.ptr, 1, s.len, f);
     var more: [1280]u8 = undefined;
-    const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\ncheck_updates={d}\naudio_app={s}\nlanguage={s}\ndebug_log={d}\ndebug_send={d}\ndebug_webhook={s}\n", .{
-        cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res, @intFromBool(cfg.check_updates), getStr(&cfg.audio_app), getStr(&cfg.language), @intFromBool(cfg.debug_log), cfg.debug_send, getStr(&cfg.debug_webhook),
+    const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\ncheck_updates={d}\naudio_app={s}\nlanguage={s}\ntheme={s}\ndebug_log={d}\ndebug_send={d}\ndebug_webhook={s}\n", .{
+        cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res, @intFromBool(cfg.check_updates), getStr(&cfg.audio_app), getStr(&cfg.language), getStr(&cfg.theme), @intFromBool(cfg.debug_log), cfg.debug_send, getStr(&cfg.debug_webhook),
     }) catch return;
     _ = c.fwrite(m.ptr, 1, m.len, f);
 }
