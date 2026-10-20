@@ -37,15 +37,7 @@ pub fn decodeCodecs() u8 {
     return mask;
 }
 fn debugEnabled() bool {
-    const S = struct {
-        var checked = false;
-        var on = false;
-    };
-    if (!S.checked) {
-        S.on = getenv("TELINHA_DEBUG") != null;
-        S.checked = true;
-    }
-    return S.on;
+    return sync.debugOn();
 }
 
 pub const Member = struct {

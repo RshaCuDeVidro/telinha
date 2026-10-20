@@ -36,15 +36,7 @@ fn ownRecording(s: *Sharer) bool {
 }
 
 fn debugEnabled() bool {
-    const S = struct {
-        var checked = false;
-        var on = false;
-    };
-    if (!S.checked) {
-        S.on = getenv("TELINHA_DEBUG") != null;
-        S.checked = true;
-    }
-    return S.on;
+    return sync.debugOn();
 }
 
 /// Tempos acumulados (µs) pra diagnóstico.

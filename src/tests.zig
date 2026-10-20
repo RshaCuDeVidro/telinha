@@ -13,6 +13,7 @@ test {
     _ = @import("chatimg.zig");
     _ = @import("i18n.zig");
     _ = @import("udp.zig");
+    _ = @import("debuglog.zig");
 }
 
 fn initPool() void {

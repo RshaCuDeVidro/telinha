@@ -46,6 +46,9 @@ pub const Config = struct {
     notifications: bool = true, // notificação do sistema com o telinha em segundo plano
     check_updates: bool = true, // pergunta ao GitHub se tem versão nova (só com -Drepo)
     audio_app: [64]u8 = zstr("", 64), // som de um programa só ("" = tudo; "*janela" = o da janela)
+    debug_log: bool = false, // grava o log de depuração (tudo) num arquivo
+    debug_send: i32 = 0, // como mandar o log: 0 = gofile.io (link), 1 = webhook
+    debug_webhook: [512]u8 = zstr("", 512), // URL do webhook (Discord etc.)
     clips: bool = true, // guardar os últimos 30 s do que assiste (pra clipe)
     camera_device: [160]u8 = zstr("", 160), // vazio = a primeira câmera
     camera_res: i32 = 1, // 0 = 480p, 1 = 720p, 2 = 1080p
@@ -74,6 +77,35 @@ fn openFile(write: bool) ?*c.FILE {
 
 /// Arquivo na pasta de configuração do telinha (criada se faltar).
 /// TELINHA_PASTA_CONFIG troca a pasta inteira (testes; telinha "portátil").
+/// Pasta de configuração (criada se faltar), em UTF-8: `buf` + nome de arquivo.
+pub fn dirPath(buf: []u8) ?[]const u8 {
+    if (is_windows) {
+        var dir: [600]u16 = undefined;
+        var n = c.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("TELINHA_PASTA_CONFIG"), &dir, 500);
+        const sub = std.unicode.utf8ToUtf16LeStringLiteral("\\telinha");
+        if (n == 0 or n >= 500) {
+            n = c.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("APPDATA"), &dir, 500);
+            if (n == 0 or n >= 500) return null;
+            @memcpy(dir[n..][0..sub.len], sub);
+            n += sub.len;
+        }
+        dir[n] = 0;
+        _ = c.CreateDirectoryW(&dir, null);
+        const len = std.unicode.utf16LeToUtf8(buf, dir[0..n]) catch return null;
+        return buf[0..len];
+    }
+    const xdg = c.getenv("XDG_CONFIG_HOME");
+    const own = c.getenv("TELINHA_PASTA_CONFIG");
+    const base = if (own != null and own[0] != 0)
+        std.fmt.bufPrintZ(buf, "{s}", .{std.mem.span(own)}) catch return null
+    else if (xdg != null and xdg[0] != 0)
+        std.fmt.bufPrintZ(buf, "{s}/telinha", .{std.mem.span(xdg)}) catch return null
+    else
+        std.fmt.bufPrintZ(buf, "{s}/.config/telinha", .{std.mem.span(c.getenv("HOME") orelse return null)}) catch return null;
+    _ = c.mkdir(base.ptr, 0o700);
+    return base;
+}
+
 fn openNamed(comptime name: []const u8, write: bool) ?*c.FILE {
     if (is_windows) {
         var dir: [600]u16 = undefined;
@@ -143,6 +175,12 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         cfg.notifications = int != 0;
     } else if (std.mem.eql(u8, k, "audio_app")) {
         setStr(&cfg.audio_app, v);
+    } else if (std.mem.eql(u8, k, "debug_log")) {
+        cfg.debug_log = int != 0;
+    } else if (std.mem.eql(u8, k, "debug_send")) {
+        cfg.debug_send = std.math.clamp(int, 0, 1);
+    } else if (std.mem.eql(u8, k, "debug_webhook")) {
+        setStr(&cfg.debug_webhook, v);
     } else if (std.mem.eql(u8, k, "check_updates")) {
         cfg.check_updates = int != 0;
     } else if (std.mem.eql(u8, k, "clips")) {
@@ -195,9 +233,9 @@ pub fn save(cfg: *const Config) void {
         @intFromBool(cfg.echo_cancellation), cfg.voice_sensitivity,      @intFromBool(cfg.mic_on_join), @intFromBool(cfg.sounds),
     }) catch return;
     _ = c.fwrite(s.ptr, 1, s.len, f);
-    var more: [512]u8 = undefined;
-    const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\ncheck_updates={d}\naudio_app={s}\nlanguage={s}\n", .{
-        cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res, @intFromBool(cfg.check_updates), getStr(&cfg.audio_app), getStr(&cfg.language),
+    var more: [1280]u8 = undefined;
+    const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\ncheck_updates={d}\naudio_app={s}\nlanguage={s}\ndebug_log={d}\ndebug_send={d}\ndebug_webhook={s}\n", .{
+        cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res, @intFromBool(cfg.check_updates), getStr(&cfg.audio_app), getStr(&cfg.language), @intFromBool(cfg.debug_log), cfg.debug_send, getStr(&cfg.debug_webhook),
     }) catch return;
     _ = c.fwrite(m.ptr, 1, m.len, f);
 }

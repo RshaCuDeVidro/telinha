@@ -65,6 +65,8 @@ Variáveis úteis pra testar: `TELINHA_SEM_UDP=1` (só TCP), `TELINHA_UDP_PERDA=
 `TELINHA_SEM_NVENC/NVDEC/MF/VAAPI=1`, `TELINHA_SEM_HWDEC_ALT=1` (sem decoder de
 placa que não seja NVIDIA), `TELINHA_ATUALIZACAO_URL=http://…` (GitHub de
 mentira), `TELINHA_VERSAO_TESTE=9.9.9` (finge outra versão na sala),
+`TELINHA_GOFILE_URL=http://…` (gofile de mentira pro envio do log de depuração;
+`tools/qa/mockupload.py` faz o papel do gofile e do webhook),
 `TELINHA_PASTA_CONFIG`/`TELINHA_PASTA_CLIPES`. O build aceita `-Drepo=dono/nome`
 (o CI passa) pra checar versão nova no GitHub.
 

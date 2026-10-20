@@ -283,7 +283,7 @@ def sala_controles():
         b.drag("##sens", 0.5, 0.9)
         b.wait(lambda st: st["cfg"]["voice_sensitivity"] > 70, 3, "a sensibilidade subir")
         b.fill("##sname", "Bruno2")
-        b.click("Fechar", window="Configura")
+        settings_click(b, "Fechar")
         b.wait(lambda st: not st["settings_modal"] and st["cfg"]["name"] == "Bruno2", 3, "fechar as configurações")
         ini = open(os.path.join(b.cfg, "telinha", "config.ini")).read()
         expect("name=Bruno2" in ini and "stats_always=1" in ini, "configuração não foi salva no arquivo")
@@ -538,7 +538,7 @@ def notificacoes():
         b.click("##gear")
         b.click(contains="Notificações com o telinha")
         b.wait(lambda st: not st["cfg"]["notifications"], 3, "desligar as notificações")
-        b.click("Fechar", window="Configura")
+        settings_click(b, "Fechar")
         n1 = b.state()["notifications_sent"]
         time.sleep(2.1)
         a.click("##chatin")
@@ -937,13 +937,15 @@ def idioma_ingles():
         # configurações em inglês; trocar pra português muda tudo na hora (e fica salvo)
         a.click("##gear")
         a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
-        a.find("Close", window="Settings")
+        settings_find(a, "Close")
+        settings_top(a)
         a.find(contains="Notification sounds", window="Settings")
         a.click("##lang")
         a.click("Português", window="##Combo")
         a.wait(lambda st: st["lang"] == "pt" and st["cfg"]["language"] == "pt", 3, "trocar pra português")
         # (o nome guardado da janela aberta não muda; o ID "###configuracoes" é o mesmo)
-        a.find("Fechar", window="###configuracoes")
+        settings_find(a, "Fechar")
+        settings_top(a)
         a.find(contains="Sons de aviso", window="###configuracoes")
         expect(a.find(contains="Notification sounds", timeout=0.5, need=False) is None, "ficou texto em inglês depois de trocar")
         ini = open(os.path.join(a.cfg, "telinha", "config.ini")).read()
@@ -952,9 +954,110 @@ def idioma_ingles():
         a.click("##lang")
         a.click("English", window="##Combo")
         a.wait(lambda st: st["lang"] == "en" and st["cfg"]["language"] == "en", 3, "voltar pro inglês")
-        a.click("Close", window="###configuracoes")
+        settings_click(a, "Close")
         a.wait(lambda st: not st["settings_modal"], 3, "fechar as configurações")
         a.find(contains="Share screen##share")
+
+
+def settings_find(a, label, tries=12):
+    """Rola as configurações até achar o item (a janela é mais alta que a tela)."""
+    for _ in range(tries):
+        it = a.find(label, window="###configuracoes", timeout=0.4, need=False)
+        if it is not None and it["vy1"] - it["vy0"] >= it["y1"] - it["y0"] - 1:
+            return it
+        win, _ = a.items()
+        a.scroll(win[0] + a.size[0] / 2, win[1] + a.size[1] / 2, -4)
+        time.sleep(0.2)
+    raise QAError(f"[{a.name}] não achei {label!r} nas configurações")
+
+
+def settings_top(a):
+    win, _ = a.items()
+    a.scroll(win[0] + a.size[0] / 2, win[1] + a.size[1] / 2, 30)
+    time.sleep(0.3)
+
+
+def settings_click(a, label):
+    settings_find(a, label)
+    a.click(label, window="###configuracoes")
+
+
+def multipart_has_log(path):
+    body = open(path, "rb").read()
+    return b'name="file"' in body and b"telinha-debug.txt" in body and b"cpu app=" in body, body
+
+
+@test
+def log_depuracao():
+    """Log de depuração: liga nas configurações, grava o sistema e as amostras, manda pro gofile (de mentira: devolve o link) e pro webhook (de mentira)."""
+    with Session("debuglog") as s:
+        gf, wh = port(), port()
+        here = os.path.dirname(__file__)
+        s.spawn("gofile", [sys.executable, os.path.join(here, "mockupload.py"), str(gf), "gofile", os.path.join(s.base, "gofile")], dict(os.environ))
+        s.spawn("webhook", [sys.executable, os.path.join(here, "mockupload.py"), str(wh), "webhook", os.path.join(s.base, "webhook")], dict(os.environ))
+        time.sleep(0.5)
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir"], extra_env={"TELINHA_GOFILE_URL": f"http://127.0.0.1:{gf}/uploadfile"})
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        aid = b.member_id("Ana")
+        b.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "a Bia ver a Ana")
+        a.click("##gear")
+        a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        settings_click(a, "##debuglog")
+        st = a.wait(lambda st: st["debug_on"], 3, "o log ligar")
+        expect(st["cfg"].get("debug_log", True), "não salvou")
+        logf = os.path.join(a.cfg, "telinha", "telinha-debug.log")
+        t0 = time.time()
+        txt = ""
+        while time.time() - t0 < 12:
+            txt = open(logf, errors="replace").read() if os.path.exists(logf) else ""
+            if "cpu app=" in txt and "transmitindo" in txt:
+                break
+            time.sleep(0.3)
+        log("log:\n" + "\n".join(txt.splitlines()[:40]))
+        for part in ["OpenGL:", "config:", "cpu app=", "sala:", "transmitindo"]:
+            expect(part in txt, f"faltou {part!r} no log")
+        expect("senha" not in txt.lower() or "senha=" not in txt.lower(), "senha no log?")
+        # gofile: devolve o link
+        settings_click(a, "##dbgsend")
+        st = a.wait(lambda st: st["debug_send"] in ("done", "failed"), 30, "o envio pro gofile")
+        expect(st["debug_send"] == "done" and st["debug_result"] == "https://gofile.io/d/teste1", f"gofile: {st['debug_send']} {st['debug_result']}")
+        ok, body = multipart_has_log(os.path.join(s.base, "gofile", "post1.bin"))
+        expect(ok, f"o gofile não recebeu o log: {body[:300]!r}")
+        settings_click(a, "##dbgcopy")
+        a.wait(lambda st: st["clipboard"] == "https://gofile.io/d/teste1", 3, "copiar o link")
+        settings_click(a, "##dbgopen")
+        a.wait(lambda st: st["opened"] == "https://gofile.io/d/teste1", 3, "abrir o link")
+        # webhook: link inválido não deixa mandar; o certo manda com a mensagem
+        settings_click(a, "Webhook (Discord etc.)")
+        a.wait(lambda st: st["cfg"]["debug_send"] == 1, 3, "escolher webhook")
+        settings_find(a, "##dbghook")
+        a.fill("##dbghook", "ftp://errado")
+        a.key("Return")
+        settings_click(a, "##dbgsend")  # desabilitado: não manda nada
+        time.sleep(1)
+        expect(not os.path.exists(os.path.join(s.base, "webhook", "post1.bin")), "mandou pra um link inválido")
+        a.fill("##dbghook", f"http://127.0.0.1:{wh}/api/webhooks/1/abc")
+        a.key("Return")
+        a.wait(lambda st: st["cfg"]["debug_webhook"].startswith("http://127.0.0.1"), 3, "guardar o webhook")
+        settings_click(a, "##dbgsend")
+        st = a.wait(lambda st: st["debug_send"] == "done" and st["debug_result"] == "", 30, "o envio pro webhook")
+        ok, body = multipart_has_log(os.path.join(s.base, "webhook", "post1.bin"))
+        expect(ok and b'name="content"' in body and b"Ana" in body, f"o webhook não recebeu o log: {body[:300]!r}")
+        # webhook fora do ar: avisa o erro
+        a.fill("##dbghook", "http://127.0.0.1:1/x")
+        a.key("Return")
+        settings_click(a, "##dbgsend")
+        st = a.wait(lambda st: st["debug_send"] == "failed", 30, "o erro do envio")
+        log(f"erro: {st['debug_result']}")
+        # desliga: para de gravar e fica salvo desligado
+        settings_click(a, "##debuglog")
+        a.wait(lambda st: not st["debug_on"], 3, "o log desligar")
+        ini = open(os.path.join(a.cfg, "telinha", "config.ini")).read()
+        expect("debug_log=0" in ini and "debug_send=1" in ini, "configuração não salva")
+        size = os.path.getsize(logf)
+        time.sleep(2.5)
+        expect(os.path.getsize(logf) == size, "continuou gravando depois de desligar")
 
 
 @test
@@ -997,6 +1100,40 @@ def windows_exe():
         # câmera: no wine não tem nenhuma; avisa e não trava
         w.click("##camera")
         w.wait(lambda st: st["camera"] is None and any("câmera" in t.lower() for t in st["toasts"]), 20, "avisar que não tem câmera")
+
+
+@test
+def windows_log_depuracao():
+    """O .exe (wine) com o log de depuração ligado: dados do Windows no cabeçalho, amostras, e o envio pelo WinHTTP (gofile de mentira)."""
+    with Session("windebug") as s:
+        gf = port()
+        s.spawn("gofile", [sys.executable, os.path.join(os.path.dirname(__file__), "mockupload.py"), str(gf), "gofile", os.path.join(s.base, "gofile")], dict(os.environ))
+        p = port()
+        a = s.app("a", 91, ["--nome", "Linux", "--criar", str(p), "--transmitir", "--software"])
+        a.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
+        w = s.wine_app("w", 96, ["--nome", "Windows", "--entrar", f"127.0.0.1:{p}", "--assistir", "--software"],
+                       extra_env={"TELINHA_GOFILE_URL": f"http://127.0.0.1:{gf}/uploadfile"}, config={"debug_log": "1", "debug_send": "0", "name": "Windows"})
+        lid = w.member_id("Linux")
+        w.wait(lambda st: any(v["stream"] == lid and v["shown"] for v in st["views"]), 40, "o .exe ver a tela do Linux")
+        st = w.wait(lambda st: st["debug_on"], 5, "o log ligado (da configuração)")
+        logf = os.path.join(w.dir, "appdata", "telinha-debug.log")
+        t0 = time.time()
+        txt = ""
+        while time.time() - t0 < 15:
+            txt = open(logf, errors="replace").read() if os.path.exists(logf) else ""
+            if "cpu app=" in txt and "assistindo" in txt:
+                break
+            time.sleep(0.3)
+        log("log do .exe:\n" + "\n".join(l for l in txt.splitlines() if not l.startswith("[telinha]"))[:2500])
+        for part in ["windows", "processador:", "OpenGL:", "cpu app=", "assistindo"]:
+            expect(part in txt, f"faltou {part!r} no log do .exe")
+        w.click("##gear")
+        w.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        settings_click(w, "##dbgsend")
+        st = w.wait(lambda st: st["debug_send"] in ("done", "failed"), 40, "o envio pelo WinHTTP")
+        expect(st["debug_send"] == "done" and st["debug_result"] == "https://gofile.io/d/teste1", f"envio: {st['debug_send']} {st['debug_result']}")
+        ok, body = multipart_has_log(os.path.join(s.base, "gofile", "post1.bin"))
+        expect(ok, f"o gofile não recebeu o log do .exe: {body[:300]!r}")
 
 
 @test

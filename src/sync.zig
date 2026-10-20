@@ -162,6 +162,23 @@ extern "kernel32" fn GetCurrentProcess() callconv(.winapi) ?*anyopaque;
 /// Termina o processo na hora, sem os destrutores das bibliotecas. O do
 /// NVDEC (libnvcuvid) e o do PipeWire travam esperando threads internas
 /// deles, e o app ficava vivo depois de fechar a janela.
+/// Depuração ligada (TELINHA_DEBUG no ambiente, ou o log de depuração das
+/// configurações, que liga e desliga com o app aberto).
+pub var debug_flag: std.atomic.Value(bool) = .init(false);
+var debug_env: std.atomic.Value(u8) = .init(0); // 0 = não olhou, 1 = não, 2 = sim
+
+extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+
+pub fn debugOn() bool {
+    if (debug_flag.load(.monotonic)) return true;
+    var e = debug_env.load(.monotonic);
+    if (e == 0) {
+        e = if (getenv("TELINHA_DEBUG") != null) 2 else 1;
+        debug_env.store(e, .monotonic);
+    }
+    return e == 2;
+}
+
 extern "winmm" fn timeBeginPeriod(ms: c_uint) callconv(.winapi) c_uint;
 extern "winmm" fn timeEndPeriod(ms: c_uint) callconv(.winapi) c_uint;
 var hires_users: std.atomic.Value(u32) = .init(0);

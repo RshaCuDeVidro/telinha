@@ -224,11 +224,17 @@ class Session:
         raise QAError(f"não apareceu: {path}")
 
     # -------------------------------------------------------------------- apps
-    def wine_app(self, name, display, args, size=(1280, 760), extra_env=None):
+    def wine_app(self, name, display, args, size=(1280, 760), extra_env=None, config=None):
         """O telinha.exe no wine (tela escondida, prefixo próprio, sem som)."""
         a = App(self, name, display, args, size, extra_env or {}, False)
         a.wine = True
         a.wrap = []
+        if config:
+            # TELINHA_PASTA_CONFIG (no .exe) = a pasta appdata do teste
+            os.makedirs(os.path.join(a.dir, "appdata"), exist_ok=True)
+            with open(os.path.join(a.dir, "appdata", "config.ini"), "w") as f:
+                for k, v in config.items():
+                    f.write(f"{k}={v}\n")
         self.apps.append(a)
         a.start()
         return a

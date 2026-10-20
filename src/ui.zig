@@ -25,6 +25,7 @@ const net = @import("net.zig");
 const update = @import("update.zig");
 const chatimg = @import("chatimg.zig");
 const chatsend = @import("chatsend.zig");
+const debuglog = @import("debuglog.zig");
 const i18n = @import("i18n.zig");
 const tr = i18n.tr;
 const build_options = @import("build_options");
@@ -483,6 +484,12 @@ pub const App = struct {
     mention_apply_len: usize = 0,
     react_hover: ?u32 = null, // mensagem com o mouse em cima (mostra as reações)
     trim_at: f64 = 0, // quando devolver a memória livre pro sistema (0 = nada pendente)
+    debug_next: f64 = 0, // próxima amostra do log de depuração
+    debug_frames_seen: u64 = 0,
+    debug_status_seen: ?client_mod.Status = null,
+    debug_size: usize = 0, // tamanho do arquivo (lido de vez em quando, nas configurações)
+    debug_size_at: f64 = -10,
+    debug_sent_via: debuglog.Method = .gofile, // por onde foi o último envio
     chat_h: std.AutoHashMapUnmanaged(u32, ChatH) = .empty, // altura medida de cada mensagem do chat
 
     share_modal: bool = false,
@@ -566,6 +573,10 @@ pub const App = struct {
         _ = std.fmt.bufPrintZ(&a.port_buf, "{d}", .{a.cfg.host_port}) catch {};
         if (a.cfg.check_updates) update.checkAsync(build_options.repo, version_string);
         voice.on_speaking_change = wakeUi;
+        if (a.cfg.debug_log) {
+            debuglog.start();
+            a.logSystem();
+        }
         return a;
     }
 
@@ -644,6 +655,103 @@ pub const App = struct {
         t.len = s.len;
         a.toasts[a.n_toasts] = t;
         a.n_toasts += 1;
+        debuglog.line("aviso{s}: {s}", .{ if (err) " (erro)" else "", s });
+    }
+
+    // ------------------------------------------------------- log de depuração
+
+    /// Placa e tela (o que o OpenGL e o GLFW dizem), uma vez ao ligar o log.
+    fn logSystem(a: *App) void {
+        const gs = struct {
+            extern fn glGetString(name: c_uint) callconv(.c) ?[*:0]const u8;
+        };
+        const v = gs.glGetString(0x1F00);
+        const r = gs.glGetString(0x1F01);
+        const gv = gs.glGetString(0x1F02);
+        debuglog.line("OpenGL: {s} | {s} | {s}", .{ if (v) |x| std.mem.span(x) else "?", if (r) |x| std.mem.span(x) else "?", if (gv) |x| std.mem.span(x) else "?" });
+        var count: c_int = 0;
+        const mons = c.glfwGetMonitors(&count);
+        for (0..@intCast(@max(0, count))) |i| {
+            const m = mons[i];
+            const mode = c.glfwGetVideoMode(m);
+            var sx: f32 = 1;
+            var sy: f32 = 1;
+            c.glfwGetMonitorContentScale(m, &sx, &sy);
+            if (mode != null) debuglog.line("monitor {d}: {d}x{d} a {d} Hz, escala {d:.2}", .{ i, mode.*.width, mode.*.height, mode.*.refreshRate, sx });
+        }
+        var fw: c_int = 0;
+        var fh: c_int = 0;
+        c.glfwGetFramebufferSize(a.window, &fw, &fh);
+        debuglog.line("janela: {d}x{d} pixels, interface em {d:.2}x", .{ fw, fh, scale });
+        const cf = &a.cfg;
+        debuglog.line("config: fps={d} qualidade={d} modo={d} resolução={d} cursor={} som={} placa={} clipes={} notificações={} supressão_ruído={} eco={} idioma={s} câmera={s}/{d}", .{
+            cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.clips, cf.notifications, cf.noise_suppression, cf.echo_cancellation, config.getStr(&cf.language), config.getStr(&cf.camera_device), cf.camera_res,
+        });
+    }
+
+    /// A cada 2 s com o log ligado: tudo o que dá pra medir do app agora.
+    fn debugTick(a: *App) void {
+        const now = c.igGetTime();
+        // muda de estado da conexão: na hora (não espera a amostra)
+        if (a.client) |cl| {
+            cl.mutex.lock();
+            const st = cl.status;
+            const route = cl.route;
+            const err = cl.err[0..cl.err_len];
+            var eb: [256]u8 = undefined;
+            const n = @min(err.len, eb.len);
+            @memcpy(eb[0..n], err[0..n]);
+            cl.mutex.unlock();
+            if (a.debug_status_seen == null or a.debug_status_seen.? != st) {
+                a.debug_status_seen = st;
+                debuglog.line("conexão: {s} (rota {s}) {s}", .{ @tagName(st), Server.routeName(route), eb[0..n] });
+            }
+        } else a.debug_status_seen = null;
+        if (now < a.debug_next) {
+            redrawIn(a.debug_next - now);
+            return;
+        }
+        const first = a.debug_next == 0;
+        a.debug_next = now + 2;
+        redrawIn(2);
+        const frames = frame_count - a.debug_frames_seen;
+        const work = frame_work_us;
+        const work_max = frame_work_max_us;
+        a.debug_frames_seen = frame_count;
+        frame_work_us = 0;
+        frame_work_max_us = 0;
+        const u = debuglog.usage();
+        if (first) return; // a primeira amostra só zera as contas
+        var tb: [256]u8 = undefined;
+        var tl: usize = 0;
+        for (u.top[0..u.n_top]) |t| {
+            const w = std.fmt.bufPrint(tb[tl..], " {s}={d:.0}%", .{ t.name[0..t.len], t.pct }) catch break;
+            tl += w.len;
+        }
+        debuglog.line("cpu app={d:.0}% (100% = 1 núcleo) pc={d:.0}% | ram app={d} MB, livre={d} MB | interface {d:.1} q/s, {d:.1} ms/quadro (máx {d:.1}){s}{s}", .{
+            u.proc_pct, u.sys_pct, u.rss_mb, u.ram_free_mb, @as(f32, @floatFromInt(frames)) / 2, if (frames > 0) @as(f32, @floatFromInt(work)) / @as(f32, @floatFromInt(frames)) / 1000 else 0, @as(f32, @floatFromInt(work_max)) / 1000, if (tl > 0) " | threads:" else "", tb[0..tl],
+        });
+        const cl = a.client orelse return;
+        cl.mutex.lock();
+        const ping = cl.ping_ms;
+        const n_members = cl.members.items.len;
+        cl.mutex.unlock();
+        var ub: [160]u8 = undefined;
+        const udp_txt: []const u8 = if (cl.udp.load(.acquire)) |l| (std.fmt.bufPrint(&ub, "udp={s} rtt={d}ms enviados={d} reenviados={d} nacks={d} perdidas={d}", .{ if (l.isActive()) "sim" else "não", l.ep.rttMs(), l.ep.stats.sent_pkts, l.ep.stats.resent_pkts, l.ep.stats.nacks_sent, l.ep.stats.lost_msgs }) catch "") else "udp=não oferecido";
+        debuglog.line("sala: {d} pessoas, ping {d} ms, fila de envio {d} KB, {s}", .{ n_members, ping, cl.queue.queuedBytes() / 1024, udp_txt });
+        for (a.views.items) |v| {
+            debuglog.line("assistindo {x}: {d}x{d} {d:.1} q/s {d:.0} kbit/s | {s} via {s}, decodifica em {d:.1} ms | atraso {d:.0} ms | som={}", .{
+                v.stream, v.w, v.h, v.fps, v.kbps * 8, v.codec.name(), v.decoder_name, v.decode_ms, v.latency_ms, v.audio_registered,
+            });
+        }
+        for ([_]?*Sharer{ a.sharer, a.camera }) |maybe| {
+            const sh = maybe orelse continue;
+            sh.mutex.lock();
+            defer sh.mutex.unlock();
+            debuglog.line("transmitindo ({s}): {s} {d}x{d} {d:.1} q/s {d:.0} kbit/s (alvo {d}) | captura {s}, encoder {s} {d:.1} ms | congestionado={} som={} ninguém_assistindo={}", .{
+                if (sh.kind == proto.kind_camera) "câmera" else "tela", @tagName(sh.state), sh.w, sh.h, sh.fps, sh.kbps * 8, sh.bitrate_kbps, sh.backendSlice(), sh.encoder_name, sh.encode_ms, sh.congested, sh.audio_on, sh.idle.load(.monotonic),
+            });
+        }
     }
 
     // ------------------------------------------------------------------ ações
@@ -1248,7 +1356,9 @@ pub const App = struct {
             a.toast("Configurações aplicadas.", .{}, false);
             return;
         }
-        a.sharer = Sharer.start(cl, a.shareSettings()) catch {
+        const st = a.shareSettings();
+        debuglog.line("começou a transmitir: fonte {d}, {d} q/s, qualidade {d}, altura máx {d}, modo {s}, placa={}, som={} ({s} pid {d}), cursor={}", .{ st.source, st.fps, st.quality, st.max_height, @tagName(st.mode), st.hardware, st.audio, std.mem.sliceTo(&st.audio_app, 0), st.audio_pid, st.cursor });
+        a.sharer = Sharer.start(cl, st) catch {
             a.toast("Não consegui iniciar a transmissão.", .{}, true);
             return;
         };
@@ -1330,6 +1440,7 @@ pub const App = struct {
     }
 
     fn stopSharing(a: *App) void {
+        if (a.sharer != null) debuglog.line("parou de transmitir", .{});
         audio.mixer.self_mute.store(false, .monotonic);
         a.audio_err_shown = false;
         if (a.sharer) |s| {
@@ -1347,6 +1458,7 @@ pub const App = struct {
     }
 
     fn watch(a: *App, stream: u32) void {
+        debuglog.line("assistir {x}", .{stream});
         const cl = a.client orelse return;
         if (a.findView(stream) != null) return;
         const v = cl.watch(stream, if (a.cfg.clips) proto.watch_clips else 0) catch return;
@@ -1355,6 +1467,7 @@ pub const App = struct {
 
     fn unwatch(a: *App, stream: u32) void {
         const cl = a.client orelse return;
+        debuglog.line("parou de assistir {x}", .{stream});
         a.trim_at = c.igGetTime() + 2; // decoder e buffers da transmissão saem numa thread
         for (a.views.items, 0..) |v, i| {
             if (v.stream != stream) continue;
@@ -1581,6 +1694,7 @@ pub const App = struct {
             sync.trimMemory();
         } else if (a.trim_at > 0) redrawIn(a.trim_at - c.igGetTime());
         audio.mixer.housekeep(); // saída de som parada depois de 5 s de silêncio
+        if (debuglog.on()) a.debugTick();
         a.checkClipJobs();
         a.checkChatImages();
         a.n_tile_rects = 0;
@@ -4251,6 +4365,9 @@ pub const App = struct {
         }
         c.igDummy(v2(0, S(16)));
 
+        a.drawDebug(w);
+        c.igDummy(v2(0, S(16)));
+
         c.igPushTextWrapPos(c.igGetCursorPosX() + w);
         pushFont(font_regular, 12.5);
         textColored(col.faint, fmtZ("telinha {s} · protocolo v{d} · vídeo H.264 (NVENC/NVDEC, Media Foundation ou openh264) · voz Opus + RNNoise + SpeexDSP · criptografia X25519 + ChaCha20-Poly1305", .{ version_string, proto.version }));
@@ -4263,6 +4380,130 @@ pub const App = struct {
             a.settings_modal = false;
             c.igCloseCurrentPopup();
         }
+    }
+
+    /// Log de depuração: grava tudo num arquivo e manda (gofile.io ou webhook).
+    fn drawDebug(a: *App, w: f32) void {
+        pushFont(font_bold, 15);
+        textColored(col.header, fmtZ("{s}  Depuração", .{ic.gear}));
+        popFont();
+        c.igDummy(v2(0, S(6)));
+        c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
+        var on = debuglog.on();
+        if (c.igCheckbox(tr("Gravar log de depuração (desempenho, rede, vídeo, erros: tudo)###debuglog"), &on)) {
+            if (on) {
+                debuglog.start();
+                if (debuglog.on()) a.logSystem() else a.toast("Não consegui criar o arquivo do log.", .{}, true);
+            } else debuglog.stop();
+            a.cfg.debug_log = debuglog.on();
+            config.save(&a.cfg);
+            a.debug_size_at = -10;
+        }
+        c.igPopStyleColor(1);
+        c.igPushTextWrapPos(c.igGetCursorPosX() + w);
+        pushFont(font_regular, 12.5);
+        textColored(col.faint, tr("Liga, usa normalmente até o problema acontecer (fps caindo, travadas...) e manda o log. Ele tem nomes, endereços e as configurações, mas nenhuma senha."));
+        popFont();
+        c.igPopTextWrapPos();
+        c.igDummy(v2(0, S(4)));
+
+        const now = c.igGetTime();
+        if (now - a.debug_size_at > 1.0) {
+            a.debug_size = debuglog.fileSize();
+            a.debug_size_at = now;
+        }
+        if (debuglog.on()) redrawIn(1.0); // tamanho subindo
+        var pb: [600]u8 = undefined;
+        const p = debuglog.path(&pb) orelse "?";
+        pushFont(font_regular, 12.5);
+        // só o nome (o caminho inteiro não cabe; fica na dica)
+        if (a.debug_size == 0)
+            textColored(col.muted, fmtZ("{s} (vazio)", .{debuglog.file_name}))
+        else
+            textColored(col.muted, fmtZ("{s} ({d:.1} MB)", .{ debuglog.file_name, @as(f64, @floatFromInt(a.debug_size)) / (1024 * 1024) }));
+        popFont();
+        if (c.igIsItemHovered(0)) tooltipText(p);
+        c.igDummy(v2(0, S(2)));
+        const bw = (w - S(8)) / 2;
+        if (secondaryButton(fmtZ("{s}  Abrir pasta###dbgdir", .{ic.folder}), v2(bw, S(34)))) {
+            var db: [512]u8 = undefined;
+            if (config.dirPath(&db)) |dir| _ = openPath(dir);
+        }
+        c.igSameLine(0, S(8));
+        if (secondaryButton(tr("Apagar log###dbgclear"), v2(bw, S(34)))) {
+            debuglog.clear();
+            if (debuglog.on()) a.logSystem();
+            a.debug_size_at = -10;
+        }
+        c.igDummy(v2(0, S(8)));
+
+        fieldLabel("MANDAR O LOG");
+        c.igDummy(v2(0, S(2)));
+        var via = a.cfg.debug_send;
+        if (segmented("dbgvia", &.{ "gofile.io (gera um link)", "Webhook (Discord etc.)" }, &via, w)) {
+            a.cfg.debug_send = via;
+            config.save(&a.cfg);
+        }
+        const method: debuglog.Method = if (a.cfg.debug_send == 1) .webhook else .gofile;
+        c.igDummy(v2(0, S(4)));
+        if (method == .webhook) {
+            // escondido: a URL é a chave do canal (e a tela pode estar sendo transmitida)
+            if (textField("##dbghook", "https://discord.com/api/webhooks/...", a.cfg.debug_webhook[0 .. a.cfg.debug_webhook.len - 1], w, true)) config.save(&a.cfg);
+            if (c.igIsItemDeactivatedAfterEdit()) config.save(&a.cfg);
+            c.igDummy(v2(0, S(4)));
+        }
+        const st = debuglog.sendState();
+        const hook = config.getStr(&a.cfg.debug_webhook);
+        const can = a.debug_size > 0 and st != .sending and (method == .gofile or debuglog.validUrl(hook));
+        if (!can) c.igBeginDisabled(true);
+        if (primaryButton(fmtZ("{s}  Enviar log###dbgsend", .{ic.send}), v2(w, S(38)), col.blurple, col.blurple_hover, col.blurple_active)) {
+            a.debug_sent_via = method;
+            debuglog.send(method, hook, config.getStr(&a.cfg.name)) catch |e| switch (e) {
+                error.BadUrl => a.toast("Link do webhook inválido (tem que começar com https://).", .{}, true),
+                error.Busy => {},
+                error.OutOfMemory => a.toast("Sem memória.", .{}, true),
+            };
+        }
+        if (!can) c.igEndDisabled();
+        if (method == .webhook and hook.len > 0 and !debuglog.validUrl(hook)) {
+            pushFont(font_regular, 12.5);
+            textColored(col.red, tr("Link do webhook inválido (tem que começar com https://)."));
+            popFont();
+        }
+
+        var rb: [512]u8 = undefined;
+        const res = debuglog.sendResult(&rb);
+        c.igPushTextWrapPos(c.igGetCursorPosX() + w);
+        pushFont(font_regular, 13);
+        switch (st) {
+            .idle => {},
+            .sending => {
+                textColored(col.muted, tr("Enviando o log..."));
+                redrawIn(0.25);
+            },
+            .failed => {
+                var eb: [300]u8 = undefined;
+                textColored(col.red, fmtZ("Não consegui enviar: {s}", .{i18n.dynamic(res, &eb)}));
+            },
+            .done => if (a.debug_sent_via == .webhook) {
+                textColored(col.green, tr("Log enviado pro webhook."));
+            } else {
+                textColored(col.green, tr("Pronto! Manda esse link pra quem vai olhar o log:"));
+                var lz: [520]u8 = undefined;
+                const link = std.fmt.bufPrintZ(&lz, "{s}", .{res}) catch "";
+                pushFont(font_semibold, 13.5);
+                textColored(col.header, link);
+                popFont();
+                if (secondaryButton(fmtZ("{s}  Copiar link###dbgcopy", .{ic.copy}), v2(bw, S(32)))) {
+                    c.igSetClipboardText(link.ptr);
+                    a.toast("Link copiado.", .{}, false);
+                }
+                c.igSameLine(0, S(8));
+                if (secondaryButton(fmtZ("{s}  Abrir###dbgopen", .{ic.link}), v2(bw, S(32)))) _ = openPath(link);
+            },
+        }
+        popFont();
+        c.igPopTextWrapPos();
     }
 
     /// Idioma da interface (troca na hora).
@@ -4334,8 +4575,8 @@ pub const App = struct {
         try w.print(",\"fps\":{d},\"quality\":{d},\"mode\":{d},\"resolution\":{d},\"cursor\":{},\"audio\":{},\"hardware\":{},\"stats_always\":{},\"show_chat\":{}", .{
             cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.stats_always, cf.show_chat,
         });
-        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_apps\":{d},\"language\":{f}}}", .{
-            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), a.n_audio_apps, s(config.getStr(&cf.language)),
+        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f}}}", .{
+            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)),
         });
         try w.print(",\"lang\":{f}", .{s(@tagName(i18n.get()))});
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);
@@ -4363,6 +4604,8 @@ pub const App = struct {
         try w.writeAll("]");
         var ub: [32]u8 = undefined;
         try w.print(",\"opened\":{f},\"update\":{f},\"update_latest\":{f}", .{ s(qa_opened[0..qa_opened_len]), s(@tagName(update.getState())), s(update.latest(&ub)) });
+        var dlb: [512]u8 = undefined;
+        try w.print(",\"debug_on\":{},\"debug_size\":{d},\"debug_send\":{f},\"debug_result\":{f}", .{ debuglog.on(), debuglog.fileSize(), s(@tagName(debuglog.sendState())), s(debuglog.sendResult(&dlb)) });
         try w.print(",\"last_saved\":{f},\"clip_jobs\":{d}", .{ s(a.last_saved[0..a.last_saved_len]), blk: {
             var n: usize = 0;
             for (a.clip_jobs) |j| n += @intFromBool(j != null);
@@ -4572,6 +4815,12 @@ fn openPath(path: []const u8) bool {
 fn nativeWindow(w: *c.GLFWwindow) ?*anyopaque {
     return if (sync.is_windows) glfwGetWin32Window(w) else null;
 }
+
+/// Tempo de trabalho de cada quadro da interface (o laço principal soma; o
+/// log de depuração tira a média a cada amostra).
+pub var frame_work_us: u64 = 0;
+pub var frame_count: u64 = 0;
+pub var frame_work_max_us: u64 = 0;
 
 /// Quando a interface precisa se redesenhar sozinha (animação, contagem,
 /// aviso sumindo), em segundos de igGetTime. O loop principal dorme até lá

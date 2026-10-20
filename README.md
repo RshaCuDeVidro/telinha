@@ -108,7 +108,7 @@ Pra binários que rodam em qualquer CPU x86-64 (como no CI): `zig build -Dcpu=x8
 --fps N --qualidade N --modo tela|jogo --software
 --estatisticas        estatísticas sempre visíveis
 ```
-`TELINHA_DEBUG=1` imprime o tempo de cada etapa do pipeline. `TELINHA_SEM_SHADER=1` força a conversão de cor na CPU; `TELINHA_CURSOR_EMBUTIDO=1` deixa o compositor desenhar o cursor (Hyprland); `TELINHA_SEM_DMABUF=1` captura por memória compartilhada em vez de DMA-BUF; `TELINHA_SEM_SOM=1` não toca o áudio recebido. `TELINHA_PASTA_CONFIG` e `TELINHA_PASTA_CLIPES` trocam as pastas de configuração e de clipes (telinha "portátil"). No Linux, `TELINHA_SEM_VAAPI=1` pula o encoder VA-API. No Windows: `TELINHA_SEM_NVENC=1`/`TELINHA_SEM_MF=1` pulam esses encoders; `TELINHA_SEM_WGC=1` captura janela por PrintWindow.
+`TELINHA_DEBUG=1` imprime o tempo de cada etapa do pipeline (ou, sem terminal, ligue *Configurações → Depuração*: grava tudo em `telinha-debug.log` na pasta de configuração e manda pelo gofile.io ou por um webhook do Discord). `TELINHA_SEM_SHADER=1` força a conversão de cor na CPU; `TELINHA_CURSOR_EMBUTIDO=1` deixa o compositor desenhar o cursor (Hyprland); `TELINHA_SEM_DMABUF=1` captura por memória compartilhada em vez de DMA-BUF; `TELINHA_SEM_SOM=1` não toca o áudio recebido. `TELINHA_PASTA_CONFIG` e `TELINHA_PASTA_CLIPES` trocam as pastas de configuração e de clipes (telinha "portátil"). No Linux, `TELINHA_SEM_VAAPI=1` pula o encoder VA-API. No Windows: `TELINHA_SEM_NVENC=1`/`TELINHA_SEM_MF=1` pulam esses encoders; `TELINHA_SEM_WGC=1` captura janela por PrintWindow.
 
 Se a captura não funcionar ou estiver lenta, `zig build captest` (ou `zig-out/tools/captest 10 30 quadro.ppm`) mostra o método, o formato, o fps real e salva um quadro.
 </details>

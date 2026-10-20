@@ -1,0 +1,34 @@
+// Log de depuração (ver debugsys.c e debuglog.zig).
+#pragma once
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct dbg_stats {
+    unsigned long long proc_cpu_ms;  // CPU do processo (usuário + sistema)
+    unsigned long long sys_total_ms; // tempo de CPU do sistema todo
+    unsigned long long sys_idle_ms;  // ... ocioso
+    unsigned long long rss_kb;       // memória em uso
+    unsigned long long ram_total_kb, ram_free_kb;
+} dbg_stats;
+
+// Saída de erro do processo (fd 2 / STD_ERROR_HANDLE) vai pro arquivo
+// (NULL = descarta). 0 = ok.
+int dbg_redirect_stderr(const char *path_utf8);
+// Volta a saída de erro pra onde estava antes do primeiro desvio.
+int dbg_restore_stderr(void);
+// Liga/desliga TELINHA_DEBUG pro processo (o C lê na hora).
+void dbg_set_env(int on);
+// Windows: CPU e memória do processo e do sistema. Linux: zerado (é /proc).
+int dbg_proc_stats(dbg_stats *s);
+// Windows: sistema, processador, memória, placas de vídeo. Linux: vazio.
+int dbg_sysinfo(char *out, int cap);
+// POST multipart com o arquivo (gofile, webhook). Retorna o código HTTP ou -1;
+// o corpo da resposta vai em `out`.
+int dbg_http_post_file(const char *url, const char *path, const char *field, const char *filename, const char *content, char *out, int cap);
+
+#ifdef __cplusplus
+}
+#endif

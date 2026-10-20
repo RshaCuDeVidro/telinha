@@ -88,6 +88,7 @@ pub fn build(b: *std.Build) void {
     linkOpenh264(b, deps, tests_mod, host, .ReleaseFast);
     addHwenc(b, deps, tests_mod);
     addAudio(b, deps, tests_mod, host, .ReleaseFast);
+    tests_mod.addCSourceFile(.{ .file = b.path("src/c/debugsys.c"), .flags = &.{"-O2"} });
     const tests = b.addTest(.{ .root_module = tests_mod });
     const run_tests = b.addRunArtifact(tests);
     b.step("test", "roda os testes").dependOn(&run_tests.step);
@@ -457,6 +458,8 @@ fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: st
     // imagens do chat (stb_image só lê arquivo/área de transferência locais)
     mod.addIncludePath(deps.stb.path(""));
     mod.addCSourceFile(.{ .file = b.path("src/c/image.c"), .flags = &.{"-O2"} });
+    // log de depuração (desvio da saída de erro, CPU/memória, envio do arquivo)
+    mod.addCSourceFile(.{ .file = b.path("src/c/debugsys.c"), .flags = &.{"-O2"} });
     addImgui(b, deps, mod);
     linkOpenh264(b, deps, mod, target, optimize);
     addHwenc(b, deps, mod);

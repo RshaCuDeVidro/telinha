@@ -100,6 +100,7 @@ pub fn main(init: std.process.Init) !void {
             if (timeout > 0) c.glfwWaitEventsTimeout(timeout) else c.glfwPollEvents();
         } else c.glfwPollEvents();
         ui.redraw_at = std.math.inf(f64);
+        const t_frame = sync.nowUs();
 
         c.ImGui_ImplOpenGL3_NewFrame();
         c.ImGui_ImplGlfw_NewFrame();
@@ -121,6 +122,10 @@ pub fn main(init: std.process.Init) !void {
             c.glfwSwapBuffers(win);
         }
         app.drawPips(); // janelas flutuantes (cada uma com o contexto dela)
+        const work = sync.nowUs() - t_frame;
+        ui.frame_work_us += work;
+        ui.frame_work_max_us = @max(ui.frame_work_max_us, work);
+        ui.frame_count += 1;
 
         const active = io.*.MouseDelta.x != 0 or io.*.MouseDelta.y != 0 or io.*.MouseWheel != 0 or
             c.igIsMouseDown_Nil(0) or c.igIsMouseDown_Nil(1) or c.igIsAnyItemActive();

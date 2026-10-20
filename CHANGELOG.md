@@ -37,6 +37,18 @@ Conversa com a 3.0 (os campos novos são opcionais).
 - **Interface em inglês** (automático pelo idioma do sistema, ou escolhido nas
   configurações). Os textos que vêm do servidor (avisos do chat, motivos de
   recusa) também são traduzidos.
+- **Log de depuração** (Configurações → Depuração): grava num arquivo tudo que
+  ajuda a achar um problema de desempenho — sistema, processador, memória,
+  placas de vídeo, driver, OpenGL, monitores, configurações (sem senhas) e, a
+  cada 2 s, CPU do app e do computador (no Linux, por thread), memória, fps e
+  tempo de quadro da interface, ping/fila/UDP da sala, e cada transmissão
+  assistida (fps, resolução, banda, codec, decoder, tempo de decodificação,
+  atraso) ou enviada (captura, encoder, tempo de codificação, banda alvo,
+  congestionamento), além dos avisos, eventos e das mensagens internas de
+  depuração. Um botão manda o log: pelo **gofile.io** (sem conta; volta um
+  link pra copiar) ou por um **webhook** (Discord etc.: o arquivo chega no
+  canal). Fica ligado entre aberturas até desligar; o arquivo é cortado se
+  passar de 24 MB.
 
 **Desempenho e memória** (medido antes/depois nos mesmos cenários):
 
