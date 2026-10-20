@@ -13,6 +13,13 @@ const mp4 = @import("mp4.zig");
 const cio = mp4.cio;
 
 pub const file_name = "telinha-travou.txt";
+
+/// Identifica esta execução (vai no relatório e no cabeçalho do log de
+/// depuração): na hora de mandar o relatório, só o pedaço do log desta mesma
+/// execução vai junto.
+pub var run_id: [16]u8 = [_]u8{'0'} ** 16;
+/// O commit exato do binário (build.zig): casa o relatório com os símbolos.
+pub const commit = @import("build_options").commit;
 const old_name = "telinha-travou-antigo.txt";
 
 /// Caminho do relatório (UTF-8).
@@ -41,7 +48,10 @@ pub fn install() void {
         ub = std.posix.uname();
         _ = std.fmt.bufPrint(&sys, "kernel {s} {s}", .{ std.mem.sliceTo(&ub.sysname, 0), std.mem.sliceTo(&ub.release, 0) }) catch {};
     }
-    const s = std.fmt.bufPrintZ(&info, "telinha {s} · {s} {s}\n{s}", .{ proto.app_version, @tagName(builtin.os.tag), @tagName(builtin.cpu.arch), std.mem.sliceTo(&sys, 0) }) catch return;
+    var rnd: [8]u8 = undefined;
+    sync.osRandom(&rnd);
+    run_id = std.fmt.bytesToHex(rnd, .lower);
+    const s = std.fmt.bufPrintZ(&info, "telinha {s} (commit {s}) · {s} {s}\nexecução {s}\n{s}", .{ proto.app_version, commit, @tagName(builtin.os.tag), @tagName(builtin.cpu.arch), &run_id, std.mem.sliceTo(&sys, 0) }) catch return;
     c.crash_install(p.ptr, s.ptr);
 }
 

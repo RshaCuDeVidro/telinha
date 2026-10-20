@@ -124,7 +124,8 @@ extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 fn header() void {
     const dt = sync.dateTime();
     line("==================== telinha {s} (protocolo {d}) — log de depuração ligado em {d}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} ====================", .{ proto.app_version, proto.version, dt.year, dt.month, dt.day, dt.h, dt.m, dt.s });
-    line("build: {s} {s}, {d} threads no pool, {d} núcleos", .{ @tagName(@import("builtin").os.tag), @tagName(@import("builtin").cpu.arch), sync.pool.threads, sync.cpuCount() });
+    line("build: {s} {s}, commit {s}, {d} threads no pool, {d} núcleos", .{ @tagName(@import("builtin").os.tag), @tagName(@import("builtin").cpu.arch), crash.commit, sync.pool.threads, sync.cpuCount() });
+    line("execução {s}", .{&crash.run_id});
     if (sync.is_windows) {
         var buf: [2048]u8 = undefined;
         const n = c.dbg_sysinfo(&buf, buf.len);
@@ -390,9 +391,8 @@ fn sendJob(j: *Job) void {
         const w = mp4.openFile(sp, "wb") orelse return setResult(.failed, "não consegui ler o relatório");
         defer _ = cio.fclose(w);
         appendTail(w, cp, 1024 * 1024) catch return setResult(.failed, "não consegui ler o relatório");
-        const sep = "\n\n--- fim do log de depuração (se estava ligado) ---\n";
-        _ = cio.fwrite(sep.ptr, 1, sep.len, w);
-        appendTail(w, p, max - 1024 * 1024) catch {};
+        // só o log da execução que travou (o arquivo tem várias)
+        appendRunLog(w, cp, p, max - 1024 * 1024);
     } else snapshot(p, sp, max) catch return setResult(.failed, "não consegui ler o log (está vazio?)");
     var out: [8192]u8 = undefined;
     const url_z = blk: {
@@ -447,6 +447,116 @@ fn snapshot(src: [:0]const u8, dst: [:0]const u8, max: usize) !void {
     const w = mp4.openFile(dst, "wb") orelse return error.Open;
     defer _ = cio.fclose(w);
     try appendTail(w, src, max);
+}
+
+/// Junta ao relatório o pedaço do log de depuração da execução que travou
+/// (a última "execução X" citada no relatório). Se o log estava desligado
+/// nela, diz isso em vez de mandar o log de outra execução.
+fn appendRunLog(w: *cio.FILE, crash_path: [:0]const u8, log_path: [:0]const u8, max: usize) void {
+    var rb: [64 * 1024]u8 = undefined;
+    const report = readSmall(crash_path, &rb);
+    const key = "execução ";
+    const at = std.mem.lastIndexOf(u8, report, key) orelse {
+        writeStr(w, "\n\n--- relatório sem identificação da execução (versão antiga): log não anexado ---\n");
+        return;
+    };
+    const id = report[at + key.len ..][0..@min(16, report.len - at - key.len)];
+    const log = readAll(log_path) orelse {
+        writeStr(w, "\n\n--- o log de depuração estava desligado nessa execução ---\n");
+        return;
+    };
+    defer gpa.free(log);
+    var part = runSection(log, id) orelse {
+        writeStr(w, "\n\n--- o log de depuração estava desligado nessa execução ---\n");
+        return;
+    };
+    writeStr(w, "\n\n--- log de depuração dessa execução ---\n");
+    if (part.len > max) {
+        writeStr(w, "[... começo do log cortado pro envio ...]\n");
+        part = part[part.len - max ..];
+    }
+    _ = cio.fwrite(part.ptr, 1, part.len, w);
+}
+
+/// O pedaço do log da execução `id`: do cabeçalho dela (pode ter sido ligado
+/// e desligado várias vezes) até o cabeçalho de outra execução. null = não tem.
+pub fn runSection(log: []const u8, id: []const u8) ?[]const u8 {
+    const tag = "] execução ";
+    var first: ?usize = null;
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, log, pos, tag)) |at| : (pos = at + tag.len) {
+        if (std.mem.startsWith(u8, log[at + tag.len ..], id)) {
+            first = at;
+            break;
+        }
+    }
+    const f = first orelse return null;
+    // começa na linha do cabeçalho "=====" logo antes
+    const hdr = std.mem.lastIndexOf(u8, log[0..f], "====================") orelse f;
+    const begin = if (std.mem.lastIndexOfScalar(u8, log[0..hdr], '\n')) |nl| nl + 1 else 0;
+    var end = log.len;
+    pos = f + tag.len;
+    while (std.mem.indexOfPos(u8, log, pos, tag)) |at| : (pos = at + tag.len) {
+        if (std.mem.startsWith(u8, log[at + tag.len ..], id)) continue;
+        const h = std.mem.lastIndexOf(u8, log[0..at], "====================") orelse at;
+        end = if (std.mem.lastIndexOfScalar(u8, log[0..h], '\n')) |nl| nl + 1 else h;
+        break;
+    }
+    return log[begin..@max(begin, end)];
+}
+
+test "relatório de travamento leva só o log da execução que travou" {
+    const log =
+        \\[0.000] ==================== telinha 3.1.0 — log ligado ====================
+        \\[0.000] execução aaaa
+        \\[1.000] coisa da execução A
+        \\[0.000] ==================== telinha 3.1.0 — log ligado ====================
+        \\[0.000] execução bbbb
+        \\[2.000] coisa da execução B
+        \\[3.000] log de depuração desligado
+        \\[0.000] ==================== telinha 3.1.0 — log ligado ====================
+        \\[0.000] execução bbbb
+        \\[4.000] mais coisa da B
+        \\[0.000] ==================== telinha 3.1.0 — log ligado ====================
+        \\[0.000] execução cccc
+        \\[5.000] coisa da C
+    ;
+    const b = runSection(log, "bbbb").?;
+    try std.testing.expect(std.mem.indexOf(u8, b, "coisa da execução B") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b, "mais coisa da B") != null);
+    try std.testing.expect(std.mem.indexOf(u8, b, "execução A") == null);
+    try std.testing.expect(std.mem.indexOf(u8, b, "coisa da C") == null);
+    try std.testing.expect(std.mem.startsWith(u8, b, "[0.000] ===="));
+    try std.testing.expect(runSection(log, "dddd") == null);
+    try std.testing.expect(std.mem.endsWith(u8, runSection(log, "cccc").?, "coisa da C"));
+}
+
+fn writeStr(w: *cio.FILE, s: []const u8) void {
+    _ = cio.fwrite(s.ptr, 1, s.len, w);
+}
+
+fn readSmall(path_z: [:0]const u8, buf: []u8) []const u8 {
+    const f = mp4.openFile(path_z, "rb") orelse return "";
+    defer _ = cio.fclose(f);
+    const n = cio.fread(buf.ptr, 1, buf.len, f);
+    return buf[0..n];
+}
+
+/// O arquivo inteiro (o log é cortado em 24 MB ao ligar).
+fn readAll(path_z: [:0]const u8) ?[]u8 {
+    const f = mp4.openFile(path_z, "rb") orelse return null;
+    defer _ = cio.fclose(f);
+    _ = cio.fseek(f, 0, cio.SEEK_END);
+    const size: usize = @intCast(@max(0, cio.ftell(f)));
+    if (size == 0) return null;
+    _ = cio.fseek(f, 0, cio.SEEK_SET);
+    const buf = gpa.alloc(u8, size) catch return null;
+    const n = cio.fread(buf.ptr, 1, size, f);
+    if (n == 0) {
+        gpa.free(buf);
+        return null;
+    }
+    return buf[0..n];
 }
 
 /// Copia o fim de `src` (até `max` bytes) no fim de `w`.

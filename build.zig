@@ -67,11 +67,14 @@ pub fn build(b: *std.Build) void {
         .options = b.addOptions(),
     };
     deps.options.addOption([]const u8, "repo", repo);
+    // o commit exato (vai no relatório de travamento e no log de depuração):
+    // casa o relatório com os símbolos certos
+    deps.options.addOption([]const u8, "commit", gitCommit(b));
 
     // app
     const native_app = app(b, deps, host, optimize);
-    b.installArtifact(native_app);
-    if (!native_only and host.result.os.tag != .windows) b.installArtifact(app(b, deps, windows, optimize));
+    installApp(b, native_app);
+    if (!native_only and host.result.os.tag != .windows) installApp(b, app(b, deps, windows, optimize));
 
     const run = b.addRunArtifact(native_app);
     if (b.args) |args| run.addArgs(args);
@@ -89,6 +92,7 @@ pub fn build(b: *std.Build) void {
     addHwenc(b, deps, tests_mod);
     addAudio(b, deps, tests_mod, host, .ReleaseFast);
     tests_mod.addCSourceFile(.{ .file = b.path("src/c/debugsys.c"), .flags = &.{"-O2"} });
+    tests_mod.addOptions("build_options", deps.options);
     const tests = b.addTest(.{ .root_module = tests_mod });
     const run_tests = b.addRunArtifact(tests);
     b.step("test", "roda os testes").dependOn(&run_tests.step);
@@ -449,6 +453,41 @@ fn glfwWindows(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, opti
 
 // ---------------------------------------------------------------------------
 
+/// `git describe` (commit + "-modificado" se tiver mudança não commitada); "?" fora de um repositório.
+fn gitCommit(b: *std.Build) []const u8 {
+    var code: u8 = 0;
+    const root = b.build_root.path orelse ".";
+    const out = b.runAllowFail(&.{ "git", "-C", root, "describe", "--always", "--dirty=-modificado", "--abbrev=10" }, &code, .ignore) catch return "?";
+    const t = std.mem.trim(u8, out, " \r\n");
+    return if (t.len == 0) "?" else t;
+}
+
+/// Instala o app. Linux: o binário vai sem símbolos (menor) e os símbolos do
+/// MESMO link vão do lado em `telinha.debug` (um build separado sem strip sai
+/// com outro layout e não serve pra ler o relatório de travamento; ver
+/// tools/simbolos.py). Windows: o .pdb vai do lado do .exe.
+fn installApp(b: *std.Build, exe: *std.Build.Step.Compile) void {
+    if (exe.rootModuleTarget().os.tag == .windows) {
+        b.installArtifact(exe);
+        return;
+    }
+    // o objcopy do Zig ainda não separa os símbolos desse binário
+    // ("unimplemented"): usa o do binutils; sem ele, vai com os símbolos dentro
+    const objcopy = b.findProgram(&.{"objcopy"}, &.{}) catch {
+        b.installArtifact(exe);
+        return;
+    };
+    const keep = b.addSystemCommand(&.{ objcopy, "--only-keep-debug", "--compress-debug-sections=zlib" });
+    keep.addFileArg(exe.getEmittedBin());
+    const dbg = keep.addOutputFileArg(b.fmt("{s}.debug", .{exe.name}));
+    const strip = b.addSystemCommand(&.{ objcopy, "--strip-all" });
+    strip.addPrefixedFileArg("--add-gnu-debuglink=", dbg);
+    strip.addFileArg(exe.getEmittedBin());
+    const bin = strip.addOutputFileArg(exe.name);
+    b.getInstallStep().dependOn(&b.addInstallBinFile(bin, exe.name).step);
+    b.getInstallStep().dependOn(&b.addInstallBinFile(dbg, b.fmt("{s}.debug", .{exe.name})).step);
+}
+
 fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
     const is_windows = target.result.os.tag == .windows;
     const mod = b.createModule(.{
@@ -457,7 +496,8 @@ fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: st
         .optimize = optimize,
         .link_libc = true,
         .link_libcpp = true,
-        .strip = optimize != .Debug,
+        // os símbolos saem do binário depois (installApp), do mesmo link
+        .strip = false,
     });
     mod.addIncludePath(b.path("src/c"));
     mod.addOptions("build_options", deps.options);

@@ -648,6 +648,7 @@ const table = [_][2][]const u8{
     .{ "ATALHO PRA SALVAR CLIPE (vale com o jogo em foco)", "SAVE CLIP SHORTCUT (works with the game focused)" },
     .{ "Sem atalho", "No shortcut" },
     .{ "Atalhos", "Shortcuts" },
+    .{ "sem imagem nova há {d} s", "no new image for {d} s" },
     .{ "Atalhos ligados", "Shortcuts enabled" },
     .{ "Atalhos ligados.", "Shortcuts enabled." },
     .{ "Atalhos desligados (só o de ligar de novo continua valendo).", "Shortcuts disabled (only the one that turns them back on still works)." },

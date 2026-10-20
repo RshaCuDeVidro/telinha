@@ -259,6 +259,10 @@ pub const View = struct {
     stat_bytes: u64 = 0,
     stat_since: u64 = 0,
     last_shown_us: u64 = 0, // último quadro entregue pra tela
+    /// Quando chegou (decodificado) o último quadro, em ms: as estatísticas só
+    /// são recalculadas quando chega quadro, então sem isso o "60 fps" ficava
+    /// na tela pra sempre depois que a imagem parava.
+    last_frame_ms: std.atomic.Value(u64) = .init(0),
 
     /// Os últimos ~30 s (clipe) e a gravação. null = clipes desligados.
     clip: ?*clip.Buffer = null,
@@ -282,6 +286,19 @@ pub const View = struct {
     tex: u32 = 0,
     tex_w: u32 = 0,
     tex_h: u32 = 0,
+
+    /// Há quanto tempo (ms) não chega quadro novo (0 = nunca chegou ou chegou agora).
+    pub fn idleMs(v: *const View) u64 {
+        const l = v.last_frame_ms.load(.acquire);
+        return if (l == 0) 0 else sync.nowMs() -| l;
+    }
+    /// q/s e KB/s pra mostrar: zero se não chega quadro há mais de 1,5 s.
+    pub fn shownFps(v: *const View) f32 {
+        return if (v.idleMs() > 1500) 0 else v.fps;
+    }
+    pub fn shownKbps(v: *const View) f32 {
+        return if (v.idleMs() > 1500) 0 else v.kbps;
+    }
 
     pub fn member(v: *const View) u32 {
         return proto.memberOf(v.stream);
@@ -621,6 +638,7 @@ pub const View = struct {
 
         const dt = @as(f32, @floatFromInt(sync.nowUs() - t0)) / 1000.0;
         v.decode_ms = v.decode_ms * 0.9 + dt * 0.1;
+        v.last_frame_ms.store(sync.nowMs(), .release);
         const now = sync.nowMs();
         if (now - v.stat_since >= 1000) {
             const secs = @as(f32, @floatFromInt(now - v.stat_since)) / 1000.0;

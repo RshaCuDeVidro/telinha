@@ -844,7 +844,7 @@ pub const App = struct {
         debuglog.line("sala: {d} pessoas, ping {d} ms, fila de envio {d} KB, {s}", .{ n_members, ping, cl.queue.queuedBytes() / 1024, udp_txt });
         for (a.views.items) |v| {
             debuglog.line("assistindo {x}: {d}x{d} {d:.1} q/s {d:.0} kbit/s | {s} via {s}, decodifica em {d:.1} ms | atraso {d:.0} ms | som={}", .{
-                v.stream, v.w, v.h, v.fps, v.kbps * 8, v.codec.name(), v.decoder_name, v.decode_ms, v.latency_ms, v.audio_registered,
+                v.stream, v.w, v.h, v.shownFps(), v.shownKbps() * 8, v.codec.name(), v.decoder_name, v.decode_ms, v.latency_ms, v.audio_registered,
             });
         }
         for ([_]?*Sharer{ a.sharer, a.camera }) |maybe| {
@@ -852,7 +852,7 @@ pub const App = struct {
             sh.mutex.lock();
             defer sh.mutex.unlock();
             debuglog.line("transmitindo ({s}): {s} {d}x{d} {d:.1} q/s {d:.0} kbit/s (alvo {d}) | captura {s}, encoder {s} {d:.1} ms | congestionado={} som={} ninguém_assistindo={}", .{
-                if (sh.kind == proto.kind_camera) "câmera" else "tela", @tagName(sh.state), sh.w, sh.h, sh.fps, sh.kbps * 8, sh.bitrate_kbps, sh.backendSlice(), sh.encoder_name, sh.encode_ms, sh.congested, sh.audio_on, sh.idle.load(.monotonic),
+                if (sh.kind == proto.kind_camera) "câmera" else "tela", @tagName(sh.state), sh.w, sh.h, sh.shownFps(), sh.shownKbps() * 8, sh.bitrate_kbps, sh.backendSlice(), sh.encoder_name, sh.encode_ms, sh.congested, sh.audio_on, sh.idle.load(.monotonic),
             });
         }
     }
@@ -3077,7 +3077,7 @@ pub const App = struct {
                     break std.fmt.bufPrint(&name_bufs[n], "{s}{s}", .{ m.nameSlice()[0..@min(m.name_len, 32)], if (v.kind() == proto.kind_camera) tr(" (câmera)") else "" }) catch "?";
                 }
             } else "?";
-            const st = i18n.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d:.0} KB/s · {s}", .{ v.tex_w, v.tex_h, v.fps, v.kbps, latencyText(&lat_bufs[n], v) }) catch "";
+            const st = i18n.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d:.0} KB/s · {s}", .{ v.tex_w, v.tex_h, v.shownFps(), v.shownKbps(), latencyText(&lat_bufs[n], v) }) catch "";
             tiles[n] = .{
                 .stream = v.stream,
                 .tex = v.tex,
@@ -3099,14 +3099,14 @@ pub const App = struct {
         cl.mutex.unlock();
         if (a.sharer) |s| {
             s.mutex.lock();
-            const st = i18n.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d} kbit/s{s} · {s} {d:.1} ms · {s}", .{ s.w, s.h, s.fps, s.bitrate_kbps, if (s.congested) tr(" (rede lenta)") else if (s.slow_viewer) tr(" (espectador lento)") else "", s.encoder_name, s.encode_ms, s.backendSlice() }) catch "";
+            const st = i18n.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d} kbit/s{s} · {s} {d:.1} ms · {s}", .{ s.w, s.h, s.shownFps(), s.bitrate_kbps, if (s.congested) tr(" (rede lenta)") else if (s.slow_viewer) tr(" (espectador lento)") else "", s.encoder_name, s.encode_ms, s.backendSlice() }) catch "";
             tiles[n] = .{ .stream = proto.streamId(0, proto.kind_screen), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = tr("Você"), .stats = st, .loading = s.preview_tex == 0, .ptr_stream = proto.streamId(my_id, proto.kind_screen), .clipbuf = s.clip };
             s.mutex.unlock();
             n += 1;
         }
         if (a.camera) |s| {
             s.mutex.lock();
-            const st = i18n.bufPrintZ(&stat_bufs[n], "câmera · {d}x{d} · {d:.0} fps · {d} kbit/s · {s} · {s}", .{ s.w, s.h, s.fps, s.bitrate_kbps, s.encoder_name, s.backendSlice() }) catch "";
+            const st = i18n.bufPrintZ(&stat_bufs[n], "câmera · {d}x{d} · {d:.0} fps · {d} kbit/s · {s} · {s}", .{ s.w, s.h, s.shownFps(), s.bitrate_kbps, s.encoder_name, s.backendSlice() }) catch "";
             tiles[n] = .{ .stream = proto.streamId(0, proto.kind_camera), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = tr("Você (câmera)"), .stats = st, .loading = s.preview_tex == 0, .ptr_stream = proto.streamId(my_id, proto.kind_camera), .clipbuf = s.clip };
             s.mutex.unlock();
             n += 1;
@@ -3212,7 +3212,13 @@ pub const App = struct {
     }
 
     fn latencyText(buf: *[48]u8, v: *const View) []const u8 {
-        if (v.fps < 0.5) return tr("tela parada");
+        // sem quadro novo: diz há quanto tempo (tela parada de quem transmite,
+        // ou a imagem parou de chegar); a contagem anda sozinha
+        const idle = v.idleMs();
+        if (idle > 3000) {
+            return i18n.bufPrint(buf, "sem imagem nova há {d} s", .{idle / 1000}) catch "";
+        }
+        if (v.shownFps() < 0.5) return tr("tela parada");
         const dec = if (std.mem.eql(u8, v.decoder_name, "nenhum")) tr("nenhum") else v.decoder_name;
         return i18n.bufPrint(buf, "atraso {d:.0} ms · {s} ({s}) {d:.1} ms", .{ v.latency_ms, v.codec.name(), dec, v.decode_ms }) catch "";
     }
@@ -3385,6 +3391,9 @@ pub const App = struct {
             const ss = textSizeF(font_regular, 12, t.stats);
             rectFill(d, x + S(10), y + S(10), x + S(22) + ss.x, y + S(16) + ss.y, col.overlay, S(6));
             drawTextF(d, font_regular, 12, v2(x + S(16), y + S(13)), col.text, t.stats);
+            // estatística à mostra de uma transmissão parada: a contagem
+            // "sem imagem nova há N s" anda (só enquanto ela aparece)
+            if (t.view) |tv| if (tv.idleMs() > 3000) redrawIn(1.0);
         }
         if (hovered) {
             // botões no canto (da direita pra esquerda)

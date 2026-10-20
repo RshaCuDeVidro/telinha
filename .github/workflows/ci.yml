@@ -43,6 +43,8 @@ jobs:
           tar -C zig-out/bin -czf dist/telinha-linux-x86_64.tar.gz telinha
           cp zig-out/bin/telinha-server-x86_64 dist/telinha-server-linux-x86_64
           cp zig-out/bin/telinha-server-aarch64 dist/telinha-server-linux-aarch64
+          # símbolos do mesmo build (pra ler relatórios de travamento: tools/simbolos.py)
+          tar -C zig-out/bin -czf dist/telinha-simbolos.tar.gz telinha.debug telinha.pdb
           (cd dist && sha256sum * > SHA256SUMS)
 
       - uses: actions/upload-artifact@v4

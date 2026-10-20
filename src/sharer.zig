@@ -219,6 +219,9 @@ pub const Sharer = struct {
     // estatísticas
     fps: f32 = 0,
     kbps: f32 = 0,
+    /// Quando as estatísticas foram recalculadas (ms): elas só andam quando o
+    /// encoder solta quadro; parado há mais de 2 s, o que aparece é zero.
+    stat_ms: u64 = 0,
     encode_ms: f32 = 0,
     bitrate_kbps: u32 = 0,
     congested: bool = false,
@@ -288,6 +291,14 @@ pub const Sharer = struct {
             s.client.release();
             gpa.destroy(s);
         }
+    }
+
+    /// q/s e KB/s pra mostrar (com `mutex`): zero se nada saiu nos últimos 2 s.
+    pub fn shownFps(s: *const Sharer) f32 {
+        return if (sync.nowMs() -| s.stat_ms > 2000) 0 else s.fps;
+    }
+    pub fn shownKbps(s: *const Sharer) f32 {
+        return if (sync.nowMs() -| s.stat_ms > 2000) 0 else s.kbps;
     }
 
     pub fn errSlice(s: *Sharer) []const u8 {
@@ -1227,6 +1238,7 @@ const Pipeline = struct {
                 const secs = @as(f32, @floatFromInt(tnow - stat_since)) / 1e6;
                 s.fps = @as(f32, @floatFromInt(stat_frames)) / secs;
                 s.kbps = @as(f32, @floatFromInt(stat_bytes)) / 1024.0 / secs;
+                s.stat_ms = sync.nowMs();
                 s.congested = tnow - bw.last_congestion_us < 2_000_000;
                 s.slow_viewer = bw.last_slow_us != 0 and tnow - bw.last_slow_us < 10_000_000;
                 if (debugEnabled()) p.timing.report(bw.bps, s.client.queue.queuedBytes(), secs);
