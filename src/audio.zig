@@ -274,6 +274,19 @@ pub const Decoder = struct {
     pub fn deinit(d: *Decoder) void {
         c.opus_decoder_destroy(d.dec);
     }
+    /// Recupera o pacote anterior (perdido) pela cópia leve (FEC) que veio
+    /// dentro deste. `frames`: o tamanho do perdido (amostras por canal).
+    pub fn decodeFec(d: *Decoder, packet: []const u8, frames: usize) ![]const f32 {
+        const n = c.opus_decode_float(d.dec, packet.ptr, @intCast(packet.len), &d.pcm, @intCast(frames), 1);
+        if (n < 0) return error.OpusDecode;
+        return d.pcm[0 .. @as(usize, @intCast(n)) * channels];
+    }
+    /// Pacote perdido sem nada pra recuperar: o Opus inventa um som parecido (PLC).
+    pub fn conceal(d: *Decoder, frames: usize) ![]const f32 {
+        const n = c.opus_decode_float(d.dec, null, 0, &d.pcm, @intCast(frames), 0);
+        if (n < 0) return error.OpusDecode;
+        return d.pcm[0 .. @as(usize, @intCast(n)) * channels];
+    }
     /// Retorna as amostras decodificadas (válidas até a próxima chamada).
     pub fn decode(d: *Decoder, packet: []const u8) ![]const f32 {
         const n = c.opus_decode_float(d.dec, packet.ptr, @intCast(packet.len), &d.pcm, 5760, 0);

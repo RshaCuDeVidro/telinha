@@ -84,6 +84,9 @@ pub const Mic = struct {
         _ = c.opus_encoder_ctl(enc, c.OPUS_SET_COMPLEXITY_REQUEST, @as(c_int, 8));
         _ = c.opus_encoder_ctl(enc, c.OPUS_SET_SIGNAL_REQUEST, @as(c_int, c.OPUS_SIGNAL_VOICE));
         _ = c.opus_encoder_ctl(enc, c.OPUS_SET_DTX_REQUEST, @as(c_int, 1));
+        // cada pacote leva uma cópia leve do anterior: um perdido no Wi-Fi é recuperado pelo próximo
+        _ = c.opus_encoder_ctl(enc, c.OPUS_SET_INBAND_FEC_REQUEST, @as(c_int, 1));
+        _ = c.opus_encoder_ctl(enc, c.OPUS_SET_PACKET_LOSS_PERC_REQUEST, @as(c_int, 10));
         const m = try gpa.create(Mic);
         errdefer gpa.destroy(m);
         m.* = .{
@@ -254,12 +257,29 @@ pub const Mic = struct {
     }
 };
 
+/// O que fazer com o pacote `seq`, sabendo o último que chegou.
+pub const Gap = struct {
+    conceal: u8 = 0, // pacotes perdidos sem como recuperar (o Opus disfarça)
+    fec: bool = false, // o perdido logo antes deste vem na cópia que este traz
+    drop: bool = false, // repetido ou chegou atrasado (já passou)
+};
+
+pub fn gapPlan(last: ?u32, seq: u32) Gap {
+    const prev = last orelse return .{};
+    const d = seq -% prev;
+    if (d == 0 or d > 0x8000_0000) return .{ .drop = true };
+    if (d == 1 or d > 6) return .{}; // em ordem, ou buraco grande (sumiu/reconectou): segue do zero
+    return .{ .conceal = @intCast(d - 2), .fec = true };
+}
+
 /// Voz de uma pessoa da sala, do lado de quem ouve.
 pub const Peer = struct {
     id: u32,
     ring: audio.Ring = .{},
     dec: ?audio.Decoder = null,
     registered: bool = false,
+    last_seq: ?u32 = null,
+    recovered: u32 = 0, // pacotes recuperados pelo FEC (estatística)
 
     pub fn deinit(p: *Peer) void {
         if (p.registered) audio.mixer.remove(&p.ring);
@@ -267,9 +287,20 @@ pub const Peer = struct {
         p.ring.deinit();
     }
 
-    pub fn push(p: *Peer, packet: []const u8) void {
+    pub fn push(p: *Peer, seq: u32, packet: []const u8) void {
+        const plan = gapPlan(p.last_seq, seq);
+        if (plan.drop) return;
+        p.last_seq = seq;
         if (p.dec == null) p.dec = audio.Decoder.init() catch return;
-        const pcm = p.dec.?.decode(packet) catch return;
+        const d = &p.dec.?;
+        for (0..plan.conceal) |_| p.ring.write(d.conceal(frame_samples) catch break);
+        if (plan.fec) {
+            if (d.decodeFec(packet, frame_samples)) |pcm| {
+                p.ring.write(pcm);
+                p.recovered += 1;
+            } else |_| {}
+        }
+        const pcm = d.decode(packet) catch return;
         p.ring.write(pcm);
         if (!p.registered) {
             p.registered = true;
@@ -285,3 +316,45 @@ pub const Peer = struct {
         return p.ring.last_write_us != 0 and now_us -| p.ring.last_write_us < 250_000 and p.ring.level > 0.01;
     }
 };
+
+test "voz: buraco na sequência vira FEC (um perdido) ou disfarce (vários); repetido e atrasado são ignorados" {
+    try std.testing.expectEqual(Gap{}, gapPlan(null, 7));
+    try std.testing.expectEqual(Gap{}, gapPlan(7, 8));
+    try std.testing.expectEqual(Gap{ .fec = true }, gapPlan(7, 9));
+    try std.testing.expectEqual(Gap{ .conceal = 2, .fec = true }, gapPlan(7, 11));
+    try std.testing.expectEqual(Gap{ .drop = true }, gapPlan(7, 7));
+    try std.testing.expectEqual(Gap{ .drop = true }, gapPlan(7, 5));
+    try std.testing.expectEqual(Gap{}, gapPlan(7, 100)); // sumiu um tempão: segue
+    try std.testing.expectEqual(Gap{}, gapPlan(0xFFFF_FFFF, 0)); // volta do contador
+}
+
+test "voz: o FEC do Opus recupera um pacote perdido" {
+    var e: c_int = 0;
+    const enc = c.opus_encoder_create(rate, 1, c.OPUS_APPLICATION_VOIP, &e) orelse return error.OpusInit;
+    defer c.opus_encoder_destroy(enc);
+    _ = c.opus_encoder_ctl(enc, c.OPUS_SET_BITRATE_REQUEST, @as(c_int, bitrate));
+    _ = c.opus_encoder_ctl(enc, c.OPUS_SET_SIGNAL_REQUEST, @as(c_int, c.OPUS_SIGNAL_VOICE));
+    _ = c.opus_encoder_ctl(enc, c.OPUS_SET_INBAND_FEC_REQUEST, @as(c_int, 1));
+    _ = c.opus_encoder_ctl(enc, c.OPUS_SET_PACKET_LOSS_PERC_REQUEST, @as(c_int, 10));
+    var packets: [6][400]u8 = undefined;
+    var lens: [6]usize = undefined;
+    var pcm: [frame_samples]f32 = undefined;
+    for (0..6) |f| {
+        for (&pcm, 0..) |*x, i| {
+            const t: f32 = @floatFromInt(f * frame_samples + i);
+            x.* = 0.3 * @sin(t * 2 * std.math.pi * 220 / rate) + 0.1 * @sin(t * 2 * std.math.pi * 660 / rate);
+        }
+        const n = c.opus_encode_float(enc, &pcm, frame_samples, &packets[f], 400);
+        try std.testing.expect(n > 0);
+        lens[f] = @intCast(n);
+    }
+    var dec = try audio.Decoder.init();
+    defer dec.deinit();
+    for (0..3) |f| _ = try dec.decode(packets[f][0..lens[f]]);
+    // o 3 se perde: o 4 traz a cópia dele
+    const rec = try dec.decodeFec(packets[4][0..lens[4]], frame_samples);
+    try std.testing.expectEqual(@as(usize, frame_samples * audio.channels), rec.len);
+    var energy: f32 = 0;
+    for (rec) |x| energy += x * x;
+    try std.testing.expect(energy / @as(f32, @floatFromInt(rec.len)) > 0.001); // não é silêncio
+}

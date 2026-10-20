@@ -1054,7 +1054,7 @@ pub const Client = struct {
             },
             .voice => {
                 const from = try r.u32_();
-                _ = try r.u32_(); // seq
+                const seq = try r.u32_();
                 const packet = r.rest();
                 if (packet.len == 0) return; // pro Opus, vazio = "perdi um pacote"
                 cl.mutex.lock();
@@ -1090,7 +1090,7 @@ pub const Client = struct {
                 // começou a falar: a interface acende a bolinha (parar ela vê sozinha)
                 const was = peer.?.speaking(sync.nowUs());
                 // só a thread de rede mexe na lista fora do lock (e ela está aqui)
-                peer.?.push(packet);
+                peer.?.push(seq, packet);
                 if (!was) cl.wake();
             },
             .chat => {
