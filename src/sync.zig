@@ -162,6 +162,20 @@ extern "kernel32" fn GetCurrentProcess() callconv(.winapi) ?*anyopaque;
 /// Termina o processo na hora, sem os destrutores das bibliotecas. O do
 /// NVDEC (libnvcuvid) e o do PipeWire travam esperando threads internas
 /// deles, e o app ficava vivo depois de fechar a janela.
+extern "winmm" fn timeBeginPeriod(ms: c_uint) callconv(.winapi) c_uint;
+extern "winmm" fn timeEndPeriod(ms: c_uint) callconv(.winapi) c_uint;
+var hires_users: std.atomic.Value(u32) = .init(0);
+
+/// Windows: Sleep() com precisão de 1 ms (cadência da captura e do envio).
+/// Só enquanto alguém precisa (transmitindo, hospedando): o timer de 1 ms
+/// acorda a CPU 1000x/s e gasta bateria até parado na tela inicial.
+pub fn hiresTimer(on: bool) void {
+    if (!is_windows) return;
+    if (on) {
+        if (hires_users.fetchAdd(1, .acq_rel) == 0) _ = timeBeginPeriod(1);
+    } else if (hires_users.fetchSub(1, .acq_rel) == 1) _ = timeEndPeriod(1);
+}
+
 extern "c" fn mallopt(param: c_int, value: c_int) c_int;
 extern "c" fn malloc_trim(pad: usize) c_int;
 

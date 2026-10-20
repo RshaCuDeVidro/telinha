@@ -331,6 +331,7 @@ pub const Server = struct {
         copyInto(&s.password, &s.password_len, opts.password);
         copyInto(&s.room_name, &s.room_name_len, opts.room_name);
         copyInto(&s.admin_token, &s.admin_token_len, opts.admin_token);
+        sync.hiresTimer(true); // o repasse por UDP cadencia em ms (solto no release)
         s.retain();
         sync.spawn(acceptLoop, .{s}) catch |e| {
             s.release();
@@ -362,6 +363,7 @@ pub const Server = struct {
         s.conns.deinit(gpa);
         s.bans.deinit(gpa);
         gpa.destroy(s);
+        sync.hiresTimer(false);
     }
 
     /// Pro túnel: solta a referência que ele segurava.

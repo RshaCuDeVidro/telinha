@@ -131,6 +131,34 @@ static int CUDAAPI on_display(void *ud, CUVIDPARSERDISPINFO *di) {
     return 1;
 }
 
+// Só pergunta à placa se ela decodifica esse codec (sem criar decoder nem
+// parser: abrir um de verdade só pra testar custava ~26 MB e uma thread).
+int nvdec_probe(int codec) {
+    CudaFunctions *cu = NULL;
+    CuvidFunctions *cv = NULL;
+    int ok = 0;
+    if (cuda_load_functions(&cu, NULL) < 0 || cuvid_load_functions(&cv, NULL) < 0) goto done;
+    CUdevice dev;
+    CUcontext ctx;
+    if (cu->cuInit(0) != CUDA_SUCCESS || cu->cuDeviceGet(&dev, 0) != CUDA_SUCCESS) goto done;
+    if (cu->cuDevicePrimaryCtxRetain(&ctx, dev) != CUDA_SUCCESS) goto done;
+    if (cu->cuCtxPushCurrent(ctx) == CUDA_SUCCESS) {
+        CUVIDDECODECAPS caps;
+        memset(&caps, 0, sizeof caps);
+        caps.eCodecType = codec == HW_CODEC_HEVC ? cudaVideoCodec_HEVC : cudaVideoCodec_H264;
+        caps.eChromaFormat = cudaVideoChromaFormat_420;
+        caps.nBitDepthMinus8 = 0;
+        ok = cv->cuvidGetDecoderCaps && cv->cuvidGetDecoderCaps(&caps) == CUDA_SUCCESS && caps.bIsSupported;
+        CUcontext dummy;
+        cu->cuCtxPopCurrent(&dummy);
+    }
+    cu->cuDevicePrimaryCtxRelease(dev);
+done:
+    if (cv) cuvid_free_functions(&cv);
+    if (cu) cuda_free_functions(&cu);
+    return ok;
+}
+
 void nvdec_close(nvdec *d) {
     if (!d) return;
     if (d->ctx) d->cu->cuCtxPushCurrent(d->ctx);

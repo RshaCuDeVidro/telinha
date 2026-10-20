@@ -63,6 +63,18 @@ hwdec *hwdec_open(int codec, char *err, int errlen) {
     return NULL;
 }
 
+int nvdec_probe(int codec);
+
+int hwdec_supports(int codec) {
+    if (!getenv("TELINHA_SEM_NVDEC") && nvdec_probe(codec)) return 1;
+    // os outros (Media Foundation, VA-API) só fazem H.264 por enquanto
+    if (codec != HW_CODEC_H264) return 0;
+    hwdec *h = hwdec_open(codec, NULL, 0);
+    if (!h) return 0;
+    hwdec_close(h);
+    return 1;
+}
+
 int hwdec_decode(hwdec *h, const uint8_t *data, int len, hwdec_frame *out) {
     if (h->kind == KIND_ALT) return alt_decode(h->impl, data, len, out);
     return nvdec_decode(h->impl, data, len, out);

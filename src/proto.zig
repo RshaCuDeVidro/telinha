@@ -552,6 +552,22 @@ pub const SendQueue = struct {
         return m;
     }
 
+    /// Próxima mensagem, se já estiver na fila e couber em `limit` (não espera).
+    fn tryPop(q: *SendQueue, limit: usize) ?*Msg {
+        q.mutex.lock();
+        defer q.mutex.unlock();
+        if (q.closed or q.head == q.items.items.len) return null;
+        const m = q.items.items[q.head];
+        if (m.data.len > limit) return null;
+        q.head += 1;
+        if (q.head == q.items.items.len) {
+            q.head = 0;
+            q.items.clearRetainingCapacity();
+        }
+        q.bytes -= m.data.len;
+        return m;
+    }
+
     fn doneSending(q: *SendQueue) void {
         q.mutex.lock();
         defer q.mutex.unlock();
@@ -574,6 +590,15 @@ pub const SendQueue = struct {
         q.items.deinit(gpa);
     }
 
+    /// Acrescenta a mensagem cifrada (tamanho + cifrado + tag) em `out`.
+    fn sealInto(out: *std.ArrayList(u8), ch: *crypto.Channel, m: *Msg) !void {
+        const plain = m.data[4..];
+        const at = out.items.len;
+        try out.resize(gpa, at + 4 + plain.len + crypto.tag_len);
+        std.mem.writeInt(u32, out.items[at..][0..4], @intCast(plain.len + crypto.tag_len), .little);
+        ch.seal(plain, out.items[at + 4 ..]);
+    }
+
     /// Loop da thread escritora: cifra e envia. Sai quando a fila fecha ou o envio falha.
     /// `link`: caminho UDP (quadro/som/voz vão por ele quando está de pé).
     pub fn writerLoop(q: *SendQueue, s: net.Socket, ch: *crypto.Channel, link: ?*const std.atomic.Value(?*udp.Link)) void {
@@ -586,14 +611,23 @@ pub const SendQueue = struct {
                 _ = q.sent_bytes.fetchAdd(m.data.len, .monotonic);
                 continue;
             };
-            const plain = m.data[4..];
-            out.resize(gpa, 4 + plain.len + crypto.tag_len) catch {
+            out.clearRetainingCapacity();
+            sealInto(&out, ch, m) catch {
                 q.close();
                 net.shutdown(s);
                 return;
             };
-            std.mem.writeInt(u32, out.items[0..4], @intCast(plain.len + crypto.tag_len), .little);
-            ch.seal(plain, out.items[4..]);
+            // o que mais já estiver esperando (ack, voz, som, chat...) vai na
+            // mesma chamada ao sistema — sem esperar nada que ainda não chegou
+            while (out.items.len < 64 * 1024) {
+                const nx = q.tryPop(16 * 1024) orelse break;
+                defer nx.release();
+                if (link) |lk| if (lk.load(.acquire)) |l| if (l.trySend(nx)) {
+                    _ = q.sent_bytes.fetchAdd(nx.data.len, .monotonic);
+                    continue;
+                };
+                sealInto(&out, ch, nx) catch break;
+            }
             net.sendAll(s, out.items) catch {
                 q.close(); // ninguém espera por uma escritora morta
                 net.shutdown(s);

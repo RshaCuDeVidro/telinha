@@ -32,14 +32,7 @@ pub fn decodeCodecs() u8 {
     const known = decode_codecs.load(.acquire);
     if (known != 0) return known;
     var mask: u8 = proto.codecs_h264;
-    if (getenv("TELINHA_SEM_HEVC") == null) {
-        var err: [256]u8 = undefined;
-        if (codec.HwDecoder.init(.hevc, &err)) |h| {
-            var hd = h;
-            hd.deinit();
-            mask |= codec.Codec.hevc.bit();
-        } else |_| {}
-    }
+    if (getenv("TELINHA_SEM_HEVC") == null and codec.HwDecoder.supports(.hevc)) mask |= codec.Codec.hevc.bit();
     decode_codecs.store(mask, .release);
     return mask;
 }

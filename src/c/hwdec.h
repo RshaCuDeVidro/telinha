@@ -31,6 +31,9 @@ hwdec *hwdec_open(int codec, char *err, int errlen);
 int hwdec_decode(hwdec *d, const uint8_t *data, int len, hwdec_frame *out);
 
 const char *hwdec_name(hwdec *d); // "NVDEC", "Media Foundation", "VA-API"...
+
+// Decodifica esse codec na placa? (só pergunta, sem abrir decoder)
+int hwdec_supports(int codec);
 void hwdec_close(hwdec *d);
 
 #ifdef __cplusplus

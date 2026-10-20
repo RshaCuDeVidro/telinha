@@ -553,6 +553,11 @@ pub fn hasIdrNal(bits: []const u8) bool {
 pub const HwDecoder = struct {
     h: *hw.hwdec,
 
+    /// A placa decodifica esse codec? (só pergunta; barato)
+    pub fn supports(cd: Codec) bool {
+        return hw.hwdec_supports(@intFromEnum(cd)) != 0;
+    }
+
     pub fn init(cd: Codec, err: []u8) !HwDecoder {
         @memset(err, 0);
         const h = hw.hwdec_open(@intFromEnum(cd), err.ptr, @intCast(err.len)) orelse return error.HwUnavailable;

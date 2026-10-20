@@ -270,6 +270,8 @@ pub const Sharer = struct {
     fn run(s: *Sharer) void {
         defer s.release();
         defer s.client.wake();
+        sync.hiresTimer(true); // cadência de captura/envio em ms
+        defer sync.hiresTimer(false);
         var p: Pipeline = .{ .s = s };
         defer p.deinit();
         p.start() catch |e| {
@@ -354,6 +356,9 @@ const Pipeline = struct {
     quit: bool = false,
     ready_was_null: bool = false,
     timing: Timing = .{},
+    /// Tempo médio de um encode (µs): a captura não vai mais rápido que isso
+    /// (quadro capturado e convertido que o encoder não pega é trabalho jogado fora).
+    enc_ema_us: std.atomic.Value(u64) = .init(0),
     /// Encoder em hardware em uso? Decidido no início; vira false se o NVENC falhar.
     use_hw: std.atomic.Value(bool) = .init(false),
     hevc_ok: bool = false, // a placa codifica HEVC (testado no começo)
@@ -497,7 +502,10 @@ const Pipeline = struct {
             }
 
             // respeita o fps configurado (ninguém assistindo: 5 q/s, só pra prévia)
-            const interval_us: u64 = if (s.idle.load(.acquire)) 200_000 else 1_000_000 / std.math.clamp(p.settings.fps, 1, 60);
+            const base_us: u64 = if (s.idle.load(.acquire)) 200_000 else 1_000_000 / std.math.clamp(p.settings.fps, 1, 60);
+            // encoder mais lento que o fps pedido (openh264 numa CPU fraca):
+            // captura no ritmo dele (um pouco antes, pra ter quadro pronto)
+            const interval_us: u64 = @max(base_us, p.enc_ema_us.load(.monotonic) * 9 / 10);
             const now = sync.nowUs();
             if (now < next_us) {
                 sync.sleepMs(@intCast(@max(1, (next_us - now) / 1000)));
@@ -945,6 +953,8 @@ const Pipeline = struct {
             const enc_ms = @as(f32, @floatFromInt(enc_us)) / 1000.0;
             _ = p.timing.encode.fetchAdd(enc_us, .monotonic);
             _ = p.timing.encoded.fetchAdd(1, .monotonic);
+            const ema = p.enc_ema_us.load(.monotonic);
+            p.enc_ema_us.store(if (ema == 0) enc_us else (ema * 7 + enc_us) / 8, .monotonic);
 
             s.mutex.lock();
             s.state = .live;
