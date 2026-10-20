@@ -25,6 +25,8 @@ struct nvdec {
     size_t host_cap;
     int have, err;
     cudaVideoCodec codec;
+    CUdevice dev;
+    int retained; // contexto primário retido (solta no close)
 };
 
 static void set_err(char *err, int errlen, const char *msg, int code) {
@@ -137,7 +139,9 @@ void nvdec_close(nvdec *d) {
     if (d->ctx) {
         CUcontext dummy;
         d->cu->cuCtxPopCurrent(&dummy);
-        d->cu->cuCtxDestroy(d->ctx);
+    }
+    if (d->retained) {
+        d->cu->cuDevicePrimaryCtxRelease(d->dev);
     }
     if (d->cv) cuvid_free_functions(&d->cv);
     if (d->cu) cuda_free_functions(&d->cu);
@@ -161,9 +165,16 @@ nvdec *nvdec_open(int codec, char *err, int errlen) {
     CUdevice dev;
     CUresult r = d->cu->cuInit(0);
     if (r == CUDA_SUCCESS) r = d->cu->cuDeviceGet(&dev, 0);
-    if (r == CUDA_SUCCESS) r = d->cu->cuCtxCreate(&d->ctx, 0, dev);
+    // contexto primário (um por placa, compartilhado): um contexto próprio por
+    // transmissão assistida custava ~37 MB
+    if (r == CUDA_SUCCESS) r = d->cu->cuDevicePrimaryCtxRetain(&d->ctx, dev);
+    if (r == CUDA_SUCCESS) {
+        d->dev = dev;
+        d->retained = 1;
+        r = d->cu->cuCtxPushCurrent(d->ctx);
+    }
     if (r != CUDA_SUCCESS) {
-        d->ctx = NULL;
+        if (!d->retained) d->ctx = NULL;
         set_err(err, errlen, "não consegui iniciar o CUDA", (int)r);
         nvdec_close(d);
         return NULL;

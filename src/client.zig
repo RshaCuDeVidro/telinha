@@ -1151,6 +1151,21 @@ pub const Client = struct {
                     line.free();
                     return e;
                 };
+                // no máximo ~24 MB de imagens guardadas (como o servidor): as
+                // mais velhas viram "imagem antiga"
+                var img_total: usize = 0;
+                var k = cl.chat.items.len;
+                while (k > 0) {
+                    k -= 1;
+                    const ln = &cl.chat.items[k];
+                    const im = ln.img orelse continue;
+                    img_total += im.len;
+                    if (img_total > 24 * 1024 * 1024) {
+                        gpa.free(im);
+                        ln.img = null;
+                        ln.img_expired = true;
+                    }
+                }
                 cl.chat_count += 1;
                 if (!line.history) cl.chat_new += 1;
             },

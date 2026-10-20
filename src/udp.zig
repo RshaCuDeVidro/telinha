@@ -165,6 +165,17 @@ pub const Endpoint = struct {
         gpa.destroy(ep);
     }
 
+    /// Esquece o que estava guardado pra reenvio (o caminho UDP caiu: ninguém
+    /// vai pedir, e eram até 1024 quadros presos).
+    pub fn dropSent(ep: *Endpoint) void {
+        ep.mutex.lock();
+        defer ep.mutex.unlock();
+        for (&ep.sent) |*x| if (x.msg) |m| {
+            m.release();
+            x.msg = null;
+        };
+    }
+
     /// Tem trabalho com prazo (pedaço faltando, mensagem esperando a vez)?
     /// Sem isso, ninguém precisa acordar a cada 10 ms.
     pub fn busy(ep: *Endpoint) bool {

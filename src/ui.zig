@@ -468,7 +468,9 @@ pub const App = struct {
     side_visible: bool = true,
     focus_chat: bool = false,
     // imagens do chat: texturas já decodificadas (as mais usadas ficam)
-    img_cache: [32]ImgTex = [_]ImgTex{.{}} ** 32,
+    img_cache: [16]ImgTex = [_]ImgTex{.{}} ** 16, // miniaturas
+    view_tex: u32 = 0, // imagem aberta em tela cheia (resolução inteira)
+    view_tex_id: u32 = 0,
     img_view: ?u32 = null, // imagem aberta em tela cheia (id da mensagem)
     img_failed_seen: u32 = 0,
     img_sent_seen: u32 = 0,
@@ -480,6 +482,7 @@ pub const App = struct {
     mention_apply: [48]u8 = undefined, // nome escolhido (o callback da caixa aplica)
     mention_apply_len: usize = 0,
     react_hover: ?u32 = null, // mensagem com o mouse em cima (mostra as reações)
+    trim_at: f64 = 0, // quando devolver a memória livre pro sistema (0 = nada pendente)
     chat_h: std.AutoHashMapUnmanaged(u32, ChatH) = .empty, // altura medida de cada mensagem do chat
 
     share_modal: bool = false,
@@ -970,6 +973,9 @@ pub const App = struct {
             a.toast("Não consegui abrir o link público.", .{}, true);
             return;
         };
+        // o túnel entrega conexões até a thread dele acabar: segura o servidor até lá
+        s.retain();
+        a.tunnel.?.ctx_release = Server.releaseCallback;
     }
 
     /// Pede pro roteador abrir a porta da sala (UPnP): conexão direta, sem túnel.
@@ -1023,6 +1029,7 @@ pub const App = struct {
     }
 
     fn leaveRoom(a: *App) void {
+        a.trim_at = c.igGetTime() + 2;
         a.closeModals();
         a.clearChatImages();
         a.chat_h.clearRetainingCapacity();
@@ -1305,6 +1312,7 @@ pub const App = struct {
         if (a.camera) |cam| {
             gl.delete(&cam.preview_tex);
             cam.stop();
+            a.trim_at = c.igGetTime() + 2; // o encoder termina numa thread: devolve a memória depois
         }
         a.camera = null;
         if (a.focused == proto.streamId(0, proto.kind_camera)) a.focused = null;
@@ -1327,6 +1335,7 @@ pub const App = struct {
         if (a.sharer) |s| {
             gl.delete(&s.preview_tex);
             s.stop();
+            a.trim_at = c.igGetTime() + 2;
         }
         a.sharer = null;
         if (a.focused == 0) a.focused = null;
@@ -1346,6 +1355,7 @@ pub const App = struct {
 
     fn unwatch(a: *App, stream: u32) void {
         const cl = a.client orelse return;
+        a.trim_at = c.igGetTime() + 2; // decoder e buffers da transmissão saem numa thread
         for (a.views.items, 0..) |v, i| {
             if (v.stream != stream) continue;
             if (v.clip) |cb| if (cb.recState().active) a.stopRecording(cb, "");
@@ -1564,6 +1574,12 @@ pub const App = struct {
 
     pub fn frame(a: *App) void {
         a.frame_no += 1;
+        // algo grande parou (transmissão, câmera, sala, transmissão assistida):
+        // a memória livre volta pro sistema
+        if (a.trim_at > 0 and c.igGetTime() >= a.trim_at) {
+            a.trim_at = 0;
+            sync.trimMemory();
+        } else if (a.trim_at > 0) redrawIn(a.trim_at - c.igGetTime());
         audio.mixer.housekeep(); // saída de som parada depois de 5 s de silêncio
         a.checkClipJobs();
         a.checkChatImages();
@@ -3492,8 +3508,41 @@ pub const App = struct {
             return null;
         };
         defer std.heap.c_allocator.free(px);
-        gl.upload(&e.tex, px, line.img_w, line.img_h, gl.RGBA);
+        // no chat vai uma miniatura (até 480 px de largura): a imagem inteira
+        // só pra quem abrir em tela cheia (1600 px em RGBA = 10 MB de textura)
+        const tw: usize = @min(line.img_w, 480);
+        if (tw == line.img_w) {
+            gl.upload(&e.tex, px, line.img_w, line.img_h, gl.RGBA);
+        } else {
+            const th: usize = @max(1, @as(usize, line.img_h) * tw / line.img_w);
+            const small = std.heap.c_allocator.alloc(u8, tw * th * 4) catch {
+                e.failed = true;
+                return null;
+            };
+            defer std.heap.c_allocator.free(small);
+            chatimg.resample(px, line.img_w, line.img_h, small, tw, th);
+            gl.upload(&e.tex, small, @intCast(tw), @intCast(th), gl.RGBA);
+        }
         return e;
+    }
+
+    /// Textura da imagem aberta em tela cheia (resolução inteira; uma só).
+    fn viewerTex(a: *App, id: u32) bool {
+        if (a.view_tex != 0 and a.view_tex_id == id) return true;
+        gl.delete(&a.view_tex);
+        const cl = a.client orelse return false;
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        for (cl.chat.items) |*line| {
+            if (line.id != id) continue;
+            const data = line.img orelse return false;
+            const px = chatimg.decode(data, line.img_w, line.img_h) catch return false;
+            defer std.heap.c_allocator.free(px);
+            gl.upload(&a.view_tex, px, line.img_w, line.img_h, gl.RGBA);
+            a.view_tex_id = id;
+            return true;
+        }
+        return false;
     }
 
     fn clearChatImages(a: *App) void {
@@ -3502,6 +3551,7 @@ pub const App = struct {
             e.* = .{};
         }
         a.img_view = null;
+        gl.delete(&a.view_tex);
     }
 
     /// Reações embaixo da mensagem (as que alguém deu). Clique liga/desliga a sua.
@@ -3552,10 +3602,15 @@ pub const App = struct {
         }
         const x = (size.x - w) / 2;
         const y = (size.y - h) / 2;
-        c.ImDrawList_AddImage(d, .{ ._TexData = null, ._TexID = e.tex }, v2(x, y), v2(x + w, y + h), v2(0, 0), v2(1, 1), 0xFFFFFFFF);
+        // resolução inteira (se não der, a miniatura esticada)
+        const tex = if (a.viewerTex(id)) a.view_tex else e.tex;
+        c.ImDrawList_AddImage(d, .{ ._TexData = null, ._TexID = tex }, v2(x, y), v2(x + w, y + h), v2(0, 0), v2(1, 1), 0xFFFFFFFF);
         drawTextF(d, font_regular, 13, v2(x, y + h + S(8)), col.muted, fmtZ("{d} x {d} · clique ou Esc pra fechar", .{ e.w, e.h }));
         c.igSetCursorScreenPos(v2(0, 0));
-        if (c.igInvisibleButton("##imgclose", size, 0) or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) a.img_view = null;
+        if (c.igInvisibleButton("##imgclose", size, 0) or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
+            a.img_view = null;
+            gl.delete(&a.view_tex); // 10 MB de textura que ninguém está vendo
+        }
     }
 
     /// Sugestões de @menção pro fim do que está digitado ("@an" → "Ana").

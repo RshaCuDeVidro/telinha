@@ -57,7 +57,7 @@ pub fn encode(rgba: []const u8, w: usize, h: usize) !Encoded {
 
 /// Reduz (média da área) ou aumenta (vizinho mais próximo), e tira a
 /// transparência pintando por cima do fundo do chat. Saída RGBX.
-fn resample(src: []const u8, sw: usize, sh: usize, dst: []u8, dw: usize, dh: usize) void {
+pub fn resample(src: []const u8, sw: usize, sh: usize, dst: []u8, dw: usize, dh: usize) void {
     for (0..dh) |y| {
         const y0 = y * sh / dh;
         const y1 = @max(y0 + 1, (y + 1) * sh / dh);

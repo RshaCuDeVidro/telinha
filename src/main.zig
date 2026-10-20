@@ -27,6 +27,7 @@ fn onGlfwError(code: c_int, desc: [*c]const u8) callconv(.c) void {
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (sync.is_windows) _ = timeBeginPeriod(1); // Sleep() com precisão de 1ms (fps estável)
+    sync.tuneMalloc();
     net.init();
     sync.pool.start(@max(2, sync.cpuCount() - 1));
 

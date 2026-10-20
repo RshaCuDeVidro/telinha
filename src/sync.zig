@@ -162,6 +162,26 @@ extern "kernel32" fn GetCurrentProcess() callconv(.winapi) ?*anyopaque;
 /// Termina o processo na hora, sem os destrutores das bibliotecas. O do
 /// NVDEC (libnvcuvid) e o do PipeWire travam esperando threads internas
 /// deles, e o app ficava vivo depois de fechar a janela.
+extern "c" fn mallopt(param: c_int, value: c_int) c_int;
+extern "c" fn malloc_trim(pad: usize) c_int;
+
+/// glibc: cada thread nova (encoder, decoder, câmera) ganha um "arena" de
+/// memória próprio, e o que elas liberam fica preso lá (medido: +15 MB a cada
+/// vez que liga/desliga a transmissão, com o uso de verdade parado). Poucos
+/// arenas e buffers grandes (quadros) direto do sistema, que volta na hora.
+pub fn tuneMalloc() void {
+    if (is_windows or builtin.abi.isMusl()) return;
+    _ = mallopt(-8, 2); // M_ARENA_MAX
+    _ = mallopt(-3, 512 * 1024); // M_MMAP_THRESHOLD (fixo: senão a glibc sobe sozinha)
+}
+
+/// Devolve pro sistema a memória livre que ficou presa (depois de parar uma
+/// transmissão, sair da sala...).
+pub fn trimMemory() void {
+    if (is_windows or builtin.abi.isMusl()) return;
+    _ = malloc_trim(0);
+}
+
 pub fn hardExit(code: u8) noreturn {
     if (is_windows) {
         _ = TerminateProcess(GetCurrentProcess(), code);

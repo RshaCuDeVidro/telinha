@@ -279,8 +279,9 @@ pub const RecvBuf = struct {
 
     /// Não guarda buffers gigantes pra sempre (depois de um IDR enorme).
     fn trim(rb: *RecvBuf) void {
-        if (rb.cipher.capacity > 4 * 1024 * 1024 and rb.cipher.items.len < 256 * 1024) rb.cipher.shrinkAndFree(gpa, rb.cipher.items.len);
-        if (rb.plain.capacity > 4 * 1024 * 1024 and rb.plain.items.len < 256 * 1024) rb.plain.shrinkAndFree(gpa, rb.plain.items.len);
+        // (passou de 1 MB por causa de uma mensagem rara: IDR enorme, imagem no chat)
+        if (rb.cipher.capacity > 1024 * 1024 and rb.cipher.items.len < 256 * 1024) rb.cipher.shrinkAndFree(gpa, rb.cipher.items.len);
+        if (rb.plain.capacity > 1024 * 1024 and rb.plain.items.len < 256 * 1024) rb.plain.shrinkAndFree(gpa, rb.plain.items.len);
     }
 };
 
@@ -539,6 +540,13 @@ pub const SendQueue = struct {
         if (q.head == q.items.items.len) {
             q.head = 0;
             q.items.clearRetainingCapacity();
+        } else if (q.head >= 256 and q.head * 2 >= q.items.items.len) {
+            // fila que nunca esvazia (espectador sempre atrasado): compacta
+            // de vez em quando em vez de só crescer
+            const rest = q.items.items.len - q.head;
+            std.mem.copyForwards(*Msg, q.items.items[0..rest], q.items.items[q.head..]);
+            q.items.shrinkRetainingCapacity(rest);
+            q.head = 0;
         }
         q.bytes -= m.data.len;
         return m;
@@ -593,7 +601,7 @@ pub const SendQueue = struct {
             };
             q.doneSending();
             _ = q.sent_bytes.fetchAdd(out.items.len, .monotonic);
-            if (out.capacity > 4 * 1024 * 1024 and out.items.len < 256 * 1024) out.shrinkAndFree(gpa, out.items.len);
+            if (out.capacity > 1024 * 1024 and out.items.len < 256 * 1024) out.shrinkAndFree(gpa, out.items.len);
         }
     }
 };

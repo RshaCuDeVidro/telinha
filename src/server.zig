@@ -132,7 +132,9 @@ const Conn = struct {
             self.flows.deinit(gpa);
             if (self.udp.load(.acquire)) |l| l.destroy();
             net.close(self.sock);
+            const srv = self.server;
             gpa.destroy(self);
+            srv.release();
         }
     }
 };
@@ -313,6 +315,9 @@ pub const Server = struct {
     chat_head: usize = 0,
     next_chat_id: u32 = 1,
     stopped: std.atomic.Value(bool) = .init(false),
+    /// Dono (quem chamou start) + uma por thread do servidor + uma por conexão
+    /// + o túnel: o último a soltar libera tudo (histórico do chat, imagens...).
+    refs: std.atomic.Value(u32) = .init(1),
     // estatística
     relayed_bytes: std.atomic.Value(u64) = .init(0),
 
@@ -326,12 +331,19 @@ pub const Server = struct {
         copyInto(&s.password, &s.password_len, opts.password);
         copyInto(&s.room_name, &s.room_name_len, opts.room_name);
         copyInto(&s.admin_token, &s.admin_token_len, opts.admin_token);
-        try sync.spawn(acceptLoop, .{s});
-        try sync.spawn(tickLoop, .{s});
+        s.retain();
+        sync.spawn(acceptLoop, .{s}) catch |e| {
+            s.release();
+            return e;
+        };
+        s.retain();
+        sync.spawn(tickLoop, .{s}) catch s.release();
         if (std.c.getenv("TELINHA_SEM_UDP") == null) {
             if (net.udpListen(opts.port)) |us| {
                 s.udp_sock = us;
+                s.retain();
                 sync.spawn(udpLoop, .{s}) catch {
+                    s.release();
                     net.close(us);
                     s.udp_sock = null;
                 };
@@ -340,9 +352,28 @@ pub const Server = struct {
         return s;
     }
 
+    pub fn retain(s: *Server) void {
+        _ = s.refs.fetchAdd(1, .monotonic);
+    }
+
+    pub fn release(s: *Server) void {
+        if (s.refs.fetchSub(1, .acq_rel) != 1) return;
+        for (0..s.chat_len) |i| s.chat_log[(s.chat_head + i) % chat_history_len].free();
+        s.conns.deinit(gpa);
+        s.bans.deinit(gpa);
+        gpa.destroy(s);
+    }
+
+    /// Pro túnel: solta a referência que ele segurava.
+    pub fn releaseCallback(ctx: *anyopaque) void {
+        const s: *Server = @ptrCast(@alignCast(ctx));
+        s.release();
+    }
+
     /// Thread do UDP: recebe os datagramas de todo mundo (o token diz de quem
     /// é), e a cada ~10 ms cuida dos reenvios e de quem parou de falar.
     fn udpLoop(s: *Server) void {
+        defer s.release();
         const sock = s.udp_sock.?;
         var timeout_ms: u32 = 500;
         net.setRecvTimeout(sock, timeout_ms);
@@ -401,6 +432,7 @@ pub const Server = struct {
                 if (l.ep.busy()) any_busy = true;
                 if (now -| l.ep.last_rx_ms.load(.monotonic) > 6000) {
                     l.active.store(false, .release);
+                    l.ep.dropSent();
                     s.log("{s}: UDP parou de responder, voltando pro TCP", .{o.nameSlice()});
                 }
             }
@@ -443,6 +475,7 @@ pub const Server = struct {
     /// quadro; mas com a tela parada (PipeWire/DXGI só mandam quando muda)
     /// ele não vem, e o espectador ficaria preso na imagem velha.
     fn tickLoop(s: *Server) void {
+        defer s.release();
         while (!s.stopped.load(.acquire)) {
             sync.sleepMs(250);
             s.mutex.lock();
@@ -521,7 +554,9 @@ pub const Server = struct {
         s.mutex.unlock();
         closeAll(list.items);
         for (list.items) |cn| cn.release();
-        // o Server continua alocado: threads de conexão podem estar terminando
+        // a referência do dono; threads e conexões que ainda estão terminando
+        // seguram as delas, e a última libera o Server
+        s.release();
     }
 
     /// Desliga o link público: quem entrou por ele sai da sala (e fica sabendo
@@ -587,6 +622,7 @@ pub const Server = struct {
     }
 
     fn acceptLoop(s: *Server) void {
+        defer s.release();
         while (!s.stopped.load(.acquire)) {
             const sock = net.accept(s.listen_sock) catch {
                 if (s.stopped.load(.acquire)) return;
@@ -621,9 +657,11 @@ pub const Server = struct {
             const ip = net.peerAddress(sock, &cn.ip);
             cn.ip_len = ip.len;
         }
+        s.retain(); // solta no release da conexão
         sync.spawn(readerLoop, .{cn}) catch {
             net.close(sock);
             gpa.destroy(cn);
+            s.release();
         };
     }
 

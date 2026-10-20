@@ -37,6 +37,8 @@ struct nvenc {
     uint64_t frame;
     int bitrate;
     int hevc;
+    CUdevice dev;
+    int retained, pushed; // contexto primário retido / empurrado nessa thread
     int layers;         // camadas temporais (1 ou 2)
     uint32_t since_idr; // quadros desde o último IDR (com 2 camadas)
 };
@@ -80,7 +82,11 @@ void nvenc_close(nvenc *e) {
         if (e->output) e->api.nvEncDestroyBitstreamBuffer(e->enc, e->output);
         e->api.nvEncDestroyEncoder(e->enc);
     }
-    if (e->ctx) e->cu->cuCtxDestroy(e->ctx);
+    if (e->pushed) {
+        CUcontext dummy;
+        e->cu->cuCtxPopCurrent(&dummy);
+    }
+    if (e->retained) e->cu->cuDevicePrimaryCtxRelease(e->dev);
     if (e->nv) nvenc_free_functions(&e->nv);
     if (e->cu) cuda_free_functions(&e->cu);
     free(e->bits);
@@ -120,7 +126,15 @@ nvenc *nvenc_open(int codec, int width, int height, int fps, int bitrate, int sc
     CUdevice dev;
     CUresult cr = e->cu->cuInit(0);
     if (cr == CUDA_SUCCESS) cr = e->cu->cuDeviceGet(&dev, 0);
-    if (cr == CUDA_SUCCESS) cr = e->cu->cuCtxCreate(&e->ctx, 0, dev);
+    // contexto primário (um por placa, compartilhado com os decoders): criar
+    // um contexto próprio custava ~30 MB e um monte de memória a cada abertura
+    if (cr == CUDA_SUCCESS) cr = e->cu->cuDevicePrimaryCtxRetain(&e->ctx, dev);
+    if (cr == CUDA_SUCCESS) {
+        e->dev = dev;
+        e->retained = 1;
+        cr = e->cu->cuCtxPushCurrent(e->ctx);
+        if (cr == CUDA_SUCCESS) e->pushed = 1;
+    }
     if (cr != CUDA_SUCCESS) {
         set_err(err, errlen, "não consegui iniciar o CUDA", (int)cr);
         nvenc_close(e);

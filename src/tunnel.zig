@@ -40,6 +40,9 @@ pub const Tunnel = struct {
     /// Recebe cada conexão de visitante (já depois do Accept); fica com o socket.
     on_conn: *const fn (ctx: *anyopaque, sock: net.Socket) void,
     ctx: *anyopaque,
+    /// Solta o `ctx` quando o túnel acaba de vez (as threads podem entregar
+    /// conexão até o fim).
+    ctx_release: ?*const fn (ctx: *anyopaque) void = null,
     stopping: std.atomic.Value(bool) = .init(false),
 
     mutex: sync.Mutex = .{},
@@ -79,7 +82,10 @@ pub const Tunnel = struct {
     }
 
     fn release(t: *Tunnel) void {
-        if (t.refs.fetchSub(1, .acq_rel) == 1) gpa.destroy(t);
+        if (t.refs.fetchSub(1, .acq_rel) == 1) {
+            if (t.ctx_release) |f| f(t.ctx);
+            gpa.destroy(t);
+        }
     }
 
     pub fn hostSlice(t: *const Tunnel) []const u8 {
