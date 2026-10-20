@@ -290,6 +290,8 @@ pub fn listApps(out: []c.audio_app) usize {
 
 pub const Sender = struct {
     dev: ?*c.audio_dev = null,
+    mix: ?*MixCapture = null, // Windows, "tudo menos alguns programas"
+    exclude_ignored: bool = false, // pediu pra excluir, mas o Windows é antigo demais
     enc: *c.OpusEncoder,
     pending: [frame_len * channels]f32 = undefined,
     n_pending: usize = 0,
@@ -301,6 +303,7 @@ pub const Sender = struct {
     pub const Only = struct {
         app: []const u8 = "", // nome, como em listApps
         pid: u32 = 0, // esse processo e os filhos (janela compartilhada no Windows)
+        exclude: []const u8 = "", // quando é "tudo": esses programas ficam de fora (nomes separados por \n)
     };
 
     pub fn create(ctx: *anyopaque, on_packet: *const fn (ctx: *anyopaque, packet: []const u8) void, only: Only, err: []u8) !*Sender {
@@ -313,9 +316,23 @@ pub const Sender = struct {
         _ = c.opus_encoder_ctl(enc, c.OPUS_SET_DTX_REQUEST, @as(c_int, 1)); // silêncio quase não gasta banda
         const s = try gpa.create(Sender);
         s.* = .{ .enc = enc, .on_packet = on_packet, .ctx = ctx };
+        const everything = only.app.len == 0 and only.pid == 0;
+        if (sync.is_windows and everything and only.exclude.len > 0) {
+            // o WASAPI só exclui um processo (o telinha): mistura um por programa
+            if (c.audio_process_loopback_ok() != 0) {
+                s.mix = MixCapture.start(s, onCapture, only.exclude) catch {
+                    gpa.destroy(s);
+                    return error.AudioCapture;
+                };
+                return s;
+            }
+            s.exclude_ignored = true;
+        }
         var app_z: [64]u8 = [_]u8{0} ** 64;
         @memcpy(app_z[0..@min(only.app.len, 63)], only.app[0..@min(only.app.len, 63)]);
-        s.dev = c.audio_capture_open(onCapture, s, &app_z, only.pid, err.ptr, @intCast(err.len)) orelse {
+        var excl_z: [512]u8 = [_]u8{0} ** 512;
+        @memcpy(excl_z[0..@min(only.exclude.len, 511)], only.exclude[0..@min(only.exclude.len, 511)]);
+        s.dev = c.audio_capture_open(onCapture, s, &app_z, only.pid, &excl_z, err.ptr, @intCast(err.len)) orelse {
             gpa.destroy(s);
             return error.AudioCapture;
         };
@@ -325,10 +342,12 @@ pub const Sender = struct {
     /// A captura também pega o que o próprio app toca (jeito antigo, sem
     /// PipeWire/Windows antigo): quem transmite precisa silenciar o que ouve.
     pub fn hearsSelf(s: *const Sender) bool {
+        if (s.mix != null) return false;
         return c.audio_capture_hears_self(s.dev) != 0;
     }
 
     pub fn destroy(s: *Sender) void {
+        if (s.mix) |m| m.destroy();
         if (s.dev) |d| c.audio_close(d); // para o callback antes de liberar
         c.opus_encoder_destroy(s.enc);
         gpa.destroy(s);
@@ -351,3 +370,225 @@ pub const Sender = struct {
         }
     }
 };
+
+// ---------------------------------------------------------------------------
+// Windows: tudo menos o telinha e os programas excluídos. O loopback do WASAPI
+// só exclui um processo por captura (o telinha); aqui é uma captura por
+// programa tocando (modo "só esse processo") e a mistura delas, a cada 10 ms.
+// Só existe quando há exclusões; sem elas é a captura de sempre.
+
+const mix_ring = rate / 2; // 500 ms por programa
+const mix_prebuffer = rate / 50; // 20 ms guardados antes de entrar na mistura
+const mix_max_latency = rate / 10; // mais que 100 ms guardados: pula pra frente
+const mix_max = 16;
+
+/// `name` está na lista (nomes separados por \n, sem diferença de maiúscula)?
+pub fn inList(list: []const u8, name: []const u8) bool {
+    if (name.len == 0) return false;
+    var it = std.mem.splitScalar(u8, list, '\n');
+    while (it.next()) |item| if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, item, " \r"), name)) return true;
+    return false;
+}
+
+/// O som de um programa: a captura escreve, o misturador lê (cada um mexe só
+/// no próprio índice).
+pub const MixSource = struct {
+    buf: [mix_ring * channels]f32 = undefined,
+    w: std.atomic.Value(usize) = .init(0), // quadros escritos (total)
+    r: usize = 0, // quadros lidos (só o misturador)
+    primed: bool = false,
+    dev: ?*c.audio_dev = null,
+    pid: u32 = 0,
+    missing: u8 = 0, // listagens seguidas sem esse programa
+
+    pub fn push(s: *MixSource, samples: []const f32) void {
+        var w = s.w.load(.monotonic);
+        var i: usize = 0;
+        while (i + 1 < samples.len) : (i += 2) {
+            const at = (w % mix_ring) * channels;
+            s.buf[at] = samples[i];
+            s.buf[at + 1] = samples[i + 1];
+            w += 1;
+        }
+        s.w.store(w, .release);
+    }
+
+    /// Soma até out.len/2 quadros em `out`. false = não tinha nada pra somar.
+    pub fn mixInto(s: *MixSource, out: []f32) bool {
+        const w = s.w.load(.acquire);
+        var avail = w - s.r;
+        if (!s.primed) {
+            if (avail < mix_prebuffer) return false;
+            s.primed = true;
+        }
+        // relógios diferentes (ou o misturador atrasou): fica perto do fim
+        if (avail > mix_max_latency) {
+            s.r = w - mix_prebuffer;
+            avail = mix_prebuffer;
+        }
+        const want = out.len / channels;
+        const take = @min(avail, want);
+        for (0..take) |k| {
+            const at = ((s.r + k) % mix_ring) * channels;
+            out[k * 2] += s.buf[at];
+            out[k * 2 + 1] += s.buf[at + 1];
+        }
+        s.r += take;
+        if (take < want) s.primed = false; // acabou o que tinha: junta de novo
+        return take > 0;
+    }
+
+    fn onCapture(user: ?*anyopaque, samples: [*c]const f32, frames: c_int) callconv(.c) void {
+        const s: *MixSource = @ptrCast(@alignCast(user));
+        s.push(samples[0..@intCast(frames * channels)]);
+    }
+};
+
+pub const MixCapture = struct {
+    on_capture: *const fn (?*anyopaque, [*c]const f32, c_int) callconv(.c) void,
+    user: *anyopaque,
+    exclude: [512]u8 = undefined,
+    exclude_len: usize = 0,
+    sources: [mix_max]?*MixSource = [_]?*MixSource{null} ** mix_max,
+    stop: std.atomic.Value(bool) = .init(false),
+    thread: ?std.Thread = null,
+
+    pub fn start(user: *anyopaque, on_capture: *const fn (?*anyopaque, [*c]const f32, c_int) callconv(.c) void, exclude: []const u8) !*MixCapture {
+        const m = try gpa.create(MixCapture);
+        m.* = .{ .on_capture = on_capture, .user = user };
+        m.exclude_len = @min(exclude.len, m.exclude.len);
+        @memcpy(m.exclude[0..m.exclude_len], exclude[0..m.exclude_len]);
+        m.thread = std.Thread.spawn(.{}, run, .{m}) catch |e| {
+            gpa.destroy(m);
+            return e;
+        };
+        return m;
+    }
+
+    pub fn destroy(m: *MixCapture) void {
+        m.stop.store(true, .release);
+        if (m.thread) |t| t.join();
+        for (&m.sources) |*sl| if (sl.*) |s| {
+            if (s.dev) |d| c.audio_close(d);
+            gpa.destroy(s);
+            sl.* = null;
+        };
+        gpa.destroy(m);
+    }
+
+    /// Um quadro de 10 ms: soma o que cada programa tem e entrega.
+    pub fn tick(m: *MixCapture, out: *[frame_len * channels]f32) bool {
+        @memset(out, 0);
+        var any = false;
+        for (m.sources) |maybe| if (maybe) |s| {
+            if (s.mixInto(out)) any = true;
+        };
+        if (!any) return false;
+        for (out) |*x| x.* = std.math.clamp(x.*, -1.0, 1.0);
+        return true;
+    }
+
+    fn run(m: *MixCapture) void {
+        var out: [frame_len * channels]f32 = undefined;
+        var next_list: u64 = 0;
+        var next_tick = sync.nowUs();
+        while (!m.stop.load(.acquire)) {
+            const now = sync.nowUs();
+            if (now >= next_list) {
+                m.refresh();
+                next_list = now + 1_000_000;
+            }
+            if (m.tick(&out)) m.on_capture(m.user, &out, frame_len);
+            next_tick += 10_000;
+            const t = sync.nowUs();
+            if (next_tick > t) {
+                sync.sleepMs(@intCast((next_tick - t + 999) / 1000));
+            } else if (t - next_tick > 100_000) next_tick = t; // atrasou demais: recomeça o relógio
+        }
+    }
+
+    /// Abre a captura de quem começou a tocar (e não está excluído) e fecha a
+    /// de quem sumiu da lista faz 3 s.
+    fn refresh(m: *MixCapture) void {
+        var apps: [24]c.audio_app = undefined;
+        const n = listApps(&apps);
+        var seen = [_]bool{false} ** mix_max;
+        for (apps[0..n]) |*ap| {
+            const name = std.mem.sliceTo(&ap.name, 0);
+            if (inList(m.exclude[0..m.exclude_len], name)) continue;
+            const have = for (m.sources, 0..) |maybe, i| {
+                if (maybe) |s| if (s.pid == ap.pid) break i;
+            } else null;
+            if (have) |i| {
+                seen[i] = true;
+                continue;
+            }
+            const slot = for (m.sources, 0..) |maybe, i| {
+                if (maybe == null) break i;
+            } else continue;
+            const s = gpa.create(MixSource) catch continue;
+            s.* = .{ .pid = ap.pid };
+            var err: [128]u8 = [_]u8{0} ** 128;
+            s.dev = c.audio_capture_open(MixSource.onCapture, s, "", ap.pid, null, &err, err.len);
+            if (s.dev == null) {
+                if (sync.debugOn()) std.debug.print("[telinha] som de {s} (pid {d}): {s}\n", .{ name, ap.pid, std.mem.sliceTo(&err, 0) });
+                gpa.destroy(s);
+                continue;
+            }
+            m.sources[slot] = s;
+            seen[slot] = true;
+        }
+        for (&m.sources, 0..) |*sl, i| if (sl.*) |s| {
+            if (seen[i]) {
+                s.missing = 0;
+            } else {
+                s.missing += 1;
+                if (s.missing >= 3) {
+                    if (s.dev) |d| c.audio_close(d);
+                    gpa.destroy(s);
+                    sl.* = null;
+                }
+            }
+        };
+    }
+};
+
+test "lista de exclusão do som" {
+    try std.testing.expect(inList("Discord\nspotify", "discord"));
+    try std.testing.expect(inList("Discord\nspotify", "Spotify"));
+    try std.testing.expect(!inList("Discord\nspotify", "Disc"));
+    try std.testing.expect(!inList("", "Discord"));
+    try std.testing.expect(!inList("Discord", ""));
+}
+
+test "mistura do som por programa: espera juntar, soma, pula pra frente quando atrasa" {
+    const a = try gpa.create(MixSource);
+    defer gpa.destroy(a);
+    a.* = .{};
+    const b = try gpa.create(MixSource);
+    defer gpa.destroy(b);
+    b.* = .{};
+    var out: [frame_len * channels]f32 = undefined;
+    var chunk: [frame_len * channels]f32 = undefined;
+    // pouco guardado: ainda não entra
+    @memset(&chunk, 0.25);
+    a.push(chunk[0 .. 240 * channels]);
+    @memset(&out, 0);
+    try std.testing.expect(!a.mixInto(&out));
+    // com 20 ms guardados entra; os dois somam
+    a.push(chunk[0 .. 480 * channels]);
+    a.push(chunk[0 .. 240 * channels]);
+    @memset(&chunk, 0.5);
+    b.push(&chunk);
+    b.push(&chunk);
+    @memset(&out, 0);
+    try std.testing.expect(a.mixInto(&out));
+    try std.testing.expect(b.mixInto(&out));
+    try std.testing.expectApproxEqAbs(@as(f32, 0.75), out[0], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.75), out[out.len - 1], 1e-6);
+    // atrasou (500 ms guardados): pula pra ficar com só 20 ms
+    for (0..50) |_| b.push(&chunk);
+    @memset(&out, 0);
+    try std.testing.expect(b.mixInto(&out));
+    try std.testing.expectEqual(mix_prebuffer - frame_len, b.w.load(.monotonic) - b.r);
+}

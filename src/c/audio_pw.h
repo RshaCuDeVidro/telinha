@@ -13,7 +13,8 @@ typedef void (*pwcap_fn)(void *user, const float *samples, int frames);
 
 // NULL = sem PipeWire (aí quem chama usa o monitor da saída padrão).
 // app/pid: só esse programa (ver audio_capture_open); vazios = todos.
-pwcap *pwcap_open(pwcap_fn fn, void *user, const char *app, uint32_t pid, char *err, int errlen);
+// exclude: nomes (separados por \n) que ficam de fora; NULL = nenhum.
+pwcap *pwcap_open(pwcap_fn fn, void *user, const char *app, uint32_t pid, const char *exclude, char *err, int errlen);
 
 // Programas tocando som agora (nome = application.name), sem o telinha.
 int pwcap_list_apps(audio_app *out, int max);

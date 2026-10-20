@@ -724,6 +724,51 @@ def som_de_um_programa():
         expect(ana.state()["sharer"]["audio"], "o som parou depois de trocar")
 
 
+@test
+def excluir_programa_do_som():
+    """Todo o som menos um programa (ex.: o Discord): exclui com a transmissão rolando, fica salvo, e tirar da lista volta a pegar."""
+    with Session("somexcl", audio=True) as s:
+        s.play_tone("tom-a", freq=440, app="Tocador A")
+        s.play_tone("tom-b", freq=880, app="Discord")
+        time.sleep(1)
+        p = port()
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p)])
+        bia = s.app("bia", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        ana.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
+        ana.click(contains="Compartilhar tela##share")
+        ana.wait(lambda st: st["share_modal"], 5, "a janela de compartilhar")
+        ana.click(contains="Ao vivo", window="Compartilhar")
+        ana.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live" and st["sharer"]["audio"], 20, "transmitir com som")
+        aid = bia.member_id("Ana")
+        bia.wait(lambda st: any(v["stream"] == aid and v["audio"] for v in st["views"]), 20, "a Bia ouvir o som da Ana")
+        t0 = time.time()
+        while time.time() - t0 < 10 and capture_links(s) != {"tom-a", "tom-b"}:
+            time.sleep(0.3)
+        expect(capture_links(s) == {"tom-a", "tom-b"}, f"os dois deveriam estar ligados: {capture_links(s)}")
+        # exclui o "Discord" com a transmissão rolando
+        ana.click(contains="Ao vivo (configurar)##share")
+        ana.wait(lambda st: st["share_modal"], 5, "abrir as configurações da transmissão")
+        ana.click("##audioexcl")
+        ana.click(contains="Discord###excl")
+        ana.wait(lambda st: st["cfg"]["audio_exclude"] == "Discord", 3, "excluir o Discord")
+        t0 = time.time()
+        while time.time() - t0 < 10 and capture_links(s) != {"tom-a"}:
+            time.sleep(0.3)
+        links = capture_links(s)
+        log(f"com o Discord excluído: {links}")
+        expect(links == {"tom-a"}, f"só o Tocador A deveria estar ligado: {links}")
+        expect(ana.state()["sharer"]["audio"], "o som parou depois de excluir")
+        ini = open(os.path.join(ana.cfg, "telinha", "config.ini")).read()
+        expect("audio_exclude=Discord" in ini, "a exclusão não foi salva")
+        # tira da lista: volta a pegar os dois
+        ana.click(contains="Discord###excl")
+        ana.wait(lambda st: st["cfg"]["audio_exclude"] == "", 3, "tirar o Discord da lista")
+        t0 = time.time()
+        while time.time() - t0 < 10 and capture_links(s) != {"tom-a", "tom-b"}:
+            time.sleep(0.3)
+        expect(capture_links(s) == {"tom-a", "tom-b"}, f"os dois deveriam voltar: {capture_links(s)}")
+
+
 def write_png(path, w, h):
     """PNG de teste (degradê com listras), sem depender de biblioteca de imagem."""
     import struct

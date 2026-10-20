@@ -61,7 +61,7 @@ pub fn main(init: std.process.Init) !void {
     for (apps[0..n_apps]) |*ap| std.debug.print("  {s} (pid {d})\n", .{ std.mem.sliceTo(&ap.name, 0), ap.pid });
     var only: [64:0]u8 = [_:0]u8{0} ** 64;
     if (args.len > 2) @memcpy(only[0..@min(args[2].len, 63)], args[2][0..@min(args[2].len, 63)]);
-    const cap = c.audio_capture_open(onCapture, null, &only, 0, &err, err.len) orelse {
+    const cap = c.audio_capture_open(onCapture, null, &only, 0, null, &err, err.len) orelse {
         std.debug.print("FALHOU ao abrir a captura: {s}\n", .{std.mem.sliceTo(&err, 0)});
         std.process.exit(1);
     };

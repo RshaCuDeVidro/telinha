@@ -46,6 +46,7 @@ struct pwcap {
     // só um programa (vazio/0 = todos): pelo nome ou pela árvore de processos
     char only_app[64];
     long only_pid;
+    char exclude[512]; // programas que ficam de fora (nomes separados por \n)
 
     // nós de aplicativos tocando áudio (fora o nosso processo)
     uint32_t apps[MAX_PORTS];
@@ -147,8 +148,26 @@ static int descends_from(long pid, long root) {
     return 0;
 }
 
-// Esse nó de saída de áudio é do programa escolhido?
+// `name` está na lista (nomes separados por \n, sem diferença de maiúscula)?
+static int in_list(const char *list, const char *name) {
+    if (!name || !*name) return 0;
+    const size_t n = strlen(name);
+    for (const char *p = list; *p;) {
+        const char *e = strchr(p, '\n');
+        const size_t len = e ? (size_t)(e - p) : strlen(p);
+        if (len == n && !strncasecmp(p, name, n)) return 1;
+        if (!e) break;
+        p = e + 1;
+    }
+    return 0;
+}
+
+// Esse nó de saída de áudio é do programa escolhido (e não de um excluído)?
 static int wanted(struct pwcap *c, const struct spa_dict *props, long pid) {
+    if (c->exclude[0] && !c->only_app[0] && !c->only_pid) {
+        if (in_list(c->exclude, spa_dict_lookup(props, PW_KEY_APP_NAME))) return 0;
+        if (in_list(c->exclude, spa_dict_lookup(props, PW_KEY_APP_PROCESS_BINARY))) return 0;
+    }
     if (!c->only_app[0] && !c->only_pid) return 1;
     if (c->only_pid && pid > 0 && descends_from(pid, c->only_pid)) return 1;
     if (c->only_app[0]) {
@@ -299,7 +318,7 @@ void pwcap_close(pwcap *c) {
     free(c);
 }
 
-pwcap *pwcap_open(pwcap_fn fn, void *user, const char *app, uint32_t pid, char *err, int errlen) {
+pwcap *pwcap_open(pwcap_fn fn, void *user, const char *app, uint32_t pid, const char *exclude, char *err, int errlen) {
     if (getenv("TELINHA_AUDIO_MONITOR")) return NULL; // força o jeito antigo (monitor)
     pw_init(NULL, NULL);
     struct pwcap *c = calloc(1, sizeof *c);
@@ -310,6 +329,7 @@ pwcap *pwcap_open(pwcap_fn fn, void *user, const char *app, uint32_t pid, char *
     c->self_pid = (long)getpid();
     if (app) snprintf(c->only_app, sizeof c->only_app, "%s", app);
     c->only_pid = (long)pid;
+    if (exclude) snprintf(c->exclude, sizeof c->exclude, "%s", exclude);
     c->loop = pw_thread_loop_new("telinha-audio", NULL);
     if (!c->loop) goto fail;
     c->ctx = pw_context_new(pw_thread_loop_get_loop(c->loop), NULL, 0);

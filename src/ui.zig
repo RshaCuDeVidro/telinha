@@ -46,6 +46,8 @@ pub var col: theme.Palette = theme.list[0].pal;
 const avatar_colors = [_]u32{ rgb(0x5865F2), rgb(0x3BA55C), rgb(0xFAA61A), rgb(0xED4245), rgb(0xEB459E), rgb(0x9B59B6), rgb(0x1ABC9C), rgb(0xE67E22) };
 
 pub var font_regular: *c.ImFont = undefined;
+const logo_rgba = @embedFile("assets/icon128.rgba");
+var logo_tex: u32 = 0;
 /// Conversão YUV→RGB na GPU (null = CPU converte).
 pub var yuv_renderer: ?gl.YuvRenderer = null;
 pub var font_semibold: *c.ImFont = undefined;
@@ -1297,6 +1299,109 @@ pub const App = struct {
             textColored(col.faint, tr("Programa tocando som aparece na lista (abra de novo esta janela se não aparecer)."));
             popFont();
         }
+        if (a.cfg.audio and cur.len == 0) a.drawAudioExclude(w);
+    }
+
+    /// "Todo o som" menos alguns programas (o Discord, pra quem assiste não
+    /// ouvir a própria voz de volta, por exemplo).
+    fn drawAudioExclude(a: *App, w: f32) void {
+        const list = config.getStr(&a.cfg.audio_exclude);
+        var n: usize = 0;
+        var it = std.mem.splitScalar(u8, list, '\n');
+        while (it.next()) |x| {
+            if (x.len > 0) n += 1;
+        }
+        c.igDummy(v2(0, S(2)));
+        const label = if (n == 0) fmtZ("{s}  Excluir programas do som###audioexcl", .{ic.ban}) else fmtZ("{s}  Excluídos: {d} (mudar)###audioexcl", .{ ic.ban, n });
+        if (secondaryButton(label, v2(w, S(32)))) {
+            a.n_audio_apps = audio.listApps(&a.audio_apps); // quem está tocando agora
+            _ = c.igOpenPopup_Str("##excluirsom", 0);
+        }
+        if (n > 0) {
+            pushFont(font_regular, 12);
+            const names = std.mem.replaceOwned(u8, std.heap.c_allocator, list, "\n", ", ") catch null;
+            defer if (names) |x| std.heap.c_allocator.free(x);
+            textColored(col.faint, fmtZ("Fora do som: {s}", .{names orelse list}));
+            popFont();
+        }
+        if (a.sharer) |s| if (s.audio_exclude_ignored) {
+            pushFont(font_regular, 12);
+            textColored(col.yellow, tr("Esse Windows não deixa excluir programas do som (precisa do Windows 10 versão 2004 ou mais novo)."));
+            popFont();
+        };
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(14), S(12)));
+        defer c.igPopStyleVar(1);
+        if (!c.igBeginPopup("##excluirsom", 0)) return;
+        defer c.igEndPopup();
+        pushFont(font_bold, 13);
+        textColored(col.header, tr("Quem fica de fora do som da transmissão"));
+        popFont();
+        pushFont(font_regular, 12);
+        textColored(col.faint, tr("Ex.: o Discord, pra quem assiste não ouvir a própria voz de volta."));
+        popFont();
+        c.igDummy(v2(0, S(4)));
+        var any = false;
+        // quem está tocando agora
+        for (a.audio_apps[0..a.n_audio_apps], 0..) |*ap, i| {
+            const name = std.mem.sliceTo(&ap.name, 0);
+            any = true;
+            var on = audio.inList(config.getStr(&a.cfg.audio_exclude), name);
+            c.igPushID_Int(@intCast(i));
+            if (c.igCheckbox(fmtZ("{s}###excl", .{name}).ptr, &on)) a.setAudioExcluded(name, on);
+            c.igPopID();
+        }
+        // excluídos que não estão tocando agora (pra poder tirar da lista)
+        var it2 = std.mem.splitScalar(u8, config.getStr(&a.cfg.audio_exclude), '\n');
+        var k: i32 = 1000;
+        while (it2.next()) |name| {
+            if (name.len == 0) continue;
+            const playing = for (a.audio_apps[0..a.n_audio_apps]) |*ap| {
+                if (std.ascii.eqlIgnoreCase(std.mem.sliceTo(&ap.name, 0), name)) break true;
+            } else false;
+            if (playing) continue;
+            any = true;
+            var on = true;
+            var nb: [64]u8 = undefined;
+            const copy = nb[0..@min(name.len, nb.len)];
+            @memcpy(copy, name[0..copy.len]);
+            c.igPushID_Int(k);
+            k += 1;
+            if (c.igCheckbox(fmtZ("{s} (não está tocando agora)###excl", .{copy}).ptr, &on) and !on) {
+                a.setAudioExcluded(copy, false);
+                c.igPopID();
+                break; // a lista mudou
+            }
+            c.igPopID();
+        }
+        if (!any) textColored(col.muted, tr("Nenhum programa tocando som agora. Dá o play no que quer excluir e abre de novo."));
+    }
+
+    /// Põe ou tira um programa da lista de exclusão do som (e aplica se já está ao vivo).
+    fn setAudioExcluded(a: *App, name: []const u8, on: bool) void {
+        var out: [512]u8 = [_]u8{0} ** 512;
+        var len: usize = 0;
+        var it = std.mem.splitScalar(u8, config.getStr(&a.cfg.audio_exclude), '\n');
+        while (it.next()) |x| {
+            if (x.len == 0 or std.ascii.eqlIgnoreCase(x, name)) continue;
+            if (len + x.len + 1 >= out.len) break;
+            if (len > 0) {
+                out[len] = '\n';
+                len += 1;
+            }
+            @memcpy(out[len..][0..x.len], x);
+            len += x.len;
+        }
+        if (on and len + name.len + 1 < out.len) {
+            if (len > 0) {
+                out[len] = '\n';
+                len += 1;
+            }
+            @memcpy(out[len..][0..name.len], name);
+            len += name.len;
+        }
+        config.setStr(&a.cfg.audio_exclude, out[0..len]);
+        config.save(&a.cfg);
+        if (a.sharer) |s| s.update(a.shareSettings());
     }
 
     fn shareSettings(a: *App) sharer_mod.Settings {
@@ -1317,6 +1422,7 @@ pub const App = struct {
             // o programa dono da janela compartilhada (e os processos filhos dele)
             if (a.chosenSource()) |src| st.audio_pid = src.pid;
         } else config.setStr(&st.audio_app, cur);
+        config.setStr(&st.audio_exclude, config.getStr(&a.cfg.audio_exclude));
         return st;
     }
 
@@ -1759,10 +1865,10 @@ pub const App = struct {
         // logo
         {
             const p = c.igGetCursorScreenPos();
-            const isz = S(44);
-            rectFill(d, p.x, p.y, p.x + isz, p.y + isz, col.blurple, S(12));
-            const ts = textSizeF(font_regular, 22, ic.tv);
-            drawTextF(d, font_regular, 22, v2(p.x + (isz - ts.x) / 2, p.y + (isz - ts.y) / 2), col.white, ic.tv);
+            const isz = S(48);
+            // o husky (assets/telinha.svg em 128 px)
+            if (logo_tex == 0) gl.upload(&logo_tex, logo_rgba, 128, 128, gl.RGBA);
+            c.ImDrawList_AddImage(d, texRef(logo_tex), p, v2(p.x + isz, p.y + isz), v2(0, 0), v2(1, 1), col.white);
             drawTextF(d, font_bold, 28, v2(p.x + isz + S(14), p.y - S(1)), col.header, "telinha");
             drawTextF(d, font_regular, 14, v2(p.x + isz + S(15), p.y + S(28)), col.muted, tr("compartilha a tela com a galera"));
             c.igDummy(v2(inner, isz + S(26)));
@@ -4590,8 +4696,8 @@ pub const App = struct {
         try w.print(",\"fps\":{d},\"quality\":{d},\"mode\":{d},\"resolution\":{d},\"cursor\":{},\"audio\":{},\"hardware\":{},\"stats_always\":{},\"show_chat\":{}", .{
             cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.stats_always, cf.show_chat,
         });
-        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f},\"theme\":{f}}}", .{
-            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)), s(config.getStr(&cf.theme)),
+        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_exclude\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f},\"theme\":{f}}}", .{
+            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), s(config.getStr(&cf.audio_exclude)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)), s(config.getStr(&cf.theme)),
         });
         try w.print(",\"lang\":{f}", .{s(@tagName(i18n.get()))});
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);

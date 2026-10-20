@@ -33,7 +33,13 @@ int audio_list_apps(audio_app *out, int max);
 // Só um programa: pid != 0 = esse processo e os filhos dele (o navegador toca
 // som num processo filho); senão app = nome (como em audio_list_apps).
 // Os dois vazios = tudo. Sem PipeWire no Linux, o filtro não vale (pega tudo).
-audio_dev *audio_capture_open(audio_capture_fn fn, void *user, const char *app, uint32_t pid, char *err, int errlen);
+// exclude: nomes de programas (separados por \n) que ficam de fora quando é
+// "tudo" (Linux/PipeWire; no Windows quem exclui é o audio.zig, misturando
+// uma captura por programa). NULL ou "" = nenhum.
+audio_dev *audio_capture_open(audio_capture_fn fn, void *user, const char *app, uint32_t pid, const char *exclude, char *err, int errlen);
+
+// 1 se dá pra capturar o som de um processo só (Windows 10 2004+); Linux: 0.
+int audio_process_loopback_ok(void);
 
 // Saída padrão (caixa/fone).
 audio_dev *audio_output_open(audio_play_fn fn, void *user, char *err, int errlen);

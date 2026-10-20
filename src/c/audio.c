@@ -104,8 +104,9 @@ static int start(struct audio_dev *d, ma_device_config *cfg, char *err, int errl
 uint32_t audio_app_pid_by_name(const char *name);
 #endif
 
-audio_dev *audio_capture_open(audio_capture_fn fn, void *user, const char *app, uint32_t pid, char *err, int errlen) {
+audio_dev *audio_capture_open(audio_capture_fn fn, void *user, const char *app, uint32_t pid, const char *exclude, char *err, int errlen) {
     if (!app) app = "";
+    (void)exclude;
 #ifdef _WIN32
     // um programa só: pelo nome, acha o processo que está tocando agora
     if (pid == 0 && app[0]) {
@@ -150,7 +151,7 @@ audio_dev *audio_capture_open(audio_capture_fn fn, void *user, const char *app, 
     {
         audio_dev *d = calloc(1, sizeof *d);
         if (!d) return NULL;
-        d->pw = pwcap_open(fn, user, app, pid, NULL, 0);
+        d->pw = pwcap_open(fn, user, app, pid, exclude, NULL, 0);
         if (d->pw) return d;
         free(d);
     }
@@ -249,6 +250,28 @@ int audio_list_apps(audio_app *out, int max) {
     return pwcap_list_apps(out, max);
 }
 #endif
+
+#ifdef _WIN32
+static void discard(void *user, const float *samples, int frames) {
+    (void)user;
+    (void)samples;
+    (void)frames;
+}
+#endif
+
+int audio_process_loopback_ok(void) {
+#ifdef _WIN32
+    static int cached = -1; // a resposta não muda enquanto o app roda
+    if (cached < 0) {
+        audio_dev *d = audio_capture_open(discard, NULL, "", GetCurrentProcessId(), NULL, NULL, 0);
+        cached = d != NULL;
+        audio_close(d);
+    }
+    return cached;
+#else
+    return 0;
+#endif
+}
 
 int audio_capture_hears_self(audio_dev *d) {
     return d ? d->hears_self : 0;

@@ -46,6 +46,7 @@ pub const Config = struct {
     notifications: bool = true, // notificação do sistema com o telinha em segundo plano
     check_updates: bool = true, // pergunta ao GitHub se tem versão nova (só com -Drepo)
     audio_app: [64]u8 = zstr("", 64), // som de um programa só ("" = tudo; "*janela" = o da janela)
+    audio_exclude: [512]u8 = zstr("", 512), // "tudo" menos esses programas (separados por "|" no arquivo)
     debug_log: bool = false, // grava o log de depuração (tudo) num arquivo
     debug_send: i32 = 0, // como mandar o log: 0 = gofile.io (link), 1 = webhook
     debug_webhook: [512]u8 = zstr("", 512), // URL do webhook (Discord etc.)
@@ -176,6 +177,10 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         cfg.notifications = int != 0;
     } else if (std.mem.eql(u8, k, "audio_app")) {
         setStr(&cfg.audio_app, v);
+    } else if (std.mem.eql(u8, k, "audio_exclude")) {
+        // uma linha no arquivo: "|" separa os nomes
+        setStr(&cfg.audio_exclude, v);
+        std.mem.replaceScalar(u8, &cfg.audio_exclude, '|', '\n');
     } else if (std.mem.eql(u8, k, "debug_log")) {
         cfg.debug_log = int != 0;
     } else if (std.mem.eql(u8, k, "debug_send")) {
@@ -241,6 +246,11 @@ pub fn save(cfg: *const Config) void {
         cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res, @intFromBool(cfg.check_updates), getStr(&cfg.audio_app), getStr(&cfg.language), getStr(&cfg.theme), @intFromBool(cfg.debug_log), cfg.debug_send, getStr(&cfg.debug_webhook),
     }) catch return;
     _ = c.fwrite(m.ptr, 1, m.len, f);
+    var excl: [512]u8 = cfg.audio_exclude;
+    std.mem.replaceScalar(u8, &excl, '\n', '|');
+    var eb: [560]u8 = undefined;
+    const e = std.fmt.bufPrint(&eb, "audio_exclude={s}\n", .{getStr(&excl)}) catch return;
+    _ = c.fwrite(e.ptr, 1, e.len, f);
 }
 
 /// Volume da voz de cada pessoa, lembrado pelo nome entre uma sala e outra

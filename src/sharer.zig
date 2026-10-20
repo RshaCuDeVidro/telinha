@@ -82,6 +82,7 @@ pub const Settings = struct {
     audio: bool = true, // compartilha o som do computador
     audio_app: [64]u8 = [_]u8{0} ** 64, // só o som desse programa (vazio = tudo menos o telinha)
     audio_pid: u32 = 0, // ou desse processo e filhos (a janela compartilhada)
+    audio_exclude: [512]u8 = [_]u8{0} ** 512, // "tudo" menos esses programas (nomes separados por \n)
     clips: bool = true, // guarda os últimos 30 s (clipe da própria transmissão)
     kind: u8 = proto.kind_screen, // tela ou câmera (não muda com a transmissão rolando)
 };
@@ -179,6 +180,7 @@ pub const Sharer = struct {
     encoder_name_buf: [48]u8 = undefined, // cópia (o encoder pode ser recriado a qualquer hora)
     audio_on: bool = false, // capturando o som do computador
     audio_hears_self: bool = false, // a captura pega também o que o telinha toca (jeito antigo)
+    audio_exclude_ignored: bool = false, // Windows antigo: não deu pra excluir programas do som
     audio_err: [160]u8 = [_]u8{0} ** 160, // por que o áudio não deu (vazio = deu certo ou não pediu)
     w: u32 = 0,
     h: u32 = 0,
@@ -426,7 +428,7 @@ const Pipeline = struct {
         const s = p.s;
         if (!p.settings.audio or s.kind != proto.kind_screen) return;
         var err: [160]u8 = [_]u8{0} ** 160;
-        if (audio.Sender.create(p, onAudioPacket, .{ .app = std.mem.sliceTo(&p.settings.audio_app, 0), .pid = p.settings.audio_pid }, &err)) |a| {
+        if (audio.Sender.create(p, onAudioPacket, .{ .app = std.mem.sliceTo(&p.settings.audio_app, 0), .pid = p.settings.audio_pid, .exclude = std.mem.sliceTo(&p.settings.audio_exclude, 0) }, &err)) |a| {
             p.audio_sender = a;
         } else |_| {}
         p.audio_live.store(p.audio_sender != null, .release);
@@ -434,6 +436,7 @@ const Pipeline = struct {
         @memcpy(&s.audio_err, &err);
         s.audio_on = p.audio_sender != null;
         s.audio_hears_self = if (p.audio_sender) |a| a.hearsSelf() else false;
+        s.audio_exclude_ignored = if (p.audio_sender) |a| a.exclude_ignored else false;
         s.mutex.unlock();
     }
 
@@ -473,6 +476,7 @@ const Pipeline = struct {
             const old_audio = p.settings.audio;
             const old_app = p.settings.audio_app;
             const old_pid = p.settings.audio_pid;
+            const old_excl = p.settings.audio_exclude;
             if (gen != p.gen) p.settings = s.settings;
             s.mutex.unlock();
             if (gen != p.gen) {
@@ -486,7 +490,7 @@ const Pipeline = struct {
                     try p.openCamera();
                 }
                 // trocou de quem é o som (ou ligou/desligou) com a transmissão rolando
-                if (old_audio != p.settings.audio or old_pid != p.settings.audio_pid or !std.mem.eql(u8, &old_app, &p.settings.audio_app)) {
+                if (old_audio != p.settings.audio or old_pid != p.settings.audio_pid or !std.mem.eql(u8, &old_app, &p.settings.audio_app) or !std.mem.eql(u8, &old_excl, &p.settings.audio_exclude)) {
                     p.closeAudio();
                     p.openAudio();
                     p.reannounce.store(true, .release);
