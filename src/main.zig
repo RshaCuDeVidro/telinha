@@ -106,6 +106,7 @@ pub fn main(init: std.process.Init) !void {
         c.ImGui_ImplGlfw_NewFrame();
         c.igNewFrame();
         app.updateUnread();
+        app.iconified = iconified;
         app.frame();
         qa.endFrame(&app, win);
         c.igRender();

@@ -1394,7 +1394,7 @@ pub const Server = struct {
         for (s.conns.items) |o| {
             if (o == cn or !contains(&o.watching, stream)) continue;
             if (o.queue.queuedBytes() > max_viewer_backlog * 2) continue;
-            o.queue.push(m);
+            o.queue.pushUrgent(m); // som não espera atrás de quadro
             _ = s.relayed_bytes.fetchAdd(m.data.len, .monotonic);
         }
     }

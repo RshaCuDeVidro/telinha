@@ -438,7 +438,8 @@ pub const SendQueue = struct {
         q.cond.signal();
     }
 
-    /// Fura a fila (confirmações e voz: não podem esperar atrás de quadros),
+    /// Fura a fila (confirmações, voz e som da transmissão: não podem esperar
+    /// atrás de quadros; um IDR de 60 KB a 2 Mbit/s segura ~240 ms),
     /// mas fica depois de outras urgentes que já estavam lá (ordem entre elas).
     pub fn pushUrgent(q: *SendQueue, m: *Msg) void {
         q.mutex.lock();
@@ -460,7 +461,7 @@ pub const SendQueue = struct {
     }
 
     fn isUrgent(t: Type) bool {
-        return t == .ack or t == .viewer_slow or t == .voice or t == .pointer;
+        return t == .ack or t == .viewer_slow or t == .voice or t == .pointer or t == .audio;
     }
 
     pub fn pushUrgentOwned(q: *SendQueue, m: *Msg) void {

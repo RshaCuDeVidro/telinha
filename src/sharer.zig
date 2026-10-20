@@ -1000,7 +1000,7 @@ const Pipeline = struct {
         std.mem.writeInt(u64, pl[4..12], ts, .little);
         if (s.clip) |cb| cb.addAudio(packet, ts);
         @memcpy(pl[12..], packet);
-        s.client.queue.pushOwned(m);
+        s.client.queue.pushUrgentOwned(m); // som não espera atrás de quadro
     }
 };
 

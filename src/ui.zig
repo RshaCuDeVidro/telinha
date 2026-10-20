@@ -522,6 +522,7 @@ pub const App = struct {
     zooms: [24]Zoom = [_]Zoom{.{}} ** 24,
     clip_jobs: [6]?*ClipJob = [_]?*ClipJob{null} ** 6,
     pips: [4]?*pip.Pip = [_]?*pip.Pip{null} ** 4, // janelas flutuantes
+    iconified: bool = false, // janela principal minimizada (o main.zig avisa)
     last_saved: [512]u8 = undefined, // último clipe/gravação salvo (modo de testes)
     last_saved_len: usize = 0,
     /// Transmissão com o ponteiro "olha aqui" ligado (o mouse vira o ponteiro).
@@ -1510,35 +1511,40 @@ pub const App = struct {
     /// Sobe pra GPU o que mudou nas transmissões (antes de desenhar).
     fn uploadTextures(a: *App) void {
         for (a.views.items) |v| {
+            // minimizado: só o que aparece numa janela flutuante (o resto fica
+            // marcado e sobe quando a janela voltar)
+            if (a.iconified and a.findPip(v.stream) == null) continue;
+            // pega o quadro novo (só a troca é travada; o upload não segura o decode)
             v.mutex.lock();
-            defer v.mutex.unlock();
-            if (v.w == 0) continue;
-            if (!v.dirty and !v.resized and v.tex != 0) continue;
-            if (v.layout != .rgba) {
+            const took = v.fresh;
+            if (took) std.mem.swap(client_mod.Pic, &v.ready, &v.front);
+            v.fresh = false;
+            v.mutex.unlock();
+            const f = &v.front;
+            if (f.w == 0) continue;
+            if (!took and v.tex != 0) continue;
+            if (f.layout != .rgba) {
                 // planos YUV: a GPU converte
                 const r = &(yuv_renderer orelse continue);
                 if (v.tex != 0 and v.tex != v.yuv.out) gl.delete(&v.tex);
-                if (r.render(&v.yuv, v.pixels, v.w, v.h, v.layout == .nv12)) {
+                if (r.render(&v.yuv, f.data, f.w, f.h, f.layout == .nv12)) {
                     v.tex = v.yuv.out;
-                    v.tex_w = v.w;
-                    v.tex_h = v.h;
+                    v.tex_w = f.w;
+                    v.tex_h = f.h;
                 }
-                v.resized = false;
-            } else if (v.resized or v.tex == 0 or v.tex == v.yuv.out) {
+            } else if (f.w != v.tex_w or f.h != v.tex_h or v.tex == 0 or v.tex == v.yuv.out) {
                 if (v.tex == v.yuv.out) v.tex = 0;
-                gl.upload(&v.tex, v.pixels, v.w, v.h, gl.RGBA);
-                v.tex_w = v.w;
-                v.tex_h = v.h;
-                v.resized = false;
+                gl.upload(&v.tex, f.data, f.w, f.h, gl.RGBA);
+                v.tex_w = f.w;
+                v.tex_h = f.h;
             } else {
-                gl.uploadRect(v.tex, v.pixels, v.w, 0, 0, v.w, v.h, gl.RGBA);
+                gl.uploadRect(v.tex, f.data, f.w, 0, 0, f.w, f.h, gl.RGBA);
             }
-            v.dirty = false;
             // latência de ponta a ponta: captura no transmissor → tela aqui
             if (a.client) |cl| {
                 const now = cl.serverNowUs();
-                if (now > v.capture_ts and v.capture_ts > 0) {
-                    const lat = @as(f32, @floatFromInt(now - v.capture_ts)) / 1000.0;
+                if (now > f.ts and f.ts > 0) {
+                    const lat = @as(f32, @floatFromInt(now - f.ts)) / 1000.0;
                     if (lat < 10_000) v.latency_ms = if (v.latency_ms == 0) lat else v.latency_ms * 0.9 + lat * 0.1;
                 }
             }

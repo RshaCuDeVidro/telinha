@@ -22,6 +22,15 @@ pub var gpu_yuv = std.atomic.Value(bool).init(false);
 
 pub const Layout = enum { rgba, i420, nv12 };
 
+/// Um quadro decodificado pronto pra subir pra GPU.
+pub const Pic = struct {
+    data: []u8 = &.{}, // RGBA, ou planos YUV compactos (ver `layout`)
+    layout: Layout = .rgba,
+    w: u32 = 0,
+    h: u32 = 0,
+    ts: u64 = 0, // hora da captura (relógio da sala)
+};
+
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 
 /// Codecs que esse PC decodifica (H.264 sempre; HEVC se a placa decodifica).
@@ -179,15 +188,16 @@ pub const View = struct {
     client: *Client,
     refs: std.atomic.Value(u32) = .init(2), // UI + thread de decode
 
+    // Buffer triplo: o decode escreve no `back` sem trava e troca com o
+    // `ready`; a UI troca o `ready` com o `front` e sobe o `front` pra GPU.
+    // A trava (`mutex`) só cobre as trocas, nunca a conversão nem o upload.
     mutex: sync.Mutex = .{},
-    pixels: []u8 = &.{}, // RGBA, ou planos YUV compactos (ver `layout`)
-    layout: Layout = .rgba,
-    w: u32 = 0,
+    back: Pic = .{}, // só a thread de decode
+    ready: Pic = .{},
+    fresh: bool = false, // o `ready` tem quadro que a UI ainda não pegou
+    front: Pic = .{}, // só a UI
+    w: u32 = 0, // tamanho do último quadro decodificado (estatística)
     h: u32 = 0,
-    resized: bool = false,
-    dirty: bool = false,
-    capture_ts: u64 = 0, // hora da captura do último quadro (relógio da sala)
-    got_first: bool = false,
     // onde está o cursor de quem transmite (proto.coord_none = sem cursor)
     cursor_x: std.atomic.Value(u16) = .init(proto.coord_none),
     cursor_y: std.atomic.Value(u16) = .init(proto.coord_none),
@@ -247,7 +257,7 @@ pub const View = struct {
             for (v.frames.items) |f| gpa.free(f);
             v.frames.deinit(gpa);
             v.arrivals.deinit(gpa);
-            gpa.free(v.pixels);
+            for ([_][]u8{ v.back.data, v.ready.data, v.front.data }) |d| gpa.free(d);
             v.client.release();
             gpa.destroy(v);
         }
@@ -462,36 +472,35 @@ pub const View = struct {
             };
             const n = @as(usize, pw) * ph;
             const need = if (layout == .rgba) n * 4 else n + n / 2;
-            v.mutex.lock();
-            defer v.mutex.unlock();
-            if (pw != v.w or ph != v.h or layout != v.layout or v.pixels.len != need) {
+            const b = &v.back;
+            if (b.data.len != need) {
                 const px = try gpa.alloc(u8, need);
-                gpa.free(v.pixels);
-                v.pixels = px;
-                v.w = pw;
-                v.h = ph;
-                v.layout = layout;
-                v.resized = true;
+                gpa.free(b.data);
+                b.data = px;
             }
+            b.* = .{ .data = b.data, .layout = layout, .w = pw, .h = ph, .ts = ts };
             switch (pic) {
                 .i420 => |p| if (gpu) {
                     // planos compactos (o decoder usa stride maior que a largura)
-                    for (0..ph) |row| @memcpy(v.pixels[row * pw ..][0..pw], p.y[row * p.ys ..][0..pw]);
+                    for (0..ph) |row| @memcpy(b.data[row * pw ..][0..pw], p.y[row * p.ys ..][0..pw]);
                     const cw = pw / 2;
                     const chh = ph / 2;
                     for (0..chh) |row| {
-                        @memcpy(v.pixels[n + row * cw ..][0..cw], p.u[row * p.uvs ..][0..cw]);
-                        @memcpy(v.pixels[n + n / 4 + row * cw ..][0..cw], p.v[row * p.uvs ..][0..cw]);
+                        @memcpy(b.data[n + row * cw ..][0..cw], p.u[row * p.uvs ..][0..cw]);
+                        @memcpy(b.data[n + n / 4 + row * cw ..][0..cw], p.v[row * p.uvs ..][0..cw]);
                     }
-                } else codec.toRgba(p.y, p.u, p.v, p.ys, p.uvs, p.w, p.h, v.pixels),
+                } else codec.toRgba(p.y, p.u, p.v, p.ys, p.uvs, p.w, p.h, b.data),
                 .nv12 => |f| if (gpu) {
-                    @memcpy(v.pixels[0..n], f.y[0..n]);
-                    @memcpy(v.pixels[n..][0 .. n / 2], f.uv[0 .. n / 2]);
-                } else codec.nv12ToRgba(f.y, f.uv, f.w, f.h, v.pixels),
+                    @memcpy(b.data[0..n], f.y[0..n]);
+                    @memcpy(b.data[n..][0 .. n / 2], f.uv[0 .. n / 2]);
+                } else codec.nv12ToRgba(f.y, f.uv, f.w, f.h, b.data),
             }
-            v.dirty = true;
-            v.capture_ts = ts;
-            v.got_first = true;
+            v.mutex.lock();
+            std.mem.swap(Pic, &v.back, &v.ready);
+            v.fresh = true;
+            v.w = pw;
+            v.h = ph;
+            v.mutex.unlock();
         }
         v.client.wake();
 
