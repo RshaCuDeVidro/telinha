@@ -56,6 +56,7 @@ pub const Config = struct {
     language: [8]u8 = zstr("auto", 8), // idioma: "auto" (o do sistema), "pt" ou "en"
     theme: [24]u8 = zstr("escuro", 24), // tema da interface (id em theme.zig)
     custom_theme: [96]u8 = zstr("", 96), // cores do tema personalizado (theme.encodeBase)
+    custom_css: [512]u8 = zstr("", 512), // arquivo CSS do tema personalizado (atualiza sozinho)
     auto_quality: bool = true, // transmitindo: baixa a resolução sozinho se o PC não der conta
     ui_zoom: i32 = 100, // tamanho da interface (%), por cima da escala da tela
     clip_secs: i32 = 30, // duração do clipe (15 a 180 s)
@@ -222,6 +223,8 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         cfg.crt = int != 0;
     } else if (std.mem.eql(u8, k, "auto_quality")) {
         cfg.auto_quality = int != 0;
+    } else if (std.mem.eql(u8, k, "custom_css")) {
+        setStr(&cfg.custom_css, v);
     } else if (std.mem.eql(u8, k, "custom_theme")) {
         setStr(&cfg.custom_theme, v);
     } else if (std.mem.eql(u8, k, "theme")) {
@@ -278,6 +281,9 @@ pub fn save(cfg: *const Config) void {
     var eb: [560]u8 = undefined;
     const e = std.fmt.bufPrint(&eb, "audio_exclude={s}\n", .{getStr(&excl)}) catch return;
     _ = c.fwrite(e.ptr, 1, e.len, f);
+    var cb: [560]u8 = undefined;
+    const cs = std.fmt.bufPrint(&cb, "custom_css={s}\n", .{getStr(&cfg.custom_css)}) catch return;
+    _ = c.fwrite(cs.ptr, 1, cs.len, f);
 }
 
 /// Volume da voz de cada pessoa, lembrado pelo nome entre uma sala e outra

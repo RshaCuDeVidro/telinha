@@ -1374,6 +1374,32 @@ def relatorio_de_travamento():
 
 
 @test
+def tema_arquivo_css():
+    """Tema personalizado lendo um arquivo CSS: aplica na hora e acompanha quando o arquivo é salvo de novo (sem reabrir nada)."""
+    with Session("cssfile") as s:
+        css = os.path.join(s.base, "meu-tema.css")
+        def write(bg):
+            with open(css, "w") as f:
+                f.write(f":root {{ --bg-dark: {bg}; --bg-card: #0a050f; --neon-purple: #9333ea; --neon-fuchsia: #d946ef; --text-main: #e5e7eb; --terminal-green: #22c55e; }}\n")
+        write("#050505")
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(port())], config={"theme": "personalizado", "name": "Ana"})
+        a.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
+        a.click("##gear")
+        a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        a.click("##cfg-aparencia")
+        settings_find(a, "##csspath")
+        a.fill("##csspath", css)
+        settings_click(a, "##cssfile")
+        a.wait(lambda st: st["cfg"]["css_status"] == "ok" and st["cfg"]["custom_theme"].startswith("050505,0a050f,9333ea"), 5, "ler o arquivo")
+        write("#101820")
+        a.wait(lambda st: st["cfg"]["custom_theme"].startswith("101820,"), 6, "acompanhar o arquivo salvo de novo")
+        ini = open(os.path.join(a.cfg, "telinha", "config.ini")).read()
+        expect(f"custom_css={css}" in ini, "o caminho não foi salvo")
+        os.remove(css)
+        a.wait(lambda st: st["cfg"]["css_status"] == "missing", 6, "avisar que o arquivo sumiu")
+
+
+@test
 def windows_exe():
     """O telinha.exe (wine isolado): entra, assiste, lista janelas, compartilha só uma janela e a câmera avisa que não tem."""
     import subprocess

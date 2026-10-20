@@ -56,7 +56,9 @@ Conversa com a 3.0 (os campos novos são opcionais).
 - **Tema personalizado**: escolha fundo, painéis, destaque, texto, verde e
   vermelho (o resto sai delas), ou **cole um CSS** e o telinha lê as
   variáveis do `:root` (`--bg-dark`, `--neon-purple`...); dá pra copiar o
-  tema como CSS. Fira Code nos temas pwnd, **tamanho da interface** (80% a
+  tema como CSS, ou apontar pra um **arquivo .css** que o telinha acompanha
+  (salvou o arquivo, o tema muda; uma thread olha a cada 1,5 s e só monta o
+  tema se o conteúdo mudou). Fira Code nos temas pwnd, **tamanho da interface** (80% a
   150%) e **efeito CRT** opcional (linhas de tela antiga, sem cobrir o vídeo).
 - **Duração do clipe** escolhível (15 s, 30 s, 1, 2 ou 3 min). Com clipe
   curto, quem assiste pede um quadro completo mais seguido, pro clipe começar

@@ -613,6 +613,15 @@ const table = [_][2][]const u8{
     .{ "Transmitir só um pedaço da tela", "Stream only part of the screen" },
     .{ "Arraste pra escolher o pedaço · botão direito: tela inteira · Esc: cancelar", "Drag to pick the area · right click: whole screen · Esc: cancel" },
 
+    .{ "ARQUIVO CSS (atualiza sozinho quando você salva o arquivo)", "CSS FILE (updates by itself when you save the file)" },
+    .{ "/caminho/do/tema.css", "/path/to/theme.css" },
+    .{ "Parar", "Stop" },
+    .{ "Usar", "Use" },
+    .{ "Cole o caminho de um .css com variáveis no :root (--bg, --accent...).", "Paste the path of a .css with :root variables (--bg, --accent...)." },
+    .{ "Usando o arquivo: salvou, mudou aqui.", "Using the file: save it and it changes here." },
+    .{ "Não achei o arquivo.", "Couldn't find the file." },
+    .{ "O arquivo não tem as cores (variáveis do :root, tipo --bg: #050505).", "The file has no colors (:root variables, like --bg: #050505)." },
+
     // temas
     .{ "TEMA", "THEME" },
     .{ "Escuro", "Dark" },

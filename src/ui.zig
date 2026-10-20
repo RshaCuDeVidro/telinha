@@ -31,6 +31,7 @@ const fonts_mod = @import("fonts.zig");
 const pctest = @import("pctest.zig");
 const crash = @import("crash.zig");
 const ptt = @import("ptt.zig");
+const cssfile = @import("cssfile.zig");
 const i18n = @import("i18n.zig");
 const tr = i18n.tr;
 const build_options = @import("build_options");
@@ -599,6 +600,9 @@ pub const App = struct {
     pub fn init(window: *c.GLFWwindow) App {
         var a: App = .{ .window = window, .cfg = config.load(), .volumes = config.VoiceVolumes.load() };
         i18n.init(config.getStr(&a.cfg.language));
+        cssfile.on_change = wakeUi;
+        if (config.getStr(&a.cfg.custom_css).len > 0) cssfile.watch(config.getStr(&a.cfg.custom_css));
+        _ = a.takeCssFile();
         a.applyTheme();
         a.applyPtt();
         clip.keep_secs.store(@intCast(std.math.clamp(a.cfg.clip_secs, 10, 300)), .release);
@@ -1864,6 +1868,7 @@ pub const App = struct {
         audio.mixer.housekeep(); // saída de som parada depois de 5 s de silêncio
         if (debuglog.on()) a.debugTick();
         a.pollPttKey();
+        if (a.takeCssFile()) a.applyTheme();
         if (a.client) |cl| if (c.igGetTime() > a.draw_prune_at) {
             a.draw_prune_at = c.igGetTime() + 2;
             cl.pruneStrokes(sync.nowUs(), stroke_life_us);
@@ -5301,6 +5306,15 @@ pub const App = struct {
         return clicked;
     }
 
+    /// O arquivo CSS do tema mudou: as cores novas vão pro tema personalizado.
+    fn takeCssFile(a: *App) bool {
+        const b = cssfile.take() orelse return false;
+        var eb: [96]u8 = undefined;
+        config.setStr(&a.cfg.custom_theme, theme.encodeBase(b, &eb));
+        config.save(&a.cfg);
+        return std.mem.eql(u8, config.getStr(&a.cfg.theme), theme.custom_id);
+    }
+
     fn applyTheme(a: *App) void {
         setTheme(config.getStr(&a.cfg.theme), config.getStr(&a.cfg.custom_theme));
     }
@@ -5375,6 +5389,36 @@ pub const App = struct {
             a.applyTheme();
             config.save(&a.cfg);
         }
+
+        // arquivo CSS: as cores vêm dele e acompanham quando ele é salvo
+        c.igDummy(v2(0, S(10)));
+        fieldLabel("ARQUIVO CSS (atualiza sozinho quando você salva o arquivo)");
+        const pw = w - S(110) - S(8);
+        const enter = textField("##csspath", "/caminho/do/tema.css", a.cfg.custom_css[0 .. a.cfg.custom_css.len - 1], pw, false);
+        c.igSameLine(0, S(8));
+        const watching = cssfile.getStatus() != .off;
+        const use = secondaryButton(if (watching) tr("Parar###cssfile") else tr("Usar###cssfile"), v2(S(110), S(36)));
+        if (use and watching) {
+            cssfile.watch("");
+            config.setStr(&a.cfg.custom_css, "");
+            config.save(&a.cfg);
+        } else if (enter or use) {
+            const p = std.mem.trim(u8, config.getStr(&a.cfg.custom_css), " \"'");
+            var pb2: [512]u8 = undefined;
+            @memcpy(pb2[0..p.len], p);
+            config.setStr(&a.cfg.custom_css, pb2[0..p.len]);
+            config.save(&a.cfg);
+            cssfile.watch(pb2[0..p.len]);
+            if (a.takeCssFile()) a.applyTheme();
+        }
+        pushFont(font_regular, 12.5);
+        switch (cssfile.getStatus()) {
+            .off => textColored(col.faint, tr("Cole o caminho de um .css com variáveis no :root (--bg, --accent...).")),
+            .ok => textColored(col.green, tr("Usando o arquivo: salvou, mudou aqui.")),
+            .missing => textColored(col.red, tr("Não achei o arquivo.")),
+            .no_colors => textColored(col.red, tr("O arquivo não tem as cores (variáveis do :root, tipo --bg: #050505).")),
+        }
+        popFont();
     }
 
     /// Idioma da interface (troca na hora).
@@ -5446,8 +5490,8 @@ pub const App = struct {
         try w.print(",\"fps\":{d},\"quality\":{d},\"mode\":{d},\"resolution\":{d},\"cursor\":{},\"audio\":{},\"hardware\":{},\"stats_always\":{},\"show_chat\":{}", .{
             cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.stats_always, cf.show_chat,
         });
-        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_exclude\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f},\"theme\":{f},\"custom_theme\":{f},\"auto_quality\":{},\"resolution_idx\":{d},\"ui_zoom\":{d},\"crt\":{},\"voice_ptt\":{},\"ptt_key\":{d},\"ptt_mouse\":{d}}}", .{
-            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), s(config.getStr(&cf.audio_exclude)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)), s(config.getStr(&cf.theme)), s(config.getStr(&cf.custom_theme)), cf.auto_quality, cf.resolution, cf.ui_zoom, cf.crt, cf.voice_ptt, cf.ptt_key, cf.ptt_mouse,
+        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_exclude\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f},\"theme\":{f},\"custom_theme\":{f},\"custom_css\":{f},\"css_status\":{f},\"auto_quality\":{},\"resolution_idx\":{d},\"ui_zoom\":{d},\"crt\":{},\"voice_ptt\":{},\"ptt_key\":{d},\"ptt_mouse\":{d}}}", .{
+            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), s(config.getStr(&cf.audio_exclude)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)), s(config.getStr(&cf.theme)), s(config.getStr(&cf.custom_theme)), s(config.getStr(&cf.custom_css)), s(@tagName(cssfile.getStatus())), cf.auto_quality, cf.resolution, cf.ui_zoom, cf.crt, cf.voice_ptt, cf.ptt_key, cf.ptt_mouse,
         });
         try w.print(",\"lang\":{f}", .{s(@tagName(i18n.get()))});
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);
