@@ -58,6 +58,11 @@ Conversa com a 3.0 (os campos novos são opcionais).
   variáveis do `:root` (`--bg-dark`, `--neon-purple`...); dá pra copiar o
   tema como CSS. Fira Code nos temas pwnd, **tamanho da interface** (80% a
   150%) e **efeito CRT** opcional (linhas de tela antiga, sem cobrir o vídeo).
+- **Apertar pra falar** (Configurações → Voz): a voz só sai com a tecla (ou
+  botão lateral do mouse) apertada, valendo com o jogo em foco no Windows e
+  no X11; no Wayland, com o telinha em foco.
+- **Voz mais resistente a perda**: FEC do Opus (um pacote perdido é
+  recuperado pelo seguinte).
 - **Temas** (Configurações → Tema, troca na hora): Escuro (o de sempre),
   Claro, pwnd (preto com fúcsia e roxo neon e verde de terminal, cantos quase
   retos), pwnd claro, Nord e Drácula. O texto dos botões escolhe sozinho entre

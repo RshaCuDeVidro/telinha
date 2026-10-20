@@ -592,6 +592,21 @@ const table = [_][2][]const u8{
     .{ "Não achei as cores no CSS copiado (precisa das variáveis do :root, tipo --bg: #050505).", "Couldn't find the colors in the copied CSS (it needs the :root variables, like --bg: #050505)." },
     .{ "Tema copiado como CSS.", "Theme copied as CSS." },
 
+    // apertar pra falar
+    .{ "MODO", "MODE" },
+    .{ "Detecção de voz", "Voice activity" },
+    .{ "Apertar pra falar", "Push to talk" },
+    .{ "Aperte a tecla (ou um botão lateral do mouse)...", "Press the key (or a mouse side button)..." },
+    .{ "Tecla:", "Key:" },
+    .{ "Espaço", "Space" },
+    .{ "Ctrl esq.", "Left Ctrl" },
+    .{ "Ctrl dir.", "Right Ctrl" },
+    .{ "Shift esq.", "Left Shift" },
+    .{ "Shift dir.", "Right Shift" },
+    .{ "tecla {d}", "key {d}" },
+    .{ "No Wayland a tecla só vale com o telinha em foco (o sistema não deixa ler o teclado de outro programa).", "On Wayland the key only works with telinha focused (the system doesn't let apps read the keyboard of other programs)." },
+    .{ "Vale com qualquer programa em foco (no jogo também). Clique no botão pra trocar a tecla.", "Works with any program focused (in-game too). Click the button to change the key." },
+
     // temas
     .{ "TEMA", "THEME" },
     .{ "Escuro", "Dark" },

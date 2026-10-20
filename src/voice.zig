@@ -8,6 +8,8 @@
 const std = @import("std");
 const audio = @import("audio.zig");
 const aec = @import("aec.zig");
+const sync = @import("sync.zig");
+const ptt = @import("ptt.zig");
 const c = audio.c;
 const rn = @cImport(@cInclude("rnnoise.h"));
 const gpa = std.heap.c_allocator;
@@ -232,7 +234,8 @@ pub const Mic = struct {
         } else if (m.hang > 0) {
             m.hang -= 1;
         }
-        const gate_open = m.hang > 0;
+        // apertar pra falar: só a tecla abre (a detecção de voz não manda)
+        const gate_open = if (ptt.enabled.load(.monotonic)) ptt.pressed(sync.nowUs()) else m.hang > 0;
         // a interface só redesenha quando acende/apaga a bolinha
         if (m.speaking.swap(gate_open, .monotonic) != gate_open) if (on_speaking_change) |f| f();
         if (!gate_open) {

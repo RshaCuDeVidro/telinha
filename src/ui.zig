@@ -30,6 +30,7 @@ const theme = @import("theme.zig");
 const fonts_mod = @import("fonts.zig");
 const pctest = @import("pctest.zig");
 const crash = @import("crash.zig");
+const ptt = @import("ptt.zig");
 const i18n = @import("i18n.zig");
 const tr = i18n.tr;
 const build_options = @import("build_options");
@@ -534,6 +535,7 @@ pub const App = struct {
     pctest_logged: bool = true, // resultado do teste do PC já foi pro log
     crash_prompt: bool = false, // travou da última vez: pergunta se manda o relatório
     crash_sending: bool = false, // mandando o relatório pelo aviso (avisa quando acabar)
+    ptt_capture: bool = false, // esperando a tecla nova do apertar pra falar
     last_saved: [512]u8 = undefined, // último clipe/gravação salvo (modo de testes)
     last_saved_len: usize = 0,
     /// Transmissão com o ponteiro "olha aqui" ligado (o mouse vira o ponteiro).
@@ -583,6 +585,7 @@ pub const App = struct {
         var a: App = .{ .window = window, .cfg = config.load(), .volumes = config.VoiceVolumes.load() };
         i18n.init(config.getStr(&a.cfg.language));
         a.applyTheme();
+        a.applyPtt();
         if (a.cfg.ui_zoom != 100) setZoom(@as(f32, @floatFromInt(a.cfg.ui_zoom)) / 100);
         a.crash_prompt = crash.pending();
         _ = std.fmt.bufPrintZ(&a.port_buf, "{d}", .{a.cfg.host_port}) catch {};
@@ -1841,6 +1844,7 @@ pub const App = struct {
         } else if (a.trim_at > 0) redrawIn(a.trim_at - c.igGetTime());
         audio.mixer.housekeep(); // saída de som parada depois de 5 s de silêncio
         if (debuglog.on()) a.debugTick();
+        a.pollPttKey();
         a.checkClipJobs();
         a.checkChatImages();
         a.n_tile_rects = 0;
@@ -4594,7 +4598,110 @@ pub const App = struct {
         }
     }
 
+    /// Passa a tecla escolhida pro microfone (no formato que o sistema lê de fora).
+    fn applyPtt(a: *App) void {
+        ptt.enabled.store(a.cfg.voice_ptt, .release);
+        if (a.cfg.ptt_mouse >= 0) {
+            ptt.configure(0, a.cfg.ptt_mouse);
+            return;
+        }
+        var sc = a.cfg.ptt_scancode;
+        if (sc == 0 and a.cfg.ptt_key > 0) sc = c.glfwGetKeyScancode(a.cfg.ptt_key);
+        // Linux: o GLFW no Wayland dá o código do evdev; o X11 soma 8
+        const key = if (!sync.is_windows and c.glfwGetPlatform() == c.GLFW_PLATFORM_WAYLAND) sc + 8 else sc;
+        ptt.configure(key, -1);
+    }
+
+    /// Com o telinha em foco, a interface também vê a tecla (o Wayland só deixa assim).
+    fn pollPttKey(a: *App) void {
+        if (!a.cfg.voice_ptt or a.ptt_capture) {
+            ptt.ui_down.store(false, .release);
+            return;
+        }
+        const focused = c.glfwGetWindowAttrib(a.window, c.GLFW_FOCUSED) != 0;
+        const down = focused and if (a.cfg.ptt_mouse >= 0)
+            c.glfwGetMouseButton(a.window, a.cfg.ptt_mouse) == c.GLFW_PRESS
+        else
+            a.cfg.ptt_key > 0 and c.glfwGetKey(a.window, a.cfg.ptt_key) == c.GLFW_PRESS;
+        ptt.ui_down.store(down, .release);
+    }
+
+    /// Nome da tecla pra mostrar ("V", "F5", "Mouse 4").
+    fn pttKeyName(a: *App, buf: []u8) []const u8 {
+        if (a.cfg.ptt_mouse >= 0) return std.fmt.bufPrint(buf, "Mouse {d}", .{a.cfg.ptt_mouse + 1}) catch "?";
+        const k = a.cfg.ptt_key;
+        if (c.glfwGetKeyName(k, a.cfg.ptt_scancode)) |n| {
+            const name = std.mem.span(n);
+            if (name.len == 1) return std.fmt.bufPrint(buf, "{c}", .{std.ascii.toUpper(name[0])}) catch "?";
+            return std.fmt.bufPrint(buf, "{s}", .{name}) catch "?";
+        }
+        if (k >= c.GLFW_KEY_F1 and k <= c.GLFW_KEY_F25) return std.fmt.bufPrint(buf, "F{d}", .{k - c.GLFW_KEY_F1 + 1}) catch "?";
+        const special = [_]struct { k: c_int, n: []const u8 }{
+            .{ .k = c.GLFW_KEY_SPACE, .n = tr("Espaço") },             .{ .k = c.GLFW_KEY_LEFT_CONTROL, .n = tr("Ctrl esq.") },
+            .{ .k = c.GLFW_KEY_RIGHT_CONTROL, .n = tr("Ctrl dir.") }, .{ .k = c.GLFW_KEY_LEFT_ALT, .n = "Alt" },
+            .{ .k = c.GLFW_KEY_RIGHT_ALT, .n = "AltGr" },         .{ .k = c.GLFW_KEY_LEFT_SHIFT, .n = tr("Shift esq.") },
+            .{ .k = c.GLFW_KEY_RIGHT_SHIFT, .n = tr("Shift dir.") },  .{ .k = c.GLFW_KEY_CAPS_LOCK, .n = "Caps Lock" },
+            .{ .k = c.GLFW_KEY_TAB, .n = "Tab" },                  .{ .k = c.GLFW_KEY_INSERT, .n = "Insert" },
+            .{ .k = c.GLFW_KEY_HOME, .n = "Home" },                .{ .k = c.GLFW_KEY_END, .n = "End" },
+            .{ .k = c.GLFW_KEY_PAGE_UP, .n = "Page Up" },          .{ .k = c.GLFW_KEY_PAGE_DOWN, .n = "Page Down" },
+            .{ .k = c.GLFW_KEY_PAUSE, .n = "Pause" },              .{ .k = c.GLFW_KEY_SCROLL_LOCK, .n = "Scroll Lock" },
+        };
+        for (special) |sp| if (sp.k == k) return sp.n;
+        return i18n.bufPrint(buf, "tecla {d}", .{k}) catch "?";
+    }
+
+    /// Esperando a tecla nova: a primeira apertada (ou botão do meio/lateral do mouse).
+    fn capturePttKey(a: *App) void {
+        if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
+            a.ptt_capture = false;
+            return;
+        }
+        var k: c_int = c.GLFW_KEY_SPACE;
+        while (k <= c.GLFW_KEY_LAST) : (k += 1) {
+            if (k == c.GLFW_KEY_ESCAPE) continue;
+            if (c.glfwGetKey(a.window, k) != c.GLFW_PRESS) continue;
+            a.cfg.ptt_key = k;
+            a.cfg.ptt_scancode = c.glfwGetKeyScancode(k);
+            a.cfg.ptt_mouse = -1;
+            a.ptt_capture = false;
+            break;
+        }
+        for ([_]c_int{ 2, 3, 4 }) |btn| {
+            if (a.ptt_capture and c.glfwGetMouseButton(a.window, btn) == c.GLFW_PRESS) {
+                a.cfg.ptt_mouse = btn;
+                a.ptt_capture = false;
+            }
+        }
+        if (!a.ptt_capture) {
+            a.applyPtt();
+            config.save(&a.cfg);
+        } else redrawIn(0.05);
+    }
+
     fn settingsVoice(a: *App, w: f32) void {
+        fieldLabel("MODO");
+        var mode: i32 = if (a.cfg.voice_ptt) 1 else 0;
+        if (segmented("voicemode", &.{ "Detecção de voz", "Apertar pra falar" }, &mode, w)) {
+            a.cfg.voice_ptt = mode == 1;
+            a.applyPtt();
+            config.save(&a.cfg);
+        }
+        if (a.cfg.voice_ptt) {
+            c.igDummy(v2(0, S(6)));
+            if (a.ptt_capture) a.capturePttKey();
+            var kb: [32]u8 = undefined;
+            const label = if (a.ptt_capture) fmtZ("{s}###pttkey", .{tr("Aperte a tecla (ou um botão lateral do mouse)...")}) else fmtZ("{s}  {s}###pttkey", .{ tr("Tecla:"), a.pttKeyName(&kb) });
+            if (secondaryButton(label, v2(w, S(36)))) a.ptt_capture = true;
+            pushFont(font_regular, 12.5);
+            c.igPushTextWrapPos(c.igGetCursorPosX() + w);
+            if (!sync.is_windows and c.glfwGetPlatform() == c.GLFW_PLATFORM_WAYLAND)
+                textColored(col.yellow, tr("No Wayland a tecla só vale com o telinha em foco (o sistema não deixa ler o teclado de outro programa)."))
+            else
+                textColored(col.faint, tr("Vale com qualquer programa em foco (no jogo também). Clique no botão pra trocar a tecla."));
+            c.igPopTextWrapPos();
+            popFont();
+        }
+        c.igDummy(v2(0, S(12)));
         fieldLabel("MICROFONE");
         {
             const cur = config.getStr(&a.cfg.mic_device);
@@ -5127,8 +5234,8 @@ pub const App = struct {
         try w.print(",\"fps\":{d},\"quality\":{d},\"mode\":{d},\"resolution\":{d},\"cursor\":{},\"audio\":{},\"hardware\":{},\"stats_always\":{},\"show_chat\":{}", .{
             cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.stats_always, cf.show_chat,
         });
-        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_exclude\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f},\"theme\":{f},\"custom_theme\":{f},\"auto_quality\":{},\"resolution_idx\":{d},\"ui_zoom\":{d},\"crt\":{}}}", .{
-            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), s(config.getStr(&cf.audio_exclude)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)), s(config.getStr(&cf.theme)), s(config.getStr(&cf.custom_theme)), cf.auto_quality, cf.resolution, cf.ui_zoom, cf.crt,
+        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_exclude\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f},\"theme\":{f},\"custom_theme\":{f},\"auto_quality\":{},\"resolution_idx\":{d},\"ui_zoom\":{d},\"crt\":{},\"voice_ptt\":{},\"ptt_key\":{d},\"ptt_mouse\":{d}}}", .{
+            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), s(config.getStr(&cf.audio_exclude)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)), s(config.getStr(&cf.theme)), s(config.getStr(&cf.custom_theme)), cf.auto_quality, cf.resolution, cf.ui_zoom, cf.crt, cf.voice_ptt, cf.ptt_key, cf.ptt_mouse,
         });
         try w.print(",\"lang\":{f}", .{s(@tagName(i18n.get()))});
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);
@@ -5156,6 +5263,7 @@ pub const App = struct {
         try w.writeAll("]");
         var ub: [32]u8 = undefined;
         try w.print(",\"opened\":{f},\"update\":{f},\"update_latest\":{f}", .{ s(qa_opened[0..qa_opened_len]), s(@tagName(update.getState())), s(update.latest(&ub)) });
+        try w.print(",\"speaking\":{}", .{if (a.mic) |m| m.speaking.load(.monotonic) else false});
         try w.print(",\"pctest\":{f},\"crash_pending\":{},\"crash_prompt\":{}", .{ s(@tagName(pctest.getState())), crash.pending(), a.crash_prompt });
         var dlb: [512]u8 = undefined;
         try w.print(",\"debug_on\":{},\"debug_size\":{d},\"debug_send\":{f},\"debug_result\":{f}", .{ debuglog.on(), debuglog.fileSize(), s(@tagName(debuglog.sendState())), s(debuglog.sendResult(&dlb)) });

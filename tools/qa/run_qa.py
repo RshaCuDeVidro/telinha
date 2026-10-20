@@ -453,6 +453,57 @@ def microfone():
 
 
 @test
+def apertar_pra_falar():
+    """Apertar pra falar: escolhe a tecla nas configurações; segurando, a voz sai (mesmo com o microfone em silêncio); soltando, para."""
+    with Session("ptt", audio=True) as s:
+        s.fake_mic()
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)])
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}"])
+        a.wait(lambda st: st["status"] == "connected", 10, "entrar")
+        b.wait(lambda st: st["status"] == "connected", 10, "o Bruno entrar")
+        a.click("##mic")
+        a.wait(lambda st: st["mic"], 5, "ligar o microfone")
+        time.sleep(1)
+        expect(not a.state()["speaking"], "o portão abriu sozinho com o microfone em silêncio")
+        a.click("##gear")
+        a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        a.click("##cfg-voz")
+        a.click("Apertar pra falar")
+        a.wait(lambda st: st["cfg"]["voice_ptt"], 3, "ligar o apertar pra falar")
+        a.click("##pttkey")
+        time.sleep(0.3)
+        a.key("g")
+        a.wait(lambda st: st["cfg"]["ptt_key"] == 71, 3, "escolher a tecla G")
+        settings_click(a, "Fechar")
+        a.wait(lambda st: not st["settings_modal"], 3, "fechar as configurações")
+        time.sleep(0.5)
+        expect(not a.state()["speaking"], "falando sem apertar a tecla")
+        a.key_down("g")
+        try:
+            a.wait(lambda st: st["speaking"], 3, "a voz sair com a tecla apertada")
+            time.sleep(1)
+            expect(a.state()["speaking"], "parou de falar com a tecla ainda apertada")
+        finally:
+            a.key_up("g")
+        a.wait(lambda st: not st["speaking"], 3, "parar de falar ao soltar")
+        # sem o telinha em foco (como com o jogo na frente): o teclado não vai
+        # pra janela nenhuma; só a leitura global (XQueryKeymap) vê a tecla
+        from Xlib import X as XX
+        a.d.set_input_focus(XX.NONE, XX.RevertToNone, XX.CurrentTime)
+        a.d.sync()
+        time.sleep(0.5)
+        a.key_down("g")
+        try:
+            a.wait(lambda st: st["speaking"], 3, "a voz sair com outro programa em foco")
+        finally:
+            a.key_up("g")
+        a.wait(lambda st: not st["speaking"], 3, "parar de falar ao soltar (sem foco)")
+        ini = open(os.path.join(a.cfg, "telinha", "config.ini")).read()
+        expect("voice_ptt=1" in ini and "ptt_key=71" in ini, "não salvou o apertar pra falar")
+
+
+@test
 def convite_colado():
     """Convite copiado (em outro app) já aparece preenchido em 'Entrar numa sala' ao abrir o telinha."""
     with Session("colar") as s:

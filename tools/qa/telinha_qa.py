@@ -519,6 +519,15 @@ class App:
         self.d.sync()
         time.sleep(0.1)
 
+    def key_down(self, name):
+        """Segura a tecla (até key_up): pro apertar pra falar."""
+        xtest.fake_input(self.d, X.KeyPress, self.d.keysym_to_keycode(XK.string_to_keysym(name)))
+        self.d.sync()
+
+    def key_up(self, name):
+        xtest.fake_input(self.d, X.KeyRelease, self.d.keysym_to_keycode(XK.string_to_keysym(name)))
+        self.d.sync()
+
     def type(self, text):
         for ch in text:
             if ch == " ":

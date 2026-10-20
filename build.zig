@@ -203,6 +203,9 @@ fn addAudio(b: *std.Build, deps: Deps, mod: *std.Build.Module, target: std.Build
     mod.addIncludePath(deps.miniaudio.path("."));
     mod.addIncludePath(b.path("src/c"));
     mod.addCSourceFile(.{ .file = b.path("src/c/audio.c"), .flags = &.{ "-O2", "-Wno-everything" } });
+    // apertar pra falar (a voz lê a tecla na thread do microfone)
+    mod.addCSourceFile(.{ .file = b.path("src/c/ptt.c"), .flags = &.{"-O2"} });
+    if (target.result.os.tag == .linux) mod.linkSystemLibrary("x11", .{});
     addRnnoise(b, deps, mod, target, optimize);
     addSpeexdsp(b, deps, mod, target, optimize);
     // Linux: som dos aplicativos pelo grafo do PipeWire (sem o próprio telinha)

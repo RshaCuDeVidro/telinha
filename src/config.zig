@@ -58,6 +58,10 @@ pub const Config = struct {
     custom_theme: [96]u8 = zstr("", 96), // cores do tema personalizado (theme.encodeBase)
     auto_quality: bool = true, // transmitindo: baixa a resolução sozinho se o PC não der conta
     ui_zoom: i32 = 100, // tamanho da interface (%), por cima da escala da tela
+    voice_ptt: bool = false, // voz: apertar pra falar (em vez da detecção de voz)
+    ptt_key: i32 = 86, // tecla do GLFW (86 = V); 0 = é botão do mouse
+    ptt_scancode: i32 = 0, // scancode da tecla (0 = descobre pela tecla)
+    ptt_mouse: i32 = -1, // botão do mouse (2 = meio, 3/4 = laterais); -1 = é tecla
     crt: bool = false, // efeito de tela antiga (linhas) por cima da interface
 };
 
@@ -201,6 +205,14 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         cfg.camera_res = std.math.clamp(int, 0, 2);
     } else if (std.mem.eql(u8, k, "language")) {
         setStr(&cfg.language, v);
+    } else if (std.mem.eql(u8, k, "voice_ptt")) {
+        cfg.voice_ptt = int != 0;
+    } else if (std.mem.eql(u8, k, "ptt_key")) {
+        cfg.ptt_key = int;
+    } else if (std.mem.eql(u8, k, "ptt_scancode")) {
+        cfg.ptt_scancode = int;
+    } else if (std.mem.eql(u8, k, "ptt_mouse")) {
+        cfg.ptt_mouse = std.math.clamp(int, -1, 7);
     } else if (std.mem.eql(u8, k, "ui_zoom")) {
         cfg.ui_zoom = std.math.clamp(int, 80, 150);
     } else if (std.mem.eql(u8, k, "crt")) {
@@ -254,8 +266,8 @@ pub fn save(cfg: *const Config) void {
     }) catch return;
     _ = c.fwrite(s.ptr, 1, s.len, f);
     var more: [1280]u8 = undefined;
-    const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\ncheck_updates={d}\naudio_app={s}\nlanguage={s}\ntheme={s}\ncustom_theme={s}\nauto_quality={d}\nui_zoom={d}\ncrt={d}\ndebug_log={d}\ndebug_send={d}\ndebug_webhook={s}\n", .{
-        cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res, @intFromBool(cfg.check_updates), getStr(&cfg.audio_app), getStr(&cfg.language), getStr(&cfg.theme), getStr(&cfg.custom_theme), @intFromBool(cfg.auto_quality), cfg.ui_zoom, @intFromBool(cfg.crt), @intFromBool(cfg.debug_log), cfg.debug_send, getStr(&cfg.debug_webhook),
+    const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\ncheck_updates={d}\naudio_app={s}\nlanguage={s}\ntheme={s}\ncustom_theme={s}\nauto_quality={d}\nui_zoom={d}\ncrt={d}\nvoice_ptt={d}\nptt_key={d}\nptt_scancode={d}\nptt_mouse={d}\ndebug_log={d}\ndebug_send={d}\ndebug_webhook={s}\n", .{
+        cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res, @intFromBool(cfg.check_updates), getStr(&cfg.audio_app), getStr(&cfg.language), getStr(&cfg.theme), getStr(&cfg.custom_theme), @intFromBool(cfg.auto_quality), cfg.ui_zoom, @intFromBool(cfg.crt), @intFromBool(cfg.voice_ptt), cfg.ptt_key, cfg.ptt_scancode, cfg.ptt_mouse, @intFromBool(cfg.debug_log), cfg.debug_send, getStr(&cfg.debug_webhook),
     }) catch return;
     _ = c.fwrite(m.ptr, 1, m.len, f);
     var excl: [512]u8 = cfg.audio_exclude;
