@@ -34,6 +34,33 @@ Conversa com a 3.0 (os campos novos são opcionais).
   A mensagem de "versão diferente" agora diz quem precisa atualizar.
 - Configurações e janela de compartilhar rolam em tela baixa (os botões do fim
   não somem mais).
+- **Interface em inglês** (automático pelo idioma do sistema, ou escolhido nas
+  configurações). Os textos que vêm do servidor (avisos do chat, motivos de
+  recusa) também são traduzidos.
+
+**Desempenho e memória** (medido antes/depois nos mesmos cenários):
+
+- Transmitindo sem ninguém assistindo: nada é codificado nem enviado (a
+  captura cai pra 5 q/s, só pra prévia) — de ~312% pra ~23% de CPU no teste.
+- Som, voz e quadros que chegam não redesenham mais a interface inteira (só o
+  quadro já decodificado, e quem começa a falar); animações, avisos e contagens
+  pedem o próximo redesenho em vez de redesenhar sem parar; minimizado não
+  desenha. Assistindo uma tela parada com som: ~47% menos CPU.
+- Sala parada: de ~246 pra ~65 despertares/s (UDP dorme até ter trabalho; ping,
+  UPnP e saída de som acordam bem menos; a saída de som pausa depois de 5 s de
+  silêncio, deixando placa e fone Bluetooth dormirem).
+- A miniatura da própria tela só é gerada quando aparece, a 15 q/s, e a
+  textura é atualizada no lugar; o cancelamento de eco não roda com a caixa
+  muda; o chat só monta as linhas visíveis.
+- Memória: a sala que você fecha é liberada de verdade (antes ficava com o
+  histórico e as imagens); um contexto CUDA compartilhado em vez de um por
+  transmissão (~37 MB a menos cada); a glibc devolve a memória depois de parar
+  transmissão/câmera (antes crescia ~15 MB a cada liga/desliga); imagens do
+  chat em miniatura (a inteira só na tela cheia) e no máximo 24 MB guardados;
+  o buffer de clipes respeita o teto mesmo sem quadro-chave novo.
+- Rede: a escritora junta numa chamada só o que já está na fila; buffers que
+  cresceram por causa de uma mensagem grande voltam ao normal.
+- Windows: o timer de 1 ms só fica ligado transmitindo ou hospedando.
 
 ## 3.0.0
 
