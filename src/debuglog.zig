@@ -13,6 +13,7 @@ const sync = @import("sync.zig");
 const config = @import("config.zig");
 const mp4 = @import("mp4.zig");
 const proto = @import("proto.zig");
+const crash = @import("crash.zig");
 const gpa = std.heap.c_allocator;
 const cio = mp4.cio;
 
@@ -339,15 +340,22 @@ fn setResult(st: SendState, msg: []const u8) void {
     send_state.store(st, .release);
 }
 
-const Job = struct { method: Method, url: [512]u8, url_len: usize, who: [64]u8, who_len: usize };
+/// O que mandar: o log de depuração ou o relatório de travamento (com o fim do log junto).
+pub const What = enum(u8) { log, crash };
+
+const Job = struct { method: Method, what: What, url: [512]u8, url_len: usize, who: [64]u8, who_len: usize };
 
 /// Manda o log (numa thread). `webhook`: a URL (só pro método webhook).
 /// `who`: o nome de quem manda (vai na mensagem do webhook).
 pub fn send(method: Method, webhook: []const u8, who: []const u8) error{ BadUrl, Busy, OutOfMemory }!void {
+    return sendWhat(method, .log, webhook, who);
+}
+
+pub fn sendWhat(method: Method, what: What, webhook: []const u8, who: []const u8) error{ BadUrl, Busy, OutOfMemory }!void {
     if (sendState() == .sending) return error.Busy;
     if (method == .webhook and !validUrl(webhook)) return error.BadUrl;
     const j = try gpa.create(Job);
-    j.* = .{ .method = method, .url = undefined, .url_len = @min(webhook.len, 512), .who = undefined, .who_len = @min(who.len, 64) };
+    j.* = .{ .method = method, .what = what, .url = undefined, .url_len = @min(webhook.len, 512), .who = undefined, .who_len = @min(who.len, 64) };
     @memcpy(j.url[0..j.url_len], webhook[0..j.url_len]);
     @memcpy(j.who[0..j.who_len], who[0..j.who_len]);
     send_state.store(.sending, .release);
@@ -374,7 +382,18 @@ fn sendJob(j: *Job) void {
     var sb: [600]u8 = undefined;
     const dir_end = std.mem.lastIndexOfAny(u8, p, "/\\") orelse return setResult(.failed, "caminho estranho");
     const sp = std.fmt.bufPrintZ(&sb, "{s}{s}", .{ p[0 .. dir_end + 1], send_name }) catch return setResult(.failed, "caminho longo demais");
-    snapshot(p, sp, if (j.method == .webhook) max_webhook else max_gofile) catch return setResult(.failed, "não consegui ler o log (está vazio?)");
+    const max: usize = if (j.method == .webhook) max_webhook else max_gofile;
+    if (j.what == .crash) {
+        // relatório: o que deu errado + o fim do log (se tiver)
+        var cb2: [600]u8 = undefined;
+        const cp = crash.path(&cb2) orelse return setResult(.failed, "sem pasta de configuração");
+        const w = mp4.openFile(sp, "wb") orelse return setResult(.failed, "não consegui ler o relatório");
+        defer _ = cio.fclose(w);
+        appendTail(w, cp, 1024 * 1024) catch return setResult(.failed, "não consegui ler o relatório");
+        const sep = "\n\n--- fim do log de depuração (se estava ligado) ---\n";
+        _ = cio.fwrite(sep.ptr, 1, sep.len, w);
+        appendTail(w, p, max - 1024 * 1024) catch {};
+    } else snapshot(p, sp, max) catch return setResult(.failed, "não consegui ler o log (está vazio?)");
     var out: [8192]u8 = undefined;
     const url_z = blk: {
         var ub: [600]u8 = undefined;
@@ -385,8 +404,8 @@ fn sendJob(j: *Job) void {
         break :blk std.fmt.bufPrintZ(&ub, "{s}", .{j.url[0..j.url_len]}) catch unreachable;
     };
     var cb: [256]u8 = undefined;
-    const content = std.fmt.bufPrintZ(&cb, "Log de depuração do telinha {s} ({s})", .{ proto.app_version, j.who[0..j.who_len] }) catch "";
-    const code = c.dbg_http_post_file(url_z.ptr, sp.ptr, "file", "telinha-debug.txt", if (j.method == .webhook) content.ptr else "", &out, out.len);
+    const content = std.fmt.bufPrintZ(&cb, "{s} do telinha {s} ({s})", .{ if (j.what == .crash) "Relatório de travamento" else "Log de depuração", proto.app_version, j.who[0..j.who_len] }) catch "";
+    const code = c.dbg_http_post_file(url_z.ptr, sp.ptr, "file", if (j.what == .crash) "telinha-travou.txt" else "telinha-debug.txt", if (j.method == .webhook) content.ptr else "", &out, out.len);
     const body = std.mem.sliceTo(&out, 0);
     if (code < 200 or code >= 300) {
         var eb: [200]u8 = undefined;
@@ -398,7 +417,8 @@ fn sendJob(j: *Job) void {
         return setResult(.failed, msg);
     }
     if (j.method == .webhook) {
-        line("log enviado pro webhook", .{});
+        line("{s} enviado pro webhook", .{if (j.what == .crash) "relatório de travamento" else "log"});
+        if (j.what == .crash) crash.dismiss();
         return setResult(.done, "");
     }
     // gofile: {"status":"ok","data":{"downloadPage":"https://gofile.io/d/xxxx",...}}
@@ -406,7 +426,8 @@ fn sendJob(j: *Job) void {
         line("gofile respondeu sem link: {s}", .{body[0..@min(body.len, 300)]});
         return setResult(.failed, "o gofile não devolveu o link");
     };
-    line("log enviado: {s}", .{link});
+    line("{s} enviado: {s}", .{ if (j.what == .crash) "relatório de travamento" else "log", link });
+    if (j.what == .crash) crash.dismiss();
     setResult(.done, link);
 }
 
@@ -423,6 +444,13 @@ pub fn gofileLink(body: []const u8) ?[]const u8 {
 
 /// Copia o fim do log (até `max` bytes) pra outro arquivo.
 fn snapshot(src: [:0]const u8, dst: [:0]const u8, max: usize) !void {
+    const w = mp4.openFile(dst, "wb") orelse return error.Open;
+    defer _ = cio.fclose(w);
+    try appendTail(w, src, max);
+}
+
+/// Copia o fim de `src` (até `max` bytes) no fim de `w`.
+fn appendTail(w: *cio.FILE, src: [:0]const u8, max: usize) !void {
     const f = mp4.openFile(src, "rb") orelse return error.Open;
     defer _ = cio.fclose(f);
     _ = cio.fseek(f, 0, cio.SEEK_END);
@@ -430,8 +458,6 @@ fn snapshot(src: [:0]const u8, dst: [:0]const u8, max: usize) !void {
     if (size == 0) return error.Empty;
     const n = @min(size, max);
     _ = cio.fseek(f, @intCast(size - n), cio.SEEK_SET);
-    const w = mp4.openFile(dst, "wb") orelse return error.Open;
-    defer _ = cio.fclose(w);
     if (n < size) {
         const msg = "[... começo do log cortado pro envio ...]\n";
         _ = cio.fwrite(msg.ptr, 1, msg.len, w);

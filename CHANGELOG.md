@@ -37,6 +37,22 @@ Conversa com a 3.0 (os campos novos são opcionais).
 - **Interface em inglês** (automático pelo idioma do sistema, ou escolhido nas
   configurações). Os textos que vêm do servidor (avisos do chat, motivos de
   recusa) também são traduzidos.
+- **Configurações em páginas** (Geral, Aparência, Voz, Câmera, Desempenho,
+  Depuração, Sobre), numa janela mais larga com barra lateral.
+- **Ícone novo**: um husky espiando por cima da tela (um olho azul e um
+  castanho).
+- **Excluir programas do som**: compartilhando "todo o som", dá pra deixar
+  programas de fora (o Discord, por exemplo, pra quem assiste não ouvir a
+  própria voz de volta). No Windows o sistema só deixa excluir um processo
+  por captura, então o telinha captura cada programa tocando e mistura.
+- **Qualidade automática**: se o PC não dá conta do fps escolhido, a
+  transmissão desce a resolução um degrau (1080p → 900p → 720p...) e volta
+  sozinha quando sobra folga; quem transmite é avisado. Desligável em
+  Desempenho.
+- **Testar meu PC** (Desempenho): uns segundos medindo encoder na CPU e na
+  placa e o decoder, com a resolução/fps sugeridos e um botão pra usar.
+- **Relatório de travamento**: se o app cair, ele anota o motivo e a pilha;
+  na próxima abertura pergunta se manda (gofile ou webhook, igual ao log).
 - **Temas** (Configurações → Tema, troca na hora): Escuro (o de sempre),
   Claro, pwnd (preto com fúcsia e roxo neon e verde de terminal, cantos quase
   retos), pwnd claro, Nord e Drácula. O texto dos botões escolhe sozinho entre

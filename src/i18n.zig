@@ -557,6 +557,22 @@ const table = [_][2][]const u8{
     .{ "Usar a sugestão", "Use the suggestion" },
     .{ "Pronto: a próxima transmissão sai em {d}p a {d} q/s.", "Done: the next stream goes out at {d}p, {d} fps." },
 
+    // relatório de travamento
+    .{ "O telinha travou", "telinha crashed" },
+    .{ "O telinha fechou do nada da última vez", "telinha closed unexpectedly last time" },
+    .{ "Dá pra mandar o relatório (o que deu errado e, se estava ligado, o fim do log de depuração) pra ajudar a consertar. Ele não tem senha nenhuma.", "You can send the report (what went wrong and, if it was on, the end of the debug log) to help fix it. It contains no passwords." },
+    .{ "Agora não", "Not now" },
+    .{ "{s}  Mandar", "{s}  Send" },
+    .{ "Já tem um envio em andamento; tenta de novo daqui a pouco.", "Something is already being sent; try again in a moment." },
+    .{ "Não consegui mandar o relatório: {s}", "Couldn't send the report: {s}" },
+    .{ "Relatório mandado pro webhook. Valeu!", "Report sent to the webhook. Thanks!" },
+    .{ "Relatório mandado: {s} (link copiado, manda pra quem vai consertar)", "Report sent: {s} (link copied, send it to whoever will fix it)" },
+    .{ "RELATÓRIO DE TRAVAMENTO", "CRASH REPORT" },
+    .{ "Tem um relatório do último travamento, ainda não mandado.", "There's a report from the last crash that hasn't been sent." },
+    .{ "{s}  Mandar o relatório", "{s}  Send the report" },
+    .{ "Nenhum travamento registrado.", "No crash recorded." },
+    .{ "não consegui ler o relatório", "couldn't read the report" },
+
     // temas
     .{ "TEMA", "THEME" },
     .{ "Escuro", "Dark" },

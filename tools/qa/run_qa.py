@@ -1180,6 +1180,53 @@ def testar_pc():
         a.toasted("próxima transmissão")
 
 
+def crash_run(s, name, num, how, wine=False):
+    """Abre o app com TELINHA_TESTE_TRAVAR e espera ele cair (sem passar pela janela)."""
+    import subprocess
+    from telinha_qa import App, APP, EXE
+    a = App(s, name, num, [], (1280, 760), {"TELINHA_TESTE_TRAVAR": how}, False)
+    if wine:
+        a.wine = True
+    a.d = s.display(a.num, "1280x760")
+    cmd = (["wine", EXE] if wine else [APP]) + ["--janela", "0,0,1280,760", "--nome", "Ana"]
+    p = s.spawn(name + "-trava", cmd, a.env())
+    t0 = time.time()
+    while p.poll() is None and time.time() - t0 < (60 if wine else 15):
+        time.sleep(0.2)
+    expect(p.poll() is not None, "o app não caiu")
+    log(f"caiu com código {p.returncode}")
+    return a
+
+
+@test
+def relatorio_de_travamento():
+    """O app cai (falha de memória e panic): na próxima abertura pergunta se manda o relatório; mandando, o gofile (de mentira) recebe o motivo e a pilha."""
+    with Session("travou") as s:
+        gf = port()
+        s.spawn("gofile", [sys.executable, os.path.join(os.path.dirname(__file__), "mockupload.py"), str(gf), "gofile", os.path.join(s.base, "gofile")], dict(os.environ))
+        a = crash_run(s, "a", 91, "1")
+        rep = open(os.path.join(a.cfg, "telinha", "telinha-travou.txt"), errors="replace").read()
+        log("relatório:\n" + rep[:1500])
+        expect("SIGSEGV" in rep and "pilha:" in rep and "telinha 3." in rep, "relatório incompleto")
+        b = s.app("a", 91, ["--nome", "Ana"], extra_env={"TELINHA_GOFILE_URL": f"http://127.0.0.1:{gf}/uploadfile"})
+        b.wait(lambda st: st["crash_prompt"] and st["crash_pending"], 10, "o aviso de que travou")
+        b.click("##travoumandar")
+        b.toasted("Relatório mandado", 30)
+        b.wait(lambda st: not st["crash_pending"] and not st["crash_prompt"], 5, "o relatório sair da fila")
+        body = open(os.path.join(s.base, "gofile", "post1.bin"), "rb").read()
+        expect(b"SIGSEGV" in body and b"telinha-travou.txt" in body, f"o gofile não recebeu o relatório: {body[:300]!r}")
+        b.stop()
+        # panic do Zig: a mensagem vai junto; "Agora não" não pergunta de novo
+        crash_run(s, "a", 91, "panic")
+        rep = open(os.path.join(a.cfg, "telinha", "telinha-travou.txt"), errors="replace").read()
+        expect("teste de travamento" in rep and "SIGABRT" in rep, f"panic sem a mensagem: {rep[:600]}")
+        c2 = s.app("a", 91, ["--nome", "Ana"])
+        c2.wait(lambda st: st["crash_prompt"], 10, "o aviso de novo")
+        c2.click("##travounao")
+        c2.wait(lambda st: not st["crash_prompt"] and not st["crash_pending"], 5, "dispensar")
+        expect(os.path.exists(os.path.join(a.cfg, "telinha", "telinha-travou-antigo.txt")), "o relatório dispensado sumiu (devia ficar o antigo)")
+
+
 @test
 def windows_exe():
     """O telinha.exe (wine isolado): entra, assiste, lista janelas, compartilha só uma janela e a câmera avisa que não tem."""
@@ -1255,6 +1302,18 @@ def windows_log_depuracao():
         expect(st["debug_send"] == "done" and st["debug_result"] == "https://gofile.io/d/teste1", f"envio: {st['debug_send']} {st['debug_result']}")
         ok, body = multipart_has_log(os.path.join(s.base, "gofile", "post1.bin"))
         expect(ok, f"o gofile não recebeu o log do .exe: {body[:300]!r}")
+
+
+@test
+def windows_relatorio_de_travamento():
+    """O .exe (wine) cai: o filtro de exceção do Windows escreve o motivo e a pilha (módulo+deslocamento)."""
+    with Session("wintravou") as s:
+        a = crash_run(s, "w", 96, "1", wine=True)
+        path = os.path.join(a.dir, "appdata", "telinha-travou.txt")
+        expect(os.path.exists(path), "o .exe não escreveu o relatório")
+        rep = open(path, errors="replace").read()
+        log("relatório do .exe:\n" + rep[:1500])
+        expect("acesso inválido à memória" in rep and "telinha.exe+0x" in rep and "pilha:" in rep, "relatório do .exe incompleto")
 
 
 @test

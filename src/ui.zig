@@ -28,6 +28,7 @@ const chatsend = @import("chatsend.zig");
 const debuglog = @import("debuglog.zig");
 const theme = @import("theme.zig");
 const pctest = @import("pctest.zig");
+const crash = @import("crash.zig");
 const i18n = @import("i18n.zig");
 const tr = i18n.tr;
 const build_options = @import("build_options");
@@ -506,6 +507,8 @@ pub const App = struct {
     settings_page: SettingsPage = .geral,
     auto_cap_seen: u32 = 0, // último teto da qualidade automática avisado
     pctest_logged: bool = true, // resultado do teste do PC já foi pro log
+    crash_prompt: bool = false, // travou da última vez: pergunta se manda o relatório
+    crash_sending: bool = false, // mandando o relatório pelo aviso (avisa quando acabar)
     last_saved: [512]u8 = undefined, // último clipe/gravação salvo (modo de testes)
     last_saved_len: usize = 0,
     /// Transmissão com o ponteiro "olha aqui" ligado (o mouse vira o ponteiro).
@@ -555,6 +558,7 @@ pub const App = struct {
         var a: App = .{ .window = window, .cfg = config.load(), .volumes = config.VoiceVolumes.load() };
         i18n.init(config.getStr(&a.cfg.language));
         setTheme(config.getStr(&a.cfg.theme));
+        a.crash_prompt = crash.pending();
         _ = std.fmt.bufPrintZ(&a.port_buf, "{d}", .{a.cfg.host_port}) catch {};
         if (a.cfg.check_updates) update.checkAsync(build_options.repo, version_string);
         voice.on_speaking_change = wakeUi;
@@ -1845,6 +1849,8 @@ pub const App = struct {
             .home => a.drawHome(vp.*.Size),
             .room => a.drawRoom(vp.*.Size),
         }
+        if (a.crash_prompt and !a.settings_modal and !a.share_modal and !a.leave_confirm) a.drawCrashPrompt();
+        a.watchCrashSend();
         a.drawToasts(vp.*.Size);
         c.igEnd();
     }
@@ -2033,6 +2039,85 @@ pub const App = struct {
         a.settings_modal = false;
         a.share_modal = false;
         a.leave_confirm = false;
+    }
+
+    /// O telinha travou da última vez: manda o relatório? (gofile, ou o
+    /// webhook se ele estiver escolhido e configurado em Depuração)
+    fn drawCrashPrompt(a: *App) void {
+        _ = c.igOpenPopup_Str(tr("O telinha travou###travou"), 0);
+        const vp = c.igGetMainViewport();
+        c.igSetNextWindowPos(v2(vp.*.Pos.x + vp.*.Size.x / 2, vp.*.Pos.y + vp.*.Size.y / 2), c.ImGuiCond_Always, v2(0.5, 0.5));
+        c.igSetNextWindowSize(v2(S(440), 0), c.ImGuiCond_Always);
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(24), S(22)));
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, S(10) * col.round);
+        c.igPushStyleColor_U32(c.ImGuiCol_PopupBg, col.bg_main);
+        c.igPushStyleColor_U32(c.ImGuiCol_ModalWindowDimBg, rgba(0x000000, 170));
+        defer {
+            c.igPopStyleColor(2);
+            c.igPopStyleVar(2);
+        }
+        if (!c.igBeginPopupModal(tr("O telinha travou###travou"), null, c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoResize | c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_AlwaysAutoResize)) return;
+        defer c.igEndPopup();
+        const w = S(392);
+        pushFont(font_bold, 19);
+        textColored(col.header, tr("O telinha fechou do nada da última vez"));
+        popFont();
+        c.igDummy(v2(0, S(6)));
+        c.igPushTextWrapPos(c.igGetCursorPosX() + w);
+        pushFont(font_regular, 14);
+        textColored(col.muted, tr("Dá pra mandar o relatório (o que deu errado e, se estava ligado, o fim do log de depuração) pra ajudar a consertar. Ele não tem senha nenhuma."));
+        popFont();
+        c.igPopTextWrapPos();
+        c.igDummy(v2(0, S(18)));
+        const bw = (w - S(10)) / 2;
+        if (secondaryButton(tr("Agora não###travounao"), v2(bw, S(40))) or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
+            crash.dismiss();
+            a.crash_prompt = false;
+            c.igCloseCurrentPopup();
+        }
+        c.igSameLine(0, S(10));
+        if (primaryButton(fmtZ("{s}  Mandar###travoumandar", .{ic.send}), v2(bw, S(40)), col.blurple, col.blurple_hover, col.blurple_active)) {
+            a.sendCrashReport();
+            a.crash_prompt = false;
+            c.igCloseCurrentPopup();
+        }
+    }
+
+    fn sendCrashReport(a: *App) void {
+        const hook = config.getStr(&a.cfg.debug_webhook);
+        const method: debuglog.Method = if (a.cfg.debug_send == 1 and debuglog.validUrl(hook)) .webhook else .gofile;
+        a.debug_sent_via = method;
+        debuglog.sendWhat(method, .crash, hook, config.getStr(&a.cfg.name)) catch {
+            a.toast("Já tem um envio em andamento; tenta de novo daqui a pouco.", .{}, true);
+            return;
+        };
+        a.crash_sending = true;
+    }
+
+    /// O relatório mandado pelo aviso terminou: diz como foi (e copia o link).
+    fn watchCrashSend(a: *App) void {
+        if (!a.crash_sending) return;
+        switch (debuglog.sendState()) {
+            .sending, .idle => redrawIn(0.25),
+            .failed => {
+                a.crash_sending = false;
+                var rb: [512]u8 = undefined;
+                var eb: [300]u8 = undefined;
+                a.toast("Não consegui mandar o relatório: {s}", .{i18n.dynamic(debuglog.sendResult(&rb), &eb)}, true);
+            },
+            .done => {
+                a.crash_sending = false;
+                var rb: [520]u8 = undefined;
+                const link = debuglog.sendResult(rb[0..512]);
+                if (link.len == 0) {
+                    a.toast("Relatório mandado pro webhook. Valeu!", .{}, false);
+                } else {
+                    rb[link.len] = 0;
+                    c.igSetClipboardText(@ptrCast(&rb));
+                    a.toast("Relatório mandado: {s} (link copiado, manda pra quem vai consertar)", .{link}, false);
+                }
+            },
+        }
     }
 
     fn drawLeaveConfirm(a: *App) void {
@@ -4764,8 +4849,21 @@ pub const App = struct {
         }
         popFont();
         c.igPopTextWrapPos();
-    }
 
+        // relatório de travamento (o app oferece mandar ao abrir; aqui dá pra mandar depois)
+        c.igDummy(v2(0, S(16)));
+        fieldLabel("RELATÓRIO DE TRAVAMENTO");
+        pushFont(font_regular, 13);
+        if (crash.pending()) {
+            textColored(col.text, tr("Tem um relatório do último travamento, ainda não mandado."));
+            popFont();
+            c.igDummy(v2(0, S(2)));
+            if (secondaryButton(fmtZ("{s}  Mandar o relatório###crashsend", .{ic.send}), v2(S(220), S(34)))) a.sendCrashReport();
+        } else {
+            textColored(col.muted, tr("Nenhum travamento registrado."));
+            popFont();
+        }
+    }
     /// Tema: um cartãozinho com as cores de cada um (troca na hora).
     fn drawThemes(a: *App, w: f32) void {
         const cur = theme.find(config.getStr(&a.cfg.theme));
@@ -4897,7 +4995,7 @@ pub const App = struct {
         try w.writeAll("]");
         var ub: [32]u8 = undefined;
         try w.print(",\"opened\":{f},\"update\":{f},\"update_latest\":{f}", .{ s(qa_opened[0..qa_opened_len]), s(@tagName(update.getState())), s(update.latest(&ub)) });
-        try w.print(",\"pctest\":{f}", .{s(@tagName(pctest.getState()))});
+        try w.print(",\"pctest\":{f},\"crash_pending\":{},\"crash_prompt\":{}", .{ s(@tagName(pctest.getState())), crash.pending(), a.crash_prompt });
         var dlb: [512]u8 = undefined;
         try w.print(",\"debug_on\":{},\"debug_size\":{d},\"debug_send\":{f},\"debug_result\":{f}", .{ debuglog.on(), debuglog.fileSize(), s(@tagName(debuglog.sendState())), s(debuglog.sendResult(&dlb)) });
         try w.print(",\"last_saved\":{f},\"clip_jobs\":{d}", .{ s(a.last_saved[0..a.last_saved_len]), blk: {

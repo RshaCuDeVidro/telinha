@@ -67,6 +67,8 @@ placa que não seja NVIDIA), `TELINHA_ATUALIZACAO_URL=http://…` (GitHub de
 mentira), `TELINHA_VERSAO_TESTE=9.9.9` (finge outra versão na sala),
 `TELINHA_GOFILE_URL=http://…` (gofile de mentira pro envio do log de depuração;
 `tools/qa/mockupload.py` faz o papel do gofile e do webhook),
+`TELINHA_ENCODE_LENTO=ms` (encoder de mentira lento, pra qualidade automática),
+`TELINHA_TESTE_TRAVAR=1` ou `=panic` (derruba o app de propósito, pro relatório de travamento),
 `TELINHA_PASTA_CONFIG`/`TELINHA_PASTA_CLIPES`. O build aceita `-Drepo=dono/nome`
 (o CI passa) pra checar versão nova no GitHub.
 

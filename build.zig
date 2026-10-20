@@ -460,6 +460,7 @@ fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: st
     mod.addCSourceFile(.{ .file = b.path("src/c/image.c"), .flags = &.{"-O2"} });
     // log de depuração (desvio da saída de erro, CPU/memória, envio do arquivo)
     mod.addCSourceFile(.{ .file = b.path("src/c/debugsys.c"), .flags = &.{"-O2"} });
+    mod.addCSourceFile(.{ .file = b.path("src/c/crash.c"), .flags = &.{"-O2"} });
     addImgui(b, deps, mod);
     linkOpenh264(b, deps, mod, target, optimize);
     addHwenc(b, deps, mod);

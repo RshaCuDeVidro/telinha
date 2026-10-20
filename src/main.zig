@@ -7,6 +7,15 @@ const ui = @import("ui.zig");
 const gl = @import("gl.zig");
 const client_mod = @import("client.zig");
 const qa = @import("qa.zig");
+const crash = @import("crash.zig");
+
+/// Panic do Zig: anota no relatório de travamento antes do padrão (que
+/// imprime a pilha e aborta; o abort também cai no relatório).
+pub const panic = std.debug.FullPanic(onPanic);
+fn onPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
+    crash.note(msg);
+    std.debug.defaultPanic(msg, first_trace_addr);
+}
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 /// TELINHA_SEM_SHADER=1 força a conversão de cor na CPU (diagnóstico).
@@ -25,6 +34,7 @@ fn onGlfwError(code: c_int, desc: [*c]const u8) callconv(.c) void {
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
+    crash.install();
     sync.tuneMalloc();
     net.init();
     sync.pool.start(@max(2, sync.cpuCount() - 1));
@@ -89,6 +99,7 @@ pub fn main(init: std.process.Init) !void {
     _ = c.glfwSetDropCallback(win, ui.onDrop);
     var app = ui.App.init(win);
     app.applyArgs(args);
+    crash.testCrash();
     var idle_frames: u32 = 0;
     while (c.glfwWindowShouldClose(win) == 0) {
         // dorme quando nada está acontecendo; rede e captura acordam o loop,
