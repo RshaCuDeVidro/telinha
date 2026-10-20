@@ -535,6 +535,23 @@ pub const HwEncoder = struct {
         return std.mem.span(hw.hwenc_name(e.h));
     }
 
+    /// Aceita quadro que já está na placa (ponteiro CUDA; ver cudagl.c)? Só o NVENC.
+    pub fn acceptsCuda(e: *HwEncoder) bool {
+        return hw.hwenc_accepts_cuda(e.h) != 0;
+    }
+
+    /// Codifica um quadro RGBX/BGRX que já está na placa (acceptsCuda). Retorna se foi IDR.
+    pub fn encodeDev(e: *HwEncoder, dev: u64, pitch: u32, fmt: PixelFormat, force_key: bool, out: *std.ArrayList(u8)) !bool {
+        var data: [*c]const u8 = null;
+        var len: c_int = 0;
+        var idr: c_int = 0;
+        const f: c_int = if (fmt == .rgbx) hw.HWENC_RGBX else hw.HWENC_BGRX;
+        if (hw.hwenc_encode_dev(e.h, dev, @intCast(pitch), f, @intFromBool(force_key), &data, &len, &idr) != 0) return error.Encode;
+        const bits = data[0..@intCast(len)];
+        try out.appendSlice(gpa, bits);
+        return idr != 0 or hasKeyNal(e.opts.codec, bits);
+    }
+
     /// Codifica um quadro. Retorna se foi IDR.
     pub fn encode(e: *HwEncoder, src: [*]const u8, stride: usize, fmt: PixelFormat, force_key: bool, out: *std.ArrayList(u8)) !bool {
         var data: [*c]const u8 = null;
@@ -621,7 +638,8 @@ pub const HwDecoder = struct {
         return std.mem.span(hw.hwdec_name(d.h));
     }
 
-    pub const Frame = struct { y: [*]const u8, uv: [*]const u8, w: u32, h: u32 };
+    /// `on_device`: o quadro foi pro buffer da placa pedido (y/uv não valem).
+    pub const Frame = struct { y: [*]const u8, uv: [*]const u8, w: u32, h: u32, on_device: bool = false };
 
     /// Decodifica um quadro completo. A imagem vale até a próxima chamada.
     pub fn decode(d: *HwDecoder, data: []const u8) !?Frame {
@@ -630,6 +648,16 @@ pub const HwDecoder = struct {
         if (r < 0) return error.Decode;
         if (r == 0) return null;
         return .{ .y = f.y, .uv = f.uv, .w = @intCast(f.width), .h = @intCast(f.height) };
+    }
+
+    /// Decodifica direto pra memória da placa (NVDEC; ver hwdec.h). Se o
+    /// decoder não faz isso, a imagem sai pela CPU (on_device = false).
+    pub fn decodeTo(d: *HwDecoder, data: []const u8, dst_y: u64, dst_uv: u64, pitch: u32, w: u32, h: u32) !?Frame {
+        var f: hw.hwdec_frame = undefined;
+        const r = hw.hwdec_decode_to(d.h, data.ptr, @intCast(data.len), &f, dst_y, dst_uv, @intCast(pitch), @intCast(w), @intCast(h));
+        if (r < 0) return error.Decode;
+        if (r == 0) return null;
+        return .{ .y = f.y, .uv = f.uv, .w = @intCast(f.width), .h = @intCast(f.height), .on_device = f.on_device != 0 };
     }
 };
 

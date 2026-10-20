@@ -191,8 +191,12 @@ pub fn main(init: std.process.Init) !void {
         ui.frame_work_max_us = @max(ui.frame_work_max_us, work);
         ui.frame_count += 1;
 
+        // "ativo" = o mouse mexendo ou apertado (arrastando um slider). Um
+        // campo de texto com foco (o chat) não conta: ele ficaria "ativo" pra
+        // sempre e a interface redesenharia a 60 q/s parada — o cursor piscando
+        // já pede o redesenho dele (WantTextInput, acima)
         const active = io.*.MouseDelta.x != 0 or io.*.MouseDelta.y != 0 or io.*.MouseWheel != 0 or
-            c.igIsMouseDown_Nil(0) or c.igIsMouseDown_Nil(1) or c.igIsAnyItemActive();
+            c.igIsMouseDown_Nil(0) or c.igIsMouseDown_Nil(1);
         idle_frames = if (active) 0 else idle_frames + 1;
     }
 

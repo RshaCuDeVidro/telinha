@@ -11,6 +11,7 @@
 typedef struct nvenc nvenc;
 nvenc *nvenc_open(int codec, int width, int height, int fps, int bitrate, int screen_mode, int temporal_layers, char *err, int errlen);
 int nvenc_encode(nvenc *e, const uint8_t *pixels, int stride, int format, int force_idr, const uint8_t **out, int *out_len, int *is_idr);
+int nvenc_encode_dev(nvenc *e, uint64_t dev, int pitch, int format, int force_idr, const uint8_t **out, int *out_len, int *is_idr);
 void nvenc_set_bitrate(nvenc *e, int bitrate);
 const char *nvenc_name(nvenc *e);
 void nvenc_close(nvenc *e);
@@ -100,6 +101,15 @@ int hwenc_encode(hwenc *h, const uint8_t *pixels, int stride, int format, int fo
     if (h->kind == KIND_VA) return vaenc_encode(h->impl, pixels, stride, format, force_idr, out, out_len, is_idr);
 #endif
     return nvenc_encode(h->impl, pixels, stride, format, force_idr, out, out_len, is_idr);
+}
+
+int hwenc_accepts_cuda(hwenc *h) {
+    return h->kind == KIND_NV;
+}
+
+int hwenc_encode_dev(hwenc *h, uint64_t dev, int pitch, int format, int force_idr, const uint8_t **out, int *out_len, int *is_idr) {
+    if (h->kind != KIND_NV) return -1;
+    return nvenc_encode_dev(h->impl, dev, pitch, format, force_idr, out, out_len, is_idr);
 }
 
 void hwenc_set_bitrate(hwenc *h, int bitrate) {

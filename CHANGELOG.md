@@ -101,6 +101,31 @@ Conversa com a 3.0 (os campos novos são opcionais).
 
 **Desempenho e memória** (medido antes/depois nos mesmos cenários):
 
+- **Transmitir sem passar pela CPU** (Linux + NVIDIA): o quadro que o
+  compositor entrega na placa (DMA-BUF) é recortado, escalado e ganha o
+  cursor ali mesmo, e vai pro NVENC por CUDA — nada é lido de volta pra
+  RAM. Antes cada quadro 1080p custava uma leitura de 3-5 ms mais uma cópia
+  de 8 MB pro encoder; medido em 1080p: 4,7 ms → 0,3 ms de CPU por quadro.
+  A prévia da própria tela sai pequena, direto da placa. Se o encoder for
+  outro (VA-API, software) ou o compositor mandar memória comum, continua
+  como antes.
+- **Assistir sem passar pela CPU** (NVIDIA, Linux e Windows): o quadro do
+  NVDEC vai direto pra textura que aparece (CUDA ↔ OpenGL), sem as duas
+  cópias de 3 MB por quadro (placa → RAM → placa). Quem assiste 1080p60 com
+  NVIDIA gasta uns 3% de um núcleo.
+- **Interface não fica mais a 60 q/s parada**: o campo do chat com foco
+  contava como "atividade" e impedia o laço de dormir (no log do usuário a
+  interface redesenhava 60 vezes por segundo o tempo todo).
+- Ninguém assistindo (e sem gravar): a captura nem lê o quadro do
+  compositor (antes lia 60 vezes por segundo a 3-5 ms cada, pra jogar fora).
+- Threads com nome no log de depuração (captura, encoder, decoder, rede,
+  udp, sala-…), em vez de "telinha" seis vezes.
+- **Atalhos** (página nova nas configurações): salvar clipe, microfone,
+  surdo, transmitir/parar, print e um que liga/desliga todos os outros. Cada
+  um aceita qualquer tecla, combinação (Ctrl+Shift+K) ou botão do meio/
+  laterais do mouse, e vale com o jogo em foco (Windows e X11; no Wayland só
+  com o telinha em foco).
+- **Duração do clipe livre** (5 s a 10 min), além dos botões de 15 s a 3 min.
 - **Menos placa de vídeo pra assistir**: a conversão de cor do vídeo sai no
   tamanho em que ele aparece na tela (um 1080p num quadradinho não converte
   1080p), e quem não está aparecendo (outro em destaque, minimizado) não

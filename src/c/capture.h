@@ -30,7 +30,21 @@ typedef struct cap_frame {
     // quem assiste poder dar zoom seguindo o mouse. cursor_known = 0: não sabe.
     int cursor_known;
     int cursor_px, cursor_py;
+    // Caminho pela placa (cap_gpu_enable): o quadro está na memória da placa
+    // (gpu_dev, RGBA, linhas de gpu_pitch bytes), já no tamanho de saída
+    // (width x height) com recorte e cursor; `data` é NULL. Devolver com
+    // cap_gpu_release quando não precisar mais.
+    void *gpu;
+    uint64_t gpu_dev;
+    int gpu_pitch;
+    int gpu_src_w, gpu_src_h; // tamanho do pedaço da fonte que virou esse quadro (antes da escala)
+    // Prévia (cap_gpu_set_preview): RGBA, quando pedida e nova; vale até a
+    // próxima chamada de cap_next. NULL = nada nova.
+    const uint8_t *preview;
+    int preview_w, preview_h;
+    int preview_full; // 1 = é a fonte inteira (sem recorte)
 } cap_frame;
+
 
 typedef struct cap_ctx cap_ctx;
 
@@ -50,6 +64,29 @@ int cap_next(cap_ctx *ctx, cap_frame *out, int timeout_ms, char *err, int errlen
 const char *cap_backend(cap_ctx *ctx);
 
 void cap_close(cap_ctx *ctx);
+
+// ---- Caminho pela placa (Linux + NVIDIA; ver cudagl.c). O quadro capturado
+// (DMA-BUF do compositor) é recortado, escalado e ganha o cursor na própria
+// placa, e vai pro NVENC sem passar pela CPU.
+// `rect`: dado o tamanho da fonte, o recorte (fração) e a altura máxima,
+// diz o retângulo da fonte (x, y, w, h) e o tamanho de saída (ow, oh).
+// `cursor`: imagem RGBA da seta do cursor (desenhada por nós no Hyprland).
+typedef void (*cap_rect_fn)(int fw, int fh, const float crop[4], int max_h, int *x, int *y, int *w, int *h, int *ow, int *oh);
+typedef const uint8_t *(*cap_cursor_fn)(int *w, int *h);
+// 1 = ligou (a partir do próximo quadro, cap_frame.gpu). `cg` tem que viver
+// mais que a captura.
+int cap_gpu_enable(cap_ctx *ctx, void *cg, cap_rect_fn rect, cap_cursor_fn cursor);
+void cap_gpu_disable(cap_ctx *ctx);
+// Recorte (fração 0..1 da fonte) e altura máxima (0 = sem limite).
+void cap_gpu_set_output(cap_ctx *ctx, const float crop[4], int max_height);
+// Prévia: 0 = não quer; 1 = do quadro de saída; 2 = da fonte inteira (escolhendo o recorte).
+void cap_gpu_set_preview(cap_ctx *ctx, int want, int max_w);
+void cap_gpu_release(cap_ctx *ctx, void *gpu);
+// A placa falhou no meio (os quadros voltaram a vir pela CPU)?
+int cap_gpu_failed(cap_ctx *ctx);
+// Chamar logo depois de criar um encoder novo: solta buffers de tamanho
+// antigo que o encoder anterior ainda podia ter registrado.
+void cap_gpu_gc(cap_ctx *ctx);
 
 #ifdef __cplusplus
 }

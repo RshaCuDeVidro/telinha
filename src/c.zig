@@ -7,6 +7,7 @@ pub const c = @cImport({
     @cInclude("cimgui_zig.h"); // cimgui.h com campos ImGuiContext* trocados por void* (limite do translate-c)
     @cInclude("cimgui_impl.h");
     @cInclude("capture.h");
+    @cInclude("cudagl.h");
     @cInclude("camera.h");
     @cInclude("qa_hooks.h");
     @cInclude("notify.h");

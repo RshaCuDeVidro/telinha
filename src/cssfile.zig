@@ -56,6 +56,7 @@ pub fn take() ?theme.Base {
 }
 
 fn loop(my_gen: u32) void {
+    sync.nameThread("css");
     while (true) {
         sync.sleepMs(1500);
         mutex.lock();

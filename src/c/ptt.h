@@ -12,6 +12,8 @@ int ptt_global_down(int key, int mouse_button);
 int ptt_global_supported(void);
 // Esse botão do mouse dá pra ler de fora? (Linux/X11: só o do meio)
 int ptt_global_button_supported(int mouse_button);
+// Modificadores apertados agora (lidos de fora): 1 = Ctrl, 2 = Shift, 4 = Alt.
+int ptt_global_mods(void);
 
 #ifdef __cplusplus
 }

@@ -30,6 +30,14 @@ int ptt_global_button_supported(int mouse_button) {
     (void)mouse_button;
     return 1;
 }
+
+int ptt_global_mods(void) {
+    int m = 0;
+    if (GetAsyncKeyState(VK_CONTROL) & 0x8000) m |= 1;
+    if (GetAsyncKeyState(VK_SHIFT) & 0x8000) m |= 2;
+    if (GetAsyncKeyState(VK_MENU) & 0x8000) m |= 4;
+    return m;
+}
 #else
 #include <X11/Xlib.h>
 #include <pthread.h>
@@ -72,5 +80,34 @@ int ptt_global_button_supported(int mouse_button) {
 
 int ptt_global_supported(void) {
     return getenv("DISPLAY") != NULL;
+}
+
+#include <X11/keysym.h>
+
+int ptt_global_mods(void) {
+    // keycodes dos modificadores (uma vez; dependem do mapa de teclado)
+    static KeyCode kc[6];
+    static int have;
+    pthread_mutex_lock(&lock);
+    if (!tried) {
+        tried = 1;
+        if (getenv("DISPLAY")) dpy = XOpenDisplay(NULL);
+    }
+    int m = 0;
+    if (dpy) {
+        if (!have) {
+            const KeySym syms[6] = {XK_Control_L, XK_Control_R, XK_Shift_L, XK_Shift_R, XK_Alt_L, XK_Alt_R};
+            for (int i = 0; i < 6; i++) kc[i] = XKeysymToKeycode(dpy, syms[i]);
+            have = 1;
+        }
+        char keys[32];
+        XQueryKeymap(dpy, keys);
+        for (int i = 0; i < 6; i++) {
+            if (!kc[i]) continue;
+            if (keys[kc[i] / 8] & (1 << (kc[i] % 8))) m |= 1 << (i / 2);
+        }
+    }
+    pthread_mutex_unlock(&lock);
+    return m;
 }
 #endif

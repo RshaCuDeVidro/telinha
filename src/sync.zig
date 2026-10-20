@@ -245,6 +245,19 @@ pub fn spawn(comptime f: anytype, args: anytype) !void {
     t.detach();
 }
 
+extern "c" fn pthread_self() usize;
+extern "c" fn pthread_setname_np(thread: usize, name: [*:0]const u8) c_int;
+
+/// Nome da thread atual (aparece no log de depuração e no top -H; até 15
+/// letras no Linux). Só diagnóstico: nada depende dele. No Windows não
+/// (SetThreadDescription só existe a partir do Windows 10 1607).
+pub fn nameThread(comptime name: []const u8) void {
+    if (!is_windows) {
+        const short = comptime name[0..@min(name.len, 15)] ++ "";
+        _ = pthread_setname_np(pthread_self(), short.ptr);
+    }
+}
+
 /// Contador pra esperar um lote de tarefas terminar.
 pub const WaitGroup = struct {
     mutex: Mutex = .{},

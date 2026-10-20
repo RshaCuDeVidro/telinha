@@ -4,6 +4,7 @@
 //   X11:     XShm + XFixes (cursor).
 #define _GNU_SOURCE
 #include "capture.h"
+#include "cudagl.h"
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -69,6 +70,11 @@ struct cap_ctx {
     int dmabuf_off;        // a importação falhou: renegociou pra memória compartilhada
     uint8_t *staging;      // leitura do DMA-BUF (fora do lock)
     size_t staging_cap;
+    struct gpu_path *gpu;  // caminho pela placa (cap_gpu_enable); NULL = pela CPU
+    int gpu_on;            // sob o lock: ligado (a thread do PipeWire vê na hora)
+    int waiting;           // sob o lock: quem chama está esperando quadro (senão, não vale a pena produzir)
+    uint64_t last_take_us; // quando quem chama pegou um quadro pela última vez
+    struct spa_source *cursor_timer; // cursor desenhado por nós: redesenha quando só o mouse mexeu
 
     pthread_mutex_t lock;
     pthread_cond_t cond;
@@ -123,8 +129,10 @@ int cap_list_sources(cap_source *out, int max) {
 typedef void *EGLDisplay, *EGLContext, *EGLImageKHR, *EGLDeviceEXT, *EGLConfig, *EGLSurface;
 typedef int EGLint;
 typedef unsigned int EGLBoolean, EGLenum;
-typedef unsigned int GLuint, GLenum;
+typedef unsigned int GLuint, GLenum, GLbitfield;
 typedef int GLint, GLsizei;
+typedef float GLfloat;
+typedef unsigned char GLboolean;
 
 #define EGL_NONE 0x3038
 #define EGL_EXTENSIONS 0x3055
@@ -151,6 +159,24 @@ typedef int GLint, GLsizei;
 #define GL_FRAMEBUFFER_COMPLETE 0x8CD5
 #define GL_COLOR_ATTACHMENT0 0x8CE0
 #define GL_FRAMEBUFFER 0x8D40
+#define GL_LINEAR 0x2601
+#define GL_CLAMP_TO_EDGE 0x812F
+#define GL_TEXTURE_WRAP_S 0x2802
+#define GL_TEXTURE_WRAP_T 0x2803
+#define GL_UNPACK_ALIGNMENT 0x0CF5
+#define GL_COLOR_BUFFER_BIT 0x4000
+#define GL_BLEND 0x0BE2
+#define GL_SRC_ALPHA 0x0302
+#define GL_ONE_MINUS_SRC_ALPHA 0x0303
+#define GL_SCISSOR_TEST 0x0C11
+#define GL_VERTEX_SHADER 0x8B31
+#define GL_FRAGMENT_SHADER 0x8B30
+#define GL_COMPILE_STATUS 0x8B81
+#define GL_LINK_STATUS 0x8B82
+#define GL_TRIANGLE_STRIP 0x0005
+#define GL_FLOAT 0x1406
+#define GL_TEXTURE0 0x84C0
+#define GL_NO_ERROR 0
 
 #define FOURCC(a, b, c, d) ((uint32_t)(a) | ((uint32_t)(b) << 8) | ((uint32_t)(c) << 16) | ((uint32_t)(d) << 24))
 #define MOD_INVALID 0x00ffffffffffffffULL
@@ -213,6 +239,86 @@ struct egl_state {
     void (*PixelStorei)(GLenum, GLint);
     const unsigned char *(*GetString)(GLenum);
     void (*EGLImageTargetTexture2DOES)(GLenum, void *);
+    // caminho pela placa (desenho do quadro de saída)
+    void (*TexImage2D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
+    void (*TexSubImage2D)(GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void *);
+    void (*Viewport)(GLint, GLint, GLsizei, GLsizei);
+    void (*Enable)(GLenum);
+    void (*Disable)(GLenum);
+    void (*BlendFunc)(GLenum, GLenum);
+    GLuint (*CreateShader)(GLenum);
+    void (*ShaderSource)(GLuint, GLsizei, const char *const *, const GLint *);
+    void (*CompileShader)(GLuint);
+    void (*GetShaderiv)(GLuint, GLenum, GLint *);
+    void (*DeleteShader)(GLuint);
+    GLuint (*CreateProgram)(void);
+    void (*AttachShader)(GLuint, GLuint);
+    void (*LinkProgram)(GLuint);
+    void (*GetProgramiv)(GLuint, GLenum, GLint *);
+    void (*DeleteProgram)(GLuint);
+    void (*UseProgram)(GLuint);
+    GLint (*GetAttribLocation)(GLuint, const char *);
+    GLint (*GetUniformLocation)(GLuint, const char *);
+    void (*Uniform1i)(GLint, GLint);
+    void (*Uniform4f)(GLint, GLfloat, GLfloat, GLfloat, GLfloat);
+    void (*EnableVertexAttribArray)(GLuint);
+    void (*VertexAttribPointer)(GLuint, GLint, GLenum, GLboolean, GLsizei, const void *);
+    void (*DrawArrays)(GLenum, GLint, GLsizei);
+    void (*ActiveTexture)(GLenum);
+    GLenum (*GetError)(void);
+    void (*Finish)(void);
+};
+
+// Caminho pela placa (ver capture.h): o quadro vai da textura importada do
+// DMA-BUF (ou subido da memória compartilhada) pra uma textura de saída —
+// recorte, escala e cursor desenhados pela GPU — e de lá, por CUDA, pra um
+// buffer na placa que o NVENC lê direto. Tudo na thread que tem o contexto
+// EGL (a do PipeWire; no X11, a de quem chama cap_next).
+#define N_GPU_SLOTS 5
+enum { SLOT_FREE = 0, SLOT_PENDING = 1, SLOT_HELD = 2, SLOT_RENDERING = 3 };
+struct gpu_slot {
+    uint64_t dev; // memória da placa (RGBA, pitch)
+    int pitch;
+    int w, h;
+    int state;
+    int cursor_known, cursor_px, cursor_py; // ponta do cursor nesse quadro
+    int cursor_x, cursor_y; // posição usada no desenho
+    int src_w, src_h; // recorte da fonte que virou esse quadro
+};
+struct gpu_path {
+    cudagl *cg;
+    cap_rect_fn rect_fn;
+    cap_cursor_fn cursor_fn;
+    int gl_ready, failed;
+    GLuint prog;
+    GLint loc_rect, loc_swap, loc_tex, loc_alpha;
+    GLuint src_tex; // quadro subido da memória compartilhada
+    int src_w, src_h;
+    GLuint copy_tex, copy_fbo; // cópia da fonte inteira (recorte novo com a tela parada)
+    int copy_w, copy_h, have_copy;
+    int output_dirty; // recorte/altura mudaram desde o último quadro
+    uint64_t retired[8]; // buffers de slots que mudaram de tamanho: soltos no cap_gpu_gc
+    int n_retired;
+    GLuint scene_tex, scene_fbo; // saída sem cursor (pra redesenhar só o cursor)
+    GLuint out_tex, out_fbo;     // saída (com cursor) — registrada no CUDA
+    int out_w, out_h;
+    void *out_res;
+    int have_scene, scene_src_w, scene_src_h, scene_swap;
+    int scene_x, scene_y, scene_w, scene_h; // recorte usado na cena (pixels da fonte)
+    GLuint cur_tex;
+    int cur_w, cur_h;
+    GLuint prev_tex, prev_fbo;
+    int prev_w, prev_h;
+    uint8_t *prev_back, *prev_front, *prev_out; // trás (PipeWire), frente (trocada sob o lock), saída (só de quem chama)
+    size_t prev_back_cap, prev_front_cap, prev_out_cap;
+    int prev_back_w, prev_back_h, prev_back_full, prev_front_w, prev_front_h, prev_front_full, prev_new;
+    uint64_t prev_last_us;
+    struct gpu_slot slots[N_GPU_SLOTS];
+    // pedidos de quem chama (sob c->lock)
+    float crop[4];
+    int max_h;
+    int want_preview, preview_max_w;
+    uint64_t work_us, work_n; // TELINHA_DEBUG: CPU gasta por quadro
 };
 
 static int has_ext(const char *list, const char *name) {
@@ -295,6 +401,33 @@ static struct egl_state *egl_create(void) {
     LOAD(PixelStorei, "glPixelStorei");
     LOAD(GetString, "glGetString");
     LOAD(EGLImageTargetTexture2DOES, "glEGLImageTargetTexture2DOES");
+    LOAD(TexImage2D, "glTexImage2D");
+    LOAD(TexSubImage2D, "glTexSubImage2D");
+    LOAD(Viewport, "glViewport");
+    LOAD(Enable, "glEnable");
+    LOAD(Disable, "glDisable");
+    LOAD(BlendFunc, "glBlendFunc");
+    LOAD(CreateShader, "glCreateShader");
+    LOAD(ShaderSource, "glShaderSource");
+    LOAD(CompileShader, "glCompileShader");
+    LOAD(GetShaderiv, "glGetShaderiv");
+    LOAD(DeleteShader, "glDeleteShader");
+    LOAD(CreateProgram, "glCreateProgram");
+    LOAD(AttachShader, "glAttachShader");
+    LOAD(LinkProgram, "glLinkProgram");
+    LOAD(GetProgramiv, "glGetProgramiv");
+    LOAD(DeleteProgram, "glDeleteProgram");
+    LOAD(UseProgram, "glUseProgram");
+    LOAD(GetAttribLocation, "glGetAttribLocation");
+    LOAD(GetUniformLocation, "glGetUniformLocation");
+    LOAD(Uniform1i, "glUniform1i");
+    LOAD(Uniform4f, "glUniform4f");
+    LOAD(EnableVertexAttribArray, "glEnableVertexAttribArray");
+    LOAD(VertexAttribPointer, "glVertexAttribPointer");
+    LOAD(DrawArrays, "glDrawArrays");
+    LOAD(ActiveTexture, "glActiveTexture");
+    LOAD(GetError, "glGetError");
+    LOAD(Finish, "glFinish");
 #undef LOAD
 
     // modificadores (layout na GPU) que dá pra ler de volta; "external only"
@@ -353,12 +486,10 @@ static void egl_forget(struct egl_state *e, struct spa_buffer *buf) {
     }
 }
 
-// Importa (uma vez por buffer) e lê o DMA-BUF pra `dst` (w*h*4).
-// Retorna o formato lido (CAP_BGRX/CAP_RGBX) ou -1.
-static int egl_read(struct egl_state *e, struct spa_buffer *buf, uint32_t drm_format, uint64_t modifier,
-                    int w, int h, uint8_t *dst) {
-    if (getenv("TELINHA_TESTE_DMABUF_FALHA")) return -1; // testa a volta pra memória compartilhada
-    if (egl_make_current(e) < 0) return -1;
+// Importa o DMA-BUF (uma vez por buffer) como textura. 0 = não deu.
+static GLuint egl_import(struct egl_state *e, struct spa_buffer *buf, uint32_t drm_format, uint64_t modifier, int w, int h) {
+    if (getenv("TELINHA_TESTE_DMABUF_FALHA")) return 0; // testa a volta pra memória compartilhada
+    if (egl_make_current(e) < 0) return 0;
     int slot = -1, free_slot = -1;
     for (int i = 0; i < MAX_IMAGES; i++) {
         if (e->images[i].buf == buf) slot = i;
@@ -380,7 +511,7 @@ static int egl_read(struct egl_state *e, struct spa_buffer *buf, uint32_t drm_fo
         uint32_t planes = buf->n_datas < 4 ? buf->n_datas : 4;
         for (uint32_t p = 0; p < planes; p++) {
             struct spa_data *d = &buf->datas[p];
-            if (d->type != SPA_DATA_DmaBuf || !d->chunk) return -1;
+            if (d->type != SPA_DATA_DmaBuf || !d->chunk) return 0;
             attr[n++] = plane_attr[p][0];
             attr[n++] = (EGLint)d->fd;
             attr[n++] = plane_attr[p][1];
@@ -396,25 +527,558 @@ static int egl_read(struct egl_state *e, struct spa_buffer *buf, uint32_t drm_fo
         }
         attr[n++] = EGL_NONE;
         EGLImageKHR img = e->CreateImageKHR(e->dpy, NULL, EGL_LINUX_DMA_BUF_EXT, NULL, attr);
-        if (!img) return -1;
+        if (!img) return 0;
         GLuint tex = 0;
         e->GenTextures(1, &tex);
         e->BindTexture(GL_TEXTURE_2D, tex);
-        e->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        e->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        // linear: a escala pela placa (caminho pela placa) sai suave; a leitura
+        // de volta (pela CPU) não amostra, então tanto faz pra ela
+        e->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        e->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        e->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        e->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         e->EGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
         e->images[free_slot].buf = buf;
         e->images[free_slot].img = img;
         e->images[free_slot].tex = tex;
         slot = free_slot;
     }
+    return e->images[slot].tex;
+}
+
+// Importa (uma vez por buffer) e lê o DMA-BUF pra `dst` (w*h*4).
+// Retorna o formato lido (CAP_BGRX/CAP_RGBX) ou -1.
+static int egl_read(struct egl_state *e, struct spa_buffer *buf, uint32_t drm_format, uint64_t modifier,
+                    int w, int h, uint8_t *dst) {
+    GLuint tex = egl_import(e, buf, drm_format, modifier, w, h);
+    if (!tex) return -1;
     e->BindFramebuffer(GL_FRAMEBUFFER, e->fbo);
-    e->FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, e->images[slot].tex, 0);
+    e->FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
     if (e->CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) return -1;
     e->PixelStorei(GL_PACK_ALIGNMENT, 4);
     // o GL lê a imagem já "destrançada" (o layout da GPU vira linhas comuns)
     e->ReadPixels(0, 0, w, h, e->read_bgra ? GL_BGRA_EXT : GL_RGBA, GL_UNSIGNED_BYTE, dst);
     return e->read_bgra ? CAP_BGRX : CAP_RGBX;
+}
+
+// ===========================================================================
+// Caminho pela placa
+
+static uint64_t now_us(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000000 + (uint64_t)t.tv_nsec / 1000;
+}
+
+static GLuint gpu_shader(struct egl_state *e, GLenum kind, const char *src) {
+    GLuint s = e->CreateShader(kind);
+    e->ShaderSource(s, 1, &src, NULL);
+    e->CompileShader(s);
+    GLint ok = 0;
+    e->GetShaderiv(s, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        e->DeleteShader(s);
+        return 0;
+    }
+    return s;
+}
+
+static void gpu_tex_alloc(struct egl_state *e, GLuint *tex, int w, int h, const void *pixels) {
+    if (!*tex) e->GenTextures(1, tex);
+    e->BindTexture(GL_TEXTURE_2D, *tex);
+    e->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    e->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    e->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    e->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    e->PixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    e->TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+}
+
+static int gpu_fbo_for(struct egl_state *e, GLuint *fbo, GLuint tex) {
+    if (!*fbo) e->GenFramebuffers(1, fbo);
+    e->BindFramebuffer(GL_FRAMEBUFFER, *fbo);
+    e->FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    return e->CheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE ? 0 : -1;
+}
+
+// Programa e cursor (uma vez, na thread do contexto).
+static int gpu_gl_init(struct egl_state *e, struct gpu_path *g) {
+    if (g->gl_ready) return 0;
+    if (egl_make_current(e) < 0) {
+        if (getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] captura pela placa: eglMakeCurrent falhou\n");
+        return -1;
+    }
+    while (e->GetError() != GL_NO_ERROR) {} // erro velho de outra etapa não é nosso
+    // `rect` = pedaço da textura (fração) que cobre a área desenhada; `swap`
+    // troca R e B (quadro BGRX subido da memória compartilhada)
+    GLuint vs = gpu_shader(e, GL_VERTEX_SHADER,
+        "attribute vec2 p; varying vec2 t; uniform vec4 rect;"
+        "void main(){ t = rect.xy + (p * 0.5 + 0.5) * rect.zw; gl_Position = vec4(p, 0.0, 1.0); }");
+    GLuint fs = gpu_shader(e, GL_FRAGMENT_SHADER,
+        "precision mediump float; varying vec2 t; uniform sampler2D s; uniform int swap; uniform int keep_alpha;"
+        "void main(){ vec4 c = texture2D(s, t); if (swap != 0) c = c.bgra; if (keep_alpha == 0) c.a = 1.0; gl_FragColor = c; }");
+    if (!vs || !fs) {
+        if (getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] captura pela placa: shader não compilou (%s)\n", vs ? "fragmento" : "vértice");
+        if (vs) e->DeleteShader(vs);
+        if (fs) e->DeleteShader(fs);
+        return -1;
+    }
+    g->prog = e->CreateProgram();
+    e->AttachShader(g->prog, vs);
+    e->AttachShader(g->prog, fs);
+    e->LinkProgram(g->prog);
+    e->DeleteShader(vs);
+    e->DeleteShader(fs);
+    GLint ok = 0;
+    e->GetProgramiv(g->prog, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        if (getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] captura pela placa: programa não linkou\n");
+        return -1;
+    }
+    g->loc_rect = e->GetUniformLocation(g->prog, "rect");
+    g->loc_swap = e->GetUniformLocation(g->prog, "swap");
+    g->loc_alpha = e->GetUniformLocation(g->prog, "keep_alpha");
+    g->loc_tex = e->GetUniformLocation(g->prog, "s");
+    e->UseProgram(g->prog);
+    e->Uniform1i(g->loc_tex, 0);
+    GLint ap = e->GetAttribLocation(g->prog, "p");
+    static const GLfloat quad[] = {-1, -1, 1, -1, -1, 1, 1, 1};
+    e->EnableVertexAttribArray((GLuint)ap);
+    e->VertexAttribPointer((GLuint)ap, 2, GL_FLOAT, 0, 0, quad);
+    if (g->cursor_fn) {
+        int cw = 0, ch = 0;
+        const uint8_t *px = g->cursor_fn(&cw, &ch);
+        if (px && cw > 0 && ch > 0) {
+            gpu_tex_alloc(e, &g->cur_tex, cw, ch, px);
+            e->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            e->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            g->cur_w = cw;
+            g->cur_h = ch;
+        }
+    }
+    const GLenum err = e->GetError();
+    if (err != GL_NO_ERROR && getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] captura pela placa: erro do GL na preparação: 0x%x\n", err);
+    g->gl_ready = err == GL_NO_ERROR;
+    return g->gl_ready ? 0 : -1;
+}
+
+// Solta tudo da placa (na thread do contexto; o cudagl continua de quem chamou).
+static void gpu_gl_destroy(struct egl_state *e, struct gpu_path *g) {
+    if (!g) return;
+    if (g->out_res) cudagl_unregister(g->cg, g->out_res);
+    g->out_res = NULL;
+    for (int i = 0; i < N_GPU_SLOTS; i++) {
+        if (g->slots[i].dev) cudagl_free(g->cg, g->slots[i].dev);
+        g->slots[i].dev = 0;
+        g->slots[i].state = SLOT_FREE;
+    }
+    for (int i = 0; i < g->n_retired; i++) cudagl_free(g->cg, g->retired[i]);
+    g->n_retired = 0;
+    if (e && e->current) {
+        GLuint texs[6] = {g->src_tex, g->scene_tex, g->out_tex, g->cur_tex, g->prev_tex, g->copy_tex};
+        GLuint fbos[4] = {g->scene_fbo, g->out_fbo, g->prev_fbo, g->copy_fbo};
+        for (int i = 0; i < 6; i++) if (texs[i]) e->DeleteTextures(1, &texs[i]);
+        for (int i = 0; i < 4; i++) if (fbos[i]) e->DeleteFramebuffers(1, &fbos[i]);
+        if (g->prog) e->DeleteProgram(g->prog);
+    }
+    g->src_tex = g->scene_tex = g->out_tex = g->cur_tex = g->prev_tex = g->copy_tex = 0;
+    g->scene_fbo = g->out_fbo = g->prev_fbo = g->copy_fbo = 0;
+    g->have_copy = 0;
+    g->prog = 0;
+    g->gl_ready = 0;
+    g->have_scene = 0;
+    g->out_w = g->out_h = 0;
+}
+
+// Desenha `tex` (o pedaço `rect`, em fração) cobrindo o framebuffer `fbo` (vw x vh).
+static void gpu_draw(struct egl_state *e, struct gpu_path *g, GLuint fbo, int vw, int vh, GLuint tex,
+                     float rx, float ry, float rw, float rh, int swap) {
+    e->BindFramebuffer(GL_FRAMEBUFFER, fbo);
+    e->Viewport(0, 0, vw, vh);
+    e->UseProgram(g->prog);
+    e->ActiveTexture(GL_TEXTURE0);
+    e->BindTexture(GL_TEXTURE_2D, tex);
+    e->Uniform4f(g->loc_rect, rx, ry, rw, rh);
+    e->Uniform1i(g->loc_swap, swap);
+    e->Uniform1i(g->loc_alpha, 0);
+    e->DrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
+// Texturas de saída no tamanho pedido (e o registro no CUDA).
+static int gpu_ensure_output(struct egl_state *e, struct gpu_path *g, int ow, int oh) {
+    if (g->out_w == ow && g->out_h == oh && g->out_res) return 0;
+    if (g->out_res) cudagl_unregister(g->cg, g->out_res);
+    g->out_res = NULL;
+    gpu_tex_alloc(e, &g->scene_tex, ow, oh, NULL);
+    gpu_tex_alloc(e, &g->out_tex, ow, oh, NULL);
+    if (gpu_fbo_for(e, &g->scene_fbo, g->scene_tex) < 0 || gpu_fbo_for(e, &g->out_fbo, g->out_tex) < 0) return -1;
+    g->out_res = cudagl_register(g->cg, g->out_tex, 0);
+    if (!g->out_res) return -1;
+    g->out_w = ow;
+    g->out_h = oh;
+    g->have_scene = 0;
+    return 0;
+}
+
+// Cena (recorte + escala, sem cursor) -> saída com o cursor -> buffer do slot.
+// O cursor vem em pixels da fonte; k = tamanho da seta em pixels lógicos.
+static int gpu_compose(struct egl_state *e, struct gpu_path *g, struct gpu_slot *sl, int cursor_draw, int cx, int cy, float cursor_scale) {
+    const int ow = g->out_w, oh = g->out_h;
+    gpu_draw(e, g, g->out_fbo, ow, oh, g->scene_tex, 0, 0, 1, 1, 0);
+    sl->cursor_x = cx;
+    sl->cursor_y = cy;
+    if (cursor_draw && g->cur_tex && g->scene_w > 0 && g->scene_h > 0) {
+        // mesma conta do desenho pela CPU (drawCursor): seta de ~24 px lógicos
+        const float sx = (float)ow / (float)g->scene_w, sy = (float)oh / (float)g->scene_h;
+        float k = cursor_scale * 1.2f;
+        if (k < 1) k = 1;
+        const float x0 = (float)(cx - g->scene_x) * sx, y0 = (float)(cy - g->scene_y) * sy;
+        const float w = (float)g->cur_w * k * sx, h = (float)g->cur_h * k * sy;
+        if (x0 < ow && y0 < oh && x0 + w > 0 && y0 + h > 0) {
+            // o quad cobre só o retângulo do cursor: viewport nele, textura inteira
+            e->Enable(GL_BLEND);
+            e->BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            e->BindFramebuffer(GL_FRAMEBUFFER, g->out_fbo);
+            e->Viewport((GLint)x0, (GLint)y0, (GLsizei)(w + 0.5f), (GLsizei)(h + 0.5f));
+            e->UseProgram(g->prog);
+            e->ActiveTexture(GL_TEXTURE0);
+            e->BindTexture(GL_TEXTURE_2D, g->cur_tex);
+            e->Uniform4f(g->loc_rect, 0, 0, 1, 1);
+            e->Uniform1i(g->loc_swap, 0);
+            e->Uniform1i(g->loc_alpha, 1);
+            e->DrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            e->Disable(GL_BLEND);
+        }
+    }
+    if (sl->w != ow || sl->h != oh || !sl->dev) {
+        if (sl->dev) {
+            // o encoder (outra thread) pode ter esse ponteiro registrado: só
+            // some quando ele for recriado no tamanho novo (cap_gpu_gc)
+            if (g->n_retired == (int)(sizeof g->retired / sizeof g->retired[0])) {
+                cudagl_free(g->cg, g->retired[0]);
+                memmove(&g->retired[0], &g->retired[1], sizeof g->retired[0] * (size_t)(g->n_retired - 1));
+                g->n_retired--;
+            }
+            g->retired[g->n_retired++] = sl->dev;
+        }
+        sl->dev = cudagl_alloc(g->cg, ow * 4, oh, &sl->pitch);
+        if (!sl->dev) return -1;
+        sl->w = ow;
+        sl->h = oh;
+    }
+    return cudagl_tex_to_dev(g->cg, g->out_res, sl->dev, sl->pitch, ow * 4, oh);
+}
+
+// Prévia pequena lida de volta pra CPU (quem transmite olha pra ela; ≤15 q/s).
+static void gpu_preview(struct egl_state *e, struct gpu_path *g, int want, int max_w, GLuint src_tex, int sw, int sh, int swap) {
+    const uint64_t now = now_us();
+    if (now - g->prev_last_us < 66000) return;
+    g->prev_last_us = now;
+    const int full = want == 2;
+    const int fw = full ? sw : g->out_w, fh = full ? sh : g->out_h;
+    if (fw <= 0 || fh <= 0) return;
+    int pw = fw, ph = fh;
+    if (max_w > 0 && pw > max_w) {
+        pw = max_w;
+        ph = (int)((long long)fh * pw / fw);
+    }
+    if (pw < 2 || ph < 2) return;
+    if (g->prev_w != pw || g->prev_h != ph || !g->prev_tex) {
+        gpu_tex_alloc(e, &g->prev_tex, pw, ph, NULL);
+        if (gpu_fbo_for(e, &g->prev_fbo, g->prev_tex) < 0) return;
+        g->prev_w = pw;
+        g->prev_h = ph;
+    }
+    const size_t need = (size_t)pw * ph * 4;
+    if (g->prev_back_cap < need) {
+        free(g->prev_back);
+        g->prev_back = malloc(need);
+        g->prev_back_cap = g->prev_back ? need : 0;
+        if (!g->prev_back) return;
+    }
+    gpu_draw(e, g, g->prev_fbo, pw, ph, full ? src_tex : g->scene_tex, 0, 0, 1, 1, full ? swap : 0);
+    e->PixelStorei(GL_PACK_ALIGNMENT, 4);
+    e->ReadPixels(0, 0, pw, ph, GL_RGBA, GL_UNSIGNED_BYTE, g->prev_back);
+    g->prev_back_w = pw;
+    g->prev_back_h = ph;
+    g->prev_back_full = full;
+    g->prev_new = 1;
+}
+
+// Escolhe um slot pra desenhar (sob o lock). NULL = todos ocupados por quem chama.
+static struct gpu_slot *gpu_pick_slot(struct gpu_path *g) {
+    for (int i = 0; i < N_GPU_SLOTS; i++)
+        if (g->slots[i].state == SLOT_FREE) return &g->slots[i];
+    for (int i = 0; i < N_GPU_SLOTS; i++)
+        if (g->slots[i].state == SLOT_PENDING) return &g->slots[i]; // ninguém pegou: o novo substitui
+    return NULL;
+}
+
+// Um quadro novo da fonte (`src_tex`, sw x sh): produz um slot pronto (e a
+// prévia, se pedida). Na thread do contexto. Retorna 1 se produziu.
+// Devolve um slot escolhido pra desenhar que acabou não sendo usado.
+static void gpu_unpick(struct cap_ctx *c, struct gpu_slot *sl) {
+    if (!sl) return;
+    pthread_mutex_lock(&c->lock);
+    sl->state = SLOT_FREE;
+    pthread_mutex_unlock(&c->lock);
+}
+
+static void gpu_fail(struct gpu_path *g, const char *what) {
+    if (!g->failed && getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] captura pela placa falhou (%s); seguindo pela CPU\n", what);
+    g->failed = 1;
+}
+
+static int gpu_produce(struct cap_ctx *c, GLuint src_tex, int sw, int sh, int swap, cap_frame *cur) {
+    struct gpu_path *g = c->gpu;
+    struct egl_state *e = c->egl;
+    if (!g || g->failed) return 0;
+    if (gpu_gl_init(e, g) < 0) {
+        gpu_fail(g, "GL");
+        return 0;
+    }
+    const uint64_t t0 = now_us();
+    pthread_mutex_lock(&c->lock);
+    float crop[4];
+    memcpy(crop, g->crop, sizeof crop);
+    const int max_h = g->max_h, want_prev = g->want_preview, prev_max_w = g->preview_max_w;
+    struct gpu_slot *sl = gpu_pick_slot(g);
+    if (sl) sl->state = SLOT_RENDERING;
+    pthread_mutex_unlock(&c->lock);
+    int x = 0, y = 0, w = sw, h = sh, ow = sw, oh = sh;
+    if (g->rect_fn) g->rect_fn(sw, sh, crop, max_h, &x, &y, &w, &h, &ow, &oh);
+    if (ow < 2 || oh < 2 || w < 1 || h < 1) {
+        gpu_unpick(c, sl);
+        return 0;
+    }
+    if (gpu_ensure_output(e, g, ow, oh) < 0) {
+        gpu_fail(g, "textura de saída/registro no CUDA");
+        gpu_unpick(c, sl);
+        return 0;
+    }
+    gpu_draw(e, g, g->scene_fbo, ow, oh, src_tex, (float)x / (float)sw, (float)y / (float)sh, (float)w / (float)sw, (float)h / (float)sh, swap);
+    // cópia da fonte inteira (já com R/B certos): recorte ou altura novos com
+    // a tela parada saem dela, sem esperar o compositor mandar outro quadro
+    if (src_tex != g->copy_tex) {
+        if (g->copy_w != sw || g->copy_h != sh || !g->copy_tex) {
+            gpu_tex_alloc(e, &g->copy_tex, sw, sh, NULL);
+            if (gpu_fbo_for(e, &g->copy_fbo, g->copy_tex) < 0) g->copy_tex = 0;
+            g->copy_w = sw;
+            g->copy_h = sh;
+        }
+        if (g->copy_tex) {
+            gpu_draw(e, g, g->copy_fbo, sw, sh, src_tex, 0, 0, 1, 1, swap);
+            g->have_copy = 1;
+        }
+    }
+    g->output_dirty = 0;
+    g->have_scene = 1;
+    g->scene_src_w = sw;
+    g->scene_src_h = sh;
+    g->scene_swap = swap;
+    g->scene_x = x;
+    g->scene_y = y;
+    g->scene_w = w;
+    g->scene_h = h;
+    int produced = 0;
+    if (sl) {
+        if (gpu_compose(e, g, sl, cur->cursor_draw, cur->cursor_x, cur->cursor_y, cur->cursor_scale) == 0) {
+            sl->src_w = w;
+            sl->src_h = h;
+            // ponta do cursor relativa ao recorte (quem assiste dá zoom seguindo ela)
+            sl->cursor_known = 0;
+            if (cur->cursor_known) {
+                const int px = cur->cursor_px - x, py = cur->cursor_py - y;
+                if (px >= 0 && py >= 0 && px < w && py < h) {
+                    // em pixels do quadro de saída
+                    sl->cursor_known = 1;
+                    sl->cursor_px = (int)((long long)px * ow / w);
+                    sl->cursor_py = (int)((long long)py * oh / h);
+                }
+            }
+            produced = 1;
+        } else {
+            gpu_fail(g, "cópia pro buffer do encoder");
+        }
+    }
+    if (want_prev) gpu_preview(e, g, want_prev, prev_max_w, src_tex, sw, sh, swap);
+    // sem cópia pro CUDA (que espera o desenho): garante que o GL acabou de
+    // ler a textura antes de devolver o DMA-BUF pro compositor
+    if (!produced) e->Finish();
+    const GLenum gl_err = e->GetError();
+    if (gl_err != GL_NO_ERROR) {
+        if (getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] erro do GL na captura pela placa: 0x%x\n", gl_err);
+        gpu_fail(g, "GL");
+    }
+    g->work_us += now_us() - t0;
+    if (++g->work_n == 120 && getenv("TELINHA_DEBUG")) {
+        fprintf(stderr, "[telinha] quadro pela placa: %.2f ms por quadro\n", (double)g->work_us / 120 / 1000.0);
+        g->work_us = g->work_n = 0;
+    }
+    pthread_mutex_lock(&c->lock);
+    if (sl) {
+        if (produced && !g->failed) {
+            for (int i = 0; i < N_GPU_SLOTS; i++)
+                if (g->slots[i].state == SLOT_PENDING) g->slots[i].state = SLOT_FREE; // o mais novo vale
+            sl->state = SLOT_PENDING;
+            c->pending_w = ow;
+            c->pending_h = oh;
+            c->pending_fmt = CAP_RGBX;
+            c->fresh |= 1;
+        } else {
+            sl->state = SLOT_FREE;
+        }
+    }
+    if (g->prev_new) {
+        uint8_t *tb = g->prev_front;
+        size_t tc = g->prev_front_cap;
+        g->prev_front = g->prev_back;
+        g->prev_front_cap = g->prev_back_cap;
+        g->prev_back = tb;
+        g->prev_back_cap = tc;
+        g->prev_front_w = g->prev_back_w;
+        g->prev_front_h = g->prev_back_h;
+        g->prev_front_full = g->prev_back_full;
+        g->prev_new = 0;
+        c->fresh |= 2; // prévia nova (mesmo sem slot: quem chama só pega a prévia)
+    }
+    pthread_cond_broadcast(&c->cond);
+    pthread_mutex_unlock(&c->lock);
+    return produced;
+}
+
+// Só o cursor mexeu (tela parada): redesenha a saída a partir da cena guardada.
+static int gpu_recompose(struct cap_ctx *c, cap_frame *cur) {
+    struct gpu_path *g = c->gpu;
+    if (!g || g->failed || !g->have_scene || !g->out_res) return 0;
+    pthread_mutex_lock(&c->lock);
+    struct gpu_slot *sl = gpu_pick_slot(g);
+    if (sl) sl->state = SLOT_RENDERING;
+    pthread_mutex_unlock(&c->lock);
+    if (!sl) return 0;
+    const int ok = gpu_compose(c->egl, g, sl, cur->cursor_draw, cur->cursor_x, cur->cursor_y, cur->cursor_scale) == 0;
+    pthread_mutex_lock(&c->lock);
+    if (ok) {
+        for (int i = 0; i < N_GPU_SLOTS; i++)
+            if (g->slots[i].state == SLOT_PENDING) g->slots[i].state = SLOT_FREE;
+        sl->state = SLOT_PENDING;
+        sl->src_w = g->scene_w;
+        sl->src_h = g->scene_h;
+        // ponta do cursor (a cena é a mesma, o recorte também)
+        sl->cursor_known = 0;
+        if (cur->cursor_known) {
+            const int px = cur->cursor_px - g->scene_x, py = cur->cursor_py - g->scene_y;
+            if (px >= 0 && py >= 0 && px < g->scene_w && py < g->scene_h) {
+                sl->cursor_known = 1;
+                sl->cursor_px = (int)((long long)px * g->out_w / g->scene_w);
+                sl->cursor_py = (int)((long long)py * g->out_h / g->scene_h);
+            }
+        }
+        c->pending_w = g->out_w;
+        c->pending_h = g->out_h;
+        c->pending_fmt = CAP_RGBX;
+        c->fresh |= 1;
+        pthread_cond_broadcast(&c->cond);
+    } else {
+        sl->state = SLOT_FREE;
+        g->failed = 1;
+    }
+    pthread_mutex_unlock(&c->lock);
+    return ok;
+}
+
+// Quem chama pega o slot pronto (sob o lock). 1 = tem quadro em *out.
+static int gpu_take(struct cap_ctx *c, cap_frame *out) {
+    struct gpu_path *g = c->gpu;
+    out->preview = NULL;
+    if (g->prev_front && (c->fresh & 2)) {
+        // cópia de quem chama: a thread do PipeWire pode trocar/realocar a frente a qualquer hora
+        const size_t need = (size_t)g->prev_front_w * (size_t)g->prev_front_h * 4;
+        if (g->prev_out_cap < need) {
+            free(g->prev_out);
+            g->prev_out = malloc(need);
+            g->prev_out_cap = g->prev_out ? need : 0;
+        }
+        if (g->prev_out) {
+            memcpy(g->prev_out, g->prev_front, need);
+            out->preview = g->prev_out;
+            out->preview_w = g->prev_front_w;
+            out->preview_h = g->prev_front_h;
+            out->preview_full = g->prev_front_full;
+        }
+    }
+    struct gpu_slot *sl = NULL;
+    for (int i = 0; i < N_GPU_SLOTS; i++)
+        if (g->slots[i].state == SLOT_PENDING) sl = &g->slots[i];
+    c->fresh = 0;
+    if (!sl) return 0;
+    sl->state = SLOT_HELD;
+    out->gpu = sl;
+    out->gpu_dev = sl->dev;
+    out->gpu_pitch = sl->pitch;
+    out->gpu_src_w = sl->src_w;
+    out->gpu_src_h = sl->src_h;
+    out->data = NULL;
+    out->width = sl->w;
+    out->height = sl->h;
+    out->stride = sl->pitch;
+    out->format = CAP_RGBX;
+    out->cursor_draw = 0; // já desenhado
+    out->cursor_known = sl->cursor_known;
+    out->cursor_px = sl->cursor_px;
+    out->cursor_py = sl->cursor_py;
+    return 1;
+}
+
+// Quem chama está parado (ninguém assistindo: pega um quadro a cada 200 ms)?
+// Aí não vale a pena produzir quadro que ninguém vai pegar.
+static int consumer_idle(struct cap_ctx *c) {
+    return !c->waiting && now_us() - c->last_take_us > 150000;
+}
+
+static int gpu_upload_wanted(void);
+
+// O caminho pela placa está mesmo produzindo os quadros (sob o lock)? Se o
+// compositor manda memória comum (sem DMA-BUF) ou a placa falhou, o quadro
+// vem pela CPU como sempre, e quem chama tem que ler ele de lá.
+static int gpu_producing(struct cap_ctx *c) {
+    if (!c->gpu_on || !c->gpu || c->gpu->failed) return 0;
+    if (c->kind == KIND_X11) return gpu_upload_wanted();
+    return c->src_kind == SRC_DMABUF || gpu_upload_wanted();
+}
+
+// TELINHA_GPU_UPLOAD=1: quadro em memória comum (X11, compositor sem DMA-BUF)
+// também vai pelo caminho da placa (subido pra textura). Serve pros testes
+// exercitarem o caminho da placa numa tela virtual; no uso normal, o quadro
+// em memória comum segue pela CPU.
+static int gpu_upload_wanted(void) {
+    static int cached = -1;
+    if (cached < 0) cached = getenv("TELINHA_GPU_UPLOAD") != NULL;
+    return cached;
+}
+
+static int fill_cursor(struct cap_ctx *c, cap_frame *out);
+
+// Quadro em memória comum (RGBX/BGRX, w*4 por linha) subido pra placa e
+// produzido como os outros. Na thread do contexto EGL.
+static int gpu_from_memory(struct cap_ctx *c, const uint8_t *pixels, int w, int h, int bgr, cap_frame *cur) {
+    struct gpu_path *g = c->gpu;
+    struct egl_state *e = c->egl;
+    if (!g || !e || g->failed) return 0;
+    if (gpu_gl_init(e, g) < 0) {
+        gpu_fail(g, "GL (subida do quadro)");
+        return 0;
+    }
+    if (g->src_w != w || g->src_h != h || !g->src_tex) {
+        gpu_tex_alloc(e, &g->src_tex, w, h, pixels);
+        g->src_w = w;
+        g->src_h = h;
+    } else {
+        e->BindTexture(GL_TEXTURE_2D, g->src_tex);
+        e->PixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        e->TexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    }
+    return gpu_produce(c, g->src_tex, w, h, bgr, cur);
 }
 
 // ===========================================================================
@@ -563,6 +1227,29 @@ static void on_process(void *data) {
     int w = (int)c->info.size.width, hgt = (int)c->info.size.height;
 
     if (d->type == SPA_DATA_DmaBuf) {
+        pthread_mutex_lock(&c->lock);
+        const int gpu_on = c->gpu_on && c->gpu && !c->gpu->failed;
+        const int idle = consumer_idle(c) && !(gpu_on && c->gpu->want_preview);
+        pthread_mutex_unlock(&c->lock);
+        if (idle) {
+            // ninguém vai pegar: nem lê o quadro (pela CPU custava 3-5 ms cada)
+            pw_stream_queue_buffer(c->stream, b);
+            return;
+        }
+        if (gpu_on && c->egl && w > 0 && hgt > 0 && !(h && (h->flags & SPA_META_HEADER_FLAG_CORRUPTED))) {
+            // caminho pela placa: a textura importada vira a cena; nada vem pra CPU
+            GLuint tex = egl_import(c->egl, buf, drm_format_of(c->info.format), c->info.modifier, w, hgt);
+            if (tex) {
+                cap_frame cur = {0};
+                cur.width = w;
+                cur.height = hgt;
+                fill_cursor(c, &cur);
+                gpu_produce(c, tex, w, hgt, 0, &cur);
+                pw_stream_queue_buffer(c->stream, b);
+                return;
+            }
+            // não importou: cai pro caminho de leitura abaixo (que renegocia)
+        }
         if (c->egl && w > 0 && hgt > 0 && !(h && (h->flags & SPA_META_HEADER_FLAG_CORRUPTED))) {
             size_t need = (size_t)w * hgt * 4;
             if (c->staging_cap < need) {
@@ -618,6 +1305,34 @@ static void on_process(void *data) {
         size_t need = (size_t)w * hgt * 4;
         if ((size_t)stride * (hgt - 1) + (size_t)w * bpp <= d->maxsize - d->chunk->offset) {
             pthread_mutex_lock(&c->lock);
+            const int gpu_on = c->gpu_on && c->gpu && !c->gpu->failed && gpu_upload_wanted();
+            const int idle = consumer_idle(c) && !(gpu_on && c->gpu->want_preview);
+            pthread_mutex_unlock(&c->lock);
+            if (idle) {
+                pw_stream_queue_buffer(c->stream, b);
+                return;
+            }
+            if (gpu_on) {
+                // memória compartilhada subida pra placa (só sob pedido: serve
+                // pra testar o caminho pela placa sem compositor com DMA-BUF)
+                if (c->staging_cap < need) {
+                    free(c->staging);
+                    c->staging = malloc(need);
+                    c->staging_cap = c->staging ? need : 0;
+                }
+                if (c->staging) {
+                    for (int y = 0; y < hgt; y++)
+                        copy_row(c->staging + (size_t)y * w * 4, src + (size_t)y * stride, w, c->src_kind);
+                    cap_frame cur = {0};
+                    cur.width = w;
+                    cur.height = hgt;
+                    fill_cursor(c, &cur);
+                    gpu_from_memory(c, c->staging, w, hgt, c->pw_format == CAP_BGRX, &cur);
+                }
+                pw_stream_queue_buffer(c->stream, b);
+                return;
+            }
+            pthread_mutex_lock(&c->lock);
             if (c->pending_cap < need) {
                 free(c->pending);
                 c->pending = malloc(need);
@@ -636,6 +1351,29 @@ static void on_process(void *data) {
         }
     }
     pw_stream_queue_buffer(c->stream, b);
+}
+
+// Cursor desenhado por nós, no caminho pela placa: a cada 1/fps, se só o
+// mouse mexeu (nenhum quadro novo), redesenha o cursor sobre a cena guardada.
+static void on_cursor_timer(void *data, uint64_t expirations) {
+    (void)expirations;
+    struct cap_ctx *c = data;
+    pthread_mutex_lock(&c->lock);
+    const int gpu_on = gpu_producing(c) && c->gpu->have_scene;
+    const int idle = consumer_idle(c);
+    const int dirty = gpu_on && c->gpu->output_dirty && c->gpu->have_copy;
+    pthread_mutex_unlock(&c->lock);
+    if (!gpu_on || idle) return;
+    cap_frame cur = {0};
+    cur.width = c->gpu->scene_src_w;
+    cur.height = c->gpu->scene_src_h;
+    const int moved = fill_cursor(c, &cur);
+    if (dirty) {
+        // recorte/altura novos com a tela parada: refaz a partir da cópia da fonte
+        gpu_produce(c, c->gpu->copy_tex, c->gpu->copy_w, c->gpu->copy_h, 0, &cur);
+    } else if (moved && c->soft_cursor) {
+        gpu_recompose(c, &cur);
+    }
 }
 
 static void on_remove_buffer(void *data, struct pw_buffer *b) {
@@ -700,16 +1438,35 @@ static void save_token(const char *tok) {
     fclose(f);
 }
 
+// Na thread do PipeWire: solta o caminho pela placa e o EGL.
+static int gpu_and_egl_release(struct spa_loop *loop, bool async, uint32_t seq, const void *data, size_t size, void *user) {
+    struct cap_ctx *c = user;
+    gpu_gl_destroy(c->egl, c->gpu);
+    return egl_release(loop, async, seq, data, size, c->egl);
+}
+
+static void gpu_free(struct cap_ctx *c) {
+    if (!c->gpu) return;
+    free(c->gpu->prev_back);
+    free(c->gpu->prev_front);
+    free(c->gpu->prev_out);
+    free(c->gpu);
+    c->gpu = NULL;
+}
+
 static void close_pipewire(struct cap_ctx *c) {
     if (c->loop) pw_thread_loop_lock(c->loop);
+    if (c->cursor_timer && c->loop) pw_loop_destroy_source(pw_thread_loop_get_loop(c->loop), c->cursor_timer);
+    c->cursor_timer = NULL;
     if (c->stream) pw_stream_destroy(c->stream);
     if (c->core) pw_core_disconnect(c->core);
     if (c->loop) {
         pw_thread_loop_unlock(c->loop);
         // o contexto EGL está ativo na thread do PipeWire: solta lá dentro
-        if (c->egl) pw_loop_invoke(pw_thread_loop_get_loop(c->loop), egl_release, 0, NULL, 0, true, c->egl);
+        if (c->egl) pw_loop_invoke(pw_thread_loop_get_loop(c->loop), gpu_and_egl_release, 0, NULL, 0, true, c);
         pw_thread_loop_stop(c->loop);
     }
+    gpu_free(c);
     egl_destroy(c->egl);
     c->egl = NULL;
     free(c->staging);
@@ -840,6 +1597,14 @@ static int open_pipewire(struct cap_ctx *c, char *err, int errlen) {
     int n_params = build_formats(c, &b, params, 8);
     int r = pw_stream_connect(c->stream, PW_DIRECTION_INPUT, node,
                               PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS, params, (uint32_t)n_params);
+    if (c->egl) {
+        // caminho pela placa: redesenha o cursor (nosso) ou um recorte novo no ritmo do fps
+        c->cursor_timer = pw_loop_add_timer(pw_thread_loop_get_loop(c->loop), on_cursor_timer, c);
+        if (c->cursor_timer) {
+            struct timespec iv = {0, (long)(1000000000L / (c->fps > 0 ? c->fps : 30))};
+            pw_loop_update_timer(pw_thread_loop_get_loop(c->loop), c->cursor_timer, &iv, &iv, false);
+        }
+    }
     pw_thread_loop_unlock(c->loop);
     if (r < 0) {
         set_err(err, errlen, "não consegui receber a tela do PipeWire%s", "");
@@ -913,15 +1678,25 @@ static int next_pipewire(struct cap_ctx *c, cap_frame *out, int timeout_ms, char
             ts.tv_sec++;
             ts.tv_nsec -= 1000000000L;
         }
+        c->waiting = 1;
         while (!c->fresh && !c->failed)
             if (pthread_cond_timedwait(&c->cond, &c->lock, &ts) == ETIMEDOUT) break;
+        c->waiting = 0;
     }
     if (c->failed) {
         set_err(err, errlen, "%s", c->fail_msg);
         pthread_mutex_unlock(&c->lock);
         return -1;
     }
-    if (!c->fresh) {
+    if (gpu_producing(c)) {
+        // caminho pela placa: o quadro é um slot (e/ou uma prévia nova)
+        c->last_take_us = now_us();
+        const int got = gpu_take(c, out);
+        pthread_mutex_unlock(&c->lock);
+        return got ? 1 : 0;
+    }
+    if (!(c->fresh & 1)) {
+        c->fresh = 0;
         pthread_mutex_unlock(&c->lock);
         // tela parada, mas o cursor mexeu: reentrega o último quadro com o cursor novo
         if (c->soft_cursor && c->have_front) {
@@ -942,6 +1717,7 @@ static int next_pipewire(struct cap_ctx *c, cap_frame *out, int timeout_ms, char
     c->pending = tmp;
     c->pending_cap = tmp_cap;
     c->fresh = 0;
+    c->last_take_us = now_us();
     out->data = c->front;
     out->width = c->pending_w;
     out->height = c->pending_h;
@@ -1046,10 +1822,33 @@ static int next_x11(struct cap_ctx *c, cap_frame *out, char *err, int errlen) {
     out->stride = c->xw * 4;
     out->format = CAP_BGRX;
     out->cursor_draw = 0;
+    pthread_mutex_lock(&c->lock);
+    const int gpu_on = gpu_producing(c);
+    pthread_mutex_unlock(&c->lock);
+    if (gpu_on) {
+        // caminho pela placa (TELINHA_GPU_UPLOAD): o contexto EGL vive nesta thread
+        cap_frame cur = *out;
+        const int produced = gpu_from_memory(c, c->xbuf, c->xw, c->xh, 1, &cur);
+        pthread_mutex_lock(&c->lock);
+        c->last_take_us = now_us();
+        const int got = produced ? gpu_take(c, out) : 0;
+        pthread_mutex_unlock(&c->lock);
+        if (!got && !c->gpu->failed) return 0;
+        if (got) return 1;
+        // a placa falhou: segue pela CPU (o quadro em xbuf continua válido)
+    }
     return 1;
 }
 
 static void close_x11(struct cap_ctx *c) {
+    // o caminho pela placa (TELINHA_GPU_UPLOAD) vive na thread de quem chama
+    if (c->egl) {
+        gpu_gl_destroy(c->egl, c->gpu);
+        egl_release(NULL, false, 0, NULL, 0, c->egl);
+        egl_destroy(c->egl);
+        c->egl = NULL;
+    }
+    gpu_free(c);
     if (c->dpy && c->img) {
         XShmDetach(c->dpy, &c->shm);
         XDestroyImage(c->img);
@@ -1068,6 +1867,7 @@ cap_ctx *cap_open(int source_id, int show_cursor, int fps, char *err, int errlen
     c->show_cursor = show_cursor;
     c->fps = fps > 0 ? fps : 30;
     c->cursor_gx = c->cursor_gy = -100000;
+    c->last_take_us = now_us(); // "parado" só depois de um tempo sem ninguém pegar quadro
     // Hyprland: cursor embutido força cursor em software (mouse com lag); desenhamos nós mesmos
     c->soft_cursor = show_cursor && getenv("HYPRLAND_INSTANCE_SIGNATURE") != NULL && getenv("TELINHA_CURSOR_EMBUTIDO") == NULL;
     pthread_mutex_init(&c->lock, NULL);
@@ -1106,4 +1906,82 @@ void cap_close(cap_ctx *c) {
     pthread_mutex_destroy(&c->lock);
     pthread_cond_destroy(&c->cond);
     free(c);
+}
+
+// ---------------------------------------------------------------------------
+// Caminho pela placa (API; ver capture.h)
+
+int cap_gpu_enable(cap_ctx *c, void *cg, cap_rect_fn rect, cap_cursor_fn cursor) {
+    if (!c || !cg || getenv("TELINHA_SEM_GPU_CAPTURA")) return 0;
+    if (c->kind == KIND_X11 && !gpu_upload_wanted()) return 0;
+    if (!c->egl && c->kind == KIND_X11) c->egl = egl_create(); // no X11 o EGL só existe pra isso
+    if (!c->egl) return 0;
+    pthread_mutex_lock(&c->lock);
+    if (!c->gpu) {
+        c->gpu = calloc(1, sizeof *c->gpu);
+        if (!c->gpu) {
+            pthread_mutex_unlock(&c->lock);
+            return 0;
+        }
+        c->gpu->crop[2] = c->gpu->crop[3] = 1;
+    }
+    c->gpu->cg = cg;
+    c->gpu->rect_fn = rect;
+    c->gpu->cursor_fn = cursor;
+    c->gpu->failed = 0;
+    c->gpu_on = 1;
+    pthread_mutex_unlock(&c->lock);
+    if (getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] captura pela placa: ligada\n");
+    return 1;
+}
+
+void cap_gpu_disable(cap_ctx *c) {
+    if (!c || !c->gpu) return;
+    pthread_mutex_lock(&c->lock);
+    c->gpu_on = 0;
+    c->fresh = 0;
+    for (int i = 0; i < N_GPU_SLOTS; i++)
+        if (c->gpu->slots[i].state == SLOT_PENDING) c->gpu->slots[i].state = SLOT_FREE;
+    pthread_mutex_unlock(&c->lock);
+}
+
+void cap_gpu_set_output(cap_ctx *c, const float crop[4], int max_height) {
+    if (!c || !c->gpu) return;
+    pthread_mutex_lock(&c->lock);
+    if (memcmp(c->gpu->crop, crop, sizeof c->gpu->crop) != 0 || c->gpu->max_h != max_height) c->gpu->output_dirty = 1;
+    memcpy(c->gpu->crop, crop, sizeof c->gpu->crop);
+    c->gpu->max_h = max_height;
+    pthread_mutex_unlock(&c->lock);
+}
+
+int cap_gpu_failed(cap_ctx *c) {
+    if (!c || !c->gpu) return 0;
+    pthread_mutex_lock(&c->lock);
+    const int f = c->gpu->failed;
+    pthread_mutex_unlock(&c->lock);
+    return f;
+}
+
+void cap_gpu_gc(cap_ctx *c) {
+    if (!c || !c->gpu) return;
+    pthread_mutex_lock(&c->lock);
+    for (int i = 0; i < c->gpu->n_retired; i++) cudagl_free(c->gpu->cg, c->gpu->retired[i]);
+    c->gpu->n_retired = 0;
+    pthread_mutex_unlock(&c->lock);
+}
+
+void cap_gpu_set_preview(cap_ctx *c, int want, int max_w) {
+    if (!c || !c->gpu) return;
+    pthread_mutex_lock(&c->lock);
+    c->gpu->want_preview = want;
+    c->gpu->preview_max_w = max_w;
+    pthread_mutex_unlock(&c->lock);
+}
+
+void cap_gpu_release(cap_ctx *c, void *gpu) {
+    if (!c || !c->gpu || !gpu) return;
+    struct gpu_slot *sl = gpu;
+    pthread_mutex_lock(&c->lock);
+    if (sl->state == SLOT_HELD) sl->state = SLOT_FREE;
+    pthread_mutex_unlock(&c->lock);
 }

@@ -40,6 +40,7 @@ fn restart() void {
 }
 
 fn poll(my_gen: u32) void {
+    sync.nameThread("ptt");
     while (gen.load(.acquire) == my_gen) {
         global_down.store(c.ptt_global_down(global_key.load(.monotonic), mouse_button.load(.monotonic)) != 0, .release);
         sync.sleepMs(10);

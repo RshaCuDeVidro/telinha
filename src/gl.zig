@@ -138,6 +138,41 @@ const fragment_src =
     \\}
 ;
 
+// CUDA <-> OpenGL (cudagl.c): na NVIDIA, o quadro do NVDEC vai direto pra
+// textura, sem passar pela CPU. `cudagl` fica null sem NVIDIA/CUDA.
+pub extern fn cudagl_open() ?*anyopaque;
+pub extern fn cudagl_close(g: ?*anyopaque) void;
+pub extern fn cudagl_register(g: ?*anyopaque, tex: c_uint, write: c_int) ?*anyopaque;
+pub extern fn cudagl_unregister(g: ?*anyopaque, res: ?*anyopaque) void;
+pub extern fn cudagl_alloc(g: ?*anyopaque, width_bytes: c_int, height: c_int, pitch: *c_int) u64;
+pub extern fn cudagl_free(g: ?*anyopaque, ptr: u64) void;
+pub extern fn cudagl_dev_to_tex(g: ?*anyopaque, res: ?*anyopaque, src: u64, src_pitch: c_int, width_bytes: c_int, height: c_int) c_int;
+pub extern fn cudagl_dev_to_host(g: ?*anyopaque, src: u64, src_pitch: c_int, dst: [*]u8, dst_pitch: c_int, width_bytes: c_int, height: c_int) c_int;
+extern fn glGetString(name: c_uint) ?[*:0]const u8;
+const VENDOR = 0x1F00;
+
+pub var cudagl: ?*anyopaque = null;
+
+/// Liga o caminho NVDEC → textura se o OpenGL é da NVIDIA e o CUDA consegue
+/// registrar uma textura deste contexto (testa com uma de 1x1).
+pub fn initCuda() void {
+    const vendor = std.mem.span(glGetString(VENDOR) orelse return);
+    if (std.mem.indexOf(u8, vendor, "NVIDIA") == null) return;
+    const g = cudagl_open() orelse return;
+    var tex: u32 = 0;
+    newTexture(&tex);
+    glBindTexture(TEXTURE_2D, tex);
+    glTexImage2D(TEXTURE_2D, 0, R8, 1, 1, 0, RED, UNSIGNED_BYTE, null);
+    const res = cudagl_register(g, tex, 1);
+    if (res) |r| cudagl_unregister(g, r);
+    delete(&tex);
+    if (res == null) {
+        cudagl_close(g);
+        return;
+    }
+    cudagl = g;
+}
+
 pub const YuvRenderer = struct {
     f: Fns,
     program: c_uint,
@@ -207,8 +242,18 @@ pub const YuvRenderer = struct {
         ow: u32 = 0, // tamanho da textura convertida (o que aparece; nunca maior que o vídeo)
         oh: u32 = 0,
         nv12: bool = false,
+        cuda_y: ?*anyopaque = null, // planos registrados no CUDA (uploadDevice)
+        cuda_uv: ?*anyopaque = null,
+
+        fn unregisterCuda(t: *Target) void {
+            if (t.cuda_y) |r| cudagl_unregister(cudagl, r);
+            if (t.cuda_uv) |r| cudagl_unregister(cudagl, r);
+            t.cuda_y = null;
+            t.cuda_uv = null;
+        }
 
         pub fn deinit(t: *Target, r: *const YuvRenderer) void {
+            t.unregisterCuda();
             delete(&t.ty);
             delete(&t.tu);
             delete(&t.tv);
@@ -237,6 +282,7 @@ pub const YuvRenderer = struct {
     pub fn upload(r: *const YuvRenderer, t: *Target, planes: []const u8, w: u32, h: u32, nv12: bool) void {
         _ = r;
         if (t.w != w or t.h != h or t.nv12 != nv12 or t.ty == 0) {
+            t.unregisterCuda();
             planeTexture(&t.ty, R8, w, h, RED);
             if (nv12) {
                 planeTexture(&t.tu, RG8, w / 2, h / 2, RG);
@@ -259,6 +305,32 @@ pub const YuvRenderer = struct {
             uploadPlane(t.tv, planes.ptr + n + n / 4, w / 2, h / 2, RED);
         }
         glPixelStorei(UNPACK_ALIGNMENT, 4);
+    }
+
+    /// Planos NV12 que já estão na memória da placa (NVDEC; ver client.DevBuf):
+    /// copiados direto pras texturas pelo CUDA. false = não deu (aí a CPU
+    /// volta a entregar os planos).
+    pub fn uploadDevice(r: *const YuvRenderer, t: *Target, dev_y: u64, dev_uv: u64, pitch: u32, w: u32, h: u32) bool {
+        _ = r;
+        const g = cudagl orelse return false;
+        if (t.w != w or t.h != h or !t.nv12 or t.ty == 0 or t.cuda_y == null) {
+            t.unregisterCuda();
+            planeTexture(&t.ty, R8, w, h, RED);
+            planeTexture(&t.tu, RG8, w / 2, h / 2, RG);
+            t.w = w;
+            t.h = h;
+            t.nv12 = true;
+            t.cuda_y = cudagl_register(g, t.ty, 1);
+            t.cuda_uv = cudagl_register(g, t.tu, 1);
+            if (t.cuda_y == null or t.cuda_uv == null) {
+                t.unregisterCuda();
+                return false;
+            }
+        }
+        if (cudagl_dev_to_tex(g, t.cuda_y, dev_y, @intCast(pitch), @intCast(w), @intCast(h)) != 0) return false;
+        // croma: w/2 pixels de 2 bytes = w bytes por linha
+        if (cudagl_dev_to_tex(g, t.cuda_uv, dev_uv, @intCast(pitch), @intCast(w), @intCast(h / 2)) != 0) return false;
+        return true;
     }
 
     /// Converte os planos (já na placa) pra `t.out` em `ow` x `oh` — o tamanho

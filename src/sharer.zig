@@ -22,6 +22,7 @@ const Client = @import("client.zig").Client;
 const clip = @import("clip.zig");
 const c = @cImport({
     @cInclude("capture.h");
+    @cInclude("cudagl.h");
     @cInclude("camera.h");
 });
 const gpa = proto.gpa;
@@ -155,6 +156,11 @@ const Slot = struct {
     u: []u8 = &.{},
     v: []u8 = &.{},
     bgrx: []u8 = &.{}, // caminho do encoder em hardware (sem conversão na CPU)
+    // caminho pela placa (cap_gpu_enable): o quadro é um buffer na placa, da
+    // captura (devolvido com cap_gpu_release quando o slot é reaproveitado)
+    gpu: ?*anyopaque = null,
+    gpu_dev: u64 = 0,
+    gpu_pitch: u32 = 0,
     fmt: codec.PixelFormat = .bgrx,
     w: u32 = 0,
     h: u32 = 0,
@@ -406,6 +412,11 @@ const Pipeline = struct {
     auto: AutoQuality = .{},
     /// Encoder em hardware em uso? Decidido no início; vira false se o NVENC falhar.
     use_hw: std.atomic.Value(bool) = .init(false),
+    /// Caminho pela placa (Linux + NVIDIA): a captura entrega o quadro já na
+    /// memória da placa (recorte, escala e cursor feitos lá) e o NVENC lê de
+    /// lá. `cg` vive mais que a captura (os buffers são do contexto dele).
+    cg: ?*c.cudagl = null,
+    gpu_on: bool = false,
     hevc_ok: bool = false, // a placa codifica HEVC (testado no começo)
     audio_sender: ?*audio.Sender = null,
     audio_live: std.atomic.Value(bool) = .init(false), // tem som saindo (vai no anúncio)
@@ -439,11 +450,47 @@ const Pipeline = struct {
 
     fn deinit(p: *Pipeline) void {
         if (p.audio_sender) |a| a.destroy();
+        for (&p.slots) |*sl| p.releaseGpu(sl);
         if (p.cap) |cp| cp.close();
+        if (p.cg) |cg| c.cudagl_close(cg);
+        p.cg = null;
         gpa.free(p.cur);
         gpa.free(p.prev);
         gpa.free(p.preview_back);
         for (&p.slots) |*sl| sl.deinit();
+    }
+
+    /// Devolve o buffer da placa de um slot pra captura (se tiver).
+    fn releaseGpu(p: *Pipeline, sl: *Slot) void {
+        const g = sl.gpu orelse return;
+        sl.gpu = null;
+        sl.gpu_dev = 0;
+        if (p.cap) |src| switch (src) {
+            .screen => |x| c.cap_gpu_release(x, g),
+            else => {},
+        };
+    }
+
+    /// Liga o caminho pela placa se o encoder aceita (NVENC) e a captura dá (DMA-BUF).
+    fn enableGpu(p: *Pipeline) void {
+        const src = p.cap orelse return;
+        if (src != .screen) return;
+        const cg = c.cudagl_open() orelse return;
+        if (c.cap_gpu_enable(src.screen, cg, outputRect, cursorRgba) != 0) {
+            p.cg = cg;
+            p.gpu_on = true;
+        } else c.cudagl_close(cg);
+    }
+
+    fn disableGpu(p: *Pipeline) void {
+        if (!p.gpu_on) return;
+        p.gpu_on = false;
+        if (p.cap) |src| if (src == .screen) c.cap_gpu_disable(src.screen);
+        const s = p.s;
+        s.mutex.lock();
+        if (std.mem.endsWith(u8, s.backend[0..s.backend_len], "+placa")) s.backend_len -= 6;
+        s.mutex.unlock();
+        if (debugEnabled()) std.debug.print("[telinha] captura pela placa: desligada\n", .{});
     }
 
     fn start(p: *Pipeline) !void {
@@ -461,8 +508,10 @@ const Pipeline = struct {
             var err: [256]u8 = undefined;
             if (codec.HwEncoder.init(.{ .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000 }, &err)) |probe| {
                 var pr = probe;
+                const cuda = pr.acceptsCuda();
                 pr.deinit();
                 p.use_hw.store(true, .release);
+                if (cuda) p.enableGpu();
                 if (getenv("TELINHA_SEM_HEVC") == null) {
                     if (codec.HwEncoder.init(.{ .codec = .hevc, .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000 }, &err)) |hp| {
                         var hh = hp;
@@ -481,6 +530,10 @@ const Pipeline = struct {
         s.mutex.lock();
         s.backend_len = @min(b.len, s.backend.len);
         @memcpy(s.backend[0..s.backend_len], b[0..s.backend_len]);
+        if (p.gpu_on and s.backend_len + 6 <= s.backend.len) {
+            @memcpy(s.backend[s.backend_len..][0..6], "+placa");
+            s.backend_len += 6;
+        }
         s.mutex.unlock();
     }
 
@@ -531,6 +584,7 @@ const Pipeline = struct {
 
     fn captureLoop(p: *Pipeline) !void {
         const s = p.s;
+        sync.nameThread("captura");
         sync.lowerThreadPriority();
         var next_us: u64 = 0;
         const started_us = sync.nowUs();
@@ -576,10 +630,25 @@ const Pipeline = struct {
                 continue;
             }
 
+            // caminho pela placa: o que ela deve produzir (recorte, altura
+            // máxima, prévia) — barato, e assim muda junto com as configurações
+            if (p.gpu_on) {
+                if (!p.use_hw.load(.acquire) or c.cap_gpu_failed(p.cap.?.screen) != 0) {
+                    p.disableGpu();
+                } else {
+                    const scr = p.cap.?.screen;
+                    c.cap_gpu_set_output(scr, &p.settings.crop, @intCast(effectiveHeight(p.settings.max_height, p.auto.cap)));
+                    const wanted = sync.nowMs() -| s.preview_wanted_ms.load(.monotonic) <= 1000 or s.preview.len == 0;
+                    const want: c_int = if (s.preview_full.load(.acquire)) 2 else if (wanted) 1 else 0;
+                    c.cap_gpu_set_preview(scr, want, if (want == 2) 1280 else 960);
+                }
+            }
+
             var f: c.cap_frame = std.mem.zeroes(c.cap_frame);
             const t_cap = sync.nowUs();
             const r = p.cap.?.next(&f, 50, &p.err);
             if (r < 0) return error.Capture;
+            if (f.preview != null) p.takePreview(&f);
             if (r == 0) {
                 // o compositor manda o primeiro quadro na hora, mesmo com a tela parada
                 if (!got_any and sync.nowUs() - started_us > 10_000_000) {
@@ -599,6 +668,25 @@ const Pipeline = struct {
             next_us = @max(next_us + interval_us, sync.nowUs() + interval_us / 2);
 
             const t_ing = sync.nowUs();
+            if (f.gpu != null) {
+                // quadro já pronto na placa: só anota tamanho e cursor
+                p.w = @intCast(f.width);
+                p.h = @intCast(f.height);
+                p.src_h = @intCast(@max(f.gpu_src_h, f.height));
+                p.fmt = .rgbx;
+                p.cursor_x = proto.coord_none;
+                p.cursor_y = proto.coord_none;
+                if (f.cursor_known != 0 and f.cursor_px >= 0 and f.cursor_py >= 0 and f.cursor_px < f.width and f.cursor_py < f.height) {
+                    p.cursor_x = @intCast(@divTrunc(@as(i64, f.cursor_px) * 65534, @max(1, @as(i64, f.width) - 1)));
+                    p.cursor_y = @intCast(@divTrunc(@as(i64, f.cursor_py) * 65534, @max(1, @as(i64, f.height) - 1)));
+                }
+                _ = p.timing.capture.fetchAdd(t_ing - t_cap, .monotonic);
+                p.ing_ema_us = (p.ing_ema_us * 7) / 8;
+                p.autoQuality(sync.nowUs());
+                _ = p.timing.captured.fetchAdd(1, .monotonic);
+                try p.publishGpu(&f, ts);
+                continue;
+            }
             try p.ingest(&f);
             _ = p.timing.capture.fetchAdd(t_ing - t_cap, .monotonic);
             const t_end = sync.nowUs();
@@ -620,11 +708,11 @@ const Pipeline = struct {
         }
     }
 
-    /// Converte pra I420 num slot livre e entrega pro encoder.
-    fn publish(p: *Pipeline, frame: []const u8, ts: u64) !void {
+    /// Slot livre: nem o que está sendo codificado, nem o último codificado;
+    /// se o "pronto" ainda não foi pego, ele é substituído pelo mais novo.
+    fn freeSlot(p: *Pipeline) usize {
         p.mutex.lock();
-        // slot livre: nem o que está sendo codificado, nem o último codificado;
-        // se o "pronto" ainda não foi pego, ele é substituído pelo mais novo
+        defer p.mutex.unlock();
         var idx: usize = 0;
         for (0..3) |i| {
             if (p.encoding == i or p.last == i) continue;
@@ -632,9 +720,57 @@ const Pipeline = struct {
             if (p.ready != i) break;
         }
         if (p.ready == idx) p.ready = null;
-        p.mutex.unlock();
+        return idx;
+    }
 
+    /// Quadro que já está na placa: o slot só guarda o ponteiro.
+    fn publishGpu(p: *Pipeline, f: *const c.cap_frame, ts: u64) !void {
+        const idx = p.freeSlot();
         const sl = &p.slots[idx];
+        p.releaseGpu(sl);
+        sl.ts = ts;
+        sl.fmt = .rgbx;
+        sl.cursor_x = p.cursor_x;
+        sl.cursor_y = p.cursor_y;
+        sl.w = p.w;
+        sl.h = p.h;
+        sl.gpu = f.gpu;
+        sl.gpu_dev = f.gpu_dev;
+        sl.gpu_pitch = @intCast(f.gpu_pitch);
+        p.mutex.lock();
+        p.ready = idx;
+        p.cond.signal();
+        p.mutex.unlock();
+    }
+
+    /// Prévia que veio pronta da placa (RGBA, pequena): só copia pra UI.
+    fn takePreview(p: *Pipeline, f: *const c.cap_frame) void {
+        const s = p.s;
+        const pw: usize = @intCast(f.preview_w);
+        const ph: usize = @intCast(f.preview_h);
+        const need = pw * ph * 4;
+        if (need == 0) return;
+        if (p.preview_back.len != need) {
+            gpa.free(p.preview_back);
+            p.preview_back = gpa.alloc(u8, need) catch &.{};
+            if (p.preview_back.len != need) return;
+        }
+        @memcpy(p.preview_back, f.preview[0..need]);
+        s.mutex.lock();
+        std.mem.swap([]u8, &s.preview, &p.preview_back);
+        s.preview_w = @intCast(pw);
+        s.preview_h = @intCast(ph);
+        s.preview_bgr = false;
+        s.preview_new = true;
+        s.mutex.unlock();
+        s.client.wake();
+    }
+
+    /// Converte pra I420 num slot livre e entrega pro encoder.
+    fn publish(p: *Pipeline, frame: []const u8, ts: u64) !void {
+        const idx = p.freeSlot();
+        const sl = &p.slots[idx];
+        p.releaseGpu(sl);
         sl.ts = ts;
         sl.fmt = p.fmt;
         sl.cursor_x = p.cursor_x;
@@ -869,6 +1005,7 @@ const Pipeline = struct {
     // ------------------------------------------------------------ encode
 
     fn encodeLoop(p: *Pipeline) void {
+        sync.nameThread("encoder");
         sync.lowerThreadPriority();
         p.encodeLoopInner() catch |e| p.s.fail(Sharer.errorText(e));
         // se o encoder morreu, a captura também tem que parar
@@ -927,7 +1064,8 @@ const Pipeline = struct {
             const resend = p.ready_was_null;
             const want_hw = p.use_hw.load(.acquire);
             // o slot pode ter sido preenchido no formato antigo (logo após trocar de encoder)
-            if (want_hw and sl.bgrx.len != @as(usize, sl.w) * sl.h * 4 or !want_hw and sl.y.len != @as(usize, sl.w) * sl.h) {
+            const gpu_slot = sl.gpu != null;
+            if (want_hw and !gpu_slot and sl.bgrx.len != @as(usize, sl.w) * sl.h * 4 or !want_hw and (gpu_slot or sl.y.len != @as(usize, sl.w) * sl.h)) {
                 p.doneWith(i, false);
                 continue;
             }
@@ -971,6 +1109,8 @@ const Pipeline = struct {
                     var err: [256]u8 = undefined;
                     if (codec.HwEncoder.init(opts, &err)) |h| {
                         enc = .{ .hw = h };
+                        // encoder novo: buffers da placa de tamanho antigo podem ir embora
+                        if (p.cap) |src| if (src == .screen) c.cap_gpu_gc(src.screen);
                     } else |_| if (want_codec != .h264) {
                         // HEVC não abriu nessa resolução: H.264 daqui pra frente
                         if (debugEnabled()) std.debug.print("[telinha] HEVC falhou ({s}), voltando pro H.264\n", .{std.mem.sliceTo(&err, 0)});
@@ -1157,6 +1297,49 @@ const arrow = [_][]const u8{
     "       XX",
 };
 
+/// Pra captura pela placa (capture.h, cap_rect_fn): recorte e tamanho de
+/// saída com as mesmas regras do caminho pela CPU (cropRect/outputSize).
+fn outputRect(fw: c_int, fh: c_int, crop: [*c]const f32, max_h: c_int, x: [*c]c_int, y: [*c]c_int, w: [*c]c_int, h: [*c]c_int, ow: [*c]c_int, oh: [*c]c_int) callconv(.c) void {
+    const cr = cropRect(crop[0..4].*, @intCast(@max(1, fw)), @intCast(@max(1, fh)));
+    const size = outputSize(cr.w, cr.h, @intCast(@max(0, max_h)));
+    x.* = @intCast(cr.x);
+    y.* = @intCast(cr.y);
+    // sem escala e altura/largura ímpar: corta 1 linha/coluna (o H.264 quer pares)
+    const exact = size.h == (cr.h & ~@as(u32, 1)) and size.w == (cr.w & ~@as(u32, 1));
+    w.* = @intCast(if (exact) size.w else cr.w);
+    h.* = @intCast(if (exact) size.h else cr.h);
+    ow.* = @intCast(size.w);
+    oh.* = @intCast(size.h);
+}
+
+/// A seta do cursor em RGBA (cap_cursor_fn), a mesma do drawCursor.
+const cursor_w: usize = blk: {
+    var maxw: usize = 0;
+    for (arrow) |line| maxw = @max(maxw, line.len);
+    break :blk maxw;
+};
+const cursor_px: [arrow.len * cursor_w * 4]u8 = blk: {
+    var px: [arrow.len * cursor_w * 4]u8 = undefined;
+    for (arrow, 0..) |line, yy| {
+        for (0..cursor_w) |xx| {
+            const o = (yy * cursor_w + xx) * 4;
+            const ch: u8 = if (xx < line.len) line[xx] else ' ';
+            const v: u8 = if (ch == '.') 255 else 0;
+            px[o] = v;
+            px[o + 1] = v;
+            px[o + 2] = v;
+            px[o + 3] = if (ch == 'X' or ch == '.') 255 else 0;
+        }
+    }
+    break :blk px;
+};
+
+fn cursorRgba(w: [*c]c_int, h: [*c]c_int) callconv(.c) [*c]const u8 {
+    w.* = @intCast(cursor_w);
+    h.* = @intCast(arrow.len);
+    return &cursor_px;
+}
+
 fn drawCursor(buf: []u8, w: u32, h: u32, x0: i32, y0: i32, logical_scale: f32) void {
     // o cursor real tem ~24 px lógicos de altura; a seta tem 20 linhas
     const k = @max(1.0, logical_scale * 1.2);
@@ -1226,7 +1409,10 @@ const Encoder = union(enum) {
         switch (e.*) {
             .hw => |*h| {
                 const before = out.items.len;
-                const is_key = try h.encode(sl.bgrx.ptr, @as(usize, sl.w) * 4, sl.fmt, key, out);
+                const is_key = if (sl.gpu != null)
+                    try h.encodeDev(sl.gpu_dev, sl.gpu_pitch, sl.fmt, key, out)
+                else
+                    try h.encode(sl.bgrx.ptr, @as(usize, sl.w) * 4, sl.fmt, key, out);
                 // encoder de hardware que ainda não soltou nada (Media Foundation): sem quadro
                 if (out.items.len == before) return null;
                 return is_key;

@@ -773,6 +773,7 @@ def atalho_de_clipe():
         b.wait(lambda st: any(v["stream"] == aid and v["clip_secs"] >= 3 for v in st["views"]), 20, "guardar uns segundos")
         b.click("##gear")
         b.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        b.click("##cfg-atalhos")
         settings_click(b, "##clipkey")
         time.sleep(0.3)
         b.key("k")
@@ -787,6 +788,60 @@ def atalho_de_clipe():
         frames, dur, _ = probe(st["last_saved"])
         log(f"clipe pelo atalho: {frames} quadros, {dur:.1f} s")
         expect(frames >= 10, "clipe vazio")
+
+
+@test
+def atalhos_globais():
+    """Página de atalhos: combinação com Ctrl+Shift, atalho de surdo valendo sem foco, a tecla que liga/desliga todos, duração livre do clipe."""
+    from Xlib import X as XX
+    with Session("atalhos") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)], config={"clips": 1, "clip_secs": 45})
+        st = a.wait(lambda st: st["screen"] == "room", 10, "entrar na sala")
+        expect(st["cfg"]["clip_secs"] == 45, f"duração livre do clipe não valeu: {st['cfg']['clip_secs']}")
+        a.click("##gear")
+        a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        a.click("##cfg-atalhos")
+        # microfone: Ctrl+Shift+K
+        settings_click(a, "##mickey")
+        time.sleep(0.3)
+        a.key("k", ctrl=True, shift=True)
+        a.wait(lambda st: st["cfg"]["hk_mic"] == 75 and st["cfg"]["hk_mic_mods"] == 3, 3, "escolher Ctrl+Shift+K pro microfone")
+        # surdo: D; liga/desliga todos: T
+        settings_click(a, "##deafkey")
+        time.sleep(0.3)
+        a.key("d")
+        time.sleep(0.4)
+        settings_click(a, "##togglekey")
+        time.sleep(0.3)
+        a.key("t")
+        time.sleep(0.4)
+        settings_click(a, "Fechar")
+        a.wait(lambda st: not st["settings_modal"], 3, "fechar as configurações")
+        ini = open(os.path.join(a.cfg, "telinha", "config.ini")).read()
+        expect("hk_mic=75," in ini and "hk_deaf=68," in ini and "hk_toggle=84," in ini, f"atalhos não salvos: {ini}")
+        # sem foco (o jogo na frente): D deixa surdo
+        a.d.set_input_focus(XX.NONE, XX.RevertToNone, XX.CurrentTime)
+        a.d.sync()
+        time.sleep(0.5)
+        a.key("d")
+        a.wait(lambda st: st["deaf"], 3, "ficar surdo pelo atalho")
+        time.sleep(0.5)
+        a.key("d")
+        a.wait(lambda st: not st["deaf"], 3, "voltar a ouvir pelo atalho")
+        # T desliga todos: D não faz mais nada; T de novo liga
+        time.sleep(0.5)
+        a.key("t")
+        a.wait(lambda st: not st["cfg"]["hotkeys_on"], 3, "desligar os atalhos pelo T")
+        time.sleep(0.5)
+        a.key("d")
+        time.sleep(1.0)
+        expect(not a.state()["deaf"], "o atalho de surdo valeu com os atalhos desligados")
+        a.key("t")
+        a.wait(lambda st: st["cfg"]["hotkeys_on"], 3, "ligar os atalhos de novo pelo T")
+        time.sleep(0.5)
+        a.key("d")
+        a.wait(lambda st: st["deaf"], 3, "surdo de novo com os atalhos ligados")
 
 
 @test

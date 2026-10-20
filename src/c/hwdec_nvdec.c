@@ -24,6 +24,10 @@ struct nvdec {
     uint8_t *host; // NV12 na memória da CPU
     size_t host_cap;
     int have, err;
+    // saída na placa (nvdec_decode_to): destino do quadro atual (0 = CPU)
+    CUdeviceptr dst_y, dst_uv;
+    int dst_pitch, dst_w, dst_h;
+    int on_device;
     cudaVideoCodec codec;
     CUdevice dev;
     int retained; // contexto primário retido (solta no close)
@@ -95,6 +99,7 @@ static int CUDAAPI on_decode(void *ud, CUVIDPICPARAMS *pp) {
 static int CUDAAPI on_display(void *ud, CUVIDPARSERDISPINFO *di) {
     struct nvdec *d = ud;
     if (!d->dec || !d->host) return 1;
+    d->on_device = 0;
     CUVIDPROCPARAMS vp;
     memset(&vp, 0, sizeof vp);
     vp.progressive_frame = di->progressive_frame;
@@ -112,22 +117,34 @@ static int CUDAAPI on_display(void *ud, CUVIDPARSERDISPINFO *di) {
     m.srcMemoryType = CU_MEMORYTYPE_DEVICE;
     m.srcDevice = src;
     m.srcPitch = pitch;
-    m.dstMemoryType = CU_MEMORYTYPE_HOST;
-    m.dstHost = d->host;
-    m.dstPitch = (size_t)d->w;
     m.WidthInBytes = (size_t)d->w;
     m.Height = (size_t)d->h;
+    const int to_dev = d->dst_y && d->dst_w == d->w && d->dst_h == d->h;
+    if (to_dev) {
+        // placa -> placa: nenhuma cópia pela CPU
+        m.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+        m.dstDevice = d->dst_y;
+        m.dstPitch = (size_t)d->dst_pitch;
+    } else {
+        m.dstMemoryType = CU_MEMORYTYPE_HOST;
+        m.dstHost = d->host;
+        m.dstPitch = (size_t)d->w;
+    }
     CUresult r = d->cu->cuMemcpy2D(&m);
     if (r == CUDA_SUCCESS) {
         // croma logo depois da luma (altura alinhada em 2)
         m.srcDevice = src + (CUdeviceptr)pitch * (CUdeviceptr)((d->h + 1) & ~1);
-        m.dstHost = d->host + (size_t)d->w * d->h;
+        if (to_dev) m.dstDevice = d->dst_uv;
+        else m.dstHost = d->host + (size_t)d->w * d->h;
         m.Height = (size_t)d->h / 2;
         r = d->cu->cuMemcpy2D(&m);
     }
     d->cv->cuvidUnmapVideoFrame(d->dec, src);
     if (r != CUDA_SUCCESS) d->err = 1;
-    else d->have = 1;
+    else {
+        d->have = 1;
+        d->on_device = to_dev;
+    }
     return 1;
 }
 
@@ -243,9 +260,27 @@ nvdec *nvdec_open(int codec, char *err, int errlen) {
     return d;
 }
 
+int nvdec_decode_to(nvdec *d, const uint8_t *data, int len, hwdec_frame *out,
+                    uint64_t dst_y, uint64_t dst_uv, int dst_pitch, int dst_w, int dst_h) {
+    d->dst_y = (CUdeviceptr)dst_y;
+    d->dst_uv = (CUdeviceptr)dst_uv;
+    d->dst_pitch = dst_pitch;
+    d->dst_w = dst_w;
+    d->dst_h = dst_h;
+    const int r = nvdec_decode(d, data, len, out);
+    d->dst_y = d->dst_uv = 0;
+    if (r == 1 && d->on_device) {
+        out->on_device = 1;
+        out->y = NULL;
+        out->uv = NULL;
+    }
+    return r;
+}
+
 int nvdec_decode(nvdec *d, const uint8_t *data, int len, hwdec_frame *out) {
     d->have = 0;
     d->err = 0;
+    out->on_device = 0;
     d->cu->cuCtxPushCurrent(d->ctx);
     CUVIDSOURCEDATAPACKET pkt;
     memset(&pkt, 0, sizeof pkt);

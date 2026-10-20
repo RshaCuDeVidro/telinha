@@ -510,6 +510,7 @@ pub const MixCapture = struct {
     }
 
     fn run(m: *MixCapture) void {
+        sync.nameThread("mistura-som");
         var out: [frame_len * channels]f32 = undefined;
         var next_list: u64 = 0;
         var next_tick = sync.nowUs();

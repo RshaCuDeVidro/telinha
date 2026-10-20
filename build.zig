@@ -133,7 +133,9 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         });
         cap_mod.addIncludePath(b.path("src/c"));
+        cap_mod.addIncludePath(deps.nv_headers.path("include"));
         cap_mod.addCSourceFile(.{ .file = b.path("src/c/capture_linux.c"), .flags = &.{"-O2"} });
+        cap_mod.addCSourceFile(.{ .file = b.path("src/c/cudagl.c"), .flags = &.{ "-O2", "-Wno-everything" } });
         for ([_][]const u8{ "libportal", "libpipewire-0.3", "x11", "xext", "xfixes" }) |lib|
             cap_mod.linkSystemLibrary(lib, .{});
         const cap_exe = b.addExecutable(.{ .name = "captest", .root_module = cap_mod });
@@ -281,6 +283,7 @@ fn addHwenc(b: *std.Build, deps: Deps, mod: *std.Build.Module) void {
     mod.addIncludePath(deps.nv_headers.path("include"));
     mod.addIncludePath(b.path("src/c"));
     mod.addCSourceFile(.{ .file = b.path("src/c/hwenc.c"), .flags = &.{ "-O2", "-Wno-everything" } });
+    mod.addCSourceFile(.{ .file = b.path("src/c/cudagl.c"), .flags = &.{ "-O2", "-Wno-everything" } });
     mod.addCSourceFile(.{ .file = b.path("src/c/hwenc_nvenc.c"), .flags = &.{ "-O2", "-Wno-everything" } });
     if (mod.resolved_target.?.result.os.tag == .windows)
         mod.addCSourceFile(.{ .file = b.path("src/c/hwenc_mf.c"), .flags = &.{ "-O2", "-Wno-everything" } });

@@ -378,6 +378,7 @@ pub const Server = struct {
     /// Thread do UDP: recebe os datagramas de todo mundo (o token diz de quem
     /// é), e a cada ~10 ms cuida dos reenvios e de quem parou de falar.
     fn udpLoop(s: *Server) void {
+        sync.nameThread("sala-udp");
         defer s.release();
         const sock = s.udp_sock.?;
         var timeout_ms: u32 = 500;
@@ -480,6 +481,7 @@ pub const Server = struct {
     /// quadro; mas com a tela parada (PipeWire/DXGI só mandam quando muda)
     /// ele não vem, e o espectador ficaria preso na imagem velha.
     fn tickLoop(s: *Server) void {
+        sync.nameThread("sala-tick");
         defer s.release();
         while (!s.stopped.load(.acquire)) {
             sync.sleepMs(250);
@@ -627,6 +629,7 @@ pub const Server = struct {
     }
 
     fn acceptLoop(s: *Server) void {
+        sync.nameThread("sala-aceita");
         defer s.release();
         while (!s.stopped.load(.acquire)) {
             const sock = net.accept(s.listen_sock) catch {
@@ -696,6 +699,7 @@ pub const Server = struct {
     }
 
     fn writerLoop(cn: *Conn) void {
+        sync.nameThread("sala-envio");
         cn.queue.writerLoop(cn.sock, &cn.channel, &cn.udp);
         cn.release();
     }
@@ -754,6 +758,7 @@ pub const Server = struct {
     }
 
     fn readerLoop(cn: *Conn) void {
+        sync.nameThread("sala-leitura");
         const s = cn.server;
         var rb: proto.RecvBuf = .{};
         defer rb.deinit();

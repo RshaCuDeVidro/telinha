@@ -885,3 +885,16 @@ void cap_close(cap_ctx *c) {
     free(c->out);
     free(c);
 }
+
+// Caminho pela placa (capture.h): só no Linux por enquanto. No Windows o
+// quadro do DXGI ainda passa pela CPU até o encoder.
+int cap_gpu_enable(cap_ctx *c, void *cg, cap_rect_fn rect, cap_cursor_fn cursor) {
+    (void)c; (void)cg; (void)rect; (void)cursor;
+    return 0;
+}
+void cap_gpu_disable(cap_ctx *c) { (void)c; }
+void cap_gpu_set_output(cap_ctx *c, const float crop[4], int max_height) { (void)c; (void)crop; (void)max_height; }
+void cap_gpu_set_preview(cap_ctx *c, int want, int max_w) { (void)c; (void)want; (void)max_w; }
+void cap_gpu_release(cap_ctx *c, void *gpu) { (void)c; (void)gpu; }
+int cap_gpu_failed(cap_ctx *c) { (void)c; return 0; }
+void cap_gpu_gc(cap_ctx *c) { (void)c; }

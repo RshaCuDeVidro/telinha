@@ -120,6 +120,12 @@ class Session:
     def display(self, num, size="1600x900"):
         if num in self.displays:
             return self.displays[num]
+        if os.environ.get("QA_USE_DISPLAY"):
+            # QA_USE_DISPLAY=:N: uma tela que já existe (ex.: XWayland num sway
+            # headless na placa de verdade), em vez de subir um Xvfb
+            d = xdisplay.Display(f":{num}")
+            self.displays[num] = d
+            return d
         if os.path.exists(f"/tmp/.X11-unix/X{num}"):
             raise QAError(f"a tela :{num} já existe (outro teste rodando?)")
         self.spawn(f"xvfb{num}", ["Xvfb", f":{num}", "-screen", "0", f"{size}x24", "-noreset", "-nolisten", "tcp"], dict(os.environ))
@@ -258,6 +264,9 @@ class App:
         self.name = name
         # QA_TELAS=N soma N aos números das telas (duas baterias rodando juntas)
         self.num = display + int(os.environ.get("QA_TELAS", "0"))
+        self._display_num = display
+        if os.environ.get("QA_USE_DISPLAY"):
+            self.num = int(os.environ["QA_USE_DISPLAY"].lstrip(":"))
         self.args = args
         self.size = size
         self.extra_env = extra_env
@@ -305,6 +314,12 @@ class App:
                 # o wine ignora APPDATA vindo de fora (pega do registro do prefixo)
                 "TELINHA_PASTA_CONFIG": winpath(appdata), "TELINHA_PASTA_CLIPES": winpath(os.path.join(self.dir, "clipes")),
             })
+        # QA_EXTRA_ENV="A=1;B=2": vai pra todos os apps (ex.: TELINHA_GPU_UPLOAD=1
+        # roda a bateria inteira pelo caminho da placa)
+        for kv in os.environ.get("QA_EXTRA_ENV", "").split(";"):
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                base[k.strip()] = v
         base.update(self.extra_env)
         return base
 
@@ -312,7 +327,9 @@ class App:
         self.d = self.s.display(self.num, f"{max(self.size[0], 1280)}x{max(self.size[1], 760)}")
         w, h = self.size
         prog = ["wine", EXE] if getattr(self, "wine", False) else [APP]
-        cmd = getattr(self, "wrap", []) + prog + ["--janela", f"0,0,{w},{h}"] + self.args
+        # numa tela só (QA_USE_DISPLAY), cada app numa posição: 91 à esquerda, 92 à direita
+        x = (self._display_num - 91) * 1290 if os.environ.get("QA_USE_DISPLAY") else 0
+        cmd = getattr(self, "wrap", []) + prog + ["--janela", f"{x},0,{w},{h}"] + self.args
         self.proc = self.s.spawn(self.name, cmd, self.env())
         self.wait(lambda st: st.get("screen") is not None, 60 if getattr(self, "wine", False) else 15, "o app abrir")
 

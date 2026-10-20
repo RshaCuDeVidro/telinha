@@ -129,6 +129,7 @@ const ic = struct {
     const zoom_in = &iconArr(0xF00E);
     const crosshairs = &iconArr(0xF05B);
     const scissors = &iconArr(0xF0C4);
+    const keyboard = &iconArr(0xF11C);
     const record = &iconArr(0xF192);
     const window_restore = &iconArr(0xF2D2);
     const bell = &iconArr(0xF0F3);
@@ -406,7 +407,7 @@ fn segmented(id: [:0]const u8, comptime options: []const [:0]const u8, current: 
 // ---------------------------------------------------------------------------
 // Estado do app
 
-const SettingsPage = enum { geral, aparencia, voz, camera, desempenho, depuracao, sobre };
+const SettingsPage = enum { geral, aparencia, voz, atalhos, camera, desempenho, depuracao, sobre };
 
 const Toast = struct { text: [256]u8, len: usize, until: f64, err: bool };
 
@@ -593,9 +594,12 @@ pub const App = struct {
     crash_prompt: bool = false, // travou da última vez: pergunta se manda o relatório
     crash_sending: bool = false, // mandando o relatório pelo aviso (avisa quando acabar)
     ptt_capture: bool = false, // esperando a tecla nova do apertar pra falar
-    clip_key_capture: bool = false, // esperando a tecla do atalho de clipe
+    key_capture: ?config.HotkeyId = null, // esperando a tecla nova desse atalho
+    capture_mod_seen: c_int = 0, // modificador apertado sozinho na captura (vira o atalho se soltar sem outra tecla)
     clip_key_last: f64 = -10,
-    clip_key_prev: bool = false, // a tecla estava apertada no quadro passado (com o telinha em foco)
+    hk_prev: [config.n_hotkeys]bool = [_]bool{false} ** config.n_hotkeys, // apertado no quadro passado (com o telinha em foco)
+    hk_last: [5]f64 = [_]f64{-10} ** 5, // último disparo de cada ação (o mesmo aperto visto de dois jeitos)
+    cuda_probed: bool = false, // já tentou ligar o NVDEC direto pra textura
     last_saved: [512]u8 = undefined, // último clipe/gravação salvo (modo de testes)
     last_saved_len: usize = 0,
     /// Transmissão com o ponteiro "olha aqui" ligado (o mouse vira o ponteiro).
@@ -663,8 +667,8 @@ pub const App = struct {
         a.applyTheme();
         a.applyPtt();
         hotkey.on_press = wakeUi;
-        a.applyClipKey();
-        clip.keep_secs.store(@intCast(std.math.clamp(a.cfg.clip_secs, 10, 300)), .release);
+        a.applyHotkeys();
+        clip.keep_secs.store(@intCast(std.math.clamp(a.cfg.clip_secs, 5, 600)), .release);
         frame_cap_fps = @intCast(@max(0, a.cfg.ui_fps_cap));
         codec.setHwEffort(@intCast(a.cfg.hw_effort));
         if (a.cfg.ui_zoom != 100) setZoom(@as(f32, @floatFromInt(a.cfg.ui_zoom)) / 100);
@@ -1742,6 +1746,14 @@ pub const App = struct {
         var fh: c_int = 0;
         c.glfwGetFramebufferSize(a.window, &fw, &fh);
         a.fb_viewport = .{ 0, 0, fw, fh };
+        // NVIDIA: o quadro do NVDEC vai direto pra textura (cudagl.c). Só liga
+        // quando tem o que assistir: reter o contexto CUDA custa memória
+        if (!a.cuda_probed and a.views.items.len > 0 and client_mod.gpu_yuv.load(.acquire)) {
+            a.cuda_probed = true;
+            gl.initCuda();
+            client_mod.gpu_interop.store(gl.cudagl != null, .release);
+            if (debuglog.on()) debuglog.line("NVDEC direto pra textura: {s}", .{if (gl.cudagl != null) "sim" else "não (sem NVIDIA/CUDA)"});
+        }
         for (a.views.items) |v| {
             // minimizado: só o que aparece numa janela flutuante (o resto fica
             // marcado e sobe quando a janela voltar)
@@ -1774,7 +1786,14 @@ pub const App = struct {
                 const resize = v.yuv.ow == 0 or tw > v.yuv.ow + v.yuv.ow / 16 or tw < v.yuv.ow * 3 / 4;
                 if (!v.gl_stale and !resize and v.tex != 0) continue;
                 if (v.gl_stale) {
-                    r.upload(&v.yuv, f.data, f.w, f.h, f.layout == .nv12);
+                    if (f.layout == .nv12_dev) {
+                        const db = f.dev orelse continue;
+                        if (!r.uploadDevice(&v.yuv, db.ptr, db.uv(), db.pitch, f.w, f.h)) {
+                            // a cópia placa→textura falhou: daqui pra frente pela CPU
+                            client_mod.gpu_interop.store(false, .release);
+                            continue;
+                        }
+                    } else r.upload(&v.yuv, f.data, f.w, f.h, f.layout == .nv12);
                     v.gl_stale = false;
                 }
                 if (v.tex != 0 and v.tex != v.yuv.out) gl.delete(&v.tex);
@@ -1963,7 +1982,7 @@ pub const App = struct {
         audio.mixer.housekeep(); // saída de som parada depois de 5 s de silêncio
         if (debuglog.on()) a.debugTick();
         a.pollPttKey();
-        a.pollClipKey();
+        a.pollHotkeys();
         // tema/zoom mudados (configurações, arquivo CSS): aplica aqui, antes de
         // qualquer janela empilhar estilo (senão o Pop devolveria o antigo)
         if (a.takeCssFile()) a.theme_dirty = true;
@@ -2210,7 +2229,7 @@ pub const App = struct {
     fn closeModals(a: *App) void {
         if (a.settings_modal) config.save(&a.cfg); // o que o "Fechar" faria
         a.ptt_capture = false;
-        a.clip_key_capture = false;
+        a.key_capture = null;
         a.settings_modal = false;
         a.share_modal = false;
         a.leave_confirm = false;
@@ -3641,7 +3660,7 @@ pub const App = struct {
             switch (j.pic.layout) {
                 .rgba => {},
                 .i420 => codec.toRgba(j.pic.data.ptr, j.pic.data.ptr + n, j.pic.data.ptr + n + n / 4, w, w / 2, w, h, px),
-                .nv12 => codec.nv12ToRgba(j.pic.data.ptr, j.pic.data.ptr + n, w, h, px),
+                .nv12, .nv12_dev => codec.nv12ToRgba(j.pic.data.ptr, j.pic.data.ptr + n, w, h, px),
             }
             // o PNG não usa o canal alfa: tudo opaco
             var i: usize = 3;
@@ -3658,11 +3677,31 @@ pub const App = struct {
             return;
         }
         const j = std.heap.c_allocator.create(PrintJob) catch return;
-        const data = std.heap.c_allocator.dupe(u8, f.data) catch {
+        const data = if (f.layout == .nv12_dev) blk: {
+            // quadro na placa: traz os planos pra CPU (uma vez, só pro print)
+            const db = f.dev orelse {
+                std.heap.c_allocator.destroy(j);
+                return;
+            };
+            const n = @as(usize, f.w) * f.h;
+            const d = std.heap.c_allocator.alloc(u8, n + n / 2) catch {
+                std.heap.c_allocator.destroy(j);
+                return;
+            };
+            if (gl.cudagl_dev_to_host(gl.cudagl, db.ptr, @intCast(db.pitch), d.ptr, @intCast(f.w), @intCast(f.w), @intCast(f.h)) != 0 or
+                gl.cudagl_dev_to_host(gl.cudagl, db.uv(), @intCast(db.pitch), d.ptr + n, @intCast(f.w), @intCast(f.w), @intCast(f.h / 2)) != 0)
+            {
+                std.heap.c_allocator.free(d);
+                std.heap.c_allocator.destroy(j);
+                a.toast("Não consegui ler o quadro da placa pro print.", .{}, true);
+                return;
+            }
+            break :blk d;
+        } else std.heap.c_allocator.dupe(u8, f.data) catch {
             std.heap.c_allocator.destroy(j);
             return;
         };
-        j.* = .{ .pic = .{ .data = data, .layout = f.layout, .w = f.w, .h = f.h } };
+        j.* = .{ .pic = .{ .data = data, .layout = if (f.layout == .nv12_dev) .nv12 else f.layout, .w = f.w, .h = f.h } };
         _ = clip.newPathExt(&j.path, if (who.len > 0) who else tr("print"), tr("_print"), ".png") catch {
             std.heap.c_allocator.free(data);
             std.heap.c_allocator.destroy(j);
@@ -4875,6 +4914,7 @@ pub const App = struct {
             .{ .page = .geral, .icon = ic.gear, .name = tr("Geral") },
             .{ .page = .aparencia, .icon = ic.palette, .name = tr("Aparência") },
             .{ .page = .voz, .icon = ic.mic, .name = tr("Voz") },
+            .{ .page = .atalhos, .icon = ic.keyboard, .name = tr("Atalhos") },
             .{ .page = .camera, .icon = ic.video, .name = tr("Câmera") },
             .{ .page = .desempenho, .icon = ic.gauge, .name = tr("Desempenho") },
             .{ .page = .depuracao, .icon = ic.bug, .name = tr("Depuração") },
@@ -4898,14 +4938,14 @@ pub const App = struct {
                 a.settings_page = pg.page;
                 // trocou de página: nenhuma captura de tecla fica pendurada
                 a.ptt_capture = false;
-                a.clip_key_capture = false;
+                a.key_capture = null;
             }
         }
         // Fechar no pé da barra
         c.igSetCursorPos(v2(S(10), mh - S(56)));
         var close = primaryButton(tr("Fechar###fecharconfig"), v2(nav_w - S(20), S(40)), col.blurple, col.blurple_hover, col.blurple_active);
         // esperando uma tecla (apertar pra falar, atalho de clipe): o Esc só cancela isso
-        const capturing = a.ptt_capture or a.clip_key_capture;
+        const capturing = a.ptt_capture or a.key_capture != null;
         close = close or (!capturing and c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false));
 
         // a página escolhida (rola sozinha)
@@ -4924,6 +4964,7 @@ pub const App = struct {
                 .geral => a.settingsGeneral(w),
                 .aparencia => a.settingsAppearance(w),
                 .voz => a.settingsVoice(w),
+                .atalhos => a.settingsShortcuts(w),
                 .camera => a.settingsCamera(w),
                 .desempenho => a.settingsPerformance(w),
                 .depuracao => a.drawDebug(w),
@@ -4938,7 +4979,7 @@ pub const App = struct {
             config.save(&a.cfg);
             a.settings_modal = false;
             a.ptt_capture = false;
-            a.clip_key_capture = false;
+            a.key_capture = null;
             c.igCloseCurrentPopup();
         }
     }
@@ -4969,7 +5010,7 @@ pub const App = struct {
             c.igDummy(v2(0, S(6)));
             fieldLabel("DURAÇÃO DO CLIPE");
             const secs = [_]i32{ 15, 30, 60, 120, 180 };
-            var si: i32 = 1;
+            var si: i32 = -1;
             for (secs, 0..) |x, i| {
                 if (x == a.cfg.clip_secs) si = @intCast(i);
             }
@@ -4978,24 +5019,21 @@ pub const App = struct {
                 clip.keep_secs.store(@intCast(a.cfg.clip_secs), .release);
                 config.save(&a.cfg);
             }
-            pushFont(font_regular, 12);
-            textColored(col.faint, fmtZ("Usa até ~{d} MB de memória por transmissão assistida (depende da qualidade).", .{@divTrunc(a.cfg.clip_secs * 3, 4) + 4}));
-            popFont();
-            c.igDummy(v2(0, S(6)));
-            fieldLabel("ATALHO PRA SALVAR CLIPE (vale com o jogo em foco)");
-            if (a.clip_key_capture) a.captureClipKey();
-            var kb: [32]u8 = undefined;
-            const bw = (w - S(8)) * 0.7;
-            const label = if (a.clip_key_capture) fmtZ("{s}###clipkey", .{tr("Aperte a tecla (ou um botão lateral do mouse)...")}) else fmtZ("{s}  {s}###clipkey", .{ tr("Tecla:"), keyName(a.cfg.clip_key, a.cfg.clip_scancode, a.cfg.clip_mouse, &kb) });
-            if (secondaryButton(label, v2(bw, S(34)))) a.clip_key_capture = true;
+            // ou qualquer duração (5 s a 10 min)
+            c.igDummy(v2(0, S(4)));
+            textColored(col.muted, tr("Outra duração (segundos):"));
             c.igSameLine(0, S(8));
-            if (secondaryButton(tr("Sem atalho###clipkeyoff"), v2(w - bw - S(8), S(34)))) {
-                a.cfg.clip_key = 0;
-                a.cfg.clip_mouse = -1;
-                a.clip_key_capture = false;
-                a.applyClipKey();
+            c.igSetNextItemWidth(S(110));
+            var custom: c_int = a.cfg.clip_secs;
+            if (c.igInputInt("##clipsecs_custom", &custom, 5, 30, 0)) {
+                a.cfg.clip_secs = std.math.clamp(custom, 5, 600);
+                clip.keep_secs.store(@intCast(a.cfg.clip_secs), .release);
                 config.save(&a.cfg);
             }
+            pushFont(font_regular, 12);
+            textColored(col.faint, fmtZ("Usa até ~{d} MB de memória por transmissão assistida (depende da qualidade).", .{@divTrunc(a.cfg.clip_secs * 3, 4) + 4}));
+            textColored(col.faint, tr("O atalho pra salvar clipe fica na página Atalhos."));
+            popFont();
         }
     }
 
@@ -5065,17 +5103,120 @@ pub const App = struct {
         ptt.configure(key, -1);
     }
 
-    /// Atalho de clipe: a thread (de fora) ou a própria janela (com foco; o Wayland só deixa assim).
-    fn pollClipKey(a: *App) void {
-        if (hotkey.pressed.swap(false, .acq_rel)) a.clipHotkey();
-        if (a.clip_key_capture or (a.cfg.clip_key <= 0 and a.cfg.clip_mouse < 0)) return;
+    /// Modificadores apertados agora, vistos pela janela (Ctrl/Shift/Alt, qualquer lado).
+    fn uiMods(a: *App) u8 {
+        var m: u8 = 0;
+        if (c.glfwGetKey(a.window, c.GLFW_KEY_LEFT_CONTROL) == c.GLFW_PRESS or c.glfwGetKey(a.window, c.GLFW_KEY_RIGHT_CONTROL) == c.GLFW_PRESS) m |= config.mod_ctrl;
+        if (c.glfwGetKey(a.window, c.GLFW_KEY_LEFT_SHIFT) == c.GLFW_PRESS or c.glfwGetKey(a.window, c.GLFW_KEY_RIGHT_SHIFT) == c.GLFW_PRESS) m |= config.mod_shift;
+        if (c.glfwGetKey(a.window, c.GLFW_KEY_LEFT_ALT) == c.GLFW_PRESS or c.glfwGetKey(a.window, c.GLFW_KEY_RIGHT_ALT) == c.GLFW_PRESS) m |= config.mod_alt;
+        return m;
+    }
+
+    fn isModKey(k: c_int) bool {
+        return ownMod(k) != 0;
+    }
+
+    /// O modificador que a tecla é (Ctrl esq. = Ctrl...; 0 = tecla comum).
+    fn ownMod(k: c_int) u8 {
+        if (k == c.GLFW_KEY_LEFT_CONTROL or k == c.GLFW_KEY_RIGHT_CONTROL) return config.mod_ctrl;
+        if (k == c.GLFW_KEY_LEFT_SHIFT or k == c.GLFW_KEY_RIGHT_SHIFT) return config.mod_shift;
+        if (k == c.GLFW_KEY_LEFT_ALT or k == c.GLFW_KEY_RIGHT_ALT) return config.mod_alt;
+        return 0;
+    }
+
+    /// Atalhos globais: a thread (de fora) ou a própria janela (com foco; o
+    /// Wayland só deixa assim). Desligados, só o de ligar/desligar vale.
+    fn pollHotkeys(a: *App) void {
         const focused = c.glfwGetWindowAttrib(a.window, c.GLFW_FOCUSED) != 0;
-        const down = focused and !c.igGetIO_Nil().*.WantTextInput and if (a.cfg.clip_mouse >= 0)
-            c.glfwGetMouseButton(a.window, a.cfg.clip_mouse) == c.GLFW_PRESS
-        else
-            c.glfwGetKey(a.window, a.cfg.clip_key) == c.GLFW_PRESS;
-        if (down and !a.clip_key_prev) a.clipHotkey();
-        a.clip_key_prev = down;
+        const typing = c.igGetIO_Nil().*.WantTextInput;
+        const mods = a.uiMods();
+        inline for (@typeInfo(config.HotkeyId).@"enum".fields) |f| {
+            const id: config.HotkeyId = @enumFromInt(f.value);
+            const hk = a.cfg.hk[f.value];
+            const allowed = a.cfg.hotkeys_on or id == .toggle;
+            // digitando no chat, uma letra sozinha é texto, não atalho (a thread
+            // de fora não sabe disso: o que ela viu é descartado aqui)
+            const plain_typing = focused and typing and hk.mods == 0 and hk.mouse < 0;
+            if (hotkey.take(f.value) and allowed and !plain_typing) a.runHotkey(id);
+            // com foco: a janela vê a tecla (de fora e de dentro ao mesmo tempo é
+            // o mesmo aperto; cada ação ignora repetição por 1 s onde importa)
+            const bound = hk.key > 0 or hk.mouse >= 0;
+            const own: u8 = if (hk.mouse < 0) ownMod(hk.key) else 0;
+            const down = bound and focused and a.key_capture == null and !plain_typing and (mods & ~own) == hk.mods and
+                (if (hk.mouse >= 0) c.glfwGetMouseButton(a.window, hk.mouse) == c.GLFW_PRESS else c.glfwGetKey(a.window, hk.key) == c.GLFW_PRESS);
+            if (down and !a.hk_prev[f.value] and allowed) a.runHotkey(id);
+            a.hk_prev[f.value] = down;
+        }
+    }
+
+    /// O que cada atalho faz.
+    fn runHotkey(a: *App, id: config.HotkeyId) void {
+        const now = c.igGetTime();
+        switch (id) {
+            .clip => a.clipHotkey(),
+            .mic => {
+                if (now - a.hk_last[0] < 0.15) return;
+                a.hk_last[0] = now;
+                if (a.screen == .room) a.toggleMic();
+            },
+            .deaf => {
+                if (now - a.hk_last[1] < 0.15) return;
+                a.hk_last[1] = now;
+                if (a.screen == .room) a.toggleDeaf();
+            },
+            .share => {
+                if (now - a.hk_last[2] < 1.0) return;
+                a.hk_last[2] = now;
+                if (a.screen != .room) return;
+                if (a.sharer != null) a.stopSharing() else a.startSharing();
+            },
+            .print => {
+                if (now - a.hk_last[3] < 1.0) return;
+                a.hk_last[3] = now;
+                a.printHotkey();
+            },
+            .toggle => {
+                if (now - a.hk_last[4] < 0.15) return;
+                a.hk_last[4] = now;
+                a.cfg.hotkeys_on = !a.cfg.hotkeys_on;
+                hotkey.setEnabled(a.cfg.hotkeys_on);
+                config.save(&a.cfg);
+                if (a.cfg.hotkeys_on) a.toast("Atalhos ligados.", .{}, false) else a.toast("Atalhos desligados (só o de ligar de novo continua valendo).", .{}, false);
+            },
+        }
+    }
+
+    /// Print pelo atalho: a transmissão em destaque (ou a primeira assistida).
+    fn printHotkey(a: *App) void {
+        var target: ?*View = null;
+        for (a.views.items) |v| {
+            if (a.focused != null and a.focused.? == v.stream) {
+                target = v;
+                break;
+            }
+            if (target == null) target = v;
+        }
+        const v = target orelse {
+            a.toast("Nada pra printar: assista alguém.", .{}, true);
+            return;
+        };
+        var nb: [64]u8 = undefined;
+        a.savePrint(v, a.viewerName(v, &nb));
+    }
+
+    /// Nome de quem transmite essa view (vazio se já saiu).
+    fn viewerName(a: *App, v: *View, nb: *[64]u8) []const u8 {
+        var name: []const u8 = "";
+        if (a.client) |cl| {
+            cl.mutex.lock();
+            for (cl.members.items) |*m| if (m.id == v.member()) {
+                const n = @min(m.name_len, nb.len);
+                @memcpy(nb[0..n], m.nameSlice()[0..n]);
+                name = nb[0..n];
+            };
+            cl.mutex.unlock();
+        }
+        return name;
     }
 
     /// Com o telinha em foco, a interface também vê a tecla (o Wayland só deixa assim).
@@ -5095,6 +5236,19 @@ pub const App = struct {
     /// Nome da tecla pra mostrar ("V", "F5", "Mouse 4").
     fn pttKeyName(a: *App, buf: []u8) []const u8 {
         return keyName(a.cfg.ptt_key, a.cfg.ptt_scancode, a.cfg.ptt_mouse, buf);
+    }
+
+    /// Com os modificadores na frente ("Ctrl+Shift+K").
+    fn hotkeyName(hk: config.Hotkey, buf: []u8) []const u8 {
+        if (hk.key <= 0 and hk.mouse < 0) return tr("nenhum");
+        var kb: [32]u8 = undefined;
+        const base = keyName(hk.key, hk.scancode, hk.mouse, &kb);
+        return std.fmt.bufPrint(buf, "{s}{s}{s}{s}", .{
+            if (hk.mods & config.mod_ctrl != 0) "Ctrl+" else "",
+            if (hk.mods & config.mod_shift != 0) "Shift+" else "",
+            if (hk.mods & config.mod_alt != 0) "Alt+" else "",
+            base,
+        }) catch "?";
     }
 
     fn keyName(k: i32, scancode: i32, mouse: i32, buf: []u8) []const u8 {
@@ -5122,27 +5276,53 @@ pub const App = struct {
 
     /// Esperando a tecla nova: a primeira apertada (ou botão do meio/lateral do mouse).
     /// Uma tecla configurável (apertar pra falar, atalho de clipe).
-    const KeyRef = struct { key: *i32, scancode: *i32, mouse: *i32 };
+    /// `mods` = null: sem modificadores (apertar pra falar: a tecla sozinha).
+    const KeyRef = struct { key: *i32, scancode: *i32, mouse: *i32, mods: ?*u8 = null };
 
     /// Esperando a tecla nova: a primeira apertada (ou botão do meio/lateral do
-    /// mouse). true = pegou; false = Esc (cancelou); null = ainda esperando.
+    /// mouse), com os modificadores que estiverem segurados (Ctrl+Shift+K);
+    /// um modificador apertado e solto sozinho vira o atalho ele mesmo.
+    /// true = pegou; false = Esc (cancelou); null = ainda esperando.
     fn captureKey(a: *App, r: KeyRef) ?bool {
-        if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) return false;
+        if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
+            a.capture_mod_seen = 0;
+            return false;
+        }
         var k: c_int = c.GLFW_KEY_SPACE;
+        var mod_down: c_int = 0;
         while (k <= c.GLFW_KEY_LAST) : (k += 1) {
             if (k == c.GLFW_KEY_ESCAPE) continue;
             if (c.glfwGetKey(a.window, k) != c.GLFW_PRESS) continue;
+            if (r.mods != null and isModKey(k)) {
+                mod_down = k;
+                continue;
+            }
             r.key.* = k;
             r.scancode.* = c.glfwGetKeyScancode(k);
             r.mouse.* = -1;
+            if (r.mods) |m| m.* = a.uiMods();
+            a.capture_mod_seen = 0;
             return true;
         }
         for ([_]c_int{ 2, 3, 4 }) |btn| {
             if (c.glfwGetMouseButton(a.window, btn) == c.GLFW_PRESS) {
                 r.key.* = 0;
                 r.mouse.* = btn;
+                if (r.mods) |m| m.* = a.uiMods();
+                a.capture_mod_seen = 0;
                 return true;
             }
+        }
+        if (mod_down != 0) {
+            a.capture_mod_seen = mod_down;
+        } else if (a.capture_mod_seen != 0) {
+            // soltou o modificador sem outra tecla: ele é o atalho
+            r.key.* = a.capture_mod_seen;
+            r.scancode.* = c.glfwGetKeyScancode(a.capture_mod_seen);
+            r.mouse.* = -1;
+            if (r.mods) |m| m.* = 0;
+            a.capture_mod_seen = 0;
+            return true;
         }
         redrawIn(0.05);
         return null;
@@ -5157,11 +5337,12 @@ pub const App = struct {
         }
     }
 
-    fn captureClipKey(a: *App) void {
-        const got = a.captureKey(.{ .key = &a.cfg.clip_key, .scancode = &a.cfg.clip_scancode, .mouse = &a.cfg.clip_mouse }) orelse return;
-        a.clip_key_capture = false;
+    fn captureHotkey(a: *App, id: config.HotkeyId) void {
+        const hk = &a.cfg.hk[@intFromEnum(id)];
+        const got = a.captureKey(.{ .key = &hk.key, .scancode = &hk.scancode, .mouse = &hk.mouse, .mods = &hk.mods }) orelse return;
+        a.key_capture = null;
         if (got) {
-            a.applyClipKey();
+            a.applyHotkeys();
             config.save(&a.cfg);
         }
     }
@@ -5174,12 +5355,66 @@ pub const App = struct {
         return if (!sync.is_windows and c.glfwGetPlatform() == c.GLFW_PLATFORM_WAYLAND) sc + 8 else sc;
     }
 
-    fn applyClipKey(a: *App) void {
-        if (a.cfg.clip_mouse >= 0) {
-            hotkey.configure(0, a.cfg.clip_mouse);
-        } else if (a.cfg.clip_key > 0) {
-            hotkey.configure(globalKey(a.cfg.clip_key, a.cfg.clip_scancode), -1);
-        } else hotkey.configure(0, -1);
+    /// Passa todos os atalhos pra thread que lê de fora.
+    fn applyHotkeys(a: *App) void {
+        hotkey.setEnabled(a.cfg.hotkeys_on);
+        for (a.cfg.hk, 0..) |hk, i| {
+            if (hk.mouse >= 0) {
+                hotkey.configure(i, 0, hk.mouse, hk.mods, 0);
+            } else if (hk.key > 0) {
+                hotkey.configure(i, globalKey(hk.key, hk.scancode), -1, hk.mods, ownMod(hk.key));
+            } else hotkey.configure(i, 0, -1, 0, 0);
+        }
+    }
+
+    /// Página de atalhos: liga/desliga geral e uma tecla (ou combinação) por ação.
+    fn settingsShortcuts(a: *App, w: f32) void {
+        c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
+        if (c.igCheckbox(tr("Atalhos ligados###hkon"), &a.cfg.hotkeys_on)) {
+            hotkey.setEnabled(a.cfg.hotkeys_on);
+            config.save(&a.cfg);
+        }
+        c.igPopStyleColor(1);
+        pushFont(font_regular, 12.5);
+        c.igPushTextWrapPos(c.igGetCursorPosX() + w);
+        if (!sync.is_windows and c.glfwGetPlatform() == c.GLFW_PLATFORM_WAYLAND)
+            textColored(col.yellow, tr("No Wayland os atalhos só valem com o telinha em foco (o sistema não deixa ler o teclado de outro programa)."))
+        else
+            textColored(col.faint, tr("Valem com o jogo em foco. Clique na tecla e aperte a nova (pode ser combinação, tipo Ctrl+Shift+K, ou o botão do meio/laterais do mouse); Esc cancela."));
+        c.igPopTextWrapPos();
+        popFont();
+        c.igDummy(v2(0, S(8)));
+        const rows = [_]struct { id: config.HotkeyId, name: [:0]const u8, tag: [:0]const u8 }{
+            .{ .id = .clip, .name = tr("Salvar clipe"), .tag = "clipkey" },
+            .{ .id = .mic, .name = tr("Microfone liga/desliga"), .tag = "mickey" },
+            .{ .id = .deaf, .name = tr("Surdo liga/desliga (não ouve ninguém)"), .tag = "deafkey" },
+            .{ .id = .share, .name = tr("Transmitir a tela / parar"), .tag = "sharekey" },
+            .{ .id = .print, .name = tr("Print da transmissão"), .tag = "printkey" },
+            .{ .id = .toggle, .name = tr("Ligar/desligar todos os atalhos (vale sempre)"), .tag = "togglekey" },
+        };
+        const bw = @min(S(260), (w - S(8)) * 0.45);
+        for (rows) |row| {
+            const idx = @intFromEnum(row.id);
+            if (a.key_capture == row.id) a.captureHotkey(row.id);
+            pushFont(font_bold, 11.5);
+            textColored(col.muted, row.name);
+            popFont();
+            var kb: [48]u8 = undefined;
+            const capturing = a.key_capture == row.id;
+            const label = if (capturing) fmtZ("{s}###{s}", .{ tr("Aperte a tecla ou combinação..."), row.tag }) else fmtZ("{s}  {s}###{s}", .{ tr("Tecla:"), hotkeyName(a.cfg.hk[idx], &kb), row.tag });
+            if (secondaryButton(label, v2(bw, S(34)))) {
+                a.key_capture = row.id;
+                a.capture_mod_seen = 0;
+            }
+            c.igSameLine(0, S(8));
+            if (secondaryButton(fmtZ("{s}###{s}off", .{ tr("Sem atalho"), row.tag }), v2(S(110), S(34)))) {
+                a.cfg.hk[idx] = .{};
+                if (a.key_capture == row.id) a.key_capture = null;
+                a.applyHotkeys();
+                config.save(&a.cfg);
+            }
+            c.igDummy(v2(0, S(4)));
+        }
     }
 
     /// Atalho de clipe: a transmissão em destaque (ou a primeira assistida, ou a minha).
@@ -5845,8 +6080,11 @@ pub const App = struct {
         try w.print(",\"fps\":{d},\"quality\":{d},\"mode\":{d},\"resolution\":{d},\"cursor\":{},\"audio\":{},\"hardware\":{},\"stats_always\":{},\"show_chat\":{}", .{
             cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.stats_always, cf.show_chat,
         });
-        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_exclude\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f},\"theme\":{f},\"custom_theme\":{f},\"custom_css\":{f},\"css_status\":{f},\"auto_quality\":{},\"resolution_idx\":{d},\"ui_zoom\":{d},\"crt\":{},\"voice_ptt\":{},\"ptt_key\":{d},\"ptt_mouse\":{d},\"clip_key\":{d}}}", .{
-            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), s(config.getStr(&cf.audio_exclude)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)), s(config.getStr(&cf.theme)), s(config.getStr(&cf.custom_theme)), s(config.getStr(&cf.custom_css)), s(@tagName(cssfile.getStatus())), cf.auto_quality, cf.resolution, cf.ui_zoom, cf.crt, cf.voice_ptt, cf.ptt_key, cf.ptt_mouse, cf.clip_key,
+        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_exclude\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f},\"theme\":{f},\"custom_theme\":{f},\"custom_css\":{f},\"css_status\":{f},\"auto_quality\":{},\"resolution_idx\":{d},\"ui_zoom\":{d},\"crt\":{},\"voice_ptt\":{},\"ptt_key\":{d},\"ptt_mouse\":{d},\"clip_key\":{d}", .{
+            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), s(config.getStr(&cf.audio_exclude)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)), s(config.getStr(&cf.theme)), s(config.getStr(&cf.custom_theme)), s(config.getStr(&cf.custom_css)), s(@tagName(cssfile.getStatus())), cf.auto_quality, cf.resolution, cf.ui_zoom, cf.crt, cf.voice_ptt, cf.ptt_key, cf.ptt_mouse, cf.hk[@intFromEnum(config.HotkeyId.clip)].key,
+        });
+        try w.print(",\"hotkeys_on\":{},\"hk_mic\":{d},\"hk_mic_mods\":{d},\"clip_secs\":{d}}}", .{
+            cf.hotkeys_on, cf.hk[@intFromEnum(config.HotkeyId.mic)].key, cf.hk[@intFromEnum(config.HotkeyId.mic)].mods, cf.clip_secs,
         });
         try w.print(",\"lang\":{f}", .{s(@tagName(i18n.get()))});
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);

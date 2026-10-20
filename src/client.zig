@@ -20,7 +20,23 @@ const gpa = proto.gpa;
 /// entrega os planos YUV (1,5 byte/pixel) e a GPU converte a cor.
 pub var gpu_yuv = std.atomic.Value(bool).init(false);
 
-pub const Layout = enum { rgba, i420, nv12 };
+/// `nv12_dev`: os planos estão na memória da placa (`Pic.dev`), não em `data`.
+pub const Layout = enum { rgba, i420, nv12, nv12_dev };
+
+/// Quadro NV12 na memória da placa (NVDEC → textura sem passar pela CPU):
+/// luma em `ptr` (h linhas de `pitch`), croma logo depois (h/2 linhas).
+/// Contado por referência: quem segura é o Pic (back/ready/front).
+pub const DevBuf = struct {
+    ptr: u64,
+    pitch: u32,
+    w: u32,
+    h: u32,
+    refs: std.atomic.Value(u32) = .init(0),
+
+    pub fn uv(b: *const DevBuf) u64 {
+        return b.ptr + @as(u64, b.pitch) * b.h;
+    }
+};
 
 /// Um quadro decodificado pronto pra subir pra GPU.
 pub const Pic = struct {
@@ -29,7 +45,18 @@ pub const Pic = struct {
     w: u32 = 0,
     h: u32 = 0,
     ts: u64 = 0, // hora da captura (relógio da sala)
+    dev: ?*DevBuf = null, // layout nv12_dev
+
+    /// Solta o buffer da placa (se tiver); `data` continua alocado.
+    pub fn dropDev(p: *Pic) void {
+        if (p.dev) |d| _ = d.refs.fetchSub(1, .acq_rel);
+        p.dev = null;
+    }
 };
+
+/// NVDEC → textura direto (cudagl.c): ligado pela interface se o OpenGL é da
+/// NVIDIA. Volta a false se uma cópia falhar (aí tudo segue pela CPU).
+pub var gpu_interop = std.atomic.Value(bool).init(false);
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 
@@ -243,6 +270,10 @@ pub const View = struct {
     audio_dec: ?audio.Decoder = null,
     audio_registered: bool = false,
 
+    /// Buffers na placa (nv12_dev), reaproveitados; só a thread de decode
+    /// escolhe, e só vão embora com o View (a UI pode estar copiando de um).
+    dev_pool: [5]?*DevBuf = .{null} ** 5,
+
     // GPU (só a thread da UI mexe)
     yuv: gl.YuvRenderer.Target = .{},
     gl_stale: bool = false, // quadro novo que ainda não foi pra placa (não estava aparecendo)
@@ -273,6 +304,10 @@ pub const View = struct {
             v.frames.deinit(gpa);
             v.arrivals.deinit(gpa);
             for ([_][]u8{ v.back.data, v.ready.data, v.front.data }) |d| gpa.free(d);
+            for (v.dev_pool) |maybe| if (maybe) |b| {
+                gl.cudagl_free(gl.cudagl, b.ptr);
+                gpa.destroy(b);
+            };
             v.client.release();
             gpa.destroy(v);
         }
@@ -399,6 +434,7 @@ pub const View = struct {
     };
 
     fn decodeLoop(v: *View) void {
+        sync.nameThread("decoder");
         defer v.release();
         var dec_codec: codec.Codec = .h264;
         var dec = Decoder.open(.h264, v.client.hw_decode);
@@ -450,6 +486,37 @@ pub const View = struct {
         }
     }
 
+    /// Um buffer da placa livre (ninguém segurando) do tamanho pedido; aloca
+    /// se precisar. null = sem CUDA ou todos ocupados (aí o quadro sai pela CPU).
+    fn pickDevBuf(v: *View, w: u32, h: u32) ?*DevBuf {
+        const g = gl.cudagl orelse return null;
+        var empty: ?usize = null;
+        for (&v.dev_pool, 0..) |*slot, i| {
+            const b = slot.* orelse {
+                if (empty == null) empty = i;
+                continue;
+            };
+            if (b.refs.load(.acquire) != 0) continue;
+            if (b.w == w and b.h == h) return b;
+            // tamanho velho: solta e aloca de novo
+            gl.cudagl_free(g, b.ptr);
+            gpa.destroy(b);
+            slot.* = null;
+            if (empty == null) empty = i;
+        }
+        const i = empty orelse return null;
+        var pitch: c_int = 0;
+        const ptr = gl.cudagl_alloc(g, @intCast(w), @intCast(h + h / 2), &pitch);
+        if (ptr == 0) return null;
+        const b = gpa.create(DevBuf) catch {
+            gl.cudagl_free(g, ptr);
+            return null;
+        };
+        b.* = .{ .ptr = ptr, .pitch = @intCast(pitch), .w = w, .h = h };
+        v.dev_pool[i] = b;
+        return b;
+    }
+
     /// `behind`: já tem quadro mais novo esperando — decodifica (precisa pra
     /// referência) mas não gasta tempo entregando uma imagem que vai ser
     /// substituída em seguida. Só que um decoder que vive atrás (CPU fraca)
@@ -460,8 +527,8 @@ pub const View = struct {
         _ = try r.u32_(); // seq
         const flags = try r.u8_();
         const ts = try r.u64_();
-        _ = try r.u16_(); // w (o decoder sabe)
-        _ = try r.u16_(); // h
+        const fw = try r.u16_(); // tamanho anunciado (o decoder confere)
+        const fh = try r.u16_();
         v.cursor_x.store(try r.u16_(), .monotonic);
         v.cursor_y.store(try r.u16_(), .monotonic);
         const bitstream = r.rest();
@@ -474,9 +541,18 @@ pub const View = struct {
         if (waiting and !key) return; // sem referência ainda: espera o IDR
 
         const Out = union(enum) { i420: codec.Decoder.Picture, nv12: codec.HwDecoder.Frame };
+        // NVIDIA: o quadro vai do NVDEC pra um buffer da placa e de lá pra
+        // textura, sem passar pela CPU (nv12_dev)
+        const dev: ?*DevBuf = if (dec.* == .hw and gpu_interop.load(.acquire) and gpu_yuv.load(.acquire) and fw >= 2 and fh >= 2)
+            v.pickDevBuf(fw, fh)
+        else
+            null;
         const decoded: ?Out = switch (dec.*) {
             .sw => |*d| if (try d.decode(bitstream)) |p| .{ .i420 = p } else null,
-            .hw => |*d| if (try d.decode(bitstream)) |f| .{ .nv12 = f } else null,
+            .hw => |*d| if (dev) |db|
+                (if (try d.decodeTo(bitstream, db.ptr, db.uv(), db.pitch, db.w, db.h)) |f| .{ .nv12 = f } else null)
+            else
+                (if (try d.decode(bitstream)) |f| .{ .nv12 = f } else null),
             .none => null,
         };
         const pic = decoded orelse {
@@ -497,20 +573,28 @@ pub const View = struct {
         };
         {
             const gpu = gpu_yuv.load(.acquire);
-            const layout: Layout = if (!gpu) .rgba else switch (pic) {
+            const on_device = pic == .nv12 and pic.nv12.on_device and dev != null;
+            const layout: Layout = if (!gpu) .rgba else if (on_device) .nv12_dev else switch (pic) {
                 .i420 => .i420,
                 .nv12 => .nv12,
             };
             const n = @as(usize, pw) * ph;
             const need = if (layout == .rgba) n * 4 else n + n / 2;
             const b = &v.back;
-            if (b.data.len != need) {
-                const px = try gpa.alloc(u8, need);
-                gpa.free(b.data);
-                b.data = px;
+            b.dropDev();
+            if (on_device) {
+                // já está na placa: o Pic só segura o buffer
+                _ = dev.?.refs.fetchAdd(1, .acq_rel);
+                b.* = .{ .data = b.data, .layout = .nv12_dev, .w = pw, .h = ph, .ts = ts, .dev = dev };
+            } else {
+                if (b.data.len != need) {
+                    const px = try gpa.alloc(u8, need);
+                    gpa.free(b.data);
+                    b.data = px;
+                }
+                b.* = .{ .data = b.data, .layout = layout, .w = pw, .h = ph, .ts = ts };
             }
-            b.* = .{ .data = b.data, .layout = layout, .w = pw, .h = ph, .ts = ts };
-            switch (pic) {
+            if (!on_device) switch (pic) {
                 .i420 => |p| if (gpu) {
                     // planos compactos (o decoder usa stride maior que a largura)
                     for (0..ph) |row| @memcpy(b.data[row * pw ..][0..pw], p.y[row * p.ys ..][0..pw]);
@@ -525,7 +609,7 @@ pub const View = struct {
                     @memcpy(b.data[0..n], f.y[0..n]);
                     @memcpy(b.data[n..][0 .. n / 2], f.uv[0 .. n / 2]);
                 } else codec.nv12ToRgba(f.y, f.uv, f.w, f.h, b.data),
-            }
+            };
             v.mutex.lock();
             std.mem.swap(Pic, &v.back, &v.ready);
             v.fresh = true;
@@ -746,6 +830,7 @@ pub const Client = struct {
     }
 
     fn connectLoop(cl: *Client) void {
+        sync.nameThread("rede");
         defer cl.release();
         defer cl.wake();
         // todos os caminhos do convite ao mesmo tempo (os primeiros com vantagem)
@@ -832,6 +917,7 @@ pub const Client = struct {
     }
 
     fn writerLoop(cl: *Client) void {
+        sync.nameThread("rede-envio");
         defer cl.release();
         cl.queue.writerLoop(cl.sock, &cl.channel, &cl.udp);
         // a escritora sai por último: fecha o socket
@@ -855,6 +941,7 @@ pub const Client = struct {
     /// quadro/som/voz, pede reenvio do que falta e mantém o NAT aberto. Se a
     /// sala para de responder, volta pro TCP e continua tentando.
     fn udpLoop(cl: *Client, l: *udp.Link) void {
+        sync.nameThread("udp");
         defer cl.release();
         var timeout_ms: u32 = 10;
         net.setRecvTimeout(l.sock, timeout_ms);
@@ -935,6 +1022,7 @@ pub const Client = struct {
     }
 
     fn pingLoop(cl: *Client) void {
+        sync.nameThread("ping");
         defer cl.release();
         var n: u32 = 0;
         while (!cl.closing.load(.acquire)) : (n += 1) {

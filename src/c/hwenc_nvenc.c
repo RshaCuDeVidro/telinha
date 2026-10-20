@@ -41,6 +41,9 @@ struct nvenc {
     int retained, pushed; // contexto primário retido / empurrado nessa thread
     int layers;         // camadas temporais (1 ou 2)
     uint32_t since_idr; // quadros desde o último IDR (com 2 camadas)
+    // quadros que já estão na placa (cudagl.c): registrados uma vez por buffer
+    struct { uint64_t ptr; NV_ENC_REGISTERED_PTR reg; } regs[8];
+    int n_regs;
 };
 
 static void set_err(char *err, int errlen, const char *msg, int code) {
@@ -78,6 +81,7 @@ static void reconfigure(nvenc *e) {
 void nvenc_close(nvenc *e) {
     if (!e) return;
     if (e->enc) {
+        for (int i = 0; i < e->n_regs; i++) e->api.nvEncUnregisterResource(e->enc, e->regs[i].reg);
         if (e->input) e->api.nvEncDestroyInputBuffer(e->enc, e->input);
         if (e->output) e->api.nvEncDestroyBitstreamBuffer(e->enc, e->output);
         e->api.nvEncDestroyEncoder(e->enc);
@@ -283,32 +287,18 @@ nvenc *nvenc_open(int codec, int width, int height, int fps, int bitrate, int sc
     return e;
 }
 
-int nvenc_encode(nvenc *e, const uint8_t *pixels, int stride, int format, int force_idr,
-                 const uint8_t **out, int *out_len, int *is_idr) {
-    // copia o quadro pro buffer de entrada (memória visível pela GPU)
-    NV_ENC_LOCK_INPUT_BUFFER li = {0};
-    li.version = NV_ENC_LOCK_INPUT_BUFFER_VER;
-    li.inputBuffer = e->input;
-    NVENCSTATUS st = e->api.nvEncLockInputBuffer(e->enc, &li);
-    if (st != NV_ENC_SUCCESS) return (int)st;
-    const size_t row = (size_t)e->width * 4;
-    uint8_t *dst = li.bufferDataPtr;
-    if ((uint32_t)stride == li.pitch && li.pitch == row) {
-        memcpy(dst, pixels, row * (size_t)e->height);
-    } else {
-        for (int y = 0; y < e->height; y++) memcpy(dst + (size_t)y * li.pitch, pixels + (size_t)y * stride, row);
-    }
-    e->api.nvEncUnlockInputBuffer(e->enc, e->input);
-
+// Codifica o quadro que já está em `input` (buffer do NVENC ou recurso mapeado).
+static int encode_input(nvenc *e, NV_ENC_INPUT_PTR input, uint32_t pitch, NV_ENC_BUFFER_FORMAT fmt, int force_idr,
+                        const uint8_t **out, int *out_len, int *is_idr) {
+    NVENCSTATUS st;
     NV_ENC_PIC_PARAMS pp = {0};
     pp.version = NV_ENC_PIC_PARAMS_VER;
     pp.inputWidth = (uint32_t)e->width;
     pp.inputHeight = (uint32_t)e->height;
-    pp.inputPitch = li.pitch;
-    pp.inputBuffer = e->input;
+    pp.inputPitch = pitch;
+    pp.inputBuffer = input;
     pp.outputBitstream = e->output;
-    // ARGB/ABGR do NVENC são "word-ordered": na memória ficam B,G,R,A / R,G,B,A
-    pp.bufferFmt = format == HWENC_RGBX ? NV_ENC_BUFFER_FORMAT_ABGR : NV_ENC_BUFFER_FORMAT_ARGB;
+    pp.bufferFmt = fmt;
     pp.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
     if (e->layers > 1) {
         const int idr = force_idr || e->frame == 0;
@@ -353,6 +343,69 @@ int nvenc_encode(nvenc *e, const uint8_t *pixels, int stride, int format, int fo
     *out = e->bits;
     *out_len = (int)n;
     return 0;
+}
+
+int nvenc_encode(nvenc *e, const uint8_t *pixels, int stride, int format, int force_idr,
+                 const uint8_t **out, int *out_len, int *is_idr) {
+    // copia o quadro pro buffer de entrada (memória visível pela GPU)
+    NV_ENC_LOCK_INPUT_BUFFER li = {0};
+    li.version = NV_ENC_LOCK_INPUT_BUFFER_VER;
+    li.inputBuffer = e->input;
+    NVENCSTATUS st = e->api.nvEncLockInputBuffer(e->enc, &li);
+    if (st != NV_ENC_SUCCESS) return (int)st;
+    const size_t row = (size_t)e->width * 4;
+    uint8_t *dst = li.bufferDataPtr;
+    if ((uint32_t)stride == li.pitch && li.pitch == row) {
+        memcpy(dst, pixels, row * (size_t)e->height);
+    } else {
+        for (int y = 0; y < e->height; y++) memcpy(dst + (size_t)y * li.pitch, pixels + (size_t)y * stride, row);
+    }
+    e->api.nvEncUnlockInputBuffer(e->enc, e->input);
+    // ARGB/ABGR do NVENC são "word-ordered": na memória ficam B,G,R,A / R,G,B,A
+    const NV_ENC_BUFFER_FORMAT fmt = format == HWENC_RGBX ? NV_ENC_BUFFER_FORMAT_ABGR : NV_ENC_BUFFER_FORMAT_ARGB;
+    return encode_input(e, e->input, li.pitch, fmt, force_idr, out, out_len, is_idr);
+}
+
+// Quadro que já está na memória da placa (ponteiro CUDA do mesmo contexto
+// primário; ver cudagl.c): nada é copiado pela CPU. O buffer é registrado no
+// NVENC na primeira vez e fica registrado (quem chama usa poucos buffers, em
+// rodízio).
+int nvenc_encode_dev(nvenc *e, uint64_t dev, int pitch, int format, int force_idr,
+                     const uint8_t **out, int *out_len, int *is_idr) {
+    NV_ENC_REGISTERED_PTR reg = NULL;
+    for (int i = 0; i < e->n_regs; i++)
+        if (e->regs[i].ptr == dev) reg = e->regs[i].reg;
+    if (!reg) {
+        if (e->n_regs == (int)(sizeof e->regs / sizeof e->regs[0])) {
+            // mais buffers que o esperado: esquece o mais antigo
+            e->api.nvEncUnregisterResource(e->enc, e->regs[0].reg);
+            memmove(&e->regs[0], &e->regs[1], sizeof e->regs[0] * (size_t)(e->n_regs - 1));
+            e->n_regs--;
+        }
+        NV_ENC_REGISTER_RESOURCE rr = {0};
+        rr.version = NV_ENC_REGISTER_RESOURCE_VER;
+        rr.resourceType = NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR;
+        rr.width = (uint32_t)e->width;
+        rr.height = (uint32_t)e->height;
+        rr.pitch = (uint32_t)pitch;
+        rr.resourceToRegister = (void *)(uintptr_t)dev;
+        rr.bufferFormat = format == HWENC_RGBX ? NV_ENC_BUFFER_FORMAT_ABGR : NV_ENC_BUFFER_FORMAT_ARGB;
+        rr.bufferUsage = NV_ENC_INPUT_IMAGE;
+        NVENCSTATUS st = e->api.nvEncRegisterResource(e->enc, &rr);
+        if (st != NV_ENC_SUCCESS) return (int)st;
+        e->regs[e->n_regs].ptr = dev;
+        e->regs[e->n_regs].reg = rr.registeredResource;
+        e->n_regs++;
+        reg = rr.registeredResource;
+    }
+    NV_ENC_MAP_INPUT_RESOURCE mp = {0};
+    mp.version = NV_ENC_MAP_INPUT_RESOURCE_VER;
+    mp.registeredResource = reg;
+    NVENCSTATUS st = e->api.nvEncMapInputResource(e->enc, &mp);
+    if (st != NV_ENC_SUCCESS) return (int)st;
+    const int rc = encode_input(e, mp.mappedResource, (uint32_t)pitch, mp.mappedBufferFmt, force_idr, out, out_len, is_idr);
+    e->api.nvEncUnmapInputResource(e->enc, mp.mappedResource);
+    return rc;
 }
 
 void nvenc_set_bitrate(nvenc *e, int bitrate) {

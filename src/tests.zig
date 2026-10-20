@@ -9,6 +9,8 @@ const audio = @import("audio.zig");
 
 test {
     _ = @import("integration_test.zig");
+    _ = @import("config.zig");
+    _ = @import("hotkey.zig");
     _ = @import("update.zig");
     _ = @import("chatimg.zig");
     _ = @import("i18n.zig");

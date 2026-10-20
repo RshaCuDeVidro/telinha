@@ -10,6 +10,7 @@
 typedef struct nvdec nvdec;
 nvdec *nvdec_open(int codec, char *err, int errlen);
 int nvdec_decode(nvdec *d, const uint8_t *data, int len, hwdec_frame *out);
+int nvdec_decode_to(nvdec *d, const uint8_t *data, int len, hwdec_frame *out, uint64_t dst_y, uint64_t dst_uv, int dst_pitch, int dst_w, int dst_h);
 void nvdec_close(nvdec *d);
 
 #ifdef _WIN32
@@ -76,8 +77,16 @@ int hwdec_supports(int codec) {
 }
 
 int hwdec_decode(hwdec *h, const uint8_t *data, int len, hwdec_frame *out) {
+    out->on_device = 0;
     if (h->kind == KIND_ALT) return alt_decode(h->impl, data, len, out);
     return nvdec_decode(h->impl, data, len, out);
+}
+
+int hwdec_decode_to(hwdec *h, const uint8_t *data, int len, hwdec_frame *out,
+                    uint64_t dst_y, uint64_t dst_uv, int dst_pitch, int dst_w, int dst_h) {
+    out->on_device = 0;
+    if (h->kind != KIND_NV || !dst_y) return hwdec_decode(h, data, len, out);
+    return nvdec_decode_to(h->impl, data, len, out, dst_y, dst_uv, dst_pitch, dst_w, dst_h);
 }
 
 const char *hwdec_name(hwdec *h) {

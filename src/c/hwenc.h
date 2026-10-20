@@ -34,6 +34,14 @@ void hwenc_set_effort(int effort);
 int hwenc_encode(hwenc *e, const uint8_t *pixels, int stride, int format, int force_idr,
                  const uint8_t **out, int *out_len, int *is_idr);
 
+// Esse encoder aceita o quadro já na memória da placa (ponteiro CUDA, ver
+// cudagl.c)? Só o NVENC.
+int hwenc_accepts_cuda(hwenc *e);
+
+// Codifica um quadro RGBX/BGRX que já está na placa (hwenc_accepts_cuda).
+int hwenc_encode_dev(hwenc *e, uint64_t dev, int pitch, int format, int force_idr,
+                     const uint8_t **out, int *out_len, int *is_idr);
+
 void hwenc_set_bitrate(hwenc *e, int bitrate);
 const char *hwenc_name(hwenc *e);
 void hwenc_close(hwenc *e);

@@ -59,10 +59,9 @@ pub const Config = struct {
     custom_css: [512]u8 = zstr("", 512), // arquivo CSS do tema personalizado (atualiza sozinho)
     auto_quality: bool = true, // transmitindo: baixa a resolução sozinho se o PC não der conta
     ui_zoom: i32 = 100, // tamanho da interface (%), por cima da escala da tela
-    clip_secs: i32 = 30, // duração do clipe (15 a 180 s)
-    clip_key: i32 = 0, // atalho de salvar clipe (tecla do GLFW; 0 = nenhum)
-    clip_scancode: i32 = 0,
-    clip_mouse: i32 = -1, // ou botão do mouse
+    clip_secs: i32 = 30, // duração do clipe (5 a 600 s)
+    hotkeys_on: bool = true, // atalhos globais ligados (o de ligar/desligar vale sempre)
+    hk: [n_hotkeys]Hotkey = [_]Hotkey{.{}} ** n_hotkeys, // atalhos (HotkeyId)
     ui_fps_cap: i32 = 60, // limite de quadros da interface (0 = o do monitor)
     hw_effort: i32 = 1, // encoder da placa: 0 = leve, 1 = equilibrado, 2 = qualidade
     voice_ptt: bool = false, // voz: apertar pra falar (em vez da detecção de voz)
@@ -71,6 +70,16 @@ pub const Config = struct {
     ptt_mouse: i32 = -1, // botão do mouse (2 = meio, 3/4 = laterais); -1 = é tecla
     crt: bool = false, // efeito de tela antiga (linhas) por cima da interface
 };
+
+/// Um atalho global: tecla do GLFW (0 = nenhuma), scancode dela, botão do
+/// mouse (-1 = é tecla; 2 = meio, 3/4 = laterais) e modificadores (mod_*).
+pub const Hotkey = struct { key: i32 = 0, scancode: i32 = 0, mouse: i32 = -1, mods: u8 = 0 };
+pub const mod_ctrl: u8 = 1;
+pub const mod_shift: u8 = 2;
+pub const mod_alt: u8 = 4;
+/// O que cada atalho faz (índice em `hk`).
+pub const HotkeyId = enum(u8) { clip, mic, deaf, share, print, toggle };
+pub const n_hotkeys = @typeInfo(HotkeyId).@"enum".fields.len;
 
 fn zstr(comptime s: []const u8, comptime n: usize) [n]u8 {
     var out = [_]u8{0} ** n;
@@ -180,6 +189,33 @@ fn openNamed(comptime name: []const u8, write: bool) ?*c.FILE {
     }
 }
 
+/// "tecla,scancode,botão,modificadores" (o que não vier fica no padrão; valores fora da faixa viram "nenhum").
+pub fn parseHotkey(v: []const u8) Hotkey {
+    var hk: Hotkey = .{};
+    var it = std.mem.splitScalar(u8, v, ',');
+    const key = std.fmt.parseInt(i32, std.mem.trim(u8, it.next() orelse "", " "), 10) catch 0;
+    hk.key = if (key >= 32 and key <= 348) key else 0;
+    hk.scancode = std.fmt.parseInt(i32, std.mem.trim(u8, it.next() orelse "", " "), 10) catch 0;
+    hk.mouse = std.math.clamp(std.fmt.parseInt(i32, std.mem.trim(u8, it.next() orelse "-1", " "), 10) catch -1, -1, 7);
+    hk.mods = @intCast((std.fmt.parseInt(u8, std.mem.trim(u8, it.next() orelse "0", " "), 10) catch 0) & 7);
+    if (hk.mouse >= 0) hk.key = 0;
+    return hk;
+}
+
+test "atalho na configuração: texto -> tecla" {
+    const a = parseHotkey("75,37,-1,3");
+    try std.testing.expectEqual(@as(i32, 75), a.key);
+    try std.testing.expectEqual(@as(u8, 3), a.mods);
+    const b = parseHotkey("0,0,3,0");
+    try std.testing.expectEqual(@as(i32, 3), b.mouse);
+    const lixo = parseHotkey("abc");
+    try std.testing.expectEqual(@as(i32, 0), lixo.key);
+    try std.testing.expectEqual(@as(i32, -1), lixo.mouse);
+    const fora = parseHotkey("9999,0,-1,99");
+    try std.testing.expectEqual(@as(i32, 0), fora.key);
+    try std.testing.expectEqual(@as(u8, 3), fora.mods);
+}
+
 pub fn load() Config {
     var cfg = loadFile();
     if (cfg.client_key == 0) {
@@ -239,16 +275,21 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
     } else if (std.mem.eql(u8, k, "ui_fps_cap")) {
         cfg.ui_fps_cap = std.math.clamp(int, 0, 240);
     } else if (std.mem.eql(u8, k, "clip_key")) {
-        cfg.clip_key = if (int >= 32 and int <= 348) int else 0; // GLFW_KEY_SPACE..GLFW_KEY_LAST
+        // versões antigas: o atalho de clipe em três chaves
+        cfg.hk[@intFromEnum(HotkeyId.clip)].key = if (int >= 32 and int <= 348) int else 0; // GLFW_KEY_SPACE..GLFW_KEY_LAST
     } else if (std.mem.eql(u8, k, "clip_scancode")) {
-        cfg.clip_scancode = int;
+        cfg.hk[@intFromEnum(HotkeyId.clip)].scancode = int;
     } else if (std.mem.eql(u8, k, "clip_mouse")) {
-        cfg.clip_mouse = std.math.clamp(int, -1, 7);
+        cfg.hk[@intFromEnum(HotkeyId.clip)].mouse = std.math.clamp(int, -1, 7);
+    } else if (std.mem.eql(u8, k, "hotkeys_on")) {
+        cfg.hotkeys_on = int != 0;
+    } else if (std.mem.startsWith(u8, k, "hk_")) {
+        // hk_<nome>=tecla,scancode,botão,modificadores
+        inline for (@typeInfo(HotkeyId).@"enum".fields) |f| {
+            if (std.mem.eql(u8, k[3..], f.name)) cfg.hk[f.value] = parseHotkey(v);
+        }
     } else if (std.mem.eql(u8, k, "clip_secs")) {
-        // só os que a tela oferece
-        cfg.clip_secs = for ([_]i32{ 15, 30, 60, 120, 180 }) |x| {
-            if (int <= x) break x;
-        } else 180;
+        cfg.clip_secs = std.math.clamp(int, 5, 600);
     } else if (std.mem.eql(u8, k, "voice_ptt")) {
         cfg.voice_ptt = int != 0;
     } else if (std.mem.eql(u8, k, "ptt_key")) {
@@ -312,10 +353,16 @@ pub fn save(cfg: *const Config) void {
     }) catch return;
     _ = c.fwrite(s.ptr, 1, s.len, f);
     var more: [1280]u8 = undefined;
-    const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\ncheck_updates={d}\naudio_app={s}\nlanguage={s}\ntheme={s}\ncustom_theme={s}\nauto_quality={d}\nui_zoom={d}\ncrt={d}\nclip_secs={d}\nclip_key={d}\nclip_scancode={d}\nclip_mouse={d}\nui_fps_cap={d}\nhw_effort={d}\nvoice_ptt={d}\nptt_key={d}\nptt_scancode={d}\nptt_mouse={d}\ndebug_log={d}\ndebug_send={d}\ndebug_webhook={s}\n", .{
-        cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res, @intFromBool(cfg.check_updates), getStr(&cfg.audio_app), getStr(&cfg.language), getStr(&cfg.theme), getStr(&cfg.custom_theme), @intFromBool(cfg.auto_quality), cfg.ui_zoom, @intFromBool(cfg.crt), cfg.clip_secs, cfg.clip_key, cfg.clip_scancode, cfg.clip_mouse, cfg.ui_fps_cap, cfg.hw_effort, @intFromBool(cfg.voice_ptt), cfg.ptt_key, cfg.ptt_scancode, cfg.ptt_mouse, @intFromBool(cfg.debug_log), cfg.debug_send, getStr(&cfg.debug_webhook),
+    const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\ncheck_updates={d}\naudio_app={s}\nlanguage={s}\ntheme={s}\ncustom_theme={s}\nauto_quality={d}\nui_zoom={d}\ncrt={d}\nclip_secs={d}\nhotkeys_on={d}\nui_fps_cap={d}\nhw_effort={d}\nvoice_ptt={d}\nptt_key={d}\nptt_scancode={d}\nptt_mouse={d}\ndebug_log={d}\ndebug_send={d}\ndebug_webhook={s}\n", .{
+        cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res, @intFromBool(cfg.check_updates), getStr(&cfg.audio_app), getStr(&cfg.language), getStr(&cfg.theme), getStr(&cfg.custom_theme), @intFromBool(cfg.auto_quality), cfg.ui_zoom, @intFromBool(cfg.crt), cfg.clip_secs, @intFromBool(cfg.hotkeys_on), cfg.ui_fps_cap, cfg.hw_effort, @intFromBool(cfg.voice_ptt), cfg.ptt_key, cfg.ptt_scancode, cfg.ptt_mouse, @intFromBool(cfg.debug_log), cfg.debug_send, getStr(&cfg.debug_webhook),
     }) catch return;
     _ = c.fwrite(m.ptr, 1, m.len, f);
+    inline for (@typeInfo(HotkeyId).@"enum".fields) |fl| {
+        const hk = cfg.hk[fl.value];
+        var hb: [64]u8 = undefined;
+        const hl = std.fmt.bufPrint(&hb, "hk_{s}={d},{d},{d},{d}\n", .{ fl.name, hk.key, hk.scancode, hk.mouse, hk.mods }) catch "";
+        _ = c.fwrite(hl.ptr, 1, hl.len, f);
+    }
     var excl: [512]u8 = cfg.audio_exclude;
     std.mem.replaceScalar(u8, &excl, '\n', '|');
     var eb: [560]u8 = undefined;
