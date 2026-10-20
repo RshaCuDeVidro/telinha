@@ -34,6 +34,10 @@ typedef struct {
 struct cap_ctx {
     int kind;
     int show_cursor;
+    // cursor fora do vídeo (cap_set_cursor_apart): não pinta, só diz onde está
+    int cursor_apart;
+    int redeliver; // reentrega o quadro limpo (o anterior tinha o cursor pintado)
+    int last_cx, last_cy, last_cshown;
     HWND hwnd;              // janela (KIND_WGC / KIND_PRINT)
     struct wgc_state *wgc;
     RECT rc;
@@ -234,6 +238,27 @@ static void draw_cursor(struct cap_ctx *c, uint8_t *buf, cap_frame *out) {
     }
 }
 
+// Cursor fora do vídeo: só onde ele está (relativo a c->rc), sem pintar.
+// Retorna 1 se mexeu (ou apareceu/sumiu) desde a última vez.
+static int cursor_pos(struct cap_ctx *c, cap_frame *out) {
+    CURSORINFO ci = {.cbSize = sizeof ci};
+    out->cursor_known = 0;
+    int shown = GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING);
+    int x = shown ? ci.ptScreenPos.x - c->rc.left : 0;
+    int y = shown ? ci.ptScreenPos.y - c->rc.top : 0;
+    if (shown && x >= 0 && y >= 0 && x < c->w && y < c->h) {
+        out->cursor_known = 1;
+        out->cursor_px = x;
+        out->cursor_py = y;
+    } else
+        shown = 0;
+    const int moved = shown != c->last_cshown || (shown && (x != c->last_cx || y != c->last_cy));
+    c->last_cshown = shown;
+    c->last_cx = x;
+    c->last_cy = y;
+    return moved;
+}
+
 // ---------------------------------------------------------------------------
 // DXGI
 
@@ -356,6 +381,25 @@ static int next_dxgi(struct cap_ctx *c, cap_frame *out, int timeout_ms, char *er
     // devolve o frame pro DWM o quanto antes (menos latência)
     IDXGIOutputDuplication_ReleaseFrame(c->dupl);
     c->have_frame = 0;
+    if (c->cursor_apart) {
+        // cursor fora do vídeo: o quadro vai limpo, sem cópia; só o mouse mexeu = 2
+        if (c->redeliver) {
+            c->redeliver = 0;
+            changed = 1;
+        }
+        const int moved = cursor_pos(c, out);
+        out->width = c->w;
+        out->height = c->h;
+        if (!changed) {
+            out->data = NULL;
+            return moved ? 2 : 0;
+        }
+        out->data = c->clean;
+        out->stride = c->w * 4;
+        out->format = CAP_BGRX;
+        out->cursor_draw = 0;
+        return 1;
+    }
     if (fi.LastMouseUpdateTime.QuadPart != 0 && c->show_cursor) changed = 1;
     if (!changed) return 0;
 
@@ -397,7 +441,8 @@ static int next_gdi(struct cap_ctx *c, cap_frame *out, char *err, int errlen) {
     GdiFlush();
     memcpy(c->out, c->dib_bits, (size_t)c->w * c->h * 4);
     out->cursor_known = 0;
-    if (c->show_cursor) draw_cursor(c, c->out, out);
+    if (c->show_cursor && c->cursor_apart) cursor_pos(c, out);
+    else if (c->show_cursor) draw_cursor(c, c->out, out);
     out->data = c->out;
     out->width = c->w;
     out->height = c->h;
@@ -557,6 +602,7 @@ struct wgc_state {
     SizeInt32 size; // tamanho atual do pool
     ID3D11Texture2D *staging;
     int staging_w, staging_h;
+    SessionFlag *cursor_flag; // IsCursorCaptureEnabled (NULL = Windows sem isso: o cursor sempre vem)
 };
 
 static void wgc_close(struct wgc_state *g) {
@@ -574,6 +620,7 @@ static void wgc_close(struct wgc_state *g) {
     RELEASE(g->pool);
     RELEASE(g->item);
     RELEASE(g->rt_device);
+    RELEASE(g->cursor_flag);
     if (g->staging) ID3D11Texture2D_Release(g->staging);
     if (g->ctx) ID3D11DeviceContext_Release(g->ctx);
     if (g->dev) ID3D11Device_Release(g->dev);
@@ -617,10 +664,8 @@ static struct wgc_state *wgc_open(HWND hwnd, int show_cursor, HRESULT *hr_out) {
     hr = g->pool->v->CreateCaptureSession(g->pool, g->item, (void **)&g->session);
     if (FAILED(hr) || !g->session) goto fail;
     // cursor desenhado pelo sistema (ou não); sem a borda amarela onde der (Windows 11)
-    if (SUCCEEDED(g->session->v->QueryInterface(g->session, &IID_Session2, (void **)&f))) {
-        f->v->put_Flag(f, show_cursor ? 1 : 0);
-        RELEASE(f);
-    }
+    if (SUCCEEDED(g->session->v->QueryInterface(g->session, &IID_Session2, (void **)&g->cursor_flag)) && g->cursor_flag)
+        g->cursor_flag->v->put_Flag(g->cursor_flag, show_cursor ? 1 : 0);
     if (SUCCEEDED(g->session->v->QueryInterface(g->session, &IID_Session3, (void **)&f))) {
         f->v->put_Flag(f, 0);
         RELEASE(f);
@@ -649,6 +694,31 @@ static int ensure_out(struct cap_ctx *c, int w, int h) {
     return c->out ? 0 : -1;
 }
 
+// Ponta do cursor relativa à janela, na escala do quadro. 1 = mexeu.
+static int wgc_cursor(struct cap_ctx *c, cap_frame *out) {
+    out->cursor_known = 0;
+    POINT pt;
+    RECT r;
+    window_bounds(c->hwnd, &r);
+    CURSORINFO ci = {.cbSize = sizeof ci};
+    int shown = c->show_cursor && GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING);
+    pt = ci.ptScreenPos;
+    int x = 0, y = 0;
+    if (shown && pt.x >= r.left && pt.y >= r.top && pt.x < r.right && pt.y < r.bottom) {
+        x = (int)((double)(pt.x - r.left) * c->w / (r.right - r.left > 0 ? r.right - r.left : 1));
+        y = (int)((double)(pt.y - r.top) * c->h / (r.bottom - r.top > 0 ? r.bottom - r.top : 1));
+        out->cursor_known = 1;
+        out->cursor_px = x;
+        out->cursor_py = y;
+    } else
+        shown = 0;
+    const int moved = shown != c->last_cshown || (shown && (x != c->last_cx || y != c->last_cy));
+    c->last_cshown = shown;
+    c->last_cx = x;
+    c->last_cy = y;
+    return moved;
+}
+
 static int next_wgc(struct cap_ctx *c, cap_frame *out, int timeout_ms, char *err, int errlen) {
     struct wgc_state *g = c->wgc;
     if (!IsWindow(c->hwnd)) {
@@ -661,7 +731,17 @@ static int next_wgc(struct cap_ctx *c, cap_frame *out, int timeout_ms, char *err
         if (SUCCEEDED(g->pool->v->TryGetNextFrame(g->pool, (void **)&frame)) && frame) break;
         Sleep(2);
     }
-    if (!frame) return 0;
+    if (!frame) {
+        // cursor fora do vídeo: a janela parada, mas o mouse mexeu
+        if (c->cursor_apart && c->w > 0) {
+            int moved = wgc_cursor(c, out);
+            out->data = NULL;
+            out->width = c->w;
+            out->height = c->h;
+            return moved ? 2 : 0;
+        }
+        return 0;
+    }
     SizeInt32 cs = {0, 0};
     frame->v->get_ContentSize(frame, &cs);
     int got = 0;
@@ -720,15 +800,7 @@ static int next_wgc(struct cap_ctx *c, cap_frame *out, int timeout_ms, char *err
     out->format = CAP_BGRX;
     out->cursor_draw = 0;
     // ponta do cursor relativa à janela (o zoom de quem assiste segue)
-    out->cursor_known = 0;
-    POINT pt;
-    RECT r;
-    window_bounds(c->hwnd, &r);
-    if (c->show_cursor && GetCursorPos(&pt) && pt.x >= r.left && pt.y >= r.top && pt.x < r.right && pt.y < r.bottom) {
-        out->cursor_known = 1;
-        out->cursor_px = (int)((double)(pt.x - r.left) * c->w / (r.right - r.left > 0 ? r.right - r.left : 1));
-        out->cursor_py = (int)((double)(pt.y - r.top) * c->h / (r.bottom - r.top > 0 ? r.bottom - r.top : 1));
-    }
+    wgc_cursor(c, out);
     return 1;
 }
 
@@ -764,7 +836,8 @@ static int next_print(struct cap_ctx *c, cap_frame *out, char *err, int errlen) 
     out->cursor_known = 0;
     if (c->show_cursor) {
         c->rc = r; // o cursor é desenhado relativo à janela
-        draw_cursor(c, c->out, out);
+        if (c->cursor_apart) cursor_pos(c, out);
+        else draw_cursor(c, c->out, out);
     }
     out->data = c->out;
     out->width = c->w;
@@ -898,3 +971,17 @@ void cap_gpu_set_preview(cap_ctx *c, int want, int max_w) { (void)c; (void)want;
 void cap_gpu_release(cap_ctx *c, void *gpu) { (void)c; (void)gpu; }
 int cap_gpu_failed(cap_ctx *c) { (void)c; return 0; }
 void cap_gpu_gc(cap_ctx *c) { (void)c; }
+
+int cap_set_cursor_apart(cap_ctx *c, int on) {
+    if (!c || !c->show_cursor) return 0;
+    if (c->kind == KIND_WGC) {
+        // janela: quem pinta o cursor é o Windows; dá pra desligar a partir do Windows 10 2004
+        if (!c->wgc || !c->wgc->cursor_flag) return 0;
+        c->wgc->cursor_flag->v->put_Flag(c->wgc->cursor_flag, on ? 0 : 1);
+    }
+    if (c->cursor_apart != (on != 0)) {
+        c->cursor_apart = on != 0;
+        c->redeliver = 1;
+    }
+    return 1;
+}

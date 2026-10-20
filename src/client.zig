@@ -238,6 +238,15 @@ pub const View = struct {
     // onde está o cursor de quem transmite (proto.coord_none = sem cursor)
     cursor_x: std.atomic.Value(u16) = .init(proto.coord_none),
     cursor_y: std.atomic.Value(u16) = .init(proto.coord_none),
+    /// O cursor não vem pintado no vídeo (frame_cursor_apart): a interface
+    /// desenha a seta em cursor_x/cursor_y (atualizados também pela mensagem `cursor`).
+    cursor_apart: std.atomic.Value(bool) = .init(false),
+    /// Altura que a interface já disse pro servidor (view_size) e o maior
+    /// tamanho visto na janela de medida atual (só a thread da UI mexe).
+    view_sent_h: u16 = 0,
+    view_peak_h: u32 = 0,
+    view_peak_since_ms: u64 = 0,
+    view_lower_since_ms: u64 = 0,
 
     qmutex: sync.Mutex = .{},
     amutex: sync.Mutex = .{}, // som da transmissão (separado da fila de quadros: não disputam)
@@ -335,6 +344,7 @@ pub const View = struct {
     const max_decode_backlog_us = 150_000;
 
     fn enqueue(v: *View, frame: []u8) void {
+        if (frame.len > 4) v.cursor_apart.store(frame[4] & proto.frame_cursor_apart != 0, .release);
         // clipe/gravação: guarda o quadro como veio (antes de qualquer descarte do decoder)
         if (v.clip) |cb| {
             if (frame.len > proto.frame_header_len) {
@@ -678,6 +688,10 @@ pub const Client = struct {
     /// Codecs que a sala libera pra cada transmissão nossa (tela, câmera):
     /// o que todo mundo que assiste decodifica (mensagem `codec`).
     codecs_allowed: [2]std.atomic.Value(u8) = .{ .init(proto.codecs_h264), .init(proto.codecs_h264) },
+    /// Recursos (feat_*) que todo mundo que assiste cada transmissão minha entende (codec).
+    features_allowed: [2]std.atomic.Value(u8) = .{ .init(0), .init(0) },
+    /// A maior altura em que alguém mostra cada transmissão minha (view_size; view_full = sem limite).
+    view_want: [2]std.atomic.Value(u16) = .{ .init(proto.view_full), .init(proto.view_full) },
     /// Vídeo/som por UDP (a sala ofereceu e o caminho abriu); null = só TCP.
     udp: std.atomic.Value(?*udp.Link) = .init(null),
     /// Algum espectador não está dando conta da nossa taxa de bits: piso (% do
@@ -906,6 +920,7 @@ pub const Client = struct {
         // TELINHA_VERSAO_TESTE: finge outra versão (testes do aviso de versão nova)
         b.str(if (getenv("TELINHA_VERSAO_TESTE")) |v| std.mem.span(v) else proto.app_version) catch return;
         b.u8_(if (cl.hw_decode) decodeCodecs() else proto.codecs_h264) catch return;
+        b.u8_(proto.features_mine) catch return;
         cl.queue.pushOwned(b.finish() catch return);
 
         var rb: proto.RecvBuf = .{};
@@ -1324,7 +1339,23 @@ pub const Client = struct {
             .codec => {
                 const kind = try r.u8_();
                 const mask = try r.u8_();
-                if (kind <= proto.kind_camera) cl.codecs_allowed[kind].store(mask | proto.codecs_h264, .release);
+                if (kind <= proto.kind_camera) {
+                    cl.codecs_allowed[kind].store(mask | proto.codecs_h264, .release);
+                    // servidor antigo não manda: nada de recurso novo
+                    cl.features_allowed[kind].store(r.u8_() catch 0, .release);
+                }
+            },
+            .view_size => {
+                const kind = try r.u8_();
+                const h = try r.u16_();
+                if (kind <= proto.kind_camera) cl.view_want[kind].store(h, .release);
+            },
+            .cursor => {
+                const v = cl.viewRetained(try r.u32_()) orelse return;
+                defer v.release();
+                v.cursor_x.store(try r.u16_(), .monotonic);
+                v.cursor_y.store(try r.u16_(), .monotonic);
+                cl.wake();
             },
             .frame => {
                 const stream = try r.u32_();
@@ -1553,6 +1584,27 @@ pub const Client = struct {
     }
 
     /// Ponteiro "olha aqui" sobre uma transmissão (x, y em 0..65534; proto.coord_none esconde).
+    /// Onde está o meu cursor (transmissão `kind`, fora do vídeo).
+    pub fn sendCursor(cl: *Client, kind: u8, x: u16, y: u16) void {
+        if (!cl.welcomed.load(.acquire)) return;
+        const m = proto.Msg.alloc(.cursor, 5) catch return;
+        const pl = m.payload();
+        pl[0] = kind;
+        std.mem.writeInt(u16, pl[1..3], x, .little);
+        std.mem.writeInt(u16, pl[3..5], y, .little);
+        cl.queue.pushUrgentOwned(m);
+    }
+
+    /// Em que altura (pixels) eu mostro essa transmissão (view_full = quero tudo).
+    pub fn sendViewSize(cl: *Client, stream: u32, h: u16) void {
+        if (!cl.welcomed.load(.acquire)) return;
+        const m = proto.Msg.alloc(.view_size, 6) catch return;
+        const pl = m.payload();
+        std.mem.writeInt(u32, pl[0..4], stream, .little);
+        std.mem.writeInt(u16, pl[4..6], h, .little);
+        cl.queue.pushOwned(m);
+    }
+
     pub fn sendPointer(cl: *Client, stream: u32, x: u16, y: u16, flags: u8) void {
         if (!cl.welcomed.load(.acquire)) return;
         const m = proto.Msg.alloc(.pointer, 9) catch return;

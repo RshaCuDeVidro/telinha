@@ -1556,6 +1556,8 @@ pub const App = struct {
             .audio = a.cfg.audio,
             .clips = a.cfg.clips,
             .auto_quality = a.cfg.auto_quality,
+            .cursor_apart = a.cfg.cursor_apart,
+            .view_size = a.cfg.view_size,
         };
         const cur = config.getStr(&a.cfg.audio_app);
         if (std.mem.eql(u8, cur, "*janela")) {
@@ -1770,6 +1772,7 @@ pub const App = struct {
             const want_h = v.disp_px_h;
             v.disp_px_w = 0;
             v.disp_px_h = 0;
+            a.reportViewSize(v, want_h);
             if (f.w == 0) continue;
             if (took) v.gl_stale = true;
             if (f.layout != .rgba) {
@@ -1834,6 +1837,43 @@ pub const App = struct {
                 s.preview_new = false;
             }
         }
+    }
+
+    /// Diz pro servidor em que altura essa transmissão aparece (quem transmite
+    /// manda no maior tamanho entre quem assiste). Degraus fixos, e só desce
+    /// depois de 3 s menor (redimensionar a janela não fica trocando a
+    /// resolução de quem transmite); sobe na hora.
+    fn reportViewSize(a: *App, v: *View, shown_h: u32) void {
+        const cl = a.client orelse return;
+        const now = sync.nowMs();
+        const tiers = [_]u16{ 360, 480, 540, 720, 900, 1080, 1440, 2160 };
+        var q: u16 = proto.view_full;
+        for (tiers) |t| if (shown_h <= t) {
+            q = t;
+            break;
+        };
+        // gravando: quer tudo (a gravação sai no tamanho que chega)
+        if (v.clip) |cb| if (cb.recState().active) {
+            q = proto.view_full;
+        };
+        if (q >= v.view_sent_h) {
+            v.view_lower_since_ms = 0;
+            v.view_peak_h = 0;
+            if (q > v.view_sent_h) {
+                v.view_sent_h = q;
+                cl.sendViewSize(v.stream, q);
+            }
+            return;
+        }
+        // menor: espera ficar assim um tempo, e aí pede o maior visto nesse tempo
+        if (v.view_lower_since_ms == 0) v.view_lower_since_ms = now;
+        v.view_peak_h = @max(v.view_peak_h, q);
+        if (now - v.view_lower_since_ms >= 3000) {
+            v.view_sent_h = @intCast(v.view_peak_h);
+            cl.sendViewSize(v.stream, v.view_sent_h);
+            v.view_lower_since_ms = 0;
+            v.view_peak_h = 0;
+        } else redrawIn(0.5); // reavalia mesmo com a interface parada
     }
 
     fn checkState(a: *App) void {
@@ -3343,6 +3383,8 @@ pub const App = struct {
             c.ImDrawList_AddRect(d, v2(mx0 + uv0.x * mw, my0 + uv0.y * mh), v2(mx0 + uv1.x * mw, my0 + uv1.y * mh), col.white, 0, S(1.5), 0);
         }
 
+        // cursor de quem transmite, quando ele vem fora do vídeo (feat_cursor)
+        if (t.view) |tv| if (tv.cursor_apart.load(.acquire)) drawRemoteCursor(tv, ix, iy, iw, ih, uv0, uv1);
         // ponteiros "olha aqui" de quem está assistindo junto
         a.drawPointers(t, ix, iy, iw, ih, uv0, uv1);
         // o meu, quando o modo ponteiro está ligado nesse quadro
@@ -3564,6 +3606,15 @@ pub const App = struct {
         return v2(ix + (u - uv0.x) / (uv1.x - uv0.x) * iw, iy + (vv - uv0.y) / (uv1.y - uv0.y) * ih);
     }
 
+    /// Seta de cursor clássica (preta com borda branca), ponta em `at`; `k` = escala (1 ≈ 22 px).
+    fn drawArrow(d: *c.ImDrawList, at: c.ImVec2_c, k: f32) void {
+        const pts = [_][2]f32{ .{ 0, 0 }, .{ 0, 17 }, .{ 4, 13 }, .{ 7.5, 20.5 }, .{ 10, 19.5 }, .{ 6.6, 12 }, .{ 12, 12 } };
+        var poly: [pts.len]c.ImVec2_c = undefined;
+        for (pts, 0..) |p, i| poly[i] = v2(at.x + p[0] * k * 1.05, at.y + p[1] * k * 1.05);
+        c.ImDrawList_AddConcavePolyFilled(d, &poly, poly.len, rgba(0x000000, 235));
+        c.ImDrawList_AddPolyline(d, &poly, poly.len, rgba(0xffffff, 255), @max(1.0, 1.4 * k), c.ImDrawFlags_Closed);
+    }
+
     /// Seta com o nome de quem aponta (cor do avatar dela).
     fn drawPointerAt(d: *c.ImDrawList, p: c.ImVec2_c, color: u32, name: []const u8, ping_age_s: f32) void {
         if (ping_age_s >= 0 and ping_age_s < 0.9) {
@@ -3583,6 +3634,17 @@ pub const App = struct {
         const ly = tip.y + S(16);
         rectFill(d, lx, ly, lx + ts.x + S(12), ly + ts.y + S(6), color, S(5));
         drawTextF(d, font_semibold, 12, v2(lx + S(6), ly + S(3)), col.white, name);
+    }
+
+    /// A seta do cursor de quem transmite (o vídeo vem sem ela), no tamanho
+    /// em que um cursor apareceria nessa imagem (~22 px numa tela de 1080).
+    fn drawRemoteCursor(v: *View, ix: f32, iy: f32, iw: f32, ih: f32, uv0: c.ImVec2_c, uv1: c.ImVec2_c) void {
+        const x = v.cursor_x.load(.monotonic);
+        const y = v.cursor_y.load(.monotonic);
+        if (x == proto.coord_none or y == proto.coord_none) return;
+        const at = mapPoint(x, y, ix, iy, iw, ih, uv0, uv1) orelse return;
+        const full_h = ih / @max(0.01, uv1.y - uv0.y); // a imagem inteira, com zoom
+        drawArrow(drawList(), at, std.math.clamp(full_h / 1080.0, 0.45, 2.5));
     }
 
     fn drawPointers(a: *App, t: *const Tile, ix: f32, iy: f32, iw: f32, ih: f32, uv0: c.ImVec2_c, uv1: c.ImVec2_c) void {
@@ -3825,7 +3887,13 @@ pub const App = struct {
             a.toast("Gravação cancelada (não chegou nenhum quadro completo).", .{}, true);
             return;
         }
-        a.toast("Gravação salva ({d}:{d:0>2}): {s}", .{ ms / 60000, (ms / 1000) % 60, baseName(a.last_saved[0..a.last_saved_len]) }, false);
+        var pb: [528]u8 = undefined;
+        a.rememberSaved(cb.recPath(&pb));
+        const parts = cb.recParts();
+        if (parts > 1)
+            a.toast("Gravação salva ({d}:{d:0>2}) em {d} partes (a resolução mudou no meio): {s}", .{ ms / 60000, (ms / 1000) % 60, parts, baseName(a.last_saved[0..a.last_saved_len]) }, false)
+        else
+            a.toast("Gravação salva ({d}:{d:0>2}): {s}", .{ ms / 60000, (ms / 1000) % 60, baseName(a.last_saved[0..a.last_saved_len]) }, false);
     }
 
     fn rememberSaved(a: *App, path: []const u8) void {
@@ -5602,6 +5670,30 @@ pub const App = struct {
         pushFont(font_regular, 12.5);
         textColored(col.faint, tr("Quando a transmissão não consegue manter o fps escolhido, desce um degrau (1080p → 900p → 720p...) e volta sozinha quando sobrar folga."));
         popFont();
+        c.igPopTextWrapPos();
+        c.igDummy(v2(0, S(8)));
+        c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
+        if (c.igCheckbox(tr("Cursor fora do vídeo: mexer o mouse com a tela parada não gera quadro nenhum###curapart"), &a.cfg.cursor_apart)) {
+            config.save(&a.cfg);
+            if (a.sharer) |s| s.update(a.shareSettings());
+        }
+        c.igPopStyleColor(1);
+        c.igPushTextWrapPos(c.igGetCursorPosX() + w);
+        pushFont(font_regular, 12.5);
+        textColored(col.faint, tr("Quem assiste desenha a seta. Só vale se todo mundo que assiste estiver nesta versão; o cursor não aparece nos clipes e gravações de quem assiste (gravando a própria tela, ele volta pro vídeo)."));
+        popFont();
+        c.igPopTextWrapPos();
+        c.igDummy(v2(0, S(8)));
+        c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
+        if (c.igCheckbox(tr("Mandar no tamanho em que aparece pra quem assiste###viewsize"), &a.cfg.view_size)) {
+            config.save(&a.cfg);
+            if (a.sharer) |s| s.update(a.shareSettings());
+        }
+        c.igPopStyleColor(1);
+        c.igPushTextWrapPos(c.igGetCursorPosX() + w);
+        pushFont(font_regular, 12.5);
+        textColored(col.faint, tr("Se todo mundo está te vendo num quadradinho da grade, não precisa mandar 1080p: menos placa, menos rede pra todos. Volta na hora quando alguém amplia. Os seus clipes da própria tela saem no tamanho mandado."));
+        popFont();
         c.igDummy(v2(0, S(18)));
 
         fieldLabel("LIMITE DE QUADROS DA INTERFACE");
@@ -6161,7 +6253,7 @@ pub const App = struct {
             defer sh.mutex.unlock();
             const audio_on = sh.audio_on;
             const aerr: [160]u8 = sh.audio_err;
-            try w.print(",\"sharer\":{{\"state\":{f},\"w\":{d},\"h\":{d},\"fps\":{d:.1},\"backend\":{f},\"encoder\":{f},\"audio\":{},\"audio_err\":{f},\"auto_cap\":{d}}}", .{ s(@tagName(sh.state)), sh.w, sh.h, sh.fps, s(sh.backendSlice()), s(sh.encoder_name), audio_on, s(std.mem.sliceTo(&aerr, 0)), sh.auto_cap.load(.acquire) });
+            try w.print(",\"sharer\":{{\"state\":{f},\"w\":{d},\"h\":{d},\"fps\":{d:.1},\"backend\":{f},\"encoder\":{f},\"audio\":{},\"audio_err\":{f},\"auto_cap\":{d},\"frames\":{d},\"cursor_msgs\":{d}}}", .{ s(@tagName(sh.state)), sh.w, sh.h, sh.fps, s(sh.backendSlice()), s(sh.encoder_name), audio_on, s(std.mem.sliceTo(&aerr, 0)), sh.auto_cap.load(.acquire), sh.frames_sent.load(.monotonic), sh.cursor_msgs.load(.monotonic) });
         } else try w.writeAll(",\"sharer\":null");
         // avisos na tela
         try w.writeAll(",\"toasts\":[");
@@ -6196,8 +6288,9 @@ pub const App = struct {
             if (i > 0) try w.writeByte(',');
             const has_audio = v.audio_registered;
             const rs: clip.Buffer.RecState = if (v.clip) |cb| cb.recState() else .{ .active = false, .waiting = false, .ms = 0, .failed = false };
-            try w.print("{{\"stream\":{d},\"fps\":{d:.1},\"w\":{d},\"h\":{d},\"shown\":{},\"audio\":{},\"volume\":{d:.2},\"muted\":{},\"clip_secs\":{d:.1},\"recording\":{},\"rec_ms\":{d},\"decoder\":{f},\"codec\":{f},\"latency\":{d:.0}}}", .{
+            try w.print("{{\"stream\":{d},\"fps\":{d:.1},\"w\":{d},\"h\":{d},\"shown\":{},\"audio\":{},\"volume\":{d:.2},\"muted\":{},\"clip_secs\":{d:.1},\"recording\":{},\"rec_ms\":{d},\"decoder\":{f},\"codec\":{f},\"latency\":{d:.0},\"cursor_apart\":{},\"cursor_x\":{d},\"cursor_y\":{d},\"view_sent_h\":{d}}}", .{
                 v.stream, v.fps, v.tex_w, v.tex_h, v.tex != 0, has_audio, v.audio_ring.getVolume(), v.audio_ring.isMuted(), if (v.clip) |cb| cb.seconds() else -1, rs.active, rs.ms, s(v.decoder_name), s(v.codec.name()), v.latency_ms,
+                v.cursor_apart.load(.acquire), v.cursor_x.load(.monotonic), v.cursor_y.load(.monotonic), v.view_sent_h,
             });
         }
         try w.writeAll("]");

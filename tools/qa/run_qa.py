@@ -518,7 +518,8 @@ def recorte_e_desenho():
     """Transmitir só um pedaço da tela (arrastando na própria prévia) e desenhar por cima (quem assiste desenha, quem transmite vê)."""
     with Session("recorte") as s:
         p = port()
-        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"])
+        # resolução conferida: sem o ajuste ao tamanho em que a Bia vê
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"], config={"view_size": 0})
         bia = s.app("bia", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"])
         aid = bia.member_id("Ana")
         bia.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "a Bia ver a Ana")
@@ -799,6 +800,7 @@ def atalhos_globais():
         a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)], config={"clips": 1, "clip_secs": 45})
         st = a.wait(lambda st: st["screen"] == "room", 10, "entrar na sala")
         expect(st["cfg"]["clip_secs"] == 45, f"duração livre do clipe não valeu: {st['cfg']['clip_secs']}")
+        time.sleep(0.6)  # a sala acabou de abrir: deixa a interface assentar antes do clique
         a.click("##gear")
         a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
         a.click("##cfg-atalhos")
@@ -842,6 +844,54 @@ def atalhos_globais():
         time.sleep(0.5)
         a.key("d")
         a.wait(lambda st: st["deaf"], 3, "surdo de novo com os atalhos ligados")
+
+
+@test
+def cursor_e_tamanho():
+    """Cursor fora do vídeo (mexer o mouse com a tela parada não gera quadro; quem assiste recebe a posição) e transmissão no tamanho em que aparece (sobe na tela cheia, desce depois)."""
+    with Session("cursortam") as s:
+        p = port()
+        # janela da Ana menor que a tela (1280x760): sobra um canto parado pra mexer o mouse
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"], size=(900, 600))
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}", "--assistir"], size=(900, 560))
+        aid = b.member_id("Ana")
+        b.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "ver a tela da Ana")
+        st = b.wait(lambda st: any(v["stream"] == aid and v["cursor_apart"] for v in st["views"]), 10, "cursor fora do vídeo")
+        # tamanho: a Ana (900 linhas de tela) manda no tamanho do quadradinho do Bruno
+        v = next(v for v in st["views"] if v["stream"] == aid)
+        st = a.wait(lambda st: st["sharer"] and 0 < st["sharer"]["h"] <= 540, 10, "a Ana mandar no tamanho do quadro do Bruno")
+        expect(st["sharer"]["h"] < 760, "a Ana continuou mandando na resolução toda")
+        log(f"Bruno mostra em até {v['view_sent_h']} linhas; a Ana manda {st['sharer']['w']}x{st['sharer']['h']}")
+        # cursor: mexe o mouse fora da janela da Ana (tela parada ali)
+        a.move(1000, 650)
+        time.sleep(1.5)
+        f0 = a.state()["sharer"]["frames"]
+        m0 = a.state()["sharer"]["cursor_msgs"]
+        for i in range(20):
+            a.move(1000 + i * 12, 650 + (i % 5) * 10)
+        st = b.wait(lambda st: any(v["stream"] == aid and abs(v["cursor_x"] - int(1228 / 1279 * 65534)) < 1200 and abs(v["cursor_y"] - int(690 / 759 * 65534)) < 1200 for v in st["views"]), 5, "a posição do cursor chegar no Bruno")
+        sh = a.state()["sharer"]
+        log(f"20 movimentos do mouse: {sh['cursor_msgs'] - m0} posições mandadas, {sh['frames'] - f0} quadros codificados")
+        if os.environ.get("QA_SHOTS"):
+            time.sleep(0.5)
+            b.screenshot(os.path.join(os.environ["QA_SHOTS"], "cursor_bruno.png"))
+            a.screenshot(os.path.join(os.environ["QA_SHOTS"], "cursor_ana.png"))
+        expect(sh["cursor_msgs"] - m0 >= 5, "a posição do cursor quase não foi mandada")
+        expect(sh["frames"] - f0 <= 3, f"mexer o mouse com a tela parada gerou {sh['frames'] - f0} quadros")
+        # tela cheia no Bruno: o quadro cresce e a Ana sobe junto, na hora
+        h0 = a.state()["sharer"]["h"]
+        b.key("F11")
+        b.wait(lambda st: st["fullscreen"], 3, "o Bruno em tela cheia")
+        st = b.wait(lambda st: any(v["stream"] == aid and v["view_sent_h"] > h0 for v in st["views"]), 3, "o Bruno pedir mais com o quadro maior")
+        want = next(v for v in st["views"] if v["stream"] == aid)["view_sent_h"]
+        st = a.wait(lambda st: st["sharer"]["h"] > h0, 3, "a Ana subir a resolução")
+        log(f"tela cheia: o Bruno pede até {want} linhas; a Ana foi de {h0} pra {st['sharer']['h']}")
+        expect(st["sharer"]["h"] <= want, "a Ana mandou mais do que o Bruno mostra")
+        # sai da tela cheia: desce de novo, mas só depois de uns segundos (sem ficar trocando)
+        b.key("F11")
+        time.sleep(1.5)
+        expect(a.state()["sharer"]["h"] > h0, "desceu antes da folga de 3 s")
+        a.wait(lambda st: st["sharer"]["h"] <= h0, 8, "a Ana descer de novo depois que o Bruno saiu da tela cheia")
 
 
 @test
@@ -1397,7 +1447,8 @@ def qualidade_automatica():
     """PC lento (encoder de mentira lento): a transmissão desce a resolução sozinha até dar conta do fps e avisa; desligando nas configurações, volta pra escolhida."""
     with Session("autoq") as s:
         p = port()
-        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"], extra_env={"TELINHA_ENCODE_LENTO": "100"})
+        # resolução conferida: sem o ajuste ao tamanho em que a Bia vê
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"], extra_env={"TELINHA_ENCODE_LENTO": "100"}, config={"view_size": 0})
         bia = s.app("bia", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"])
         aid = bia.member_id("Ana")
         bia.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "a Bia ver a Ana")
@@ -1663,7 +1714,8 @@ def windows_decoder():
     """O .exe (wine) assistindo com 'usar a placa de vídeo': sem NVIDIA, Media Foundation (QA_MF_SOFTWARE=1) ou openh264; a imagem certa, inclusive quando a resolução muda."""
     with Session("winedec") as s:
         p = port()
-        a = s.app("a", 91, ["--nome", "Linux", "--criar", str(p), "--transmitir", "--software"])
+        # resolução conferida: sem o ajuste ao tamanho em que o Windows vê
+        a = s.app("a", 91, ["--nome", "Linux", "--criar", str(p), "--transmitir", "--software"], config={"view_size": 0})
         a.wait(lambda st: st["status"] == "connected" and st["sharer"] and st["sharer"]["state"] == "live", 15, "a sala abrir transmitindo")
         # no wine o decoder aceita o Direct3D, mas a imagem sairia zerada (o
         # wined3d não lê textura NV12): o app recusa e fica no openh264.

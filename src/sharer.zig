@@ -78,6 +78,12 @@ pub const Settings = struct {
     quality: u8 = 60, // 20..100
     max_height: u32 = 0, // 0 = resolução original
     cursor: bool = true,
+    /// O cursor vai fora do vídeo (só a posição; quem assiste desenha a seta)
+    /// quando todo mundo que assiste entende isso.
+    cursor_apart: bool = true,
+    /// Manda no maior tamanho em que alguém está vendo (não em 1080p pra quem
+    /// vê num quadradinho).
+    view_size: bool = true,
     mode: codec.Mode = .screen,
     hardware: bool = true, // tenta NVENC antes do encoder em software
     audio: bool = true, // compartilha o som do computador
@@ -167,6 +173,7 @@ const Slot = struct {
     ts: u64 = 0, // hora da captura (relógio da sala)
     cursor_x: u16 = proto.coord_none, // ponta do cursor no quadro (0..65534)
     cursor_y: u16 = proto.coord_none,
+    cursor_apart: bool = false, // o cursor não está pintado (frame_cursor_apart)
 
     fn ensure(s: *Slot, w: u32, h: u32) !void {
         const n = @as(usize, w) * h;
@@ -222,6 +229,9 @@ pub const Sharer = struct {
     /// Quando as estatísticas foram recalculadas (ms): elas só andam quando o
     /// encoder solta quadro; parado há mais de 2 s, o que aparece é zero.
     stat_ms: u64 = 0,
+    /// Quadros codificados e mandados, e posições de cursor mandadas (total; testes e log).
+    frames_sent: std.atomic.Value(u64) = .init(0),
+    cursor_msgs: std.atomic.Value(u64) = .init(0),
     encode_ms: f32 = 0,
     bitrate_kbps: u32 = 0,
     congested: bool = false,
@@ -404,6 +414,11 @@ const Pipeline = struct {
     fmt: codec.PixelFormat = .bgrx,
     cursor_x: u16 = proto.coord_none,
     cursor_y: u16 = proto.coord_none,
+    /// Cursor fora do vídeo (cap_set_cursor_apart ligado) e o que já foi mandado.
+    cursor_apart: bool = false,
+    cursor_apart_unsupported: bool = false, // essa captura não sabe: nem tenta de novo
+    cursor_sent: [2]u16 = .{ proto.coord_none, proto.coord_none },
+    cursor_sent_us: u64 = 0,
 
     // fila de 3 slots entre captura e encode
     mutex: sync.Mutex = .{},
@@ -457,6 +472,64 @@ const Pipeline = struct {
 
     fn errSlice(p: *Pipeline) []const u8 {
         return std.mem.sliceTo(&p.err, 0);
+    }
+
+    /// Altura máxima de saída: a escolhida, a da qualidade automática e a do
+    /// maior tamanho em que alguém está vendo (view_size), o que for menor.
+    fn maxHeight(p: *Pipeline) u32 {
+        return effectiveHeight(effectiveHeight(p.settings.max_height, p.auto.cap), p.viewCap());
+    }
+
+    /// Teto pelo tamanho em que aparece pra quem assiste (0 = nenhum). Não
+    /// vale gravando a própria tela (a gravação quer tudo).
+    fn viewCap(p: *Pipeline) u32 {
+        const s = p.s;
+        if (!p.settings.view_size or ownRecording(s)) return 0;
+        const w = s.client.view_want[s.kind].load(.acquire);
+        return if (w == proto.view_full) 0 else @max(w, 360);
+    }
+
+    /// Liga/desliga o cursor fora do vídeo conforme quem assiste entende.
+    fn updateCursorMode(p: *Pipeline) void {
+        const s = p.s;
+        const src = p.cap orelse return;
+        if (src != .screen or p.cursor_apart_unsupported) return;
+        const want = p.settings.cursor and p.settings.cursor_apart and !ownRecording(s) and
+            s.client.features_allowed[s.kind].load(.acquire) & proto.feat_cursor != 0;
+        if (want == p.cursor_apart) return;
+        if (c.cap_set_cursor_apart(src.screen, @intFromBool(want)) == 0) {
+            p.cursor_apart_unsupported = true;
+            p.cursor_apart = false;
+            return;
+        }
+        p.cursor_apart = want;
+        p.cursor_sent = .{ proto.coord_none ^ 1, proto.coord_none ^ 1 }; // manda a próxima posição de qualquer jeito
+        if (debugEnabled()) std.debug.print("[telinha] cursor {s}\n", .{if (want) "fora do vídeo (só a posição)" else "pintado no vídeo"});
+    }
+
+    /// Manda a posição do cursor (fora do vídeo) se mudou; no máximo 1 a cada 8 ms.
+    fn sendCursor(p: *Pipeline, x: u16, y: u16) void {
+        if (!p.cursor_apart or p.s.idle.load(.acquire)) return;
+        if (x == p.cursor_sent[0] and y == p.cursor_sent[1]) return;
+        const now = sync.nowUs();
+        if (now - p.cursor_sent_us < 8_000) return;
+        p.cursor_sent_us = now;
+        p.cursor_sent = .{ x, y };
+        p.s.client.sendCursor(p.s.kind, x, y);
+        _ = p.s.cursor_msgs.fetchAdd(1, .monotonic);
+    }
+
+    /// Posição relativa (0..65534) no recorte de um ponto da fonte inteira (fw x fh).
+    fn cursorInCrop(p: *Pipeline, f: *const c.cap_frame) [2]u16 {
+        if (f.cursor_known == 0 or f.width <= 0 or f.height <= 0) return .{ proto.coord_none, proto.coord_none };
+        const cr = cropRect(p.settings.crop, @intCast(f.width), @intCast(f.height));
+        const cpx = f.cursor_px - @as(c_int, @intCast(cr.x));
+        const cpy = f.cursor_py - @as(c_int, @intCast(cr.y));
+        if (cpx < 0 or cpy < 0 or cpx >= cr.w or cpy >= cr.h) return .{ proto.coord_none, proto.coord_none };
+        return .{
+            @intCast(@divTrunc(@as(i64, cpx) * 65534, @max(1, @as(i64, cr.w) - 1))),
+            @intCast(@divTrunc(@as(i64, cpy) * 65534, @max(1, @as(i64, cr.h) - 1))),
+        };
     }
 
     fn deinit(p: *Pipeline) void {
@@ -648,18 +721,25 @@ const Pipeline = struct {
                     p.disableGpu();
                 } else {
                     const scr = p.cap.?.screen;
-                    c.cap_gpu_set_output(scr, &p.settings.crop, @intCast(effectiveHeight(p.settings.max_height, p.auto.cap)));
+                    c.cap_gpu_set_output(scr, &p.settings.crop, @intCast(p.maxHeight()));
                     const wanted = sync.nowMs() -| s.preview_wanted_ms.load(.monotonic) <= 1000 or s.preview.len == 0;
                     const want: c_int = if (s.preview_full.load(.acquire)) 2 else if (wanted) 1 else 0;
                     c.cap_gpu_set_preview(scr, want, if (want == 2) 1280 else 960);
                 }
             }
 
+            p.updateCursorMode();
             var f: c.cap_frame = std.mem.zeroes(c.cap_frame);
             const t_cap = sync.nowUs();
             const r = p.cap.?.next(&f, 50, &p.err);
             if (r < 0) return error.Capture;
             if (f.preview != null) p.takePreview(&f);
+            if (r == 2) {
+                // só o cursor mexeu (fora do vídeo): manda a posição, nada de quadro
+                const pos = p.cursorInCrop(&f);
+                p.sendCursor(pos[0], pos[1]);
+                continue;
+            }
             if (r == 0) {
                 // o compositor manda o primeiro quadro na hora, mesmo com a tela parada
                 if (!got_any and sync.nowUs() - started_us > 10_000_000) {
@@ -695,6 +775,7 @@ const Pipeline = struct {
                 p.ing_ema_us = (p.ing_ema_us * 7) / 8;
                 p.autoQuality(sync.nowUs());
                 _ = p.timing.captured.fetchAdd(1, .monotonic);
+                p.sendCursor(p.cursor_x, p.cursor_y);
                 try p.publishGpu(&f, ts);
                 continue;
             }
@@ -708,6 +789,7 @@ const Pipeline = struct {
             p.ing_ema_us = if (p.ing_ema_us == 0) ing else (p.ing_ema_us * 7 + ing) / 8;
             p.autoQuality(t_end);
             _ = p.timing.captured.fetchAdd(1, .monotonic);
+            p.sendCursor(p.cursor_x, p.cursor_y);
             if (!p.event_driven) {
                 // captura por polling: pula quadro idêntico ao anterior
                 if (p.have_prev and std.mem.eql(u8, p.cur, p.prev)) continue;
@@ -745,6 +827,7 @@ const Pipeline = struct {
         sl.fmt = .rgbx;
         sl.cursor_x = p.cursor_x;
         sl.cursor_y = p.cursor_y;
+        sl.cursor_apart = p.cursor_apart;
         sl.w = p.w;
         sl.h = p.h;
         sl.gpu = f.gpu;
@@ -788,6 +871,7 @@ const Pipeline = struct {
         sl.fmt = p.fmt;
         sl.cursor_x = p.cursor_x;
         sl.cursor_y = p.cursor_y;
+        sl.cursor_apart = p.cursor_apart;
         const t0 = sync.nowUs();
         if (p.use_hw.load(.acquire)) {
             // hardware: o encoder recebe BGRX direto
@@ -960,7 +1044,7 @@ const Pipeline = struct {
         const sw: u32 = cr.w;
         const sh: u32 = cr.h;
         const src_ptr: [*]const u8 = f.data + @as(usize, cr.y) * @as(usize, @intCast(f.stride)) + @as(usize, cr.x) * 4;
-        const size = outputSize(sw, sh, effectiveHeight(p.settings.max_height, p.auto.cap));
+        const size = outputSize(sw, sh, p.maxHeight());
         // sem escala e altura/largura ímpar: corta 1 linha/coluna (o H.264 quer pares)
         const exact = size.h == (sh & ~@as(u32, 1)) and size.w == (sw & ~@as(u32, 1));
         const ow = size.w;
@@ -1006,7 +1090,7 @@ const Pipeline = struct {
             p.cursor_x = @intCast(@divTrunc(@as(i64, cpx) * 65534, @max(1, sw - 1)));
             p.cursor_y = @intCast(@divTrunc(@as(i64, cpy) * 65534, @max(1, sh - 1)));
         }
-        if (f.cursor_draw != 0) {
+        if (f.cursor_draw != 0 and !p.cursor_apart) {
             const sx = @as(f32, @floatFromInt(ow)) / @as(f32, @floatFromInt(if (exact) ow else sw));
             const sy = @as(f32, @floatFromInt(oh)) / @as(f32, @floatFromInt(if (exact) oh else sh));
             const cx = f.cursor_x - @as(c_int, @intCast(cr.x));
@@ -1206,7 +1290,8 @@ const Pipeline = struct {
             const cam: u8 = if (kind == proto.kind_camera) proto.frame_camera else 0;
             const cd = enc.?.codecOf();
             const cflag: u8 = @as(u8, @intFromEnum(cd)) << proto.frame_codec_shift;
-            try msg.u8_(cam | cflag | if (is_key) proto.frame_key else if (cd == .h264 and codec.isDroppable(out.items)) proto.frame_droppable else 0);
+            const apart: u8 = if (sl.cursor_apart) proto.frame_cursor_apart else 0;
+            try msg.u8_(cam | cflag | apart | if (is_key) proto.frame_key else if (cd == .h264 and codec.isDroppable(out.items)) proto.frame_droppable else 0);
             try msg.u64_(if (resend) s.client.serverNowUs() else sl.ts);
             try msg.u16_(@intCast(sl.w));
             try msg.u16_(@intCast(sl.h));
@@ -1220,6 +1305,7 @@ const Pipeline = struct {
             if (s.clip) |cb| cb.addVideo(out.items, if (resend) s.client.serverNowUs() else sl.ts, is_key, @intCast(sl.w), @intCast(sl.h), cd);
             // registra antes de enfileirar: a confirmação pode voltar muito rápido
             s.client.frameSent(kind, frame_seq, is_key);
+            _ = s.frames_sent.fetchAdd(1, .monotonic);
             s.client.queue.pushOwned(m);
             p.doneWith(i, true);
             const enc_us = sync.nowUs() - t0;

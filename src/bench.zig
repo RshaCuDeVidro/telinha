@@ -126,7 +126,11 @@ pub fn main(init: std.process.Init) !void {
     try convNV12(w, h);
     try runHw("NVENC: texto rolando", w, h, .screen, .text);
     try runHw("NVENC: movimento", w, h, .motion, .motion);
-    if (std.c.getenv("TELINHA_BENCH_QUALIDADE") != null) try quality(w, h, 6_000_000);
+    if (std.c.getenv("TELINHA_BENCH_QUALIDADE") != null) {
+        // TELINHA_BENCH_TAXA=bits/s (padrão 6 Mbit/s)
+        const taxa: u32 = if (std.c.getenv("TELINHA_BENCH_TAXA")) |t| std.fmt.parseInt(u32, std.mem.span(t), 10) catch 6_000_000 else 6_000_000;
+        try quality(w, h, taxa);
+    }
 }
 
 /// A conversão que os encoders VA-API e Media Foundation usam.

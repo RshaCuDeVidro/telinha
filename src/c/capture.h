@@ -57,8 +57,18 @@ int cap_list_sources(cap_source *out, int max);
 cap_ctx *cap_open(int source_id, int show_cursor, int fps, char *err, int errlen);
 
 // Espera um frame novo por até timeout_ms.
-// 1 = frame novo em *out, 0 = nada mudou, -1 = erro fatal (err preenchido).
+// 1 = frame novo em *out, 0 = nada mudou, -1 = erro fatal (err preenchido),
+// 2 = só o cursor mexeu (com cap_set_cursor_apart): sem imagem (data NULL),
+// a posição em cursor_known/cursor_px/cursor_py, nas coordenadas de um
+// quadro width x height da fonte inteira (sem recorte).
 int cap_next(cap_ctx *ctx, cap_frame *out, int timeout_ms, char *err, int errlen);
+
+// Cursor fora do vídeo: a captura não pinta o cursor no quadro, só diz onde
+// ele está (quem assiste desenha a seta; mexer o mouse com a tela parada não
+// gera quadro). 1 = dá (vale a partir do próximo quadro; o último quadro é
+// reentregue limpo); 0 = esse método de captura não sabe (o cursor continua
+// pintado pelo sistema: GNOME/KDE com o cursor embutido, por exemplo).
+int cap_set_cursor_apart(cap_ctx *ctx, int on);
 
 // Nome do método de captura em uso ("PipeWire", "X11", "DXGI", "GDI").
 const char *cap_backend(cap_ctx *ctx);

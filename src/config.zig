@@ -61,6 +61,8 @@ pub const Config = struct {
     ui_zoom: i32 = 100, // tamanho da interface (%), por cima da escala da tela
     clip_secs: i32 = 30, // duração do clipe (5 a 600 s)
     hotkeys_on: bool = true, // atalhos globais ligados (o de ligar/desligar vale sempre)
+    cursor_apart: bool = true, // transmitindo: cursor fora do vídeo (só a posição) se quem assiste entende
+    view_size: bool = true, // transmitindo: no maior tamanho em que alguém está vendo
     hk: [n_hotkeys]Hotkey = [_]Hotkey{.{}} ** n_hotkeys, // atalhos (HotkeyId)
     ui_fps_cap: i32 = 60, // limite de quadros da interface (0 = o do monitor)
     hw_effort: i32 = 1, // encoder da placa: 0 = leve, 1 = equilibrado, 2 = qualidade
@@ -283,6 +285,10 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         cfg.hk[@intFromEnum(HotkeyId.clip)].mouse = std.math.clamp(int, -1, 7);
     } else if (std.mem.eql(u8, k, "hotkeys_on")) {
         cfg.hotkeys_on = int != 0;
+    } else if (std.mem.eql(u8, k, "cursor_apart")) {
+        cfg.cursor_apart = int != 0;
+    } else if (std.mem.eql(u8, k, "view_size")) {
+        cfg.view_size = int != 0;
     } else if (std.mem.startsWith(u8, k, "hk_")) {
         // hk_<nome>=tecla,scancode,botão,modificadores
         inline for (@typeInfo(HotkeyId).@"enum".fields) |f| {
@@ -353,8 +359,8 @@ pub fn save(cfg: *const Config) void {
     }) catch return;
     _ = c.fwrite(s.ptr, 1, s.len, f);
     var more: [1280]u8 = undefined;
-    const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\ncheck_updates={d}\naudio_app={s}\nlanguage={s}\ntheme={s}\ncustom_theme={s}\nauto_quality={d}\nui_zoom={d}\ncrt={d}\nclip_secs={d}\nhotkeys_on={d}\nui_fps_cap={d}\nhw_effort={d}\nvoice_ptt={d}\nptt_key={d}\nptt_scancode={d}\nptt_mouse={d}\ndebug_log={d}\ndebug_send={d}\ndebug_webhook={s}\n", .{
-        cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res, @intFromBool(cfg.check_updates), getStr(&cfg.audio_app), getStr(&cfg.language), getStr(&cfg.theme), getStr(&cfg.custom_theme), @intFromBool(cfg.auto_quality), cfg.ui_zoom, @intFromBool(cfg.crt), cfg.clip_secs, @intFromBool(cfg.hotkeys_on), cfg.ui_fps_cap, cfg.hw_effort, @intFromBool(cfg.voice_ptt), cfg.ptt_key, cfg.ptt_scancode, cfg.ptt_mouse, @intFromBool(cfg.debug_log), cfg.debug_send, getStr(&cfg.debug_webhook),
+    const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\ncheck_updates={d}\naudio_app={s}\nlanguage={s}\ntheme={s}\ncustom_theme={s}\nauto_quality={d}\nui_zoom={d}\ncrt={d}\nclip_secs={d}\nhotkeys_on={d}\ncursor_apart={d}\nview_size={d}\nui_fps_cap={d}\nhw_effort={d}\nvoice_ptt={d}\nptt_key={d}\nptt_scancode={d}\nptt_mouse={d}\ndebug_log={d}\ndebug_send={d}\ndebug_webhook={s}\n", .{
+        cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res, @intFromBool(cfg.check_updates), getStr(&cfg.audio_app), getStr(&cfg.language), getStr(&cfg.theme), getStr(&cfg.custom_theme), @intFromBool(cfg.auto_quality), cfg.ui_zoom, @intFromBool(cfg.crt), cfg.clip_secs, @intFromBool(cfg.hotkeys_on), @intFromBool(cfg.cursor_apart), @intFromBool(cfg.view_size), cfg.ui_fps_cap, cfg.hw_effort, @intFromBool(cfg.voice_ptt), cfg.ptt_key, cfg.ptt_scancode, cfg.ptt_mouse, @intFromBool(cfg.debug_log), cfg.debug_send, getStr(&cfg.debug_webhook),
     }) catch return;
     _ = c.fwrite(m.ptr, 1, m.len, f);
     inline for (@typeInfo(HotkeyId).@"enum".fields) |fl| {

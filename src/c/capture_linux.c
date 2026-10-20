@@ -87,6 +87,10 @@ struct cap_ctx {
     size_t pending_cap;
     int pending_w, pending_h, pending_fmt;
     int fresh; // FRESH_*: o que tem de novo pra quem chama
+    // cursor fora do vídeo (cap_set_cursor_apart): não pinta, só diz onde está
+    int cursor_apart;
+    int redeliver; // reentregar o último quadro limpo (o de antes tinha o cursor pintado)
+    int x11_cx, x11_cy; // última posição do cursor no X11 (pra saber se mexeu)
     int front_w, front_h, front_fmt; // tamanho/formato do que está em `front` (o `pending` pode mudar antes)
     int failed;
     char fail_msg[160];
@@ -1414,7 +1418,7 @@ static void on_cursor_timer(void *data, uint64_t expirations) {
     if (dirty) {
         // recorte/altura novos com a tela parada: refaz a partir da cópia da fonte
         gpu_produce(c, c->gpu->copy_tex, c->gpu->copy_w, c->gpu->copy_h, 0, &cur);
-    } else if (moved && c->soft_cursor) {
+    } else if (moved && c->soft_cursor && !c->cursor_apart) {
         gpu_recompose(c, &cur);
     }
 }
@@ -1696,7 +1700,7 @@ static int fill_cursor(struct cap_ctx *c, cap_frame *out) {
     if (hyprland_cursor(&gx, &gy) < 0) return 0;
     float scale = 1.0f;
     if (c->stream_w > 0 && out->width > 0) scale = (float)out->width / (float)c->stream_w;
-    out->cursor_draw = 1;
+    out->cursor_draw = !c->cursor_apart;
     out->cursor_x = (int)((float)(gx - c->stream_x) * scale);
     out->cursor_y = (int)((float)(gy - c->stream_y) * scale);
     out->cursor_scale = scale;
@@ -1739,20 +1743,38 @@ static int next_pipewire(struct cap_ctx *c, cap_frame *out, int timeout_ms, char
         // caminho pela placa: o quadro é um slot (e/ou uma prévia nova)
         c->last_take_us = now_us();
         const int got = gpu_take(c, out);
+        const int src_w = c->gpu->scene_src_w, src_h = c->gpu->scene_src_h;
         pthread_mutex_unlock(&c->lock);
-        return got ? 1 : 0;
+        if (got) return 1;
+        // cursor fora do vídeo: tela parada, mas o mouse mexeu (posição na fonte inteira)
+        if (c->cursor_apart && c->soft_cursor && src_w > 0) {
+            out->width = src_w;
+            out->height = src_h;
+            if (fill_cursor(c, out)) return 2;
+        }
+        return 0;
     }
     if (!(c->fresh & FRESH_CPU) || !c->pending) {
         c->fresh = 0;
         pthread_mutex_unlock(&c->lock);
-        // tela parada, mas o cursor mexeu: reentrega o último quadro com o cursor novo
+        // tela parada, mas o cursor mexeu: reentrega o último quadro com o
+        // cursor novo; com o cursor fora do vídeo, só a posição (2)
         if (c->soft_cursor && c->have_front && c->front) {
             out->data = c->front;
             out->width = c->front_w;
             out->height = c->front_h;
             out->stride = c->front_w * 4;
             out->format = c->front_fmt;
-            if (fill_cursor(c, out)) return 1;
+            const int moved = fill_cursor(c, out);
+            if (c->redeliver) {
+                c->redeliver = 0;
+                return 1; // o quadro limpo (o anterior foi com o cursor pintado)
+            }
+            if (moved && c->cursor_apart) {
+                out->data = NULL;
+                return 2;
+            }
+            if (moved) return 1;
         }
         return 0;
     }
@@ -1865,7 +1887,17 @@ static int next_x11(struct cap_ctx *c, cap_frame *out, char *err, int errlen) {
     for (int y = 0; y < c->xh; y++)
         memcpy(c->xbuf + (size_t)y * c->xw * 4, c->img->data + (size_t)y * c->img->bytes_per_line, (size_t)c->xw * 4);
     out->cursor_known = 0;
-    if (c->show_cursor && c->has_xfixes) draw_x11_cursor(c, c->xbuf, out);
+    if (c->show_cursor && c->cursor_apart) {
+        // cursor fora do vídeo: só a posição
+        Window root, child;
+        int rx, ry, wx, wy;
+        unsigned int mask;
+        if (XQueryPointer(c->dpy, c->root, &root, &child, &rx, &ry, &wx, &wy, &mask)) {
+            out->cursor_known = 1;
+            out->cursor_px = rx;
+            out->cursor_py = ry;
+        }
+    } else if (c->show_cursor && c->has_xfixes) draw_x11_cursor(c, c->xbuf, out);
     out->data = c->xbuf;
     out->width = c->xw;
     out->height = c->xh;
@@ -1960,6 +1992,25 @@ void cap_close(cap_ctx *c) {
     pthread_mutex_destroy(&c->lock);
     pthread_cond_destroy(&c->cond);
     free(c);
+}
+
+// ---------------------------------------------------------------------------
+// Cursor fora do vídeo (ver capture.h)
+
+int cap_set_cursor_apart(cap_ctx *c, int on) {
+    if (!c || !c->show_cursor) return 0;
+    // dá onde o cursor é desenhado por nós (Hyprland, X11); com o cursor
+    // embutido pelo compositor (GNOME, KDE...) ele já vem pintado
+    const int supported = c->kind == KIND_X11 || c->soft_cursor;
+    if (!supported) return 0;
+    pthread_mutex_lock(&c->lock);
+    if (c->cursor_apart != (on != 0)) {
+        c->cursor_apart = on != 0;
+        c->redeliver = 1;
+        if (c->gpu) c->gpu->output_dirty = 1; // refaz a saída sem (ou com) o cursor
+    }
+    pthread_mutex_unlock(&c->lock);
+    return 1;
 }
 
 // ---------------------------------------------------------------------------

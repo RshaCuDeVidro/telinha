@@ -80,7 +80,7 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 
 | tipo | nome | direção | payload |
 |---|---|---|---|
-| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (o que decodifica, bits `1<<codec`) |
+| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (o que decodifica, bits `1<<codec`), `u8 recursos` (`feat_*`) |
 | 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (servidor fecha em seguida) |
 | 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo), n × `str versão_do_app` (mesma ordem) |
@@ -110,7 +110,12 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 21 | pointer | S→C | `u32 de`, `u32 stream`, `u16 x`, `u16 y`, `u8 flags` |
 | 22 | react | C→S | `u32 id_da_mensagem`, `u8 reação` (0–5), `u8 ligado` |
 | 22 | react | S→C | `u32 id_da_mensagem`, `u32 de`, `u8 reação`, `u8 ligado` |
-| 23 | codec | S→C | `u8 tipo` (tela/câmera), `u8 codecs`: o que todo mundo que assiste essa transmissão decodifica |
+| 23 | codec | S→C | `u8 tipo` (tela/câmera), `u8 codecs`: o que todo mundo que assiste essa transmissão decodifica; `u8 recursos`: o que todo mundo que assiste entende |
+| 24 | draw | C→S / S→C | desenho por cima da transmissão (ver `proto.zig`) |
+| 25 | cursor | C→S | `u8 tipo`, `u16 x`, `u16 y` (`0xFFFF` = escondido): o cursor de quem transmite, fora do vídeo |
+| 25 | cursor | S→C | `u32 stream`, `u16 x`, `u16 y` |
+| 26 | view_size | C→S | `u32 stream`, `u16 altura` em que essa transmissão aparece (`0xFFFF` = quer tudo: tela cheia, gravando) |
+| 26 | view_size | S→C | `u8 tipo`, `u16 altura`: a maior entre quem assiste (`0xFFFF` = sem limite) |
 
 `versão_do_app` ("3.0.0") serve só pra avisar quem está desatualizado (a
 interface mostra "fulano está no telinha X: tem versão nova"); vazia = não
@@ -170,7 +175,7 @@ ligado, 16 = surdo, 32 = silenciado pelo admin, 64 = câmera ligada.
 | campo | tamanho | |
 |---|---|---|
 | seq | u32 | por transmissão; volta pra 0 quando ela recomeça |
-| flags | u8 | 1 = IDR, 2 = pulável, bits 2–3 = codec (0 H.264, 1 HEVC, 2 AV1), `0x80` = câmera |
+| flags | u8 | 1 = IDR, 2 = pulável, bits 2–3 = codec (0 H.264, 1 HEVC, 2 AV1), `0x10` = cursor fora do vídeo, `0x80` = câmera |
 | hora_da_captura | u64 | relógio da sala, µs |
 | w, h | u16, u16 | |
 | cursor_x, cursor_y | u16, u16 | ponta do cursor de quem transmite, relativa ao quadro (0..65534); `0xFFFF` = sem cursor |
@@ -191,6 +196,22 @@ a interseção (`codec`), e ele escolhe o melhor que o encoder dele faz — HEVC
 se puder, senão H.264. Entrou alguém que só tem H.264: a transmissão volta pro
 H.264 na hora (encoder novo, começando num IDR); quem já assistia troca de
 decoder ao ver o codec mudar nas flags.
+
+**Recursos** (`hello` e `codec`, um byte no fim; app ou servidor antigo não
+manda e vale 0, tudo como antes):
+
+- `feat_cursor` (1): quem assiste desenha a seta. Se todo mundo que assiste
+  entende, quem transmite para de pintar o cursor no vídeo, marca os quadros
+  com a flag `0x10` e manda a posição na mensagem `cursor` (até ~120 por
+  segundo; o servidor corta acima de 130). Mexer o mouse com a tela parada
+  não gera quadro. Entrou alguém que não entende: o cursor volta pro vídeo
+  na hora. Gravando a própria tela, também (a gravação leva o cursor).
+- `feat_view_size` (2): quem assiste diz em que altura mostra cada
+  transmissão (`view_size`, em degraus: 360, 480, 540, 720, 900, 1080,
+  1440, 2160; sobe na hora, só desce depois de 3 s menor). O servidor manda
+  pro transmissor a maior entre quem assiste (quem não entende conta como
+  "tudo"), e ele usa isso como altura máxima — junto da escolhida e da
+  qualidade automática, vale a menor.
 
 **Áudio:** `u32 seq`, `u64 hora_da_captura`, pacote Opus até o fim
 (48 kHz, estéreo, 10 ms por pacote, ~96 kbit/s). Só a tela tem áudio.

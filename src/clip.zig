@@ -38,6 +38,10 @@ pub const Buffer = struct {
     rec_path: [512:0]u8 = [_:0]u8{0} ** 512,
     rec_waiting: bool = false, // esperando o próximo IDR pra começar
     rec_error: bool = false,
+    // a resolução mudou no meio: a gravação continua em outro arquivo (parte 2, 3...)
+    rec_part: u32 = 1,
+    rec_cur: [528:0]u8 = [_:0]u8{0} ** 528, // arquivo da parte atual
+    rec_done_ms: u64 = 0, // duração das partes já fechadas
 
     pub fn create() !*Buffer {
         const b = try gpa.create(Buffer);
@@ -211,27 +215,69 @@ pub const Buffer = struct {
         b.rec_path[n] = 0;
         b.rec_error = false;
         b.rec_waiting = true;
+        b.rec_part = 1;
+        b.rec_done_ms = 0;
+        @memcpy(b.rec_cur[0 .. n + 1], b.rec_path[0 .. n + 1]);
+    }
+
+    /// Caminho da parte `part` da gravação: "x_gravacao.mp4" → "x_gravacao_2.mp4".
+    fn partPath(b: *Buffer, part: u32) void {
+        const base = std.mem.sliceTo(&b.rec_path, 0);
+        const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse base.len;
+        const out = std.fmt.bufPrintZ(&b.rec_cur, "{s}_{d}{s}", .{ base[0..dot], part, base[dot..] }) catch return;
+        _ = out;
+    }
+
+    /// Arquivo da parte atual (ou da última) da gravação.
+    pub fn recPath(b: *Buffer, buf: []u8) []const u8 {
+        b.mutex.lock();
+        defer b.mutex.unlock();
+        const p = std.mem.sliceTo(&b.rec_cur, 0);
+        const n = @min(p.len, buf.len);
+        @memcpy(buf[0..n], p[0..n]);
+        return buf[0..n];
+    }
+
+    /// Quantas partes (arquivos) a gravação teve.
+    pub fn recParts(b: *Buffer) u32 {
+        b.mutex.lock();
+        defer b.mutex.unlock();
+        return b.rec_part;
     }
 
     fn feedRecorder(b: *Buffer, data: []const u8, ts_us: u64, key: bool, w: u16, h: u16, hevc: bool) void {
         if (b.rec_waiting and key) {
             b.rec_waiting = false;
-            const n = std.mem.len(@as([*:0]const u8, &b.rec_path));
-            b.recorder = mp4.Recorder.start(b.rec_path[0..n :0], w, h, .{ .data = data, .ts_us = ts_us, .key = true }, true) catch {
-                b.rec_error = true;
-                return;
-            };
+            b.openPart(data, ts_us, w, h);
             return;
         }
         const r = b.recorder orelse return;
         if (key and (w != r.w or h != r.h or hevc != r.hevc)) {
-            // resolução ou codec mudou no meio: fecha esse arquivo (o próximo IDR não cabe nele)
+            // resolução ou codec mudou (qualidade automática, quem assiste
+            // pediu outro tamanho, alguém sem HEVC entrou): o IDR novo não cabe
+            // nesse arquivo. Logo no começo, recomeça o arquivo no tamanho
+            // novo; no meio, fecha essa parte e continua numa próxima.
+            const ms = r.durationMs();
             r.finish();
             b.recorder = null;
+            if (ms >= 1500 or b.rec_part > 1) {
+                b.rec_done_ms += ms;
+                b.rec_part += 1;
+                b.partPath(b.rec_part);
+            }
+            b.openPart(data, ts_us, w, h);
             return;
         }
         r.addVideo(.{ .data = data, .ts_us = ts_us, .key = key }) catch {
             b.rec_error = true;
+        };
+    }
+
+    fn openPart(b: *Buffer, data: []const u8, ts_us: u64, w: u16, h: u16) void {
+        const n = std.mem.len(@as([*:0]const u8, &b.rec_cur));
+        b.recorder = mp4.Recorder.start(b.rec_cur[0..n :0], w, h, .{ .data = data, .ts_us = ts_us, .key = true }, true) catch {
+            b.rec_error = true;
+            return;
         };
     }
 
@@ -243,7 +289,7 @@ pub const Buffer = struct {
         return .{
             .active = b.recorder != null or b.rec_waiting,
             .waiting = b.rec_waiting,
-            .ms = if (b.recorder) |r| r.durationMs() else 0,
+            .ms = b.rec_done_ms + if (b.recorder) |r| r.durationMs() else 0,
             .failed = b.rec_error,
         };
     }
@@ -254,12 +300,12 @@ pub const Buffer = struct {
         b.mutex.lock();
         defer b.mutex.unlock();
         b.rec_waiting = false;
-        const r = b.recorder orelse return 0;
+        const r = b.recorder orelse return b.rec_done_ms;
         const end = if (end_us > r.last_video_us) end_us else 0;
         const ms = if (end > 0) (end - r.start_us) / 1000 else r.durationMs();
         r.finishAt(end);
         b.recorder = null;
-        return ms;
+        return b.rec_done_ms + ms;
     }
 };
 

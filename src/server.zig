@@ -46,6 +46,10 @@ pub const clip_key_interval_ms = 20_000;
 pub const chat_history_len = 50;
 /// Ponteiro: no máximo isso por segundo por pessoa.
 const pointer_rate = 40;
+/// Cursor de quem transmite (mensagem `cursor`): no máximo isso por segundo.
+const cursor_rate = 130;
+/// Em que tamanho a transmissão aparece (`view_size`): muda pouco.
+const view_size_rate = 20;
 const draw_rate = 60; // mensagens de desenho por segundo por pessoa
 
 /// Uma transmissão (tela ou câmera) de alguém.
@@ -61,7 +65,12 @@ const StreamState = struct {
     last_slow_ms: u64 = 0,
     last_key_ms: u64 = 0, // último IDR que passou
     codecs_sent: u8 = 0, // codecs liberados que o transmissor já sabe (0 = ainda nada)
+    features_sent: u8 = 0, // recursos (feat_*) que todo mundo que assiste entende, já avisados
+    view_sent: u16 = 0, // altura pedida já avisada (0 = ainda nada)
 };
+
+/// Em que altura (pixels) quem assiste mostra uma transmissão (`view_size`).
+const ViewSize = struct { stream: u32, h: u16 };
 
 const Conn = struct {
     server: *Server,
@@ -76,6 +85,12 @@ const Conn = struct {
     client_key: u64 = 0, // aleatória, do app de quem conectou (banimento)
     app_version: [16]u8 = [_]u8{0} ** 16, // "3.0.0" (vazio = app que não conta)
     decode_codecs: u8 = proto.codecs_h264, // o que essa pessoa decodifica (H.264 sempre)
+    features: u8 = 0, // o que o app dela entende (feat_*; app antigo: 0)
+    view_sizes: std.ArrayList(ViewSize) = .empty, // em que tamanho ela mostra cada transmissão
+    cursor_sec: u64 = 0, // limite do cursor (como o do ponteiro)
+    cursor_count: u32 = 0,
+    view_sec: u64 = 0,
+    view_count: u32 = 0,
     udp: std.atomic.Value(?*udp.Link) = .init(null), // vídeo/som por UDP (quando o cliente abre o caminho)
     route: u8 = proto.route_unknown,
     via_tunnel: bool = false,
@@ -120,6 +135,10 @@ const Conn = struct {
     /// Para de receber `stream` (saiu, parou de transmitir ou parou de assistir).
     fn forget(self: *Conn, stream: u32) void {
         remove(&self.watching, stream);
+        for (self.view_sizes.items, 0..) |vs, i| if (vs.stream == stream) {
+            _ = self.view_sizes.swapRemove(i);
+            break;
+        };
         remove(&self.waiting_key, stream);
         _ = self.queue.dropFrames(stream);
         self.dropFlow(stream);
@@ -131,6 +150,7 @@ const Conn = struct {
         if (self.refs.fetchSub(1, .acq_rel) == 1) {
             self.queue.deinit();
             self.watching.deinit(gpa);
+            self.view_sizes.deinit(gpa);
             self.waiting_key.deinit(gpa);
             self.flows.deinit(gpa);
             if (self.udp.load(.acquire)) |l| l.destroy();
@@ -754,6 +774,7 @@ pub const Server = struct {
             @memcpy(cn.app_version[0..n], v[0..n]);
         } else |_| {}
         cn.decode_codecs = (r.u8_() catch 0) | proto.codecs_h264;
+        cn.features = r.u8_() catch 0;
         try s.join(cn, name, token);
     }
 
@@ -947,6 +968,27 @@ pub const Server = struct {
             },
             .pointer => try s.forwardPointer(cn, payload),
             .draw => try s.forwardDraw(cn, payload),
+            .cursor => try s.forwardCursor(cn, payload),
+            .view_size => {
+                const stream = try r.u32_();
+                const h = try r.u16_();
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                const sec = sync.nowMs() / 1000;
+                if (sec != cn.view_sec) {
+                    cn.view_sec = sec;
+                    cn.view_count = 0;
+                }
+                cn.view_count += 1;
+                if (cn.view_count > view_size_rate) return;
+                if (!contains(&cn.watching, stream)) return;
+                for (cn.view_sizes.items) |*vs| {
+                    if (vs.stream != stream) continue;
+                    vs.h = h;
+                    break;
+                } else try cn.view_sizes.append(gpa, .{ .stream = stream, .h = h });
+                s.updateCodecs();
+            },
             else => {},
         }
     }
@@ -1311,20 +1353,48 @@ pub const Server = struct {
             for (&owner.streams, 0..) |*ss, kind| {
                 if (!ss.on) {
                     ss.codecs_sent = 0;
+                    ss.features_sent = 0;
+                    ss.view_sent = 0;
                     continue;
                 }
                 const stream = proto.streamId(owner.id, @intCast(kind));
                 var mask: u8 = 0xFF;
+                var feats: u8 = proto.features_mine;
+                var want: u16 = 0; // maior altura em que alguém mostra (view_full = sem limite)
+                var watchers: usize = 0;
                 for (s.conns.items) |o| {
-                    if (contains(&o.watching, stream)) mask &= o.decode_codecs;
+                    if (!contains(&o.watching, stream)) continue;
+                    watchers += 1;
+                    mask &= o.decode_codecs;
+                    feats &= o.features;
+                    var h: u16 = proto.view_full; // app antigo ou ainda não disse: tudo
+                    if (o.features & proto.feat_view_size != 0) {
+                        for (o.view_sizes.items) |vs| if (vs.stream == stream) {
+                            h = vs.h;
+                        };
+                    }
+                    want = @max(want, h);
                 }
                 mask |= proto.codecs_h264;
-                if (mask == ss.codecs_sent) continue;
-                ss.codecs_sent = mask;
-                const m = proto.Msg.alloc(.codec, 2) catch continue;
-                m.payload()[0] = @intCast(kind);
-                m.payload()[1] = mask;
-                owner.queue.pushOwned(m);
+                if (watchers == 0) want = proto.view_full;
+                if (mask != ss.codecs_sent or feats != ss.features_sent) {
+                    ss.codecs_sent = mask;
+                    ss.features_sent = feats;
+                    if (proto.Msg.alloc(.codec, 3)) |m| {
+                        m.payload()[0] = @intCast(kind);
+                        m.payload()[1] = mask;
+                        m.payload()[2] = feats;
+                        owner.queue.pushOwned(m);
+                    } else |_| {}
+                }
+                if (want != ss.view_sent and owner.features & proto.feat_view_size != 0) {
+                    ss.view_sent = want;
+                    if (proto.Msg.alloc(.view_size, 3)) |m| {
+                        m.payload()[0] = @intCast(kind);
+                        std.mem.writeInt(u16, m.payload()[1..3], want, .little);
+                        owner.queue.pushOwned(m);
+                    } else |_| {}
+                }
             }
         }
     }
@@ -1453,6 +1523,31 @@ pub const Server = struct {
             if (o == cn) continue;
             if (o.id != owner and !contains(&o.watching, stream)) continue;
             o.queue.pushUrgent(m);
+        }
+    }
+
+    /// Cursor de quem transmite (fora do vídeo): vai pra quem assiste.
+    fn forwardCursor(s: *Server, cn: *Conn, payload: []const u8) !void {
+        if (payload.len < 5) return error.BadMessage;
+        const kind = payload[0];
+        if (kind > proto.kind_camera) return error.BadMessage;
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        if (!cn.streams[kind].on) return;
+        const sec = sync.nowMs() / 1000;
+        if (sec != cn.cursor_sec) {
+            cn.cursor_sec = sec;
+            cn.cursor_count = 0;
+        }
+        cn.cursor_count += 1;
+        if (cn.cursor_count > cursor_rate) return;
+        const stream = proto.streamId(cn.id, kind);
+        const m = try proto.Msg.alloc(.cursor, 8);
+        defer m.release();
+        std.mem.writeInt(u32, m.payload()[0..4], stream, .little);
+        @memcpy(m.payload()[4..8], payload[1..5]);
+        for (s.conns.items) |o| {
+            if (o != cn and contains(&o.watching, stream)) o.queue.pushUrgent(m);
         }
     }
 

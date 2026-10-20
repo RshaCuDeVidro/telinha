@@ -45,8 +45,10 @@ pub const Type = enum(u8) {
     notice = 20, // S→C u8 tipo (notice_*), str texto: algo que o admin fez com você
     pointer = 21, // C→S u32 stream, u16 x, u16 y, u8 flags | S→C u32 de, u32 stream, u16 x, u16 y, u8 flags
     react = 22, // C→S u32 id_da_mensagem, u8 reação, u8 ligado | S→C u32 id, u32 de, u8 reação, u8 ligado
-    codec = 23, // S→C u8 tipo (kind_*), u8 codecs (bits 1<<codec): o que todo mundo que assiste consegue decodificar
+    codec = 23, // S→C u8 tipo (kind_*), u8 codecs (bits 1<<codec), [u8 recursos (feat_*)]: o que todo mundo que assiste consegue decodificar / entende
     draw = 24, // C→S u32 stream, u8 flags (draw_*), u16 n, n × (u16 x, u16 y) | S→C u32 de + o mesmo (desenho por cima da transmissão)
+    cursor = 25, // C→S u8 tipo, u16 x, u16 y (coord_none = escondido) | S→C u32 stream, u16 x, u16 y: o cursor de quem transmite, fora do vídeo (feat_cursor)
+    view_size = 26, // C→S u32 stream, u16 altura (pixels em que aparece; view_full = quer tudo) | S→C u8 tipo, u16 altura (a maior entre quem assiste; view_full = sem limite)
     _,
 };
 
@@ -143,6 +145,19 @@ pub const draw_max_points = 64; // por mensagem
 /// Coordenada de ponteiro/cursor: 0..65534 = posição relativa no quadro, 0xFFFF = nenhum.
 pub const coord_none: u16 = 0xFFFF;
 
+/// Recursos que um app entende (hello, depois dos codecs) / que todo mundo
+/// que assiste uma transmissão entende (codec, depois dos codecs). App ou
+/// servidor antigo não manda o byte: vale 0 (tudo como antes).
+/// feat_cursor: desenha a seta de quem transmite a partir da mensagem
+/// `cursor` (o cursor não vai pintado no vídeo; mexer o mouse com a tela
+/// parada não gera quadro). feat_view_size: avisa em que tamanho cada
+/// transmissão aparece (`view_size`); quem transmite manda no maior deles.
+pub const feat_cursor: u8 = 1;
+pub const feat_view_size: u8 = 2;
+pub const features_mine: u8 = feat_cursor | feat_view_size;
+/// view_size: "quero a resolução toda" (tela cheia, gravando, ou app antigo).
+pub const view_full: u16 = 0xFFFF;
+
 /// Payload de áudio: u32 seq, u64 hora_da_captura (relógio da sala, µs),
 /// pacote Opus (48 kHz estéreo, 10 ms) até o fim.
 pub const audio_header_len = 4 + 8;
@@ -157,6 +172,9 @@ pub const frame_key: u8 = 1;
 pub const frame_droppable: u8 = 2;
 /// Quadro da câmera (não da tela).
 pub const frame_camera: u8 = 0x80;
+/// O cursor não está pintado no quadro: quem assiste desenha a seta na
+/// posição do quadro / da última mensagem `cursor` (feat_cursor).
+pub const frame_cursor_apart: u8 = 0x10;
 /// Codec do quadro (codec.Codec: 0 H.264, 1 HEVC, 2 AV1) nos bits 2–3 das flags.
 pub const frame_codec_shift = 2;
 pub const frame_codec_mask: u8 = 0x0C;
@@ -466,7 +484,7 @@ pub const SendQueue = struct {
     }
 
     fn isUrgent(t: Type) bool {
-        return t == .ack or t == .viewer_slow or t == .voice or t == .pointer or t == .audio or t == .draw;
+        return t == .ack or t == .viewer_slow or t == .voice or t == .pointer or t == .audio or t == .draw or t == .cursor;
     }
 
     pub fn pushUrgentOwned(q: *SendQueue, m: *Msg) void {
