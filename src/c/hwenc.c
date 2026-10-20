@@ -107,7 +107,24 @@ int hwenc_accepts_cuda(hwenc *h) {
     return h->kind == KIND_NV;
 }
 
+int hwenc_is_va(hwenc *h) {
+#ifdef _WIN32
+    (void)h;
+    return 0;
+#else
+    return h->kind == KIND_VA;
+#endif
+}
+
+#ifndef _WIN32
+int vaenc_encode_surface(vaenc *e, uint32_t surface, int force_idr, const uint8_t **out, int *out_len, int *is_idr);
+#endif
+
 int hwenc_encode_dev(hwenc *h, uint64_t dev, int pitch, int format, int force_idr, const uint8_t **out, int *out_len, int *is_idr) {
+#ifndef _WIN32
+    // VA-API: `dev` é a superfície NV12 do conversor (mesmo dispositivo)
+    if (h->kind == KIND_VA) return vaenc_encode_surface(h->impl, (uint32_t)dev, force_idr, out, out_len, is_idr);
+#endif
     if (h->kind != KIND_NV) return -1;
     return nvenc_encode_dev(h->impl, dev, pitch, format, force_idr, out, out_len, is_idr);
 }

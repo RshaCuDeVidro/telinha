@@ -540,6 +540,11 @@ pub const HwEncoder = struct {
         return hw.hwenc_accepts_cuda(e.h) != 0;
     }
 
+    /// É o VA-API (Intel/AMD no Linux)?
+    pub fn isVa(e: *HwEncoder) bool {
+        return hw.hwenc_is_va(e.h) != 0;
+    }
+
     /// Codifica um quadro RGBX/BGRX que já está na placa (acceptsCuda). Retorna se foi IDR.
     pub fn encodeDev(e: *HwEncoder, dev: u64, pitch: u32, fmt: PixelFormat, force_key: bool, out: *std.ArrayList(u8)) !bool {
         var data: [*c]const u8 = null;

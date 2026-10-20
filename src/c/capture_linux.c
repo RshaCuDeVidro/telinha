@@ -298,6 +298,7 @@ struct gpu_slot {
 };
 struct gpu_path {
     cudagl *cg;
+    cap_va_ops va; // Intel/AMD: conversor VA-API (va.ctx != NULL); aí não tem GL nem CUDA aqui
     cap_rect_fn rect_fn;
     cap_cursor_fn cursor_fn;
     int gl_ready, failed;
@@ -1084,6 +1085,8 @@ static int gpu_upload_wanted(void);
 // vem pela CPU como sempre, e quem chama tem que ler ele de lá.
 static int gpu_producing(struct cap_ctx *c) {
     if (!c->gpu_on || !c->gpu || c->gpu->failed) return 0;
+    // conversor VA-API: o cursor nosso não dá pra pintar lá (vai pela CPU)
+    if (c->gpu->va.ctx && c->soft_cursor && !c->cursor_apart) return 0;
     if (c->kind == KIND_X11) return gpu_upload_wanted();
     return c->src_kind == SRC_DMABUF || gpu_upload_wanted();
 }
@@ -1185,6 +1188,7 @@ static void on_param_changed(void *data, uint32_t id, const struct spa_pod *para
     int kind = SRC_32;
     const int dmabuf = c->egl && !c->dmabuf_off && spa_pod_find_prop(param, NULL, SPA_FORMAT_VIDEO_modifier) != NULL;
     if (c->egl) egl_forget(c->egl, NULL);
+    if (c->gpu && c->gpu->va.ctx) c->gpu->va.forget(c->gpu->va.ctx, NULL);
     switch (c->info.format) {
     case SPA_VIDEO_FORMAT_RGBx:
     case SPA_VIDEO_FORMAT_RGBA: c->pw_format = CAP_RGBX; break;
@@ -1257,6 +1261,118 @@ static void copy_row(uint8_t *dst, const uint8_t *src, int w, int kind) {
     }
 }
 
+// Intel/AMD: do DMA-BUF do compositor até um slot (superfície NV12 do
+// conversor VA-API), sem GL nem CPU. 1 = tratou o quadro; 0 = falhou (cai pro
+// caminho da CPU).
+static int va_produce(struct cap_ctx *c, struct spa_buffer *buf, int sw, int sh) {
+    struct gpu_path *g = c->gpu;
+    cap_dmabuf src;
+    memset(&src, 0, sizeof src);
+    src.width = sw;
+    src.height = sh;
+    src.planes = buf->n_datas < 4 ? (int)buf->n_datas : 4;
+    for (int i = 0; i < src.planes; i++) {
+        struct spa_data *d = &buf->datas[i];
+        if (d->type != SPA_DATA_DmaBuf || !d->chunk) return 0;
+        src.fd[i] = (int)d->fd;
+        src.offset[i] = (int)d->chunk->offset;
+        src.pitch[i] = d->chunk->stride;
+    }
+    src.modifier = c->info.modifier;
+    src.drm_fourcc = drm_format_of(c->info.format);
+    pthread_mutex_lock(&c->lock);
+    float crop[4];
+    memcpy(crop, g->crop, sizeof crop);
+    const int max_h = g->max_h, want_prev = g->want_preview, prev_max_w = g->preview_max_w;
+    struct gpu_slot *sl = gpu_pick_slot(g);
+    if (sl) sl->state = SLOT_RENDERING;
+    pthread_mutex_unlock(&c->lock);
+    int x = 0, y = 0, w = sw, h = sh, ow = sw, oh = sh;
+    if (g->rect_fn) g->rect_fn(sw, sh, crop, max_h, &x, &y, &w, &h, &ow, &oh);
+    if (ow < 2 || oh < 2 || w < 1 || h < 1) {
+        gpu_unpick(c, sl);
+        return 1;
+    }
+    int produced = 0;
+    if (sl) {
+        const int idx = (int)(sl - g->slots);
+        if (g->va.convert(g->va.ctx, buf, &src, x, y, w, h, ow, oh, idx) != 0) {
+            gpu_unpick(c, sl);
+            gpu_fail(g, "VA-API (VPP)");
+            return 0;
+        }
+        sl->dev = g->va.surface(g->va.ctx, idx);
+        sl->pitch = 0;
+        sl->w = ow;
+        sl->h = oh;
+        sl->src_w = w;
+        sl->src_h = h;
+        cap_frame cur = {0};
+        cur.width = sw;
+        cur.height = sh;
+        fill_cursor(c, &cur);
+        sl->cursor_known = 0;
+        if (cur.cursor_known) {
+            const int px = cur.cursor_px - x, py = cur.cursor_py - y;
+            if (px >= 0 && py >= 0 && px < w && py < h) {
+                sl->cursor_known = 1;
+                sl->cursor_px = (int)((long long)px * ow / w);
+                sl->cursor_py = (int)((long long)py * oh / h);
+            }
+        }
+        produced = 1;
+    }
+    // prévia pequena (até 15 q/s)
+    if (want_prev && now_us() - g->prev_last_us >= 66000) {
+        g->prev_last_us = now_us();
+        const int full = want_prev == 2;
+        const int fw = full ? sw : w, fh = full ? sh : h;
+        int pw = fw, ph = fh;
+        if (prev_max_w > 0 && pw > prev_max_w) {
+            pw = prev_max_w;
+            ph = (int)((long long)fh * pw / fw);
+        }
+        pw &= ~1;
+        ph &= ~1;
+        const size_t need = (size_t)pw * ph * 4;
+        if (pw >= 2 && ph >= 2 && g->prev_back_cap < need) {
+            free(g->prev_back);
+            g->prev_back = malloc(need);
+            g->prev_back_cap = g->prev_back ? need : 0;
+        }
+        if (pw >= 2 && ph >= 2 && g->prev_back &&
+            g->va.preview(g->va.ctx, buf, &src, full ? 0 : x, full ? 0 : y, fw, fh, pw, ph, g->prev_back) == 0) {
+            g->prev_back_w = pw;
+            g->prev_back_h = ph;
+            g->prev_back_full = full;
+            g->prev_new = 1;
+        }
+    }
+    pthread_mutex_lock(&c->lock);
+    if (sl && produced) {
+        for (int i = 0; i < N_GPU_SLOTS; i++)
+            if (g->slots[i].state == SLOT_PENDING) g->slots[i].state = SLOT_FREE;
+        sl->state = SLOT_PENDING;
+        c->fresh |= FRESH_GPU;
+    }
+    if (g->prev_new) {
+        uint8_t *tb = g->prev_front;
+        size_t tc = g->prev_front_cap;
+        g->prev_front = g->prev_back;
+        g->prev_front_cap = g->prev_back_cap;
+        g->prev_back = tb;
+        g->prev_back_cap = tc;
+        g->prev_front_w = g->prev_back_w;
+        g->prev_front_h = g->prev_back_h;
+        g->prev_front_full = g->prev_back_full;
+        g->prev_new = 0;
+        c->fresh |= FRESH_PREVIEW;
+    }
+    pthread_cond_broadcast(&c->cond);
+    pthread_mutex_unlock(&c->lock);
+    return 1;
+}
+
 static void on_process(void *data) {
     struct cap_ctx *c = data;
     struct pw_buffer *b = NULL, *nb;
@@ -1283,7 +1399,15 @@ static void on_process(void *data) {
             pw_stream_queue_buffer(c->stream, b);
             return;
         }
-        if (gpu_on && c->egl && w > 0 && hgt > 0 && !(h && (h->flags & SPA_META_HEADER_FLAG_CORRUPTED))) {
+        if (gpu_on && c->gpu->va.ctx && w > 0 && hgt > 0 && !(h && (h->flags & SPA_META_HEADER_FLAG_CORRUPTED)) &&
+            (!c->soft_cursor || c->cursor_apart)) {
+            // Intel/AMD: o conversor VA-API faz tudo (recorte, escala, NV12)
+            if (va_produce(c, buf, w, hgt)) {
+                pw_stream_queue_buffer(c->stream, b);
+                return;
+            }
+            // não deu: segue pela leitura do DMA-BUF (CPU) daqui pra frente
+        } else if (gpu_on && !c->gpu->va.ctx && c->egl && w > 0 && hgt > 0 && !(h && (h->flags & SPA_META_HEADER_FLAG_CORRUPTED))) {
             // caminho pela placa: a textura importada vira a cena; nada vem pra CPU
             GLuint tex = egl_import(c->egl, buf, drm_format_of(c->info.format), c->info.modifier, w, hgt);
             if (tex) {
@@ -1426,6 +1550,7 @@ static void on_cursor_timer(void *data, uint64_t expirations) {
 static void on_remove_buffer(void *data, struct pw_buffer *b) {
     struct cap_ctx *c = data;
     if (c->egl) egl_forget(c->egl, b->buffer);
+    if (c->gpu && c->gpu->va.ctx) c->gpu->va.forget(c->gpu->va.ctx, b->buffer);
 }
 
 static const struct pw_stream_events stream_events = {
@@ -2094,6 +2219,26 @@ int cap_gpu_enable(cap_ctx *c, void *cg, cap_rect_fn rect, cap_cursor_fn cursor)
     }
     pthread_mutex_unlock(&c->lock);
     if (getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] captura pela placa: ligada\n");
+    return 1;
+}
+
+int cap_gpu_enable_va(cap_ctx *c, const cap_va_ops *ops, cap_rect_fn rect) {
+    if (!c || !ops || !ops->ctx || c->kind != KIND_PIPEWIRE || !c->egl || getenv("TELINHA_SEM_GPU_CAPTURA")) return 0;
+    pthread_mutex_lock(&c->lock);
+    if (!c->gpu) {
+        c->gpu = calloc(1, sizeof *c->gpu);
+        if (!c->gpu) {
+            pthread_mutex_unlock(&c->lock);
+            return 0;
+        }
+        c->gpu->crop[2] = c->gpu->crop[3] = 1;
+    }
+    c->gpu->va = *ops;
+    c->gpu->rect_fn = rect;
+    c->gpu->failed = 0;
+    c->gpu_on = 1;
+    pthread_mutex_unlock(&c->lock);
+    if (getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] captura pela placa: ligada (VA-API, VPP)\n");
     return 1;
 }
 

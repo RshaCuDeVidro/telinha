@@ -24,6 +24,7 @@ const c = @cImport({
     @cInclude("capture.h");
     @cInclude("cudagl.h");
     @cInclude("camera.h");
+    @cInclude("hwva.h");
 });
 const gpa = proto.gpa;
 
@@ -442,6 +443,8 @@ const Pipeline = struct {
     /// memória da placa (recorte, escala e cursor feitos lá) e o NVENC lê de
     /// lá. `cg` vive mais que a captura (os buffers são do contexto dele).
     cg: ?*c.cudagl = null,
+    /// Intel/AMD no Linux: o conversor VA-API (VPP) no lugar do CUDA.
+    vapp: ?*c.vapp = null,
     gpu_on: bool = false,
     hevc_ok: bool = false, // a placa codifica HEVC (testado no começo)
     audio_sender: ?*audio.Sender = null,
@@ -538,6 +541,8 @@ const Pipeline = struct {
         if (p.cap) |cp| cp.close();
         if (p.cg) |cg| c.cudagl_close(cg);
         p.cg = null;
+        if (!sync.is_windows) if (p.vapp) |vp| c.vapp_close(vp);
+        p.vapp = null;
         gpa.free(p.cur);
         gpa.free(p.prev);
         gpa.free(p.preview_back);
@@ -564,6 +569,30 @@ const Pipeline = struct {
             p.cg = cg;
             p.gpu_on = true;
         } else c.cudagl_close(cg);
+    }
+
+    /// Intel/AMD (VA-API): o conversor da placa recorta, escala e converte pra
+    /// NV12, e o encoder lê a superfície dele direto.
+    fn enableVa(p: *Pipeline) void {
+        if (sync.is_windows) return;
+        const src = p.cap orelse return;
+        if (src != .screen) return;
+        var err: [256]u8 = [_]u8{0} ** 256;
+        const vp = c.vapp_open(&err, err.len) orelse {
+            if (debugEnabled()) std.debug.print("[telinha] captura pela placa (VA-API) não ligou: {s}\n", .{std.mem.sliceTo(&err, 0)});
+            return;
+        };
+        const ops: c.cap_va_ops = .{
+            .ctx = vp,
+            .convert = @ptrCast(&c.vapp_convert),
+            .surface = @ptrCast(&c.vapp_slot_surface),
+            .preview = @ptrCast(&c.vapp_preview),
+            .forget = @ptrCast(&c.vapp_forget),
+        };
+        if (c.cap_gpu_enable_va(src.screen, &ops, outputRect) != 0) {
+            p.vapp = vp;
+            p.gpu_on = true;
+        } else c.vapp_close(vp);
     }
 
     fn disableGpu(p: *Pipeline) void {
@@ -593,9 +622,10 @@ const Pipeline = struct {
             if (codec.HwEncoder.init(.{ .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000 }, &err)) |probe| {
                 var pr = probe;
                 const cuda = pr.acceptsCuda();
+                const is_va = pr.isVa();
                 pr.deinit();
                 p.use_hw.store(true, .release);
-                if (cuda) p.enableGpu();
+                if (cuda) p.enableGpu() else if (is_va) p.enableVa();
                 if (getenv("TELINHA_SEM_HEVC") == null) {
                     if (codec.HwEncoder.init(.{ .codec = .hevc, .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000 }, &err)) |hp| {
                         var hh = hp;

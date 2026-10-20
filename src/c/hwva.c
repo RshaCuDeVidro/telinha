@@ -34,6 +34,8 @@
 #include <unistd.h>
 
 #include <va/va.h>
+#include <va/va_drmcommon.h>
+#include <va/va_vpp.h>
 #include <wels/codec_api.h>
 
 #include "hwdec.h"
@@ -178,6 +180,56 @@ static int va_has(VADisplay dpy, VAProfile prof, VAEntrypoint ep) {
 }
 
 // "Intel iHD driver ...", "Mesa Gallium driver ... for AMD Radeon ..." -> fabricante
+// ---------------------------------------------------------------- dispositivo compartilhado
+// Conversor da captura (vapp) e encoders no mesmo VADisplay: a superfície que
+// o VPP preenche entra direto no encoder. Aberto pelo vapp (que confere VPP e
+// encoder H.264 no mesmo driver); os encoders abertos enquanto ele existe usam.
+
+static pthread_mutex_t g_shared_lock = PTHREAD_MUTEX_INITIALIZER;
+static va_dev g_shared = {-1, NULL};
+static int g_shared_refs;
+
+static int enc_check(VADisplay dpy, char *why, int whylen);
+
+static int vpp_and_enc_check(VADisplay dpy, char *why, int whylen) {
+    if (!va_has(dpy, VAProfileNone, VAEntrypointVideoProc)) {
+        snprintf(why, whylen, "o driver não tem o processador de vídeo (VPP)");
+        return 0;
+    }
+    // teste: o driver da NVIDIA (nvidia-vaapi-driver) tem VPP mas não encoder;
+    // com isso dá pra testar o conversor numa máquina sem Intel/AMD
+    if (getenv("TELINHA_TESTE_VPP_SEM_ENCODER")) return 1;
+    return enc_check(dpy, why, whylen);
+}
+
+// Abre (ou só conta mais um) o dispositivo compartilhado. 0 = ok.
+static int shared_acquire(char *err, int errlen) {
+    pthread_mutex_lock(&g_shared_lock);
+    int rc = 0;
+    if (g_shared_refs == 0) rc = va_open_dev(&g_shared, vpp_and_enc_check, err, errlen);
+    if (rc == 0) g_shared_refs++;
+    pthread_mutex_unlock(&g_shared_lock);
+    return rc;
+}
+
+// Se o compartilhado está aberto (tem um vapp vivo), entra nele. 1 = entrou.
+static int shared_try(va_dev *dev) {
+    pthread_mutex_lock(&g_shared_lock);
+    const int ok = g_shared_refs > 0;
+    if (ok) {
+        g_shared_refs++;
+        *dev = g_shared;
+    }
+    pthread_mutex_unlock(&g_shared_lock);
+    return ok;
+}
+
+static void shared_release(void) {
+    pthread_mutex_lock(&g_shared_lock);
+    if (g_shared_refs > 0 && --g_shared_refs == 0) va_close_dev(&g_shared);
+    pthread_mutex_unlock(&g_shared_lock);
+}
+
 static const char *vendor_short(const char *v) {
     if (!v) return "?";
     if (strstr(v, "Intel")) return "Intel";
@@ -1663,6 +1715,7 @@ struct vaenc {
     uint32_t frames, since_idr;
     int idr_id, cur;
     uint8_t *nv12; // referência do autoteste (aw x ah)
+    int shared;    // no dispositivo compartilhado com o conversor (vapp): aceita as superfícies dele
     uint8_t *out;
     size_t out_cap;
     VAImage up;
@@ -1684,10 +1737,17 @@ static void enc_teardown(vaenc *e) {
     e->no_derive = 0;
 }
 
+static void shared_release(void);
+
 void vaenc_close(vaenc *e) {
     if (!e) return;
     if (e->dev.dpy) enc_teardown(e);
-    va_close_dev(&e->dev);
+    if (e->shared) {
+        shared_release();
+        e->dev.dpy = NULL;
+        e->dev.fd = -1;
+    } else
+        va_close_dev(&e->dev);
     free(e->nv12);
     free(e->out);
     free(e);
@@ -1886,10 +1946,18 @@ static int packed_buffers(vaenc *e, int type, const uint8_t *data, int bytes, VA
     return 0;
 }
 
+static int encode_from(vaenc *e, VASurfaceID in, int force_idr, const uint8_t **out, int *out_len, int *is_idr);
+
 int vaenc_encode(vaenc *e, const uint8_t *pixels, int stride, int format, int force_idr, const uint8_t **out, int *out_len, int *is_idr) {
+    if (upload(e, pixels, stride, format) < 0) return -1;
+    return encode_from(e, e->surf[0], force_idr, out, out_len, is_idr);
+}
+
+// Codifica a partir de uma superfície NV12 (aw x ah) que já está na placa:
+// a nossa de entrada (vaenc_encode) ou uma do conversor (vaenc_encode_surface).
+static int encode_from(vaenc *e, VASurfaceID in, int force_idr, const uint8_t **out, int *out_len, int *is_idr) {
     VADisplay dpy = e->dev.dpy;
     const int idr = force_idr || e->frames == 0;
-    if (upload(e, pixels, stride, format) < 0) return -1;
     if (idr) {
         e->since_idr = 0;
         e->idr_id = (e->idr_id + 1) & 0xffff; // dois IDRs seguidos não podem ter o mesmo idr_pic_id
@@ -1986,10 +2054,10 @@ int vaenc_encode(vaenc *e, const uint8_t *pixels, int stride, int format, int fo
         ok = va.CreateBuffer(dpy, e->ctx, VAEncSliceParameterBufferType, sizeof sp, 1, &sp, &ids[n]) == VA_STATUS_SUCCESS && ++n;
     }
     int rc = -1;
-    if (ok && va.BeginPicture(dpy, e->ctx, e->surf[0]) == VA_STATUS_SUCCESS) {
+    if (ok && va.BeginPicture(dpy, e->ctx, in) == VA_STATUS_SUCCESS) {
         ok = va.RenderPicture(dpy, e->ctx, ids, n) == VA_STATUS_SUCCESS;
         ok = va.EndPicture(dpy, e->ctx) == VA_STATUS_SUCCESS && ok;
-        if (ok && va.SyncSurface(dpy, e->surf[0]) == VA_STATUS_SUCCESS) {
+        if (ok && va.SyncSurface(dpy, in) == VA_STATUS_SUCCESS) {
             VACodedBufferSegment *seg = NULL;
             if (va.MapBuffer(dpy, e->coded, (void **)&seg) == VA_STATUS_SUCCESS) {
                 size_t total = 0;
@@ -2180,7 +2248,12 @@ vaenc *vaenc_open(int codec, int width, int height, int fps, int bitrate, int sc
         return NULL;
     }
     char why[200] = "";
-    if (va_open_dev(&e->dev, enc_check, why, sizeof why) < 0) {
+    // com o conversor da captura aberto (vapp), o encoder fica no mesmo
+    // dispositivo: as superfícies NV12 dele entram direto, sem cópia
+    if (shared_try(&e->dev)) {
+        e->shared = 1;
+    } else if (va_open_dev(&e->dev, enc_check, why, sizeof why) < 0) {
+        e->dev.fd = -1;
         set_err(err, errlen, "VA-API: %s", why);
         vaenc_close(e);
         return NULL;
@@ -2350,4 +2423,322 @@ int hwva_test_headers(char *err, int errlen) {
         T_CHECK(l4[0] == 6 && l4[1] == 13 && l4[4] == 13 && l4[15] == 42 && l8[0] == 9 && l8[63] == 35 && l8[8] == 13, "matriz padrão");
     }
     return 0;
+}
+
+// ================================================================ conversor (VPP)
+// Captura → encoder sem passar pela CPU em Intel/AMD: o DMA-BUF que o
+// compositor entrega (RGB) é importado como superfície, e o processador de
+// vídeo da placa (VPP) recorta, escala e converte pra NV12 numa superfície
+// que o encoder lê direto (mesmo dispositivo, ver shared_*). Ao abrir, um
+// autoteste converte uma imagem conhecida e compara com a conversão da CPU
+// (telinha_to_nv12): cor errada (outra matriz, outra faixa) = não liga.
+
+#define VAPP_SLOTS 5
+#define VAPP_IMPORTS 16
+
+struct vapp {
+    VADisplay dpy;
+    VAConfigID cfg;
+    VAContextID ctx;
+    struct {
+        const void *key;
+        VASurfaceID s;
+    } imports[VAPP_IMPORTS];
+    VASurfaceID slot[VAPP_SLOTS];
+    int slot_w[VAPP_SLOTS], slot_h[VAPP_SLOTS];
+    VASurfaceID prev;
+    int prev_w, prev_h;
+};
+
+static int vapp_blit(vapp *p, VASurfaceID in, int x, int y, int w, int h, VASurfaceID out, int ow, int oh) {
+    VAProcPipelineParameterBuffer pp;
+    memset(&pp, 0, sizeof pp);
+    VARectangle src = {(int16_t)x, (int16_t)y, (uint16_t)w, (uint16_t)h};
+    VARectangle dst = {0, 0, (uint16_t)ow, (uint16_t)oh};
+    pp.surface = in;
+    pp.surface_region = &src;
+    pp.output_region = &dst;
+    pp.output_background_color = 0xff000000; // preto onde sobra (alinhamento de 16)
+    pp.surface_color_standard = VAProcColorStandardSRGB;
+    pp.output_color_standard = VAProcColorStandardBT601; // como a conversão da CPU
+    pp.input_color_properties.color_range = VA_SOURCE_RANGE_FULL;
+    pp.output_color_properties.color_range = VA_SOURCE_RANGE_REDUCED;
+    pp.filter_flags = VA_FILTER_SCALING_HQ;
+    VABufferID buf = VA_INVALID_ID;
+    if (va.CreateBuffer(p->dpy, p->ctx, VAProcPipelineParameterBufferType, sizeof pp, 1, &pp, &buf) != VA_STATUS_SUCCESS) return -1;
+    int rc = -1;
+    if (va.BeginPicture(p->dpy, p->ctx, out) == VA_STATUS_SUCCESS) {
+        int ok = va.RenderPicture(p->dpy, p->ctx, &buf, 1) == VA_STATUS_SUCCESS;
+        ok = va.EndPicture(p->dpy, p->ctx) == VA_STATUS_SUCCESS && ok;
+        if (ok && va.SyncSurface(p->dpy, out) == VA_STATUS_SUCCESS) rc = 0;
+    }
+    va.DestroyBuffer(p->dpy, buf);
+    return rc;
+}
+
+// Superfície NV12 (lida/escrita pela CPU só no autoteste e na prévia).
+static int vapp_nv12_surface(vapp *p, int w, int h, VASurfaceID *s) {
+    return va.CreateSurfaces(p->dpy, VA_RT_FORMAT_YUV420, (unsigned)w, (unsigned)h, s, 1, NULL, 0) == VA_STATUS_SUCCESS ? 0 : -1;
+}
+
+// Lê uma superfície NV12 pra memória (y w x h, uv w x h/2). 0 = ok.
+static int vapp_read_nv12(vapp *p, VASurfaceID s, int w, int h, uint8_t *y, uint8_t *uv) {
+    VAImage img;
+    VAImageFormat f;
+    memset(&f, 0, sizeof f);
+    f.fourcc = VA_FOURCC_NV12;
+    f.byte_order = VA_LSB_FIRST;
+    f.bits_per_pixel = 12;
+    if (va.CreateImage(p->dpy, &f, w, h, &img) != VA_STATUS_SUCCESS) return -1;
+    int rc = -1;
+    if (va.GetImage(p->dpy, s, 0, 0, (unsigned)w, (unsigned)h, img.image_id) == VA_STATUS_SUCCESS) {
+        void *ptr = NULL;
+        if (va.MapBuffer(p->dpy, img.buf, &ptr) == VA_STATUS_SUCCESS) {
+            const uint8_t *b = ptr;
+            for (int r = 0; r < h; r++) memcpy(y + (size_t)r * w, b + img.offsets[0] + (size_t)r * img.pitches[0], (size_t)w);
+            for (int r = 0; r < h / 2; r++) memcpy(uv + (size_t)r * w, b + img.offsets[1] + (size_t)r * img.pitches[1], (size_t)w);
+            va.UnmapBuffer(p->dpy, img.buf);
+            rc = 0;
+        }
+    }
+    va.DestroyImage(p->dpy, img.image_id);
+    return rc;
+}
+
+// Autoteste: um degradê BGRX conhecido pelo VPP e pela CPU; tem que bater.
+static int vapp_selftest(vapp *p, char *why, int whylen) {
+    enum { W = 64, H = 64 };
+    static uint8_t px[W * H * 4];
+    synth_frame(px, W, H, 0);
+    VASurfaceAttrib at;
+    memset(&at, 0, sizeof at);
+    at.type = VASurfaceAttribPixelFormat;
+    at.flags = VA_SURFACE_ATTRIB_SETTABLE;
+    at.value.type = VAGenericValueTypeInteger;
+    at.value.value.i = (int)VA_FOURCC_BGRX;
+    VASurfaceID in = VA_INVALID_ID, out = VA_INVALID_ID;
+    if (va.CreateSurfaces(p->dpy, VA_RT_FORMAT_RGB32, W, H, &in, 1, &at, 1) != VA_STATUS_SUCCESS) {
+        snprintf(why, whylen, "autoteste do VPP: sem superfície RGB");
+        return -1;
+    }
+    int rc = -1;
+    VAImageFormat f;
+    memset(&f, 0, sizeof f);
+    f.fourcc = VA_FOURCC_BGRX;
+    f.byte_order = VA_LSB_FIRST;
+    f.bits_per_pixel = 32;
+    f.depth = 24;
+    f.red_mask = 0x00ff0000;
+    f.green_mask = 0x0000ff00;
+    f.blue_mask = 0x000000ff;
+    VAImage img;
+    img.image_id = VA_INVALID_ID;
+    static uint8_t gy[W * H], guv[W * H / 2], cy[W * H], cuv[W * H / 2];
+    if (va.CreateImage(p->dpy, &f, W, H, &img) == VA_STATUS_SUCCESS) {
+        void *ptr = NULL;
+        if (va.MapBuffer(p->dpy, img.buf, &ptr) == VA_STATUS_SUCCESS) {
+            for (int r = 0; r < H; r++) memcpy((uint8_t *)ptr + img.offsets[0] + (size_t)r * img.pitches[0], px + (size_t)r * W * 4, W * 4);
+            va.UnmapBuffer(p->dpy, img.buf);
+            if (va.PutImage(p->dpy, in, img.image_id, 0, 0, W, H, 0, 0, W, H) == VA_STATUS_SUCCESS && vapp_nv12_surface(p, W, H, &out) == 0 &&
+                vapp_blit(p, in, 0, 0, W, H, out, W, H) == 0 && vapp_read_nv12(p, out, W, H, gy, guv) == 0) {
+                telinha_to_nv12(px, W * 4, W, H, HWENC_BGRX, cy, W, cuv, W);
+                double dy = 0, duv = 0;
+                int worst = 0;
+                for (int i = 0; i < W * H; i++) {
+                    const int d = abs((int)gy[i] - (int)cy[i]);
+                    dy += d;
+                    if (d > worst) worst = d;
+                }
+                for (int i = 0; i < W * H / 2; i++) duv += abs((int)guv[i] - (int)cuv[i]);
+                dy /= W * H;
+                duv /= W * H / 2;
+                if (getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] VPP autoteste: diferença média Y %.2f, UV %.2f, pior Y %d\n", dy, duv, worst);
+                if (dy <= 2.5 && duv <= 3.5 && worst <= 16) rc = 0;
+                else snprintf(why, whylen, "autoteste do VPP: cor diferente da CPU (Y %.1f, UV %.1f)", dy, duv);
+            } else
+                snprintf(why, whylen, "autoteste do VPP: a conversão falhou");
+        }
+        va.DestroyImage(p->dpy, img.image_id);
+    } else
+        snprintf(why, whylen, "autoteste do VPP: sem imagem BGRX");
+    if (out != VA_INVALID_ID) va.DestroySurfaces(p->dpy, &out, 1);
+    va.DestroySurfaces(p->dpy, &in, 1);
+    return rc;
+}
+
+void vapp_close(vapp *p) {
+    if (!p) return;
+    vapp_forget(p, NULL);
+    for (int i = 0; i < VAPP_SLOTS; i++)
+        if (p->slot[i] != VA_INVALID_ID) va.DestroySurfaces(p->dpy, &p->slot[i], 1);
+    if (p->prev != VA_INVALID_ID) va.DestroySurfaces(p->dpy, &p->prev, 1);
+    if (p->ctx != VA_INVALID_ID) va.DestroyContext(p->dpy, p->ctx);
+    if (p->cfg != VA_INVALID_ID) va.DestroyConfig(p->dpy, p->cfg);
+    free(p);
+    shared_release();
+}
+
+vapp *vapp_open(char *err, int errlen) {
+    if (getenv("TELINHA_SEM_GPU_CAPTURA") || getenv("TELINHA_SEM_VAAPI")) {
+        set_err(err, errlen, "desligado%s", "");
+        return NULL;
+    }
+    char why[200] = "";
+    if (shared_acquire(why, sizeof why) < 0) {
+        set_err(err, errlen, "VA-API: %s", why);
+        return NULL;
+    }
+    vapp *p = calloc(1, sizeof *p);
+    if (!p) {
+        shared_release();
+        return NULL;
+    }
+    p->dpy = g_shared.dpy;
+    p->cfg = VA_INVALID_ID;
+    p->ctx = VA_INVALID_ID;
+    p->prev = VA_INVALID_ID;
+    for (int i = 0; i < VAPP_SLOTS; i++) p->slot[i] = VA_INVALID_ID;
+    if (va.CreateConfig(p->dpy, VAProfileNone, VAEntrypointVideoProc, NULL, 0, &p->cfg) != VA_STATUS_SUCCESS ||
+        va.CreateContext(p->dpy, p->cfg, 0, 0, 0, NULL, 0, &p->ctx) != VA_STATUS_SUCCESS) {
+        set_err(err, errlen, "VA-API: o VPP não abriu%s", "");
+        vapp_close(p);
+        return NULL;
+    }
+    if (vapp_selftest(p, why, sizeof why) < 0) {
+        set_err(err, errlen, "VA-API: %s", why);
+        vapp_close(p);
+        return NULL;
+    }
+    return p;
+}
+
+void vapp_forget(vapp *p, const void *key) {
+    for (int i = 0; i < VAPP_IMPORTS; i++) {
+        if (!p->imports[i].key || (key && p->imports[i].key != key)) continue;
+        va.DestroySurfaces(p->dpy, &p->imports[i].s, 1);
+        p->imports[i].key = NULL;
+    }
+}
+
+// Importa (uma vez por buffer `key`) o DMA-BUF RGB do compositor.
+static VASurfaceID vapp_import(vapp *p, const void *key, const vapp_src *src) {
+    int free_i = -1;
+    for (int i = 0; i < VAPP_IMPORTS; i++) {
+        if (p->imports[i].key == key) return p->imports[i].s;
+        if (!p->imports[i].key && free_i < 0) free_i = i;
+    }
+    if (free_i < 0) {
+        vapp_forget(p, NULL);
+        free_i = 0;
+    }
+    // DRM → VA (mesma ordem de bytes: XR24 = BGRX na memória)
+    uint32_t vf = 0;
+    switch (src->drm_fourcc) {
+    case 0x34325258: vf = VA_FOURCC_BGRX; break; // XR24
+    case 0x34325241: vf = VA_FOURCC_BGRA; break; // AR24
+    case 0x34324258: vf = VA_FOURCC_RGBX; break; // XB24
+    case 0x34324241: vf = VA_FOURCC_RGBA; break; // AB24
+    default: return VA_INVALID_ID;
+    }
+    VADRMPRIMESurfaceDescriptor d;
+    memset(&d, 0, sizeof d);
+    d.fourcc = vf;
+    d.width = (uint32_t)src->width;
+    d.height = (uint32_t)src->height;
+    d.num_objects = (uint32_t)src->planes;
+    d.num_layers = 1;
+    d.layers[0].drm_format = src->drm_fourcc;
+    d.layers[0].num_planes = (uint32_t)src->planes;
+    for (int i = 0; i < src->planes && i < 4; i++) {
+        d.objects[i].fd = src->fd[i];
+        const off_t end = lseek(src->fd[i], 0, SEEK_END);
+        d.objects[i].size = end > 0 ? (uint32_t)end : 0;
+        d.objects[i].drm_format_modifier = src->modifier;
+        d.layers[0].object_index[i] = (uint32_t)i;
+        d.layers[0].offset[i] = (uint32_t)src->offset[i];
+        d.layers[0].pitch[i] = (uint32_t)src->pitch[i];
+    }
+    VASurfaceAttrib at[2];
+    memset(at, 0, sizeof at);
+    at[0].type = VASurfaceAttribMemoryType;
+    at[0].flags = VA_SURFACE_ATTRIB_SETTABLE;
+    at[0].value.type = VAGenericValueTypeInteger;
+    at[0].value.value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2;
+    at[1].type = VASurfaceAttribExternalBufferDescriptor;
+    at[1].flags = VA_SURFACE_ATTRIB_SETTABLE;
+    at[1].value.type = VAGenericValueTypePointer;
+    at[1].value.value.p = &d;
+    VASurfaceID s = VA_INVALID_ID;
+    if (va.CreateSurfaces(p->dpy, VA_RT_FORMAT_RGB32, (unsigned)src->width, (unsigned)src->height, &s, 1, at, 2) != VA_STATUS_SUCCESS) return VA_INVALID_ID;
+    p->imports[free_i].key = key;
+    p->imports[free_i].s = s;
+    return s;
+}
+
+int vapp_convert(vapp *p, const void *key, const vapp_src *src, int x, int y, int w, int h, int ow, int oh, int slot) {
+    if (slot < 0 || slot >= VAPP_SLOTS) return -1;
+    const VASurfaceID in = vapp_import(p, key, src);
+    if (in == VA_INVALID_ID) return -1;
+    // a superfície do slot no tamanho que o encoder usa (alinhado em 16)
+    const int aw = (ow + 15) & ~15, ah = (oh + 15) & ~15;
+    if (p->slot[slot] == VA_INVALID_ID || p->slot_w[slot] != aw || p->slot_h[slot] != ah) {
+        if (p->slot[slot] != VA_INVALID_ID) va.DestroySurfaces(p->dpy, &p->slot[slot], 1);
+        p->slot[slot] = VA_INVALID_ID;
+        if (vapp_nv12_surface(p, aw, ah, &p->slot[slot]) < 0) return -1;
+        p->slot_w[slot] = aw;
+        p->slot_h[slot] = ah;
+    }
+    return vapp_blit(p, in, x, y, w, h, p->slot[slot], ow, oh);
+}
+
+uint32_t vapp_slot_surface(vapp *p, int slot) {
+    return slot >= 0 && slot < VAPP_SLOTS ? p->slot[slot] : VA_INVALID_ID;
+}
+
+int vapp_preview(vapp *p, const void *key, const vapp_src *src, int x, int y, int w, int h, int pw, int ph, uint8_t *rgba) {
+    const VASurfaceID in = vapp_import(p, key, src);
+    if (in == VA_INVALID_ID || pw < 2 || ph < 2) return -1;
+    pw &= ~1;
+    ph &= ~1;
+    if (p->prev == VA_INVALID_ID || p->prev_w != pw || p->prev_h != ph) {
+        if (p->prev != VA_INVALID_ID) va.DestroySurfaces(p->dpy, &p->prev, 1);
+        p->prev = VA_INVALID_ID;
+        if (vapp_nv12_surface(p, pw, ph, &p->prev) < 0) return -1;
+        p->prev_w = pw;
+        p->prev_h = ph;
+    }
+    if (vapp_blit(p, in, x, y, w, h, p->prev, pw, ph) < 0) return -1;
+    uint8_t *yv = malloc((size_t)pw * ph * 3 / 2);
+    if (!yv) return -1;
+    int rc = vapp_read_nv12(p, p->prev, pw, ph, yv, yv + (size_t)pw * ph);
+    if (rc == 0) {
+        // NV12 (BT.601, faixa reduzida) → RGBA, só pra prévia
+        const uint8_t *uv = yv + (size_t)pw * ph;
+        for (int r = 0; r < ph; r++) {
+            for (int c = 0; c < pw; c++) {
+                const int Y = yv[(size_t)r * pw + c] - 16;
+                const int U = uv[(size_t)(r / 2) * pw + (c & ~1)] - 128;
+                const int V = uv[(size_t)(r / 2) * pw + (c & ~1) + 1] - 128;
+                int R = (298 * Y + 409 * V + 128) >> 8;
+                int G = (298 * Y - 100 * U - 208 * V + 128) >> 8;
+                int B = (298 * Y + 516 * U + 128) >> 8;
+                uint8_t *o = rgba + ((size_t)r * pw + c) * 4;
+                o[0] = (uint8_t)(R < 0 ? 0 : R > 255 ? 255 : R);
+                o[1] = (uint8_t)(G < 0 ? 0 : G > 255 ? 255 : G);
+                o[2] = (uint8_t)(B < 0 ? 0 : B > 255 ? 255 : B);
+                o[3] = 255;
+            }
+        }
+    }
+    free(yv);
+    return rc;
+}
+
+int vaenc_is_shared(vaenc *e) {
+    return e && e->shared;
+}
+
+int vaenc_encode_surface(vaenc *e, uint32_t surface, int force_idr, const uint8_t **out, int *out_len, int *is_idr) {
+    if (!e->shared || surface == VA_INVALID_ID) return -1;
+    return encode_from(e, (VASurfaceID)surface, force_idr, out, out_len, is_idr);
 }

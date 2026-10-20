@@ -1879,3 +1879,15 @@ test "escala na placa (CUDA, caminho do Windows) igual à conta na CPU" {
         try std.testing.expect(worst <= 2);
     }
 }
+
+test "conversor VA-API (Intel/AMD): abre e passa no autoteste, ou recusa sem travar" {
+    const hv = @cImport(@cInclude("hwva.h"));
+    var err: [256]u8 = [_]u8{0} ** 256;
+    if (hv.vapp_open(&err, err.len)) |vp| {
+        // máquina com VPP e encoder: o autoteste de cor já passou na abertura
+        hv.vapp_close(vp);
+    } else {
+        try std.testing.expect(std.mem.sliceTo(&err, 0).len > 0); // diz por quê
+        std.debug.print("(conversor VA-API indisponível aqui: {s})\n", .{std.mem.sliceTo(&err, 0)});
+    }
+}

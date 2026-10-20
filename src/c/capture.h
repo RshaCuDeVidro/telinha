@@ -92,6 +92,26 @@ void cap_gpu_set_output(cap_ctx *ctx, const float crop[4], int max_height);
 // Prévia: 0 = não quer; 1 = do quadro de saída; 2 = da fonte inteira (escolhendo o recorte).
 void cap_gpu_set_preview(cap_ctx *ctx, int want, int max_w);
 void cap_gpu_release(cap_ctx *ctx, void *gpu);
+// Linux Intel/AMD: o mesmo caminho, mas por um conversor VA-API (vapp,
+// hwva.h; quem chama passa as funções dele): o quadro sai como superfície
+// NV12 (gpu_dev = o id dela), pro encoder VA-API. Só com o cursor fora do
+// vídeo (ou sem o cursor desenhado por nós). 1 = ligou.
+typedef struct cap_dmabuf {
+    int width, height;
+    int planes;
+    int fd[4];
+    int offset[4], pitch[4];
+    uint64_t modifier;
+    uint32_t drm_fourcc; // ex.: XR24
+} cap_dmabuf;
+typedef struct cap_va_ops {
+    void *ctx;
+    int (*convert)(void *ctx, const void *key, const cap_dmabuf *src, int x, int y, int w, int h, int ow, int oh, int slot);
+    uint32_t (*surface)(void *ctx, int slot);
+    int (*preview)(void *ctx, const void *key, const cap_dmabuf *src, int x, int y, int w, int h, int pw, int ph, uint8_t *rgba);
+    void (*forget)(void *ctx, const void *key);
+} cap_va_ops;
+int cap_gpu_enable_va(cap_ctx *ctx, const cap_va_ops *ops, cap_rect_fn rect);
 // A placa falhou no meio (os quadros voltaram a vir pela CPU)?
 int cap_gpu_failed(cap_ctx *ctx);
 // Chamar logo depois de criar um encoder novo: solta buffers de tamanho

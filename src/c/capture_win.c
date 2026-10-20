@@ -1338,3 +1338,8 @@ int cap_set_cursor_apart(cap_ctx *c, int on) {
     }
     return 1;
 }
+
+int cap_gpu_enable_va(cap_ctx *c, const cap_va_ops *ops, cap_rect_fn rect) {
+    (void)c; (void)ops; (void)rect;
+    return 0; // VA-API é só no Linux
+}

@@ -37,6 +37,9 @@ int hwenc_encode(hwenc *e, const uint8_t *pixels, int stride, int format, int fo
 // Esse encoder aceita o quadro já na memória da placa (ponteiro CUDA, ver
 // cudagl.c)? Só o NVENC.
 int hwenc_accepts_cuda(hwenc *e);
+// É o VA-API (Intel/AMD no Linux)? Aí o caminho pela placa é o conversor
+// (vapp, hwva.h), e o "ponteiro" do hwenc_encode_dev é uma superfície dele.
+int hwenc_is_va(hwenc *e);
 
 // Codifica um quadro RGBX/BGRX que já está na placa (hwenc_accepts_cuda).
 int hwenc_encode_dev(hwenc *e, uint64_t dev, int pitch, int format, int force_idr,
