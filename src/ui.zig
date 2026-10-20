@@ -83,6 +83,7 @@ const ic = struct {
     const info = &iconArr(0xF05A);
     const pen = &iconArr(0xF303);
     const crop = &iconArr(0xF565);
+    const camera_photo = &iconArr(0xF030);
     const tv = &iconArr(0xF26C);
     const gear = &iconArr(0xF013);
     const leave = &iconArr(0xF2F5);
@@ -532,6 +533,7 @@ pub const App = struct {
     tile_controls: ?u32 = null,
     zooms: [24]Zoom = [_]Zoom{.{}} ** 24,
     clip_jobs: [6]?*ClipJob = [_]?*ClipJob{null} ** 6,
+    print_job: ?*PrintJob = null,
     pips: [4]?*pip.Pip = [_]?*pip.Pip{null} ** 4, // janelas flutuantes
     iconified: bool = false, // janela principal minimizada (o main.zig avisa)
     settings_page: SettingsPage = .geral,
@@ -1909,6 +1911,7 @@ pub const App = struct {
             cl.pruneStrokes(sync.nowUs(), stroke_life_us);
         };
         a.checkClipJobs();
+        a.checkPrintJob();
         a.checkChatImages();
         a.n_tile_rects = 0;
         a.n_member_rects = 0;
@@ -3360,6 +3363,13 @@ pub const App = struct {
                     if (iconButton("##pip", ic.window_restore, bs, col.white, withAlpha(col.blurple, 200), if (open) tr("Fechar a janela flutuante") else tr("Abrir numa janela flutuante (por cima das outras)"))) a.togglePip(t.stream, t.name);
                     bx -= bs + S(6);
                 }
+                // print (PNG em resolução cheia)
+                if (t.view) |vw| {
+                    c.igSetCursorScreenPos(v2(bx, by));
+                    rectFill(d, bx, by, bx + bs, by + bs, col.overlay, S(6));
+                    if (iconButton("##print", ic.camera_photo, bs, col.white, withAlpha(col.blurple, 200), tr("Print (PNG, na resolução da transmissão)"))) a.savePrint(vw, t.name);
+                    bx -= bs + S(6);
+                }
                 // clipe (últimos 30 s) e gravação
                 if (t.clipbuf) |cb| {
                     const rs = cb.recState();
@@ -3531,6 +3541,75 @@ pub const App = struct {
     // ------------------------------------------------------ clipes e gravação
 
     /// Escrita de um clipe numa thread (o arquivo pode ter dezenas de MB).
+    /// Print de uma transmissão: converte o último quadro e grava o PNG numa thread.
+    const PrintJob = struct {
+        done: std.atomic.Value(bool) = .init(false),
+        ok: bool = false,
+        path: [512:0]u8 = undefined,
+        pic: client_mod.Pic,
+
+        fn run(j: *PrintJob) void {
+            defer {
+                std.heap.c_allocator.free(j.pic.data);
+                j.done.store(true, .release);
+                wakeUi();
+            }
+            const w: usize = j.pic.w;
+            const h: usize = j.pic.h;
+            const px = if (j.pic.layout == .rgba) j.pic.data else std.heap.c_allocator.alloc(u8, w * h * 4) catch return;
+            defer if (j.pic.layout != .rgba) std.heap.c_allocator.free(px);
+            const n = w * h;
+            switch (j.pic.layout) {
+                .rgba => {},
+                .i420 => codec.toRgba(j.pic.data.ptr, j.pic.data.ptr + n, j.pic.data.ptr + n + n / 4, w, w / 2, w, h, px),
+                .nv12 => codec.nv12ToRgba(j.pic.data.ptr, j.pic.data.ptr + n, w, h, px),
+            }
+            // o PNG não usa o canal alfa: tudo opaco
+            var i: usize = 3;
+            while (i < px.len) : (i += 4) px[i] = 255;
+            j.ok = c.img_write_png(&j.path, px.ptr, @intCast(w), @intCast(h)) == 0;
+        }
+    };
+
+    fn savePrint(a: *App, v: *View, who: []const u8) void {
+        if (a.print_job != null) return;
+        const f = &v.front;
+        if (f.w == 0) {
+            a.toast("Ainda não chegou imagem dessa transmissão.", .{}, true);
+            return;
+        }
+        const j = std.heap.c_allocator.create(PrintJob) catch return;
+        const data = std.heap.c_allocator.dupe(u8, f.data) catch {
+            std.heap.c_allocator.destroy(j);
+            return;
+        };
+        j.* = .{ .pic = .{ .data = data, .layout = f.layout, .w = f.w, .h = f.h } };
+        _ = clip.newPathExt(&j.path, if (who.len > 0) who else tr("print"), tr("_print"), ".png") catch {
+            std.heap.c_allocator.free(data);
+            std.heap.c_allocator.destroy(j);
+            a.toast("Não achei a pasta de vídeos pra salvar o print.", .{}, true);
+            return;
+        };
+        sync.spawn(PrintJob.run, .{j}) catch {
+            std.heap.c_allocator.free(data);
+            std.heap.c_allocator.destroy(j);
+            return;
+        };
+        a.print_job = j;
+    }
+
+    fn checkPrintJob(a: *App) void {
+        const j = a.print_job orelse return;
+        if (!j.done.load(.acquire)) return;
+        const path = std.mem.sliceTo(&j.path, 0);
+        if (j.ok) {
+            a.rememberSaved(path);
+            a.toast("Print salvo: {s}", .{baseName(path)}, false);
+        } else a.toast("Não consegui salvar o print em {s}", .{path}, true);
+        std.heap.c_allocator.destroy(j);
+        a.print_job = null;
+    }
+
     const ClipJob = struct {
         done: std.atomic.Value(bool) = .init(false),
         ok: bool = false,

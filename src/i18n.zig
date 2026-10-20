@@ -634,6 +634,14 @@ const table = [_][2][]const u8{
     .{ "Qualidade", "Quality" },
     .{ "Leve: menos trabalho na placa (bom pra jogar e transmitir junto), um pouco menos nítido. Qualidade: mais nítido, mais placa.", "Light: less GPU work (good for gaming while streaming), a bit less sharp. Quality: sharper, more GPU." },
 
+    .{ "Ainda não chegou imagem dessa transmissão.", "No image from this stream yet." },
+    .{ "print", "screenshot" },
+    .{ "_print", "_screenshot" },
+    .{ "Não achei a pasta de vídeos pra salvar o print.", "Couldn't find the videos folder to save the screenshot." },
+    .{ "Print salvo: {s}", "Screenshot saved: {s}" },
+    .{ "Não consegui salvar o print em {s}", "Couldn't save the screenshot to {s}" },
+    .{ "Print (PNG, na resolução da transmissão)", "Screenshot (PNG, at the stream's resolution)" },
+
     // temas
     .{ "TEMA", "THEME" },
     .{ "Escuro", "Dark" },

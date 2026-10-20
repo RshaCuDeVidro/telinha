@@ -344,6 +344,10 @@ fn videosDir(buf: []u8) []const u8 {
 
 /// Caminho de um arquivo novo: <pasta>/telinha_<quem>_<data-hora>[_tipo].mp4
 pub fn newPath(buf: []u8, who: []const u8, kind: []const u8) ![:0]const u8 {
+    return newPathExt(buf, who, kind, ".mp4");
+}
+
+pub fn newPathExt(buf: []u8, who: []const u8, kind: []const u8, ext: []const u8) ![:0]const u8 {
     var dir_buf: [512]u8 = undefined;
     const dir = folder(&dir_buf);
     if (dir.len == 0) return error.NoFolder;
@@ -356,7 +360,7 @@ pub fn newPath(buf: []u8, who: []const u8, kind: []const u8) ![:0]const u8 {
         n += 1;
     }
     const t = sync.dateTime();
-    return std.fmt.bufPrintZ(buf, "{s}{s}telinha_{s}_{d:0>4}-{d:0>2}-{d:0>2}_{d:0>2}-{d:0>2}-{d:0>2}{s}.mp4", .{
-        dir, if (sync.is_windows) "\\" else "/", clean[0..n], t.year, t.month, t.day, t.h, t.m, t.s, kind,
+    return std.fmt.bufPrintZ(buf, "{s}{s}telinha_{s}_{d:0>4}-{d:0>2}-{d:0>2}_{d:0>2}-{d:0>2}-{d:0>2}{s}{s}", .{
+        dir, if (sync.is_windows) "\\" else "/", clean[0..n], t.year, t.month, t.day, t.h, t.m, t.s, kind, ext,
     });
 }

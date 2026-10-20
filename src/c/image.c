@@ -17,6 +17,37 @@
 
 #include "image.h"
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STBI_WRITE_NO_STDIO
+#include "stb_image_write.h"
+#include <stdio.h>
+#ifdef _WIN32
+#include <wchar.h>
+#endif
+
+static void write_to_file(void *ctx, void *data, int size) {
+    fwrite(data, 1, (size_t)size, (FILE *)ctx);
+}
+
+// Print de uma transmissão: RGBA → PNG (caminho UTF-8). 0 = deu certo.
+int img_write_png(const char *path_utf8, const uint8_t *rgba, int w, int h) {
+#ifdef _WIN32
+    wchar_t wp[1024];
+    if (!MultiByteToWideChar(CP_UTF8, 0, path_utf8, -1, wp, 1024)) return -1;
+    FILE *f = _wfopen(wp, L"wb");
+#else
+    FILE *f = fopen(path_utf8, "wb");
+#endif
+    if (!f) return -1;
+    const int ok = stbi_write_png_to_func(write_to_file, f, w, h, 4, rgba, w * 4);
+    const int closed = fclose(f);
+    return ok && closed == 0 ? 0 : -1;
+}
+
 uint8_t *img_decode(const uint8_t *data, int len, int *w, int *h) {
     int n = 0;
     return stbi_load_from_memory(data, len, w, h, &n, 4);

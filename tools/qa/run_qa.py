@@ -735,6 +735,29 @@ def clipe_curto():
 
 
 @test
+def print_da_transmissao():
+    """Print de uma transmissão: salva um PNG na resolução cheia (não a do quadradinho na tela)."""
+    import struct
+    with Session("print") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"])
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        aid = b.member_id("Ana")
+        st = b.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "ver a Ana")
+        v = next(v for v in st["views"] if v["stream"] == aid)
+        tile = b.tile(aid)
+        b.click("##print", within=tile, hover_first=center(tile))
+        st = b.wait(lambda st: st["last_saved"].endswith(".png") and os.path.exists(st["last_saved"]), 10, "salvar o print")
+        with open(st["last_saved"], "rb") as f:
+            head = f.read(24)
+        expect(head[:8] == b"\x89PNG\r\n\x1a\n", "não é PNG")
+        w, h = struct.unpack(">II", head[16:24])
+        log(f"print: {w}x{h} ({os.path.basename(st['last_saved'])}), vídeo {v['w']}x{v['h']}")
+        expect((w, h) == (v["w"], v["h"]), f"tamanho errado: {w}x{h}")
+        b.toasted("Print salvo")
+
+
+@test
 def janela_flutuante():
     """Janela flutuante: abre pelo quadro, mostra o vídeo, fecha pelo sistema, pelo botão dela e sozinha quando a transmissão some."""
     S = os.environ.get("QA_SHOTS")
