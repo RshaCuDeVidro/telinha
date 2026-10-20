@@ -11,6 +11,7 @@ test {
     _ = @import("integration_test.zig");
     _ = @import("update.zig");
     _ = @import("chatimg.zig");
+    _ = @import("i18n.zig");
     _ = @import("udp.zig");
 }
 
@@ -1667,4 +1668,69 @@ test "VA-API: decoder igual ao ffmpeg bit a bit com x264 (CAVLC/CABAC, várias r
     var st: hwva.vadec_stats = undefined;
     hwva.vadec_get_stats(d, &st);
     try testing.expect(st.weighted > 0 and st.scaling > 0 and st.multi_slice > 0 and st.reorder > 0);
+}
+
+// ------------------------------------------------------------------ idioma
+
+/// Duas letras seguidas fora dos {} (texto pra traduzir, não só formato/ícone).
+fn hasWords(s: []const u8) bool {
+    var depth: usize = 0;
+    var letters: usize = 0;
+    for (s) |ch| {
+        if (ch == '{') depth += 1 else if (ch == '}' and depth > 0) depth -= 1;
+        if (depth == 0 and std.ascii.isAlphabetic(ch)) {
+            letters += 1;
+            if (letters >= 2) return true;
+        } else letters = 0;
+    }
+    return false;
+}
+
+/// Textos passados direto pra interface sem tr()/fmtZ() (a tradução não
+/// pegaria). Os "##id" e os que nunca mudam ficam de fora.
+fn untranslated(name: []const u8, src: []const u8) usize {
+    const calls = [_][]const u8{
+        "drawTextF(",       "drawTextWrapF(",     "textColored(",         "tooltipText(",       "primaryButton(",
+        "secondaryButton(", "iconButton(",        "igCheckbox(",          "igSelectable_Bool(", "igSmallButton(",
+        "igOpenPopup_Str(", "igBeginPopupModal(", "igInputTextWithHint(", "setHomeError(",      "notifyAway(",
+        "beginCombo(",      "p.button(",          "igSetTooltip(",        "igButton(",
+    };
+    const fixed = [_][]const u8{ "telinha", "Português###lang1", "English###lang2" };
+    var bad: usize = 0;
+    var lines = std.mem.splitScalar(u8, src, '\n');
+    var ln: usize = 0;
+    while (lines.next()) |line| {
+        ln += 1;
+        if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " "), "//")) continue;
+        const relevant = for (calls) |cl| {
+            if (std.mem.indexOf(u8, line, cl) != null) break true;
+        } else false;
+        if (!relevant) continue;
+        var i: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, line, i, '"')) |q| {
+            var e = q + 1;
+            while (e < line.len and line[e] != '"') : (e += 1) {
+                if (line[e] == '\\') e += 1;
+            }
+            if (e >= line.len) break;
+            const lit = line[q + 1 .. e];
+            i = e + 1;
+            const before = std.mem.trimEnd(u8, line[0..q], " ");
+            const callee = before[0 .. std.mem.lastIndexOfScalar(u8, before, '(') orelse 0];
+            const wrapped = std.mem.endsWith(u8, before, "tr(") or std.mem.endsWith(u8, before, "fmtZ(") or
+                std.mem.endsWith(u8, callee, "bufPrint") or std.mem.endsWith(u8, callee, "bufPrintZ");
+            const is_fixed = for (fixed) |f| {
+                if (std.mem.eql(u8, lit, f)) break true;
+            } else false;
+            if (wrapped or is_fixed or !hasWords(lit[0 .. std.mem.indexOf(u8, lit, "##") orelse lit.len])) continue;
+            std.debug.print("{s}:{d}: texto sem tradução: \"{s}\"\n", .{ name, ln, lit });
+            bad += 1;
+        }
+    }
+    return bad;
+}
+
+test "idioma: todo texto da interface passa pela tradução" {
+    const bad = untranslated("src/ui.zig", @embedFile("ui.zig")) + untranslated("src/pip.zig", @embedFile("pip.zig"));
+    try testing.expectEqual(@as(usize, 0), bad);
 }

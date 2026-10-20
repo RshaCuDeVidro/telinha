@@ -12,6 +12,8 @@ const audio = @import("audio.zig");
 const voice = @import("voice.zig");
 const clip = @import("clip.zig");
 const connect_mod = @import("connect.zig");
+const i18n = @import("i18n.zig");
+const tr = i18n.tr;
 const gpa = proto.gpa;
 
 /// A UI liga isso quando o shader de YUV→RGB compilou: aí a thread de decode
@@ -687,7 +689,7 @@ pub const Client = struct {
         cl.mutex.lock();
         defer cl.mutex.unlock();
         cl.status = .failed;
-        const s = std.fmt.bufPrint(&cl.err, fmt, args) catch cl.err[0..0];
+        const s = i18n.bufPrint(&cl.err, fmt, args) catch cl.err[0..0];
         cl.err_len = s.len;
     }
 
@@ -706,7 +708,7 @@ pub const Client = struct {
         return switch (v) {
             0...4 => "1.x",
             5 => "2.x",
-            else => "anterior",
+            else => tr("anterior"),
         };
     }
 
@@ -730,9 +732,9 @@ pub const Client = struct {
                     cl.setError("Isso não é uma sala do telinha.", .{});
                 },
                 else => cl.setError("{s}", .{switch (e) {
-                    error.UnknownHost => "Não achei esse endereço.",
-                    error.ConnectionRefused => "Conexão recusada. A sala está aberta? O túnel está ligado?",
-                    else => "Não consegui conectar (a sala não respondeu por nenhum caminho).",
+                    error.UnknownHost => tr("Não achei esse endereço."),
+                    error.ConnectionRefused => tr("Conexão recusada. A sala está aberta? O túnel está ligado?"),
+                    else => tr("Não consegui conectar (a sala não respondeu por nenhum caminho)."),
                 }}),
             }
             return;
@@ -960,7 +962,9 @@ pub const Client = struct {
                 cl.deny_code = code;
                 cl.mutex.unlock();
                 cl.setFinal();
-                cl.setError("{s}", .{reason});
+                // o motivo vem do servidor em português
+                var rb: [256]u8 = undefined;
+                cl.setError("{s}", .{i18n.server(reason, &rb)});
                 return error.Denied;
             },
             .members => {

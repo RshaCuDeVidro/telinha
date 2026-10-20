@@ -2,6 +2,7 @@
 //! A leitura (stb_image) e a codificação (chatimg.zig) rodam numa thread, pra
 //! interface não engasgar; o resultado vai direto pra sala.
 const std = @import("std");
+const tr = @import("i18n.zig").tr;
 const c = @import("c.zig").c;
 const sync = @import("sync.zig");
 const mp4 = @import("mp4.zig");
@@ -24,10 +25,10 @@ pub const Failure = enum(u8) { none, read, not_image, encode, too_big };
 pub fn failureText(f: Failure) []const u8 {
     return switch (f) {
         .none => "",
-        .read => "não consegui ler o arquivo",
-        .not_image => "isso não é uma imagem (PNG, JPEG, GIF ou BMP)",
-        .encode => "não consegui preparar a imagem",
-        .too_big => "imagem detalhada demais pro chat",
+        .read => tr("não consegui ler o arquivo"),
+        .not_image => tr("isso não é uma imagem (PNG, JPEG, GIF ou BMP)"),
+        .encode => tr("não consegui preparar a imagem"),
+        .too_big => tr("imagem detalhada demais pro chat"),
     };
 }
 

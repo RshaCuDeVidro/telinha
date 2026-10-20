@@ -25,6 +25,8 @@ const net = @import("net.zig");
 const update = @import("update.zig");
 const chatimg = @import("chatimg.zig");
 const chatsend = @import("chatsend.zig");
+const i18n = @import("i18n.zig");
+const tr = i18n.tr;
 const build_options = @import("build_options");
 pub const version_string = proto.app_version;
 const Sharer = sharer_mod.Sharer;
@@ -194,7 +196,16 @@ var fmt_buf: [1024]u8 = undefined;
 /// Reações do chat (mesma ordem do protocolo): curti, amei, haha, fogo, uau, triste.
 const reaction_icons = [proto.reactions][]const u8{ &iconArr(0xF164), &iconArr(0xF004), &iconArr(0xF59B), &iconArr(0xF06D), &iconArr(0xF5C2), &iconArr(0xF5B4) };
 const reaction_colors = [proto.reactions]u32{ rgb(0x5865F2), rgb(0xF23F43), rgb(0xF0B232), rgb(0xF57731), rgb(0xF0B232), rgb(0x00A8FC) };
-const reaction_names = [proto.reactions][:0]const u8{ "Curti", "Amei", "Haha", "Fogo", "Uau", "Triste" };
+fn reactionName(e: usize) [:0]const u8 {
+    return switch (e) {
+        0 => tr("Curti"),
+        1 => tr("Amei"),
+        2 => tr("Haha"),
+        3 => tr("Fogo"),
+        4 => tr("Uau"),
+        else => tr("Triste"),
+    };
+}
 
 /// Arquivos soltos em cima da janela (callback do GLFW; tratados no quadro).
 var drop_paths: [4][1024]u8 = undefined;
@@ -224,8 +235,20 @@ fn mentions(text: []const u8, name: []const u8) bool {
     return false;
 }
 
+/// Formata no buffer do quadro, com o formato traduzido (ver i18n.zig).
 fn fmtZ(comptime f: []const u8, args: anytype) [:0]const u8 {
-    return std.fmt.bufPrintZ(&fmt_buf, f, args) catch "...";
+    return i18n.bufPrintZ(&fmt_buf, f, args) catch "...";
+}
+
+/// Nome da fonte de captura pra mostrar (o C escreve em português).
+fn sourceName(src: *const c.cap_source, buf: []u8) [:0]const u8 {
+    var tmp: [300]u8 = undefined;
+    const name = i18n.dynamic(std.mem.sliceTo(&src.name, 0), &tmp);
+    // Windows: "Monitor 1 — 1920x1080 (principal)"
+    const main_sfx = " (principal)";
+    if (i18n.english() and std.mem.endsWith(u8, name, main_sfx))
+        return std.fmt.bufPrintZ(buf, "{s} (primary)", .{name[0 .. name.len - main_sfx.len]}) catch "?";
+    return std.fmt.bufPrintZ(buf, "{s}", .{name}) catch "?";
 }
 
 fn avatarColor(id: u32) u32 {
@@ -272,7 +295,7 @@ fn slash(d: *c.ImDrawList, top_left: c.ImVec2_c, size: f32) void {
 }
 
 fn liveBadge(d: *c.ImDrawList, pos: c.ImVec2_c) f32 {
-    const t = "AO VIVO";
+    const t = tr("AO VIVO");
     const ts = textSizeF(font_bold, 10, t);
     const pad = S(5);
     rectFill(d, pos.x, pos.y, pos.x + ts.x + pad * 2, pos.y + ts.y + S(2), col.red, S(3));
@@ -324,13 +347,13 @@ fn tooltipText(s: [:0]const u8) void {
     c.igPopStyleVar(1);
 }
 
-fn fieldLabel(s: []const u8) void {
+fn fieldLabel(comptime s: [:0]const u8) void {
     pushFont(font_bold, 11.5);
-    textColored(col.muted, s);
+    textColored(col.muted, tr(s));
     popFont();
 }
 
-fn textField(id: [:0]const u8, hint: [:0]const u8, buf: []u8, width: f32, password: bool) bool {
+fn textField(id: [:0]const u8, comptime hint: [:0]const u8, buf: []u8, width: f32, password: bool) bool {
     c.igSetNextItemWidth(width);
     c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(10), S(9)));
     c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
@@ -338,25 +361,28 @@ fn textField(id: [:0]const u8, hint: [:0]const u8, buf: []u8, width: f32, passwo
     c.igPushStyleColor_U32(c.ImGuiCol_FrameBgActive, col.input);
     var flags: c.ImGuiInputTextFlags = c.ImGuiInputTextFlags_EnterReturnsTrue;
     if (password) flags |= c.ImGuiInputTextFlags_Password;
-    const r = c.igInputTextWithHint(id.ptr, hint.ptr, buf.ptr, buf.len, flags, null, null);
+    const r = c.igInputTextWithHint(id.ptr, tr(hint).ptr, buf.ptr, buf.len, flags, null, null);
     c.igPopStyleColor(3);
     c.igPopStyleVar(1);
     return r;
 }
 
 /// Botões lado a lado, tipo "segmented control". Retorna o índice escolhido.
-fn segmented(id: [:0]const u8, options: []const [:0]const u8, current: *i32, width: f32) bool {
+/// O ID de cada botão é a posição dele (não muda com o idioma).
+fn segmented(id: [:0]const u8, comptime options: []const [:0]const u8, current: *i32, width: f32) bool {
     c.igPushID_Str(id.ptr);
     defer c.igPopID();
     var changed = false;
     const w = (width - S(4) * @as(f32, @floatFromInt(options.len - 1))) / @as(f32, @floatFromInt(options.len));
-    for (options, 0..) |opt, i| {
+    inline for (options, 0..) |opt, i| {
         if (i > 0) c.igSameLine(0, S(4));
         const sel = current.* == @as(i32, @intCast(i));
         const bg = if (sel) col.blurple else col.input;
         const hv = if (sel) col.blurple_hover else col.hover;
         c.igPushID_Int(@intCast(i));
-        if (primaryButton(opt, v2(w, S(34)), bg, hv, if (sel) col.blurple_active else col.selected)) {
+        var lb: [96]u8 = undefined;
+        const label = std.fmt.bufPrintZ(&lb, "{s}###seg", .{tr(opt)}) catch "###seg";
+        if (primaryButton(label, v2(w, S(34)), bg, hv, if (sel) col.blurple_active else col.selected)) {
             current.* = @intCast(i);
             changed = true;
         }
@@ -529,6 +555,7 @@ pub const App = struct {
 
     pub fn init(window: *c.GLFWwindow) App {
         var a: App = .{ .window = window, .cfg = config.load(), .volumes = config.VoiceVolumes.load() };
+        i18n.init(config.getStr(&a.cfg.language));
         _ = std.fmt.bufPrintZ(&a.port_buf, "{d}", .{a.cfg.host_port}) catch {};
         if (a.cfg.check_updates) update.checkAsync(build_options.repo, version_string);
         voice.on_speaking_change = wakeUi;
@@ -606,7 +633,7 @@ pub const App = struct {
             a.n_toasts -= 1;
         }
         var t: Toast = .{ .text = undefined, .len = 0, .until = c.igGetTime() + 5.0, .err = err };
-        const s = std.fmt.bufPrint(&t.text, f, args) catch t.text[0..0];
+        const s = i18n.bufPrint(&t.text, f, args) catch t.text[0..0];
         t.len = s.len;
         a.toasts[a.n_toasts] = t;
         a.n_toasts += 1;
@@ -621,7 +648,7 @@ pub const App = struct {
 
     fn myName(a: *App) []const u8 {
         const n = std.mem.trim(u8, config.getStr(&a.cfg.name), " ");
-        return if (n.len == 0) "anônimo" else n;
+        return if (n.len == 0) tr("anônimo") else n;
     }
 
     fn joinRoom(a: *App) void {
@@ -635,24 +662,24 @@ pub const App = struct {
         a.cfg.join_addr = tmp;
         const addrs = config.getStr(&a.cfg.join_addr);
         var targets: [connect_mod.max_targets]connect_mod.Target = undefined;
-        if (addrs.len == 0 or std.mem.findScalar(u8, addrs, ':') == null) return a.setHomeError("Põe o endereço com a porta. Ex.: 0.tcp.sa.ngrok.io:12345 (ou cola o convite).");
-        if (connect_mod.parseList(addrs, &targets) == 0) return a.setHomeError("Endereço inválido. Ex.: 0.tcp.sa.ngrok.io:12345 (IPv6 entre colchetes: [2804::1]:7777)");
+        if (addrs.len == 0 or std.mem.findScalar(u8, addrs, ':') == null) return a.setHomeError(tr("Põe o endereço com a porta. Ex.: 0.tcp.sa.ngrok.io:12345 (ou cola o convite)."));
+        if (connect_mod.parseList(addrs, &targets) == 0) return a.setHomeError(tr("Endereço inválido. Ex.: 0.tcp.sa.ngrok.io:12345 (IPv6 entre colchetes: [2804::1]:7777)"));
         a.connect(addrs, config.getStr(&a.cfg.join_pass), config.getStr(&a.cfg.admin_token));
     }
 
     fn createRoom(a: *App) void {
         const port = std.fmt.parseInt(u16, std.mem.sliceTo(&a.port_buf, 0), 10) catch 0;
-        if (port == 0) return a.setHomeError("Porta inválida.");
+        if (port == 0) return a.setHomeError(tr("Porta inválida."));
         a.cfg.host_port = port;
         var rn = std.mem.trim(u8, config.getStr(&a.cfg.room_name), " ");
         var tmp: [64]u8 = undefined;
-        if (rn.len == 0) rn = std.fmt.bufPrint(&tmp, "Sala do {s}", .{a.myName()}) catch "Sala";
+        if (rn.len == 0) rn = i18n.bufPrint(&tmp, "Sala do {s}", .{a.myName()}) catch "telinha";
         const pass = config.getStr(&a.cfg.host_pass);
         var rnd: [16]u8 = undefined;
         sync.osRandom(&rnd);
         const token = std.fmt.bufPrintZ(&a.room_admin_token, "{x}", .{&rnd}) catch "";
         a.server = Server.start(.{ .port = port, .password = pass, .room_name = rn, .admin_token = token }) catch {
-            a.setHomeError("Não consegui abrir essa porta. Já tem outra coisa usando? Tenta outra.");
+            a.setHomeError(tr("Não consegui abrir essa porta. Já tem outra coisa usando? Tenta outra."));
             return;
         };
         var self_addr: [32]u8 = undefined;
@@ -704,7 +731,7 @@ pub const App = struct {
             if (went_live) a.chime(.live) else if (joined) a.chime(.join) else if (left) a.chime(.leave);
             if (who) |m| {
                 var b: [96]u8 = undefined;
-                a.notifyAway("telinha", std.fmt.bufPrint(&b, "{s} {s}", .{ m.nameSlice(), if (went_live) "começou a transmitir" else "entrou na sala" }) catch "");
+                a.notifyAway("telinha", (if (went_live) i18n.bufPrint(&b, "{s} começou a transmitir", .{m.nameSlice()}) else i18n.bufPrint(&b, "{s} entrou na sala", .{m.nameSlice()})) catch "");
             }
         }
         // alguém na sala com o telinha mais novo: avisa uma vez por versão
@@ -719,7 +746,7 @@ pub const App = struct {
         if (newest.len > 0 and !std.mem.eql(u8, newest, a.newer_seen[0..a.newer_seen_len])) {
             a.newer_seen_len = @min(newest.len, a.newer_seen.len);
             @memcpy(a.newer_seen[0..a.newer_seen_len], newest[0..a.newer_seen_len]);
-            a.toast("{s} está no telinha {s} e você no {s}: tem versão nova.{s}", .{ newest_who, newest, version_string, if (build_options.repo.len > 0) " Baixe em Configurações." else "" }, false);
+            a.toast("{s} está no telinha {s} e você no {s}: tem versão nova.{s}", .{ newest_who, newest, version_string, if (build_options.repo.len > 0) tr(" Baixe em Configurações.") else "" }, false);
         }
         a.known_ready = true;
         a.n_known = n;
@@ -775,7 +802,7 @@ pub const App = struct {
                 if (name_len == 0 or (ment and !mentioned)) {
                     name_len = @min(l.name_len, name.len);
                     @memcpy(name[0..name_len], l.name[0..name_len]);
-                    const body: []const u8 = if (l.text.len > 0) l.text else if (l.img != null) "mandou uma imagem" else "";
+                    const body: []const u8 = if (l.text.len > 0) l.text else if (l.img != null) tr("mandou uma imagem") else "";
                     text_len = @min(body.len, text.len);
                     @memcpy(text[0..text_len], body[0..text_len]);
                 }
@@ -801,12 +828,12 @@ pub const App = struct {
         a.notif_chat_seen = count;
         if (mentioned) {
             var t: [96]u8 = undefined;
-            a.notifyAway(std.fmt.bufPrint(&t, "{s} mencionou você", .{name[0..name_len]}) catch "telinha", text[0..text_len]);
+            a.notifyAway(i18n.bufPrint(&t, "{s} mencionou você", .{name[0..name_len]}) catch "telinha", text[0..text_len]);
         } else if (fresh == 1) {
             a.notifyAway(name[0..name_len], text[0..text_len]);
         } else {
             var b: [64]u8 = undefined;
-            a.notifyAway("telinha", std.fmt.bufPrint(&b, "{d} mensagens novas no chat", .{fresh}) catch "");
+            a.notifyAway("telinha", i18n.bufPrint(&b, "{d} mensagens novas no chat", .{fresh}) catch "");
         }
     }
 
@@ -828,7 +855,8 @@ pub const App = struct {
         a.mic = voice.Mic.open(opts, cl.retain(), onMicPacket, &err) catch {
             cl.release();
             a.mic_wanted = false;
-            a.toast("Não consegui abrir o microfone: {s}", .{std.mem.sliceTo(&err, 0)}, true);
+            var eb: [300]u8 = undefined;
+            a.toast("Não consegui abrir o microfone: {s}", .{i18n.dynamic(std.mem.sliceTo(&err, 0), &eb)}, true);
             return;
         };
         a.mic_client = cl;
@@ -970,13 +998,13 @@ pub const App = struct {
         a.home_error_len = 0;
         config.save(&a.cfg);
         a.client = Client.create(.{ .addrs = addrs, .name = a.myName(), .password = pass, .admin_token = admin_token, .client_key = a.cfg.client_key, .hw_decode = a.cfg.hardware, .wake = wakeUi }) catch {
-            a.setHomeError("Endereço inválido.");
+            a.setHomeError(tr("Endereço inválido."));
             return;
         };
         // até conectar mostra a lista (ou "N caminhos"); depois, o que ganhou
         const n_paths = std.mem.count(u8, addrs, ",") + 1;
         const s = (if (n_paths > 1)
-            std.fmt.bufPrint(&a.connect_label, "{d} caminhos", .{n_paths})
+            i18n.bufPrint(&a.connect_label, "{d} caminhos", .{n_paths})
         else
             std.fmt.bufPrint(&a.connect_label, "{s}", .{addrs})) catch "";
         a.connect_label_len = s.len;
@@ -1137,43 +1165,43 @@ pub const App = struct {
         const window_mode = std.mem.eql(u8, cur, "*janela");
         var preview_buf: [96]u8 = undefined;
         const preview: []const u8 = if (!a.cfg.audio)
-            "Sem som"
+            tr("Sem som")
         else if (window_mode and has_win)
-            std.fmt.bufPrint(&preview_buf, "Só o som da janela ({s})", .{win_app}) catch "Só o som da janela"
+            i18n.bufPrint(&preview_buf, "Só o som da janela ({s})", .{win_app}) catch win_app
         else if (cur.len == 0 or window_mode)
-            "Todo o som do computador (menos o telinha)"
+            tr("Todo o som do computador (menos o telinha)")
         else
-            std.fmt.bufPrint(&preview_buf, "Só o som do {s}", .{cur}) catch cur;
+            i18n.bufPrint(&preview_buf, "Só o som do {s}", .{cur}) catch cur;
         fieldLabel("SOM");
         c.igSetNextItemWidth(w);
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(10), S(9)));
         if (beginCombo("##audio", fmtZ("{s}", .{preview}).ptr, 0)) {
-            if (c.igSelectable_Bool("Todo o som do computador (menos o telinha)", a.cfg.audio and cur.len == 0, 0, v2(0, 0))) {
+            if (c.igSelectable_Bool(tr("Todo o som do computador (menos o telinha)###audioall"), a.cfg.audio and cur.len == 0, 0, v2(0, 0))) {
                 a.cfg.audio = true;
                 config.setStr(&a.cfg.audio_app, "");
             }
-            if (has_win and c.igSelectable_Bool(fmtZ("Só o som da janela ({s})##audiowin", .{win_app}).ptr, a.cfg.audio and window_mode, 0, v2(0, 0))) {
+            if (has_win and c.igSelectable_Bool(fmtZ("Só o som da janela ({s})###audiowin", .{win_app}).ptr, a.cfg.audio and window_mode, 0, v2(0, 0))) {
                 a.cfg.audio = true;
                 config.setStr(&a.cfg.audio_app, "*janela");
             }
             for (a.audio_apps[0..a.n_audio_apps], 0..) |*ap, i| {
                 const name = std.mem.sliceTo(&ap.name, 0);
                 c.igPushID_Int(@intCast(i));
-                if (c.igSelectable_Bool(fmtZ("Só o som do {s}", .{name}).ptr, a.cfg.audio and std.ascii.eqlIgnoreCase(name, cur), 0, v2(0, 0))) {
+                if (c.igSelectable_Bool(fmtZ("Só o som do {s}###audioapp", .{name}).ptr, a.cfg.audio and std.ascii.eqlIgnoreCase(name, cur), 0, v2(0, 0))) {
                     a.cfg.audio = true;
                     config.setStr(&a.cfg.audio_app, name);
                 }
                 c.igPopID();
             }
-            if (c.igSelectable_Bool("Sem som", !a.cfg.audio, 0, v2(0, 0))) a.cfg.audio = false;
+            if (c.igSelectable_Bool(tr("Sem som###audionone"), !a.cfg.audio, 0, v2(0, 0))) a.cfg.audio = false;
             c.igEndCombo();
         }
         c.igPopStyleVar(1);
         c.igPopStyleColor(1);
         if (a.n_audio_apps == 0 and !sync.is_windows) {
             pushFont(font_regular, 12);
-            textColored(col.faint, "Programa tocando som aparece na lista (abra de novo esta janela se não aparecer).");
+            textColored(col.faint, tr("Programa tocando som aparece na lista (abra de novo esta janela se não aparecer)."));
             popFont();
         }
     }
@@ -1230,7 +1258,8 @@ pub const App = struct {
                 else => {},
             }
             const bad = n.kind == proto.notice_muted or n.kind == proto.notice_stream_stopped or n.kind == proto.notice_admin_off;
-            a.toast("{s}", .{n.textSlice()}, bad);
+            var nb: [200]u8 = undefined;
+            a.toast("{s}", .{i18n.server(n.textSlice(), &nb)}, bad);
         }
     }
 
@@ -1471,7 +1500,7 @@ pub const App = struct {
             }
             if (!a.was_connected) {
                 // não conectou: volta pra tela inicial com o erro
-                a.setHomeError(if (a.reconnect.attempt > 0) "Não consegui reconectar na sala." else cl.errSlice());
+                a.setHomeError(if (a.reconnect.attempt > 0) tr("Não consegui reconectar na sala.") else cl.errSlice());
                 a.leaveRoom();
                 return;
             }
@@ -1482,7 +1511,8 @@ pub const App = struct {
             const cst = cam.state;
             cam.mutex.unlock();
             if (cst == .failed) {
-                a.toast("A câmera parou: {s}", .{cam.errSlice()}, true);
+                var eb: [300]u8 = undefined;
+                a.toast("A câmera parou: {s}", .{i18n.dynamic(cam.errSlice(), &eb)}, true);
                 a.stopCamera();
             }
         }
@@ -1498,10 +1528,12 @@ pub const App = struct {
             audio.mixer.self_mute.store(hears_self, .monotonic);
             if (!a.audio_err_shown and audio_err[0] != 0) {
                 a.audio_err_shown = true;
-                a.toast("Transmitindo sem áudio: {s}", .{std.mem.sliceTo(&audio_err, 0)}, true);
+                var eb: [300]u8 = undefined;
+                a.toast("Transmitindo sem áudio: {s}", .{i18n.dynamic(std.mem.sliceTo(&audio_err, 0), &eb)}, true);
             }
             if (sst == .failed) {
-                a.toast("A transmissão parou: {s}", .{s.errSlice()}, true);
+                var eb: [300]u8 = undefined;
+                a.toast("A transmissão parou: {s}", .{i18n.dynamic(s.errSlice(), &eb)}, true);
                 a.stopSharing();
             }
         }
@@ -1618,7 +1650,7 @@ pub const App = struct {
             const ts = textSizeF(font_regular, 22, ic.tv);
             drawTextF(d, font_regular, 22, v2(p.x + (isz - ts.x) / 2, p.y + (isz - ts.y) / 2), col.white, ic.tv);
             drawTextF(d, font_bold, 28, v2(p.x + isz + S(14), p.y - S(1)), col.header, "telinha");
-            drawTextF(d, font_regular, 14, v2(p.x + isz + S(15), p.y + S(28)), col.muted, "compartilha a tela com a galera");
+            drawTextF(d, font_regular, 14, v2(p.x + isz + S(15), p.y + S(28)), col.muted, tr("compartilha a tela com a galera"));
             c.igDummy(v2(inner, isz + S(26)));
         }
         a.drawUpdateBanner(inner);
@@ -1636,7 +1668,7 @@ pub const App = struct {
             if (textField("##addr", "ex.: 0.tcp.sa.ngrok.io:12345 ou o convite telinha://...", &a.cfg.join_addr, inner, false)) go = true;
             if (c.igGetTime() < a.paste_hint_until) {
                 pushFont(font_regular, 12.5);
-                textColored(col.green, "Convite colado da área de transferência. É só clicar em Entrar.");
+                textColored(col.green, tr("Convite colado da área de transferência. É só clicar em Entrar."));
                 popFont();
             }
             c.igDummy(v2(0, S(8)));
@@ -1659,7 +1691,7 @@ pub const App = struct {
                 if (textField("##tok", "deixe vazio se não souber o que é", &a.cfg.admin_token, inner, true)) go = true;
             }
             c.igDummy(v2(0, S(14)));
-            if (primaryButton("Entrar##go", v2(inner, S(44)), col.blurple, col.blurple_hover, col.blurple_active)) go = true;
+            if (primaryButton(tr("Entrar##go"), v2(inner, S(44)), col.blurple, col.blurple_hover, col.blurple_active)) go = true;
             if (go) a.joinRoom();
         } else {
             fieldLabel("NOME DA SALA");
@@ -1676,11 +1708,11 @@ pub const App = struct {
             if (textField("##hpass", "vazio = sem senha", &a.cfg.host_pass, half, true)) go = true;
             c.igSetCursorScreenPos(after);
             c.igDummy(v2(0, S(18)));
-            if (primaryButton("Criar sala##go", v2(inner, S(44)), col.green, rgb(0x1A8B4C), rgb(0x15703D))) go = true;
+            if (primaryButton(tr("Criar sala##go"), v2(inner, S(44)), col.green, rgb(0x1A8B4C), rgb(0x15703D))) go = true;
             c.igDummy(v2(0, S(10)));
             c.igPushTextWrapPos(c.igGetCursorPosX() + inner);
             pushFont(font_regular, 13);
-            textColored(col.muted, "Pra galera de fora entrar, abre um túnel TCP pra essa porta (ngrok tcp, bore, playit...) e manda o endereço que ele mostrar.");
+            textColored(col.muted, tr("Pra galera de fora entrar, abre um túnel TCP pra essa porta (ngrok tcp, bore, playit...) e manda o endereço que ele mostrar."));
             popFont();
             c.igPopTextWrapPos();
             if (go) a.createRoom();
@@ -1752,7 +1784,7 @@ pub const App = struct {
     }
 
     fn drawLeaveConfirm(a: *App) void {
-        _ = c.igOpenPopup_Str("Fechar a sala", 0);
+        _ = c.igOpenPopup_Str(tr("Fechar a sala###fecharsala"), 0);
         const vp = c.igGetMainViewport();
         c.igSetNextWindowPos(v2(vp.*.Pos.x + vp.*.Size.x / 2, vp.*.Pos.y + vp.*.Size.y / 2), c.ImGuiCond_Always, v2(0.5, 0.5));
         c.igSetNextWindowSize(v2(S(400), 0), c.ImGuiCond_Always);
@@ -1764,31 +1796,30 @@ pub const App = struct {
             c.igPopStyleColor(2);
             c.igPopStyleVar(2);
         }
-        if (!c.igBeginPopupModal("Fechar a sala", null, c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoResize | c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_AlwaysAutoResize)) return;
+        if (!c.igBeginPopupModal(tr("Fechar a sala###fecharsala"), null, c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoResize | c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_AlwaysAutoResize)) return;
         defer c.igEndPopup();
         const w = S(352);
         pushFont(font_bold, 19);
-        textColored(col.header, "Fechar a sala?");
+        textColored(col.header, tr("Fechar a sala?"));
         popFont();
         c.igDummy(v2(0, S(6)));
         const others = if (a.server) |sv| sv.memberCount() -| 1 else 0;
         c.igPushTextWrapPos(c.igGetCursorPosX() + w);
         pushFont(font_regular, 14);
-        var who_buf: [32]u8 = undefined;
-        const who = if (others == 1) "a pessoa" else std.fmt.bufPrint(&who_buf, "as {d} pessoas", .{others}) catch "todo mundo";
-        textColored(col.muted, fmtZ("A sala é sua: fechando, {s} que {s} aqui {s} da sala (e fica sabendo que você fechou).", .{
-            who, if (others == 1) "está" else "estão", if (others == 1) "sai" else "saem",
-        }));
+        textColored(col.muted, if (others == 1)
+            fmtZ("A sala é sua: fechando, a pessoa que está aqui sai da sala (e fica sabendo que você fechou).", .{})
+        else
+            fmtZ("A sala é sua: fechando, as {d} pessoas que estão aqui saem da sala (e fica sabendo que você fechou).", .{others}));
         popFont();
         c.igPopTextWrapPos();
         c.igDummy(v2(0, S(18)));
         const bw = (w - S(10)) / 2;
-        if (secondaryButton("Cancelar##sair", v2(bw, S(40))) or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
+        if (secondaryButton(tr("Cancelar###sair"), v2(bw, S(40))) or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
             a.leave_confirm = false;
             c.igCloseCurrentPopup();
         }
         c.igSameLine(0, S(10));
-        if (primaryButton("Fechar a sala", v2(bw, S(40)), col.red, col.red_hover, col.red_hover)) {
+        if (primaryButton(tr("Fechar a sala###fecharsalabtn"), v2(bw, S(40)), col.red, col.red_hover, col.red_hover)) {
             c.igCloseCurrentPopup();
             a.leaveRoom();
         }
@@ -1824,14 +1855,15 @@ pub const App = struct {
         }
         drawTextF(d, font_semibold, 18, v2((size.x - ts.x) / 2, size.y / 2), col.header, t);
         c.igSetCursorScreenPos(v2(size.x / 2 - S(60), size.y / 2 + S(40)));
-        if (secondaryButton("Cancelar", v2(S(120), S(36)))) a.leaveRoom();
+        if (secondaryButton(tr("Cancelar###cancelconn"), v2(S(120), S(36)))) a.leaveRoom();
         redrawIn(0.05); // mantém a animação (20 q/s bastam)
     }
 
     fn drawDropped(a: *App, cl: *Client, size: c.ImVec2_c) void {
         const d = beginOverlay("##dropped", size, rgba(0x1E1F22, 225));
         defer c.igEnd();
-        const t = cl.errSlice();
+        var eb: [400]u8 = undefined;
+        const t = i18n.dynamic(cl.errSlice(), &eb);
         const ts = textSizeF(font_semibold, 18, t);
         const it = textSizeF(font_regular, 36, ic.warn);
         drawTextF(d, font_regular, 36, v2((size.x - it.x) / 2, size.y / 2 - S(70)), col.yellow, ic.warn);
@@ -1843,9 +1875,9 @@ pub const App = struct {
             const ss = textSizeF(font_regular, 14, sub);
             drawTextF(d, font_regular, 14, v2((size.x - ss.x) / 2, size.y / 2 + S(16)), col.muted, sub);
             c.igSetCursorScreenPos(v2(size.x / 2 - S(130), size.y / 2 + S(50)));
-            if (primaryButton("Tentar agora", v2(S(125), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.reconnect.at = 0;
+            if (primaryButton(tr("Tentar agora###tentar"), v2(S(125), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.reconnect.at = 0;
             c.igSameLine(0, S(10));
-            if (secondaryButton("Sair", v2(S(125), S(38)))) a.leaveRoom();
+            if (secondaryButton(tr("Sair###sair"), v2(S(125), S(38)))) a.leaveRoom();
             redrawIn(0.25); // mantém a contagem andando
             return;
         }
@@ -1855,18 +1887,18 @@ pub const App = struct {
         if (final) {
             // expulso, sala fechada, link desligado: reconectar não adianta
             c.igSetCursorScreenPos(v2(size.x / 2 - S(80), size.y / 2 + S(30)));
-            if (primaryButton("Voltar ao início", v2(S(160), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.leaveRoom();
+            if (primaryButton(tr("Voltar ao início###inicio"), v2(S(160), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.leaveRoom();
             return;
         }
         c.igSetCursorScreenPos(v2(size.x / 2 - S(130), size.y / 2 + S(30)));
-        if (primaryButton("Reconectar", v2(S(125), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) {
+        if (primaryButton(tr("Reconectar###reconectar"), v2(S(125), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) {
             const was_host = a.server != null;
             a.leaveRoom();
             if (was_host) a.createRoom() else a.joinRoom();
             return;
         }
         c.igSameLine(0, S(10));
-        if (secondaryButton("Sair", v2(S(125), S(38)))) a.leaveRoom();
+        if (secondaryButton(tr("Sair###sair"), v2(S(125), S(38)))) a.leaveRoom();
     }
 
     fn sectionHeader(text: []const u8) void {
@@ -1919,16 +1951,16 @@ pub const App = struct {
         {
             c.igSetCursorScreenPos(v2(origin.x + size.x - S(116), origin.y + S(8)));
             if (i_am_admin) {
-                if (iconButton("##lockroom", if (locked) ic.lock else ic.lock_open, S(28), if (locked) col.yellow else col.muted, col.hover, if (locked) "Sala trancada: ninguém novo entra. Clique pra destrancar." else "Trancar a sala (ninguém novo entra)"))
+                if (iconButton("##lockroom", if (locked) ic.lock else ic.lock_open, S(28), if (locked) col.yellow else col.muted, col.hover, if (locked) tr("Sala trancada: ninguém novo entra. Clique pra destrancar.") else tr("Trancar a sala (ninguém novo entra)")))
                     cl.admin(proto.admin_lock, 0, @intFromBool(!locked));
             } else if (locked) {
                 const ls = textSizeF(font_regular, 15, ic.lock);
                 drawTextF(d, font_regular, 15, v2(origin.x + size.x - S(102) - ls.x / 2, origin.y + S(14)), col.yellow, ic.lock);
                 if (c.igIsMouseHoveringRect(v2(origin.x + size.x - S(116), origin.y + S(8)), v2(origin.x + size.x - S(88), origin.y + S(36)), true))
-                    tooltipText("Sala trancada: ninguém novo entra");
+                    tooltipText(tr("Sala trancada: ninguém novo entra"));
             }
             c.igSetCursorScreenPos(v2(origin.x + size.x - S(84), origin.y + S(8)));
-            if (iconButton("##invite", ic.user_plus, S(28), col.muted, col.hover, "Copiar convite da sala")) a.copyInvite();
+            if (iconButton("##invite", ic.user_plus, S(28), col.muted, col.hover, tr("Copiar convite da sala"))) a.copyInvite();
             c.igSetCursorScreenPos(origin);
         }
         // ping + cadeado
@@ -1944,7 +1976,7 @@ pub const App = struct {
             const lx = origin.x + size.x - S(20) - pts.x - ls.x;
             drawTextF(d, font_regular, 11, v2(lx, origin.y + S(32)), col.green, ic.lock);
             if (c.igIsMouseHoveringRect(v2(lx - S(4), origin.y + S(6)), v2(origin.x + size.x, origin.y + S(48)), true))
-                tooltipText("Conexão criptografada (X25519 + ChaCha20-Poly1305)");
+                tooltipText(tr("Conexão criptografada (X25519 + ChaCha20-Poly1305)"));
         }
         c.igDummy(v2(size.x, hh));
 
@@ -1999,10 +2031,10 @@ pub const App = struct {
             primaryButton(fmtZ("{s}##camera", .{ic.video}), v2(cam_w, bh), col.red, rgb(0xC03537), rgb(0xA12828))
         else
             secondaryButton(fmtZ("{s}##camera", .{ic.video}), v2(cam_w, bh))) a.toggleCamera();
-        if (c.igIsItemHovered(0)) tooltipText(if (cam_on) "Desligar a câmera" else "Ligar a câmera");
+        if (c.igIsItemHovered(0)) tooltipText(if (cam_on) tr("Desligar a câmera") else tr("Ligar a câmera"));
         c.igSameLine(0, S(8));
         if (primaryButton(fmtZ("{s}##leave", .{ic.leave}), v2(leave_w, bh), rgb(0x3F2A2F), col.red, rgb(0xA12828))) a.askLeave();
-        if (c.igIsItemHovered(0)) tooltipText(if (a.server != null) "Fechar a sala" else "Sair da sala");
+        if (c.igIsItemHovered(0)) tooltipText(if (a.server != null) tr("Fechar a sala") else tr("Sair da sala"));
         c.igSetCursorScreenPos(v2(p.x, p.y + size.y));
     }
 
@@ -2041,13 +2073,13 @@ pub const App = struct {
         // tooltip: ação + quem está assistindo
         var tip_buf: [320]u8 = undefined;
         var tip_len: usize = 0;
-        const action: []const u8 = if (is_me) "É você!" else if (watching) "Parar de assistir" else "Assistir";
+        const action: []const u8 = if (is_me) tr("É você!") else if (watching) tr("Parar de assistir") else tr("Assistir");
         @memcpy(tip_buf[0..action.len], action);
         tip_len = action.len;
         var first = true;
         for (all) |*o| {
             if (!o.isWatching(stream)) continue;
-            const sep: []const u8 = if (first) "\nAssistindo: " else ", ";
+            const sep: []const u8 = if (first) tr("\nAssistindo: ") else ", ";
             first = false;
             const part = std.fmt.bufPrint(tip_buf[tip_len .. tip_buf.len - 1], "{s}{s}", .{ sep, o.nameSlice() }) catch break;
             tip_len += part.len;
@@ -2067,11 +2099,11 @@ pub const App = struct {
 
     fn routeText(route: u8) [:0]const u8 {
         return switch (route) {
-            proto.route_local => "Nessa mesma máquina",
-            proto.route_lan => "Rede local (ou VPN tipo Tailscale)",
-            proto.route_internet => "Direto pela internet (IPv4)",
-            proto.route_internet6 => "Direto pela internet (IPv6)",
-            proto.route_tunnel => "Pelo link público (túnel)",
+            proto.route_local => tr("Nessa mesma máquina"),
+            proto.route_lan => tr("Rede local (ou VPN tipo Tailscale)"),
+            proto.route_internet => tr("Direto pela internet (IPv4)"),
+            proto.route_internet6 => tr("Direto pela internet (IPv6)"),
+            proto.route_tunnel => tr("Pelo link público (túnel)"),
             else => "",
         };
     }
@@ -2104,9 +2136,9 @@ pub const App = struct {
         if (hovered) {
             var tip: [200]u8 = undefined;
             const route = routeText(m.route);
-            const action: []const u8 = if (m.id == my_id) "" else if (i_am_admin) "Clique direito: volume da voz e ações de admin" else "Clique direito: volume da voz";
+            const action: []const u8 = if (m.id == my_id) "" else if (i_am_admin) tr("Clique direito: volume da voz e ações de admin") else tr("Clique direito: volume da voz");
             const t = std.fmt.bufPrintZ(&tip, "{s}{s}{s}{s}", .{
-                if (route.len > 0) "Conectado: " else "", route, if (route.len > 0 and action.len > 0) "\n" else "", action,
+                if (route.len > 0) tr("Conectado: ") else "", route, if (route.len > 0 and action.len > 0) "\n" else "", action,
             }) catch "";
             if (t.len > 0) tooltipText(t);
             if (m.id != my_id and c.igIsItemClicked(1)) {
@@ -2130,7 +2162,7 @@ pub const App = struct {
             drawTextF(d, font_regular, 11, v2(tx, p.y + (h - S(13)) / 2), col.blurple, ic.shield);
             tx += S(18);
         }
-        if (m.id == my_id) drawTextF(d, font_regular, 12, v2(tx, p.y + (h - S(15)) / 2), col.faint, "(você)");
+        if (m.id == my_id) drawTextF(d, font_regular, 12, v2(tx, p.y + (h - S(15)) / 2), col.faint, tr("(você)"));
         var rx = p.x + row_w - S(10);
         if (m.streaming) rx -= liveBadge(d, v2(p.x + row_w - S(58), p.y + (h - S(15)) / 2)) + S(14);
         // câmera, microfone desligado / silenciado pelo admin, surdo, rota
@@ -2199,7 +2231,7 @@ pub const App = struct {
         }
         c.igDummy(v2(0, S(4)));
         // volume da voz dessa pessoa, só pra mim (0–200%)
-        textColored(col.faint, "Volume da voz");
+        textColored(col.faint, tr("Volume da voz"));
         var pct: i32 = @intFromFloat(@round(cl.voiceVolume(a.menu_target) * 100));
         const before = pct;
         sliderStyled("##vvol", &pct, 0, 200, "%d%%", S(220));
@@ -2208,7 +2240,7 @@ pub const App = struct {
         var new_pct: ?i32 = if (pct != before) pct else null;
         const muted = pct == 0;
         c.igDummy(v2(0, S(4)));
-        if (c.igSelectable_Bool(if (muted) "Voltar a ouvir" else "Silenciar pra mim", false, 0, v2(S(220), 0))) {
+        if (c.igSelectable_Bool(if (muted) tr("Voltar a ouvir###vmute") else tr("Silenciar pra mim###vmute"), false, 0, v2(S(220), 0))) {
             new_pct = if (muted) 100 else 0;
             save = true;
         }
@@ -2233,20 +2265,20 @@ pub const App = struct {
         c.igSeparator();
         c.igDummy(v2(0, S(2)));
         pushFont(font_bold, 11);
-        textColored(col.muted, "ADMIN");
+        textColored(col.muted, tr("ADMIN"));
         popFont();
         const w = S(220);
-        if (c.igSelectable_Bool(if (target.muted()) fmtZ("{s}  Liberar o microfone", .{ic.mic}) else fmtZ("{s}  Silenciar o microfone (pra todos)", .{ic.mic_slash}), false, 0, v2(w, 0)))
+        if (c.igSelectable_Bool(if (target.muted()) fmtZ("{s}  Liberar o microfone###amute", .{ic.mic}) else fmtZ("{s}  Silenciar o microfone (pra todos)###amute", .{ic.mic_slash}), false, 0, v2(w, 0)))
             cl.admin(proto.admin_mute, target.id, @intFromBool(!target.muted()));
-        if (target.streaming and c.igSelectable_Bool(fmtZ("{s}  Parar a transmissão", .{ic.stop}), false, 0, v2(w, 0)))
+        if (target.streaming and c.igSelectable_Bool(fmtZ("{s}  Parar a transmissão###astop", .{ic.stop}), false, 0, v2(w, 0)))
             cl.admin(proto.admin_stop_stream, target.id, proto.kind_screen);
-        if (target.camera() and c.igSelectable_Bool(fmtZ("{s}  Desligar a câmera", .{ic.video_slash}), false, 0, v2(w, 0)))
+        if (target.camera() and c.igSelectable_Bool(fmtZ("{s}  Desligar a câmera###acam", .{ic.video_slash}), false, 0, v2(w, 0)))
             cl.admin(proto.admin_stop_stream, target.id, proto.kind_camera);
-        if (i_am_owner and c.igSelectable_Bool(if (target.admin) fmtZ("{s}  Tirar o admin", .{ic.shield}) else fmtZ("{s}  Dar admin", .{ic.shield}), false, 0, v2(w, 0)))
+        if (i_am_owner and c.igSelectable_Bool(if (target.admin) fmtZ("{s}  Tirar o admin###aadmin", .{ic.shield}) else fmtZ("{s}  Dar admin###aadmin", .{ic.shield}), false, 0, v2(w, 0)))
             cl.admin(proto.admin_set_admin, target.id, @intFromBool(!target.admin));
         c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);
-        if (c.igSelectable_Bool(fmtZ("{s}  Expulsar da sala", .{ic.ban}), false, 0, v2(w, 0))) cl.admin(proto.admin_kick, target.id, 0);
-        if (c.igSelectable_Bool(fmtZ("{s}  Banir (não volta mais)", .{ic.gavel}), false, 0, v2(w, 0))) cl.admin(proto.admin_ban, target.id, 0);
+        if (c.igSelectable_Bool(fmtZ("{s}  Expulsar da sala###akick", .{ic.ban}), false, 0, v2(w, 0))) cl.admin(proto.admin_kick, target.id, 0);
+        if (c.igSelectable_Bool(fmtZ("{s}  Banir (não volta mais)###aban", .{ic.gavel}), false, 0, v2(w, 0))) cl.admin(proto.admin_ban, target.id, 0);
         c.igPopStyleColor(1);
     }
 
@@ -2254,33 +2286,34 @@ pub const App = struct {
         const st = m.status();
         switch (st.state) {
             .working => {
-                drawTextF(d, font_semibold, 14, v2(x + pad, yy + S(4)), col.text, "Pedindo pro roteador abrir a porta…");
-                drawTextF(d, font_regular, 13, v2(x + pad, yy + S(26)), col.muted, "Procurando o roteador na rede (UPnP). Leva uns segundos.");
+                drawTextF(d, font_semibold, 14, v2(x + pad, yy + S(4)), col.text, tr("Pedindo pro roteador abrir a porta…"));
+                drawTextF(d, font_regular, 13, v2(x + pad, yy + S(26)), col.muted, tr("Procurando o roteador na rede (UPnP). Leva uns segundos."));
                 c.igSetCursorScreenPos(v2(x + pad, yy + S(48)));
-                if (secondaryButton("Cancelar##upnp", v2(S(110), S(38)))) a.stopUpnp();
+                if (secondaryButton(tr("Cancelar##upnp"), v2(S(110), S(38)))) a.stopUpnp();
             },
             .ready => {
                 var abuf: [64]u8 = undefined;
                 const addr = m.address(&abuf);
-                drawTextF(d, font_regular, 13, v2(x + pad, yy), col.muted, "Porta aberta no roteador: conexão direta, sem túnel.");
+                drawTextF(d, font_regular, 13, v2(x + pad, yy), col.muted, tr("Porta aberta no roteador: conexão direta, sem túnel."));
                 rectFill(d, x + pad, yy + S(22), x + w - pad, yy + S(52), col.input, S(5));
                 drawTextF(d, font_regular, 13, v2(x + pad + S(10), yy + S(29)), col.green, ic.circle);
                 drawTextF(d, font_semibold, 14, v2(x + pad + S(30), yy + S(28)), col.header, fmtZ("{s}", .{addr}));
                 c.igSetCursorScreenPos(v2(x + pad, yy + S(62)));
                 if (primaryButton(fmtZ("{s}  Copiar convite##upnp", .{ic.user_plus}), v2(S(170), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.copyInvite();
                 c.igSameLine(0, S(10));
-                if (secondaryButton(fmtZ("{s}  Fechar porta", .{ic.power}), v2(S(140), S(38)))) a.stopUpnp();
+                if (secondaryButton(fmtZ("{s}  Fechar porta###upnpclose", .{ic.power}), v2(S(140), S(38)))) a.stopUpnp();
             },
             .failed => {
                 drawTextF(d, font_semibold, 14, v2(x + pad, yy - S(2)), col.red, fmtZ("{s}  Não deu pra abrir a porta", .{ic.warn}));
-                drawTextWrapF(d, font_regular, 12.5, v2(x + pad, yy + S(18)), col.muted, st.err, w - 2 * pad);
+                var eb: [300]u8 = undefined;
+                drawTextWrapF(d, font_regular, 12.5, v2(x + pad, yy + S(18)), col.muted, i18n.dynamic(st.err, &eb), w - 2 * pad);
                 c.igSetCursorScreenPos(v2(x + pad, yy + S(56)));
                 if (primaryButton(fmtZ("{s}  Criar link público##upnp", .{ic.globe}), v2(S(200), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) {
                     a.stopUpnp();
                     a.startTunnel();
                 }
                 c.igSameLine(0, S(10));
-                if (secondaryButton("Fechar##upnp", v2(S(100), S(38)))) a.stopUpnp();
+                if (secondaryButton(tr("Fechar##upnp"), v2(S(100), S(38)))) a.stopUpnp();
             },
         }
     }
@@ -2390,13 +2423,13 @@ pub const App = struct {
         const nm = a.myName();
         const shown = if (nm.len > 14) std.fmt.bufPrint(&name_buf, "{s}…", .{nm[0..12]}) catch nm else nm;
         drawTextF(d, font_semibold, 14, v2(p.x + S(50), p.y + S(10)), col.header, shown);
-        var status_text: []const u8 = "Online";
+        var status_text: []const u8 = tr("Online");
         var status_col = col.muted;
         if (a.sharer) |s| {
             s.mutex.lock();
             const st = s.state;
             s.mutex.unlock();
-            status_text = if (st == .starting) "Iniciando..." else "Ao vivo";
+            status_text = if (st == .starting) tr("Iniciando...") else tr("Ao vivo");
             status_col = if (st == .starting) col.yellow else col.red;
         }
         drawTextF(d, font_regular, 12, v2(p.x + S(50), p.y + S(29)), status_col, status_text);
@@ -2406,13 +2439,13 @@ pub const App = struct {
         const by = p.y + (size.y - bs) / 2;
         c.igSetCursorScreenPos(v2(bx, by));
         const mic_on = a.mic != null;
-        const mic_tip: [:0]const u8 = if (a.admin_muted) "O admin silenciou seu microfone" else if (mic_on) "Desligar o microfone" else "Ligar o microfone";
+        const mic_tip: [:0]const u8 = if (a.admin_muted) tr("O admin silenciou seu microfone") else if (mic_on) tr("Desligar o microfone") else tr("Ligar o microfone");
         if (iconButton("##mic", if (mic_on) ic.mic else ic.mic_slash, bs, if (mic_on) col.text else col.red, col.hover, mic_tip)) a.toggleMic();
         c.igSameLine(0, 0);
-        if (iconButton("##deaf", ic.headphones, bs, if (a.deaf) col.red else col.text, col.hover, if (a.deaf) "Voltar a ouvir a sala" else "Parar de ouvir a sala (surdo)")) a.toggleDeaf();
+        if (iconButton("##deaf", ic.headphones, bs, if (a.deaf) col.red else col.text, col.hover, if (a.deaf) tr("Voltar a ouvir a sala") else tr("Parar de ouvir a sala (surdo)"))) a.toggleDeaf();
         if (a.deaf) slash(d, v2(bx + bs, by), bs);
         c.igSameLine(0, 0);
-        if (iconButton("##gear", ic.gear, bs, col.text, col.hover, "Configurações")) a.openSettings();
+        if (iconButton("##gear", ic.gear, bs, col.text, col.hover, tr("Configurações"))) a.openSettings();
     }
 
     /// Liga/desliga os clipes das transmissões que já estão sendo assistidas.
@@ -2510,10 +2543,10 @@ pub const App = struct {
             // cópia: a thread de rede troca a lista de membros a qualquer hora
             const name = for (cl.members.items) |*m| {
                 if (m.id == v.member()) {
-                    break std.fmt.bufPrint(&name_bufs[n], "{s}{s}", .{ m.nameSlice()[0..@min(m.name_len, 32)], if (v.kind() == proto.kind_camera) " (câmera)" else "" }) catch "?";
+                    break std.fmt.bufPrint(&name_bufs[n], "{s}{s}", .{ m.nameSlice()[0..@min(m.name_len, 32)], if (v.kind() == proto.kind_camera) tr(" (câmera)") else "" }) catch "?";
                 }
             } else "?";
-            const st = std.fmt.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d:.0} KB/s · {s}", .{ v.tex_w, v.tex_h, v.fps, v.kbps, latencyText(&lat_bufs[n], v) }) catch "";
+            const st = i18n.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d:.0} KB/s · {s}", .{ v.tex_w, v.tex_h, v.fps, v.kbps, latencyText(&lat_bufs[n], v) }) catch "";
             tiles[n] = .{
                 .stream = v.stream,
                 .tex = v.tex,
@@ -2535,15 +2568,15 @@ pub const App = struct {
         cl.mutex.unlock();
         if (a.sharer) |s| {
             s.mutex.lock();
-            const st = std.fmt.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d} kbit/s{s} · {s} {d:.1} ms · {s}", .{ s.w, s.h, s.fps, s.bitrate_kbps, if (s.congested) " (rede lenta)" else if (s.slow_viewer) " (espectador lento)" else "", s.encoder_name, s.encode_ms, s.backendSlice() }) catch "";
-            tiles[n] = .{ .stream = proto.streamId(0, proto.kind_screen), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = "Você", .stats = st, .loading = s.preview_tex == 0, .ptr_stream = proto.streamId(my_id, proto.kind_screen), .clipbuf = s.clip };
+            const st = i18n.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d} kbit/s{s} · {s} {d:.1} ms · {s}", .{ s.w, s.h, s.fps, s.bitrate_kbps, if (s.congested) tr(" (rede lenta)") else if (s.slow_viewer) tr(" (espectador lento)") else "", s.encoder_name, s.encode_ms, s.backendSlice() }) catch "";
+            tiles[n] = .{ .stream = proto.streamId(0, proto.kind_screen), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = tr("Você"), .stats = st, .loading = s.preview_tex == 0, .ptr_stream = proto.streamId(my_id, proto.kind_screen), .clipbuf = s.clip };
             s.mutex.unlock();
             n += 1;
         }
         if (a.camera) |s| {
             s.mutex.lock();
-            const st = std.fmt.bufPrintZ(&stat_bufs[n], "câmera · {d}x{d} · {d:.0} fps · {d} kbit/s · {s} · {s}", .{ s.w, s.h, s.fps, s.bitrate_kbps, s.encoder_name, s.backendSlice() }) catch "";
-            tiles[n] = .{ .stream = proto.streamId(0, proto.kind_camera), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = "Você (câmera)", .stats = st, .loading = s.preview_tex == 0, .ptr_stream = proto.streamId(my_id, proto.kind_camera), .clipbuf = s.clip };
+            const st = i18n.bufPrintZ(&stat_bufs[n], "câmera · {d}x{d} · {d:.0} fps · {d} kbit/s · {s} · {s}", .{ s.w, s.h, s.fps, s.bitrate_kbps, s.encoder_name, s.backendSlice() }) catch "";
+            tiles[n] = .{ .stream = proto.streamId(0, proto.kind_camera), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = tr("Você (câmera)"), .stats = st, .loading = s.preview_tex == 0, .ptr_stream = proto.streamId(my_id, proto.kind_camera), .clipbuf = s.clip };
             s.mutex.unlock();
             n += 1;
         }
@@ -2556,21 +2589,21 @@ pub const App = struct {
             if (!a.side_visible) {
                 // barra lateral recolhida (janela estreita): botão pra trazer de volta
                 c.igSetCursorScreenPos(v2(o.x + S(8), o.y + S(7)));
-                if (iconButton("##side", ic.users, S(34), col.muted, col.hover, "Membros e controles")) {
+                if (iconButton("##side", ic.users, S(34), col.muted, col.hover, tr("Membros e controles"))) {
                     a.cfg.show_chat = false;
                     config.save(&a.cfg);
                 }
                 tx += S(36);
             }
             drawTextF(d, font_regular, 16, v2(tx, o.y + S(14)), col.muted, ic.tv);
-            drawTextF(d, font_bold, 15.5, v2(tx + S(28), o.y + S(14)), col.header, "Transmissões");
+            drawTextF(d, font_bold, 15.5, v2(tx + S(28), o.y + S(14)), col.header, tr("Transmissões"));
             if (n > 0) {
                 const cnt = fmtZ("{d} na tela", .{n});
                 drawTextF(d, font_regular, 13, v2(tx + S(144), o.y + S(16)), col.muted, cnt);
             }
             c.igSetCursorScreenPos(v2(o.x + size.x - S(44), o.y + S(7)));
             if (!a.chat_visible) {
-                if (iconButton("##showchat", ic.comments, S(34), if (a.chat_unread > 0) col.header else col.muted, col.hover, "Mostrar chat")) {
+                if (iconButton("##showchat", ic.comments, S(34), if (a.chat_unread > 0) col.header else col.muted, col.hover, tr("Mostrar chat"))) {
                     a.cfg.show_chat = true;
                     config.save(&a.cfg);
                 }
@@ -2648,8 +2681,9 @@ pub const App = struct {
     }
 
     fn latencyText(buf: *[48]u8, v: *const View) []const u8 {
-        if (v.fps < 0.5) return "tela parada";
-        return std.fmt.bufPrint(buf, "atraso {d:.0} ms · {s} ({s}) {d:.1} ms", .{ v.latency_ms, v.codec.name(), v.decoder_name, v.decode_ms }) catch "";
+        if (v.fps < 0.5) return tr("tela parada");
+        const dec = if (std.mem.eql(u8, v.decoder_name, "nenhum")) tr("nenhum") else v.decoder_name;
+        return i18n.bufPrint(buf, "atraso {d:.0} ms · {s} ({s}) {d:.1} ms", .{ v.latency_ms, v.codec.name(), dec, v.decode_ms }) catch "";
     }
 
     fn drawTile(a: *App, t: *const Tile, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f32, big: bool) void {
@@ -2751,7 +2785,7 @@ pub const App = struct {
         if (t.tex != 0 and t.tw > 0 and t.th > 0) {
             c.ImDrawList_AddImageRounded(d, texRef(t.tex), v2(ix, iy), v2(ix + iw, iy + ih), uv0, uv1, col.white, round, 0);
         } else {
-            const msg = "Carregando...";
+            const msg = tr("Carregando...");
             const ts = textSizeF(font_semibold, 14, msg);
             drawTextF(d, font_semibold, 14, v2(x + (w - ts.x) / 2, y + (h - ts.y) / 2), col.muted, msg);
         }
@@ -2816,7 +2850,7 @@ pub const App = struct {
             if (proto.memberOf(t.stream) != 0) {
                 c.igSetCursorScreenPos(v2(bx, by));
                 rectFill(d, bx, by, bx + bs, by + bs, col.overlay, S(6));
-                if (iconButton("##close", ic.xmark, bs, col.white, rgba(0xED4245, 200), "Parar de assistir")) {
+                if (iconButton("##close", ic.xmark, bs, col.white, rgba(0xED4245, 200), tr("Parar de assistir"))) {
                     a.unwatch(t.stream);
                     return;
                 }
@@ -2825,7 +2859,7 @@ pub const App = struct {
             c.igSetCursorScreenPos(v2(bx, by));
             rectFill(d, bx, by, bx + bs, by + bs, col.overlay, S(6));
             const focused = a.focused != null and a.focused.? == t.stream;
-            if (iconButton("##focus", if (focused) ic.compress else ic.expand, bs, col.white, rgba(0x5865F2, 200), if (focused) "Voltar pra grade" else "Destacar (duplo clique: tela cheia)")) {
+            if (iconButton("##focus", if (focused) ic.compress else ic.expand, bs, col.white, rgba(0x5865F2, 200), if (focused) tr("Voltar pra grade") else tr("Destacar (duplo clique: tela cheia)"))) {
                 a.focused = if (focused) null else t.stream;
             } else if (dbl and !pointing) {
                 a.focused = t.stream;
@@ -2840,7 +2874,7 @@ pub const App = struct {
                 // ponteiro "olha aqui"
                 c.igSetCursorScreenPos(v2(bx, by));
                 rectFill(d, bx, by, bx + bs, by + bs, if (pointing) col.blurple else col.overlay, S(6));
-                if (iconButton("##pointer", ic.hand_pointer, bs, col.white, rgba(0x5865F2, 200), if (pointing) "Desligar o ponteiro" else "Ponteiro: quem assiste vê onde você aponta (clique chama atenção)")) {
+                if (iconButton("##pointer", ic.hand_pointer, bs, col.white, rgba(0x5865F2, 200), if (pointing) tr("Desligar o ponteiro") else tr("Ponteiro: quem assiste vê onde você aponta (clique chama atenção)"))) {
                     if (pointing) a.stopPointer() else {
                         a.stopPointer();
                         a.pointer_tile = t.stream;
@@ -2852,7 +2886,7 @@ pub const App = struct {
                     const open = a.findPip(t.stream) != null;
                     c.igSetCursorScreenPos(v2(bx, by));
                     rectFill(d, bx, by, bx + bs, by + bs, if (open) col.blurple else col.overlay, S(6));
-                    if (iconButton("##pip", ic.window_restore, bs, col.white, rgba(0x5865F2, 200), if (open) "Fechar a janela flutuante" else "Abrir numa janela flutuante (por cima das outras)")) a.togglePip(t.stream, t.name);
+                    if (iconButton("##pip", ic.window_restore, bs, col.white, rgba(0x5865F2, 200), if (open) tr("Fechar a janela flutuante") else tr("Abrir numa janela flutuante (por cima das outras)"))) a.togglePip(t.stream, t.name);
                     bx -= bs + S(6);
                 }
                 // clipe (últimos 30 s) e gravação
@@ -2860,13 +2894,13 @@ pub const App = struct {
                     const rs = cb.recState();
                     c.igSetCursorScreenPos(v2(bx, by));
                     rectFill(d, bx, by, bx + bs, by + bs, if (rs.active) col.red else col.overlay, S(6));
-                    if (iconButton("##rec", ic.record, bs, col.white, rgba(0xED4245, 200), if (rs.active) "Parar de gravar (salva o arquivo)" else "Gravar (MP4, com o som da transmissão, a partir de agora)")) {
+                    if (iconButton("##rec", ic.record, bs, col.white, rgba(0xED4245, 200), if (rs.active) tr("Parar de gravar (salva o arquivo)") else tr("Gravar (MP4, com o som da transmissão, a partir de agora)"))) {
                         if (rs.active) a.stopRecording(cb, t.name) else a.startRecording(cb, t.name);
                     }
                     bx -= bs + S(6);
                     c.igSetCursorScreenPos(v2(bx, by));
                     rectFill(d, bx, by, bx + bs, by + bs, col.overlay, S(6));
-                    if (iconButton("##clip", ic.scissors, bs, col.white, rgba(0x5865F2, 200), "Salvar clipe dos últimos 30 s")) a.saveClip(cb, t.name);
+                    if (iconButton("##clip", ic.scissors, bs, col.white, rgba(0x5865F2, 200), tr("Salvar clipe dos últimos 30 s"))) a.saveClip(cb, t.name);
                     bx -= bs + S(6);
                 }
                 // zoom: seguir o cursor de quem transmite / voltar pro tamanho normal
@@ -2874,7 +2908,7 @@ pub const App = struct {
                     c.igSetCursorScreenPos(v2(bx, by));
                     rectFill(d, bx, by, bx + bs, by + bs, if (zm.follow) col.blurple else col.overlay, S(6));
                     const can_follow = t.cur_x != proto.coord_none;
-                    if (iconButton("##follow", ic.crosshairs, bs, if (can_follow) col.white else col.faint, rgba(0x5865F2, 200), if (zm.follow) "Parar de seguir o cursor" else if (can_follow) "Zoom seguindo o cursor de quem transmite (rodinha: aproximar)" else "Seguir o cursor (quem transmite está sem cursor)")) {
+                    if (iconButton("##follow", ic.crosshairs, bs, if (can_follow) col.white else col.faint, rgba(0x5865F2, 200), if (zm.follow) tr("Parar de seguir o cursor") else if (can_follow) tr("Zoom seguindo o cursor de quem transmite (rodinha: aproximar)") else tr("Seguir o cursor (quem transmite está sem cursor)"))) {
                         zm.follow = !zm.follow and can_follow;
                         if (zm.follow and zm.z < 2) zm.z = 2;
                     }
@@ -2883,7 +2917,7 @@ pub const App = struct {
                 if (zm.z > 1.001) {
                     c.igSetCursorScreenPos(v2(bx, by));
                     rectFill(d, bx, by, bx + bs, by + bs, col.overlay, S(6));
-                    if (iconButton("##zoomreset", ic.compress, bs, col.white, rgba(0x5865F2, 200), "Voltar pro tamanho normal (sem zoom)")) {
+                    if (iconButton("##zoomreset", ic.compress, bs, col.white, rgba(0x5865F2, 200), tr("Voltar pro tamanho normal (sem zoom)"))) {
                         zm.* = .{ .stream = t.stream, .used = true };
                     }
                     bx -= bs + S(6);
@@ -2898,7 +2932,7 @@ pub const App = struct {
                 rectFill(d, vx, vy, vx + vw, vy + vh, col.overlay, S(6));
                 c.igSetCursorScreenPos(v2(vx + S(2), vy));
                 const rg_muted = rg.isMuted();
-                if (iconButton("##mute", if (rg_muted) ic.volume_off else ic.volume, vh, if (rg_muted) col.red else col.white, rgba(0xFFFFFF, 30), if (rg_muted) "Ativar som" else "Silenciar")) rg.setMuted(!rg_muted);
+                if (iconButton("##mute", if (rg_muted) ic.volume_off else ic.volume, vh, if (rg_muted) col.red else col.white, rgba(0xFFFFFF, 30), if (rg_muted) tr("Ativar som") else tr("Silenciar"))) rg.setMuted(!rg_muted);
                 c.igSameLine(0, S(4));
                 c.igSetCursorScreenPos(v2(vx + vh + S(6), vy + S(7)));
                 c.igSetNextItemWidth(vw - vh - S(14));
@@ -3020,7 +3054,7 @@ pub const App = struct {
         }
         c.igSetMouseCursor(c.ImGuiMouseCursor_None);
         const ping_age: f32 = if (a.my_ping_us != 0) @as(f32, @floatFromInt(now - a.my_ping_us)) / 1e6 else -1;
-        drawPointerAt(drawList(), mouse, col.blurple, "você", ping_age);
+        drawPointerAt(drawList(), mouse, col.blurple, tr("você"), ping_age);
     }
 
     // ------------------------------------------------------ clipes e gravação
@@ -3061,7 +3095,7 @@ pub const App = struct {
             return;
         };
         j.* = .{ .snap = snap, .secs = @min(secs, @as(f32, @floatFromInt(clip.keep_us / 1_000_000))) };
-        const path = clip.newPath(&j.path, if (who.len > 0) who else "clipe", "_clipe") catch {
+        const path = clip.newPath(&j.path, if (who.len > 0) who else tr("clipe"), tr("_clipe")) catch {
             j.snap.deinit();
             std.heap.c_allocator.destroy(j);
             a.toast("Não achei a pasta de vídeos pra salvar o clipe.", .{}, true);
@@ -3094,7 +3128,7 @@ pub const App = struct {
 
     fn startRecording(a: *App, cb: *clip.Buffer, who: []const u8) void {
         var buf: [512:0]u8 = undefined;
-        const path = clip.newPath(&buf, if (who.len > 0) who else "gravacao", "_gravacao") catch {
+        const path = clip.newPath(&buf, if (who.len > 0) who else tr("gravacao"), tr("_gravacao")) catch {
             a.toast("Não achei a pasta de vídeos pra gravar.", .{}, true);
             return;
         };
@@ -3169,7 +3203,7 @@ pub const App = struct {
             if (a.client) |cl| {
                 cl.mutex.lock();
                 for (cl.members.items) |*m| if (m.id == v.member()) {
-                    name = std.fmt.bufPrint(&name_buf, "{s}{s}", .{ m.nameSlice()[0..@min(m.name_len, 40)], if (v.kind() == proto.kind_camera) " (câmera)" else "" }) catch "";
+                    name = std.fmt.bufPrint(&name_buf, "{s}{s}", .{ m.nameSlice()[0..@min(m.name_len, 40)], if (v.kind() == proto.kind_camera) tr(" (câmera)") else "" }) catch "";
                 };
                 cl.mutex.unlock();
             }
@@ -3209,7 +3243,7 @@ pub const App = struct {
         drawTextF(d, font_semibold, 14, v2(p.x + S(12), p.y + S(11)), col.header, fmtZ("{s}  telinha {s} saiu (você tem o {s})", .{ ic.arrow_right, v, version_string }));
         const bw = S(78);
         c.igSetCursorScreenPos(v2(p.x + w - bw - S(6), p.y + S(6)));
-        if (primaryButton("Baixar##update", v2(bw, h - S(12)), col.green, rgb(0x1F8B4C), rgb(0x1A7340))) openReleases();
+        if (primaryButton(tr("Baixar##update"), v2(bw, h - S(12)), col.green, rgb(0x1F8B4C), rgb(0x1A7340))) openReleases();
         c.igSetCursorScreenPos(v2(p.x, p.y + h));
         c.igDummy(v2(w, S(12)));
     }
@@ -3254,11 +3288,11 @@ pub const App = struct {
         drawTextF(d, font_regular, 34, v2(cx - its.x / 2, y + (isz - its.y) / 2), col.muted, ic.tv);
         y += isz + S(22);
 
-        const title = if (n_live > 0) "Tem gente ao vivo!" else "Ninguém está transmitindo";
+        const title = if (n_live > 0) tr("Tem gente ao vivo!") else tr("Ninguém está transmitindo");
         const ts = textSizeF(font_bold, 20, title);
         drawTextF(d, font_bold, 20, v2(cx - ts.x / 2, y), col.header, title);
         y += ts.y + S(8);
-        const sub = if (n_live > 0) "Escolhe quem assistir. Dá pra assistir várias telas ao mesmo tempo." else "Clica em Compartilhar tela pra começar, ou espera alguém da sala.";
+        const sub = if (n_live > 0) tr("Escolhe quem assistir. Dá pra assistir várias telas ao mesmo tempo.") else tr("Clica em Compartilhar tela pra começar, ou espera alguém da sala.");
         const ss = textSizeF(font_regular, 14, sub);
         drawTextF(d, font_regular, 14, v2(cx - ss.x / 2, y), col.muted, sub);
         y += ss.y + S(24);
@@ -3294,7 +3328,7 @@ pub const App = struct {
             }
         } else {
             c.igSetCursorScreenPos(v2(cx - S(100), y));
-            const lbl = fmtZ("{s}   Compartilhar tela", .{ic.desktop});
+            const lbl = fmtZ("{s}   Compartilhar tela###shareempty", .{ic.desktop});
             if (primaryButton(lbl, v2(S(200), S(42)), col.blurple, col.blurple_hover, col.blurple_active)) a.openShareModal();
             y += S(70);
             if (a.server) |s| a.drawHostTips(s, v2(cx, y));
@@ -3319,40 +3353,41 @@ pub const App = struct {
             a.drawUpnpState(m, d, x, yy, w, pad);
         } else if (st == null) {
             drawTextF(d, font_regular, 13, v2(x + pad, yy), col.muted, fmtZ("Link público: pelo {s}, funciona em qualquer rede.", .{config.getStr(&a.cfg.tunnel_host)}));
-            drawTextF(d, font_regular, 13, v2(x + pad, yy + S(18)), col.muted, "Porta no roteador (UPnP): direto, menos atraso. Tudo cifrado.");
+            drawTextF(d, font_regular, 13, v2(x + pad, yy + S(18)), col.muted, tr("Porta no roteador (UPnP): direto, menos atraso. Tudo cifrado."));
             c.igSetCursorScreenPos(v2(x + pad, yy + S(48)));
-            if (primaryButton(fmtZ("{s}  Criar link público", .{ic.globe}), v2(S(200), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.startTunnel();
+            if (primaryButton(fmtZ("{s}  Criar link público###tunnelgo", .{ic.globe}), v2(S(200), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.startTunnel();
             c.igSameLine(0, S(10));
-            if (secondaryButton(fmtZ("{s}  Abrir porta no roteador", .{ic.link}), v2(S(230), S(38)))) a.startUpnp();
+            if (secondaryButton(fmtZ("{s}  Abrir porta no roteador###upnpgo", .{ic.link}), v2(S(230), S(38)))) a.startUpnp();
         } else switch (st.?.state) {
             .connecting => {
                 drawTextF(d, font_semibold, 14, v2(x + pad, yy + S(4)), col.text, fmtZ("Abrindo o link público no {s}…", .{a.tunnel.?.hostSlice()}));
-                drawTextF(d, font_regular, 13, v2(x + pad, yy + S(26)), col.muted, "Leva só alguns segundos.");
+                drawTextF(d, font_regular, 13, v2(x + pad, yy + S(26)), col.muted, tr("Leva só alguns segundos."));
                 c.igSetCursorScreenPos(v2(x + pad, yy + S(48)));
-                if (secondaryButton("Cancelar##tunel", v2(S(110), S(38)))) a.stopTunnel();
+                if (secondaryButton(tr("Cancelar##tunel"), v2(S(110), S(38)))) a.stopTunnel();
             },
             .ready => {
                 var abuf: [300]u8 = undefined;
                 const addr = a.tunnel.?.address(&abuf);
-                drawTextF(d, font_regular, 13, v2(x + pad, yy), col.muted, "Link público no ar. Manda o convite pra galera:");
+                drawTextF(d, font_regular, 13, v2(x + pad, yy), col.muted, tr("Link público no ar. Manda o convite pra galera:"));
                 rectFill(d, x + pad, yy + S(22), x + w - pad, yy + S(52), col.input, S(5));
                 drawTextF(d, font_regular, 13, v2(x + pad + S(10), yy + S(29)), col.green, ic.circle);
                 drawTextF(d, font_semibold, 14, v2(x + pad + S(30), yy + S(28)), col.header, fmtZ("{s}", .{addr}));
                 c.igSetCursorScreenPos(v2(x + pad, yy + S(62)));
                 if (primaryButton(fmtZ("{s}  Copiar convite##tunel", .{ic.user_plus}), v2(S(170), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.copyInvite();
                 c.igSameLine(0, S(10));
-                if (secondaryButton(fmtZ("{s}  Desligar", .{ic.power}), v2(S(120), S(38)))) a.stopTunnel();
+                if (secondaryButton(fmtZ("{s}  Desligar###tunneloff", .{ic.power}), v2(S(120), S(38)))) a.stopTunnel();
             },
             .failed => {
                 drawTextF(d, font_semibold, 14, v2(x + pad, yy + S(4)), col.red, fmtZ("{s}  Não deu pra abrir o link público", .{ic.warn}));
-                drawTextF(d, font_regular, 13, v2(x + pad, yy + S(26)), col.muted, fmtZ("{s}", .{st.?.err}));
+                var eb: [300]u8 = undefined;
+                drawTextF(d, font_regular, 13, v2(x + pad, yy + S(26)), col.muted, fmtZ("{s}", .{i18n.dynamic(st.?.err, &eb)}));
                 c.igSetCursorScreenPos(v2(x + pad, yy + S(48)));
-                if (primaryButton(fmtZ("{s}  Tentar de novo", .{ic.rotate}), v2(S(170), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) {
+                if (primaryButton(fmtZ("{s}  Tentar de novo###tunnelretry", .{ic.rotate}), v2(S(170), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) {
                     a.stopTunnel();
                     a.startTunnel();
                 }
                 c.igSameLine(0, S(10));
-                if (secondaryButton("Fechar##tunel", v2(S(100), S(38)))) a.stopTunnel();
+                if (secondaryButton(tr("Fechar##tunel"), v2(S(100), S(38)))) a.stopTunnel();
             },
         }
 
@@ -3377,11 +3412,11 @@ pub const App = struct {
             drawTextF(d, font_regular, 13, v2(x + S(28), cy + S(5)), col.text, cmd);
             c.igSetCursorScreenPos(v2(x + w - S(50), cy - S(1)));
             c.igPushID_Int(@intCast(i));
-            if (iconButton("##cp", ic.copy, S(29), col.muted, col.hover, "Copiar")) c.igSetClipboardText(cmd.ptr);
+            if (iconButton("##cp", ic.copy, S(29), col.muted, col.hover, tr("Copiar"))) c.igSetClipboardText(cmd.ptr);
             c.igPopID();
         }
         yy += S(100);
-        drawTextF(d, font_regular, 13, v2(x + pad, yy), col.muted, "Cola aqui o endereço que o túnel mostrou e copia o convite:");
+        drawTextF(d, font_regular, 13, v2(x + pad, yy), col.muted, tr("Cola aqui o endereço que o túnel mostrou e copia o convite:"));
         c.igSetCursorScreenPos(v2(x + pad, yy + S(22)));
         const fw = w - S(36) - S(150);
         _ = textField("##pub", "ex.: 0.tcp.sa.ngrok.io:12345", &a.cfg.public_addr, fw, false);
@@ -3486,7 +3521,7 @@ pub const App = struct {
             if (rc.mine) c.ImDrawList_AddRect(d, p, v2(p.x + w, p.y + h), rgb(0x5865F2), S(8), S(1), 0);
             drawTextF(d, font_regular, 12.5, v2(p.x + S(8), p.y + S(4)), reaction_colors[e], reaction_icons[e]);
             drawTextF(d, font_semibold, 12.5, v2(p.x + S(26), p.y + S(3)), col.text, label);
-            if (hov) tooltipText(reaction_names[e]);
+            if (hov) tooltipText(reactionName(e));
             if (clicked) cl.sendReact(line.id, @intCast(e), !rc.mine);
         }
     }
@@ -3573,9 +3608,9 @@ pub const App = struct {
         const hh = S(48);
         rectFill(d, o.x, o.y + hh - 1, o.x + size.x, o.y + hh, rgba(0x000000, 60), 0);
         drawTextF(d, font_regular, 16, v2(o.x + S(16), o.y + S(14)), col.muted, ic.comments);
-        drawTextF(d, font_bold, 15.5, v2(o.x + S(44), o.y + S(14)), col.header, "Chat");
+        drawTextF(d, font_bold, 15.5, v2(o.x + S(44), o.y + S(14)), col.header, tr("Chat"));
         c.igSetCursorScreenPos(v2(o.x + size.x - S(44), o.y + S(7)));
-        if (iconButton("##hidechat", ic.xmark, S(34), col.muted, col.hover, "Esconder chat")) {
+        if (iconButton("##hidechat", ic.xmark, S(34), col.muted, col.hover, tr("Esconder chat"))) {
             a.cfg.show_chat = false;
             config.save(&a.cfg);
         }
@@ -3616,7 +3651,7 @@ pub const App = struct {
                 in_history = true;
                 c.igDummy(v2(0, S(6)));
                 pushFont(font_semibold, 11.5);
-                textColored(col.faint, "MENSAGENS DE ANTES DE VOCÊ ENTRAR");
+                textColored(col.faint, tr("MENSAGENS DE ANTES DE VOCÊ ENTRAR"));
                 popFont();
             } else if (!line.history and in_history) {
                 in_history = false;
@@ -3633,7 +3668,8 @@ pub const App = struct {
                 c.igSetCursorScreenPos(v2(p.x + S(24), p.y));
                 c.igPushTextWrapPos(0);
                 pushFont(font_regular, 13.5);
-                textColored(col.muted, text);
+                var sb: [256]u8 = undefined;
+                textColored(col.muted, i18n.server(text, &sb));
                 popFont();
                 c.igPopTextWrapPos();
                 last_from = 0;
@@ -3695,7 +3731,7 @@ pub const App = struct {
                 for (0..proto.reactions) |e| {
                     c.igSetCursorScreenPos(v2(bx0 + bs * @as(f32, @floatFromInt(e)), by0));
                     const mine = line.reactCount(@intCast(e), me).mine;
-                    if (iconButton(fmtZ("##r{d}_{d}", .{ line.id, e }), reaction_icons[e], bs, reaction_colors[e], col.hover, reaction_names[e])) cl.sendReact(line.id, @intCast(e), !mine);
+                    if (iconButton(fmtZ("##r{d}_{d}", .{ line.id, e }), reaction_icons[e], bs, reaction_colors[e], col.hover, reactionName(e))) cl.sendReact(line.id, @intCast(e), !mine);
                 }
                 c.igSetCursorScreenPos(back);
             }
@@ -3736,7 +3772,7 @@ pub const App = struct {
         a.chat_sent_len = 0;
         a.updateMentionSuggestions(cl);
         c.igSetNextItemWidth(bw - S(82));
-        const enter = c.igInputTextWithHint("##chatin", "Mensagem, @nome, ou cole/arraste uma imagem", &a.chat_input, a.chat_input.len, c.ImGuiInputTextFlags_EnterReturnsTrue | c.ImGuiInputTextFlags_CallbackAlways | c.ImGuiInputTextFlags_CallbackCompletion, chatCallback, a);
+        const enter = c.igInputTextWithHint("##chatin", tr("Mensagem, @nome, ou cole/arraste uma imagem"), &a.chat_input, a.chat_input.len, c.ImGuiInputTextFlags_EnterReturnsTrue | c.ImGuiInputTextFlags_CallbackAlways | c.ImGuiInputTextFlags_CallbackCompletion, chatCallback, a);
         const input_active = c.igIsItemActive();
         c.igPopStyleVar(1);
         c.igPopStyleColor(3);
@@ -3761,7 +3797,7 @@ pub const App = struct {
                 }
                 if (c.igIsItemHovered(0) or i == 0) rectFill(d, bx + S(4), ry, bx + bw - S(4), ry + row, if (c.igIsItemHovered(0)) col.hover else rgba(0xFFFFFF, 10), S(5));
                 drawTextF(d, font_semibold, 14, v2(bx + S(14), ry + S(6)), col.text, fmtZ("@{s}", .{name}));
-                if (i == 0) drawTextF(d, font_regular, 12, v2(bx + bw - S(60), ry + S(8)), col.faint, "Tab");
+                if (i == 0) drawTextF(d, font_regular, 12, v2(bx + bw - S(60), ry + S(8)), col.faint, tr("Tab"));
             }
             c.igSetCursorScreenPos(back);
         }
@@ -3770,11 +3806,11 @@ pub const App = struct {
         }
         c.igSameLine(0, 0);
         c.igSetCursorScreenPos(v2(bx + bw - S(76), by + S(5)));
-        if (iconButton("##attach", ic.image, S(34), col.muted, col.hover, "Imagem: arraste o arquivo pra janela ou copie e aperte Ctrl+V aqui")) {
+        if (iconButton("##attach", ic.image, S(34), col.muted, col.hover, tr("Imagem: arraste o arquivo pra janela ou copie e aperte Ctrl+V aqui"))) {
             if (!chatsend.paste(cl)) a.toast("Pra mandar imagem: arraste o arquivo pra janela do telinha, ou copie a imagem e aperte Ctrl+V no chat.", .{}, false);
         }
         c.igSetCursorScreenPos(v2(bx + bw - S(40), by + S(5)));
-        const send_click = iconButton("##send", ic.send, S(34), col.muted, col.hover, "Enviar");
+        const send_click = iconButton("##send", ic.send, S(34), col.muted, col.hover, tr("Enviar"));
         if (enter or send_click) {
             const raw = if (enter and a.chat_sent_len > 0) a.chat_sent[0..a.chat_sent_len] else std.mem.sliceTo(&a.chat_input, 0);
             const msg = std.mem.trim(u8, raw, " \t");
@@ -3834,7 +3870,7 @@ pub const App = struct {
     // ---------------------------------------------------------- modal de tela
 
     fn drawShareModal(a: *App) void {
-        _ = c.igOpenPopup_Str("Compartilhar tela", 0);
+        _ = c.igOpenPopup_Str(tr("Compartilhar tela###compartilhar"), 0);
         const vp = c.igGetMainViewport();
         c.igSetNextWindowPos(v2(vp.*.Pos.x + vp.*.Size.x / 2, vp.*.Pos.y + vp.*.Size.y / 2), c.ImGuiCond_Always, v2(0.5, 0.5));
         c.igSetNextWindowSize(v2(S(480), 0), c.ImGuiCond_Always);
@@ -3848,15 +3884,15 @@ pub const App = struct {
             c.igPopStyleColor(2);
             c.igPopStyleVar(2);
         }
-        if (!c.igBeginPopupModal("Compartilhar tela", null, c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoResize | c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_AlwaysAutoResize)) return;
+        if (!c.igBeginPopupModal(tr("Compartilhar tela###compartilhar"), null, c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoResize | c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_AlwaysAutoResize)) return;
         defer c.igEndPopup();
         const w = S(432);
 
         pushFont(font_bold, 20);
-        textColored(col.header, "Compartilhar tela");
+        textColored(col.header, tr("Compartilhar tela"));
         popFont();
         pushFont(font_regular, 13.5);
-        textColored(col.muted, "Todo mundo na sala vai poder assistir.");
+        textColored(col.muted, tr("Todo mundo na sala vai poder assistir."));
         popFont();
         c.igDummy(v2(0, S(14)));
 
@@ -3864,10 +3900,13 @@ pub const App = struct {
         c.igSetNextItemWidth(w);
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(10), S(9)));
-        const preview: [*:0]const u8 = if (a.n_sources > 0) @ptrCast(&a.sources[@intCast(a.source_idx)].name) else "Tela";
+        var src_buf: [300]u8 = undefined;
+        const preview: [:0]const u8 = if (a.n_sources > 0) sourceName(&a.sources[@intCast(a.source_idx)], &src_buf) else tr("Tela");
         if (beginCombo("##src", preview, 0)) {
             for (a.sources[0..a.n_sources], 0..) |*s, i| {
-                if (c.igSelectable_Bool(@ptrCast(&s.name), a.source_idx == @as(i32, @intCast(i)), 0, v2(0, 0))) a.source_idx = @intCast(i);
+                c.igPushID_Int(@intCast(i));
+                if (c.igSelectable_Bool(fmtZ("{s}###src", .{sourceName(s, &src_buf)}).ptr, a.source_idx == @as(i32, @intCast(i)), 0, v2(0, 0))) a.source_idx = @intCast(i);
+                c.igPopID();
             }
             c.igEndCombo();
         }
@@ -3903,7 +3942,7 @@ pub const App = struct {
         c.igDummy(v2(0, S(9)));
 
         fieldLabel("QUALIDADE");
-        const qname = if (a.cfg.quality < 40) "economia" else if (a.cfg.quality < 65) "equilibrada" else if (a.cfg.quality < 85) "alta" else "máxima";
+        const qname = if (a.cfg.quality < 40) tr("economia") else if (a.cfg.quality < 65) tr("equilibrada") else if (a.cfg.quality < 85) tr("alta") else tr("máxima");
         // estimativa de banda pra resolução escolhida (tela 1080p se "Original")
         const est_h: u32 = switch (a.cfg.resolution) {
             1 => 1080,
@@ -3916,15 +3955,15 @@ pub const App = struct {
         sliderStyled("##q", &a.cfg.quality, 20, 100, fmtZ("%d — {s} · até {d},{d} Mbit/s", .{ qname, mbit10 / 10, mbit10 % 10 }), w);
         c.igPushTextWrapPos(c.igGetCursorPosX() + w);
         pushFont(font_regular, 12);
-        textColored(col.faint, "A taxa cai sozinha se a internet de alguém não aguentar, e volta a subir quando melhora.");
+        textColored(col.faint, tr("A taxa cai sozinha se a internet de alguém não aguentar, e volta a subir quando melhora."));
         popFont();
         c.igPopTextWrapPos();
         c.igDummy(v2(0, S(10)));
 
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         c.igPushStyleColor_U32(c.ImGuiCol_CheckMark, col.white);
-        _ = c.igCheckbox("Mostrar o cursor do mouse", &a.cfg.cursor);
-        _ = c.igCheckbox("Usar a placa de vídeo (NVIDIA; no Windows também AMD e Intel), se tiver", &a.cfg.hardware);
+        _ = c.igCheckbox(tr("Mostrar o cursor do mouse###cursor"), &a.cfg.cursor);
+        _ = c.igCheckbox(tr("Usar a placa de vídeo (NVIDIA; no Windows também AMD e Intel), se tiver###hardware"), &a.cfg.hardware);
 
         c.igPopStyleColor(2);
 
@@ -3932,33 +3971,33 @@ pub const App = struct {
             c.igDummy(v2(0, S(8)));
             c.igPushTextWrapPos(c.igGetCursorPosX() + w);
             pushFont(font_regular, 12.5);
-            textColored(col.muted, "No Wayland o sistema abre um seletor pra escolher a tela ou janela. Na próxima vez ele lembra a escolha.");
+            textColored(col.muted, tr("No Wayland o sistema abre um seletor pra escolher a tela ou janela. Na próxima vez ele lembra a escolha."));
             popFont();
             c.igPopTextWrapPos();
         }
 
         c.igDummy(v2(0, S(18)));
         const bw = (w - S(10)) / 2;
-        if (secondaryButton("Cancelar", v2(bw, S(42))) or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
+        if (secondaryButton(tr("Cancelar###cancelshare"), v2(bw, S(42))) or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
             a.share_modal = false;
             c.igCloseCurrentPopup();
         }
         c.igSameLine(0, S(10));
         if (a.sharer != null) {
             const hb = (bw - S(10)) / 2;
-            if (primaryButton("Parar", v2(hb, S(42)), col.red, col.red_hover, col.red_hover)) {
+            if (primaryButton(tr("Parar###parar"), v2(hb, S(42)), col.red, col.red_hover, col.red_hover)) {
                 a.share_modal = false;
                 c.igCloseCurrentPopup();
                 a.stopSharing();
             }
             c.igSameLine(0, S(10));
-            if (primaryButton("Aplicar", v2(hb, S(42)), col.blurple, col.blurple_hover, col.blurple_active)) {
+            if (primaryButton(tr("Aplicar###aplicar"), v2(hb, S(42)), col.blurple, col.blurple_hover, col.blurple_active)) {
                 a.share_modal = false;
                 c.igCloseCurrentPopup();
                 a.startSharing();
             }
         } else {
-            const go = fmtZ("{s}   Ao vivo", .{ic.circle});
+            const go = fmtZ("{s}   Ao vivo###golive", .{ic.circle});
             if (primaryButton(go, v2(bw, S(42)), col.blurple, col.blurple_hover, col.blurple_active)) {
                 a.share_modal = false;
                 c.igCloseCurrentPopup();
@@ -3970,7 +4009,7 @@ pub const App = struct {
     // ------------------------------------------------------- configurações
 
     fn drawSettingsModal(a: *App) void {
-        _ = c.igOpenPopup_Str("Configurações", 0);
+        _ = c.igOpenPopup_Str(tr("Configurações###configuracoes"), 0);
         const vp = c.igGetMainViewport();
         c.igSetNextWindowPos(v2(vp.*.Pos.x + vp.*.Size.x / 2, vp.*.Pos.y + vp.*.Size.y / 2), c.ImGuiCond_Always, v2(0.5, 0.5));
         c.igSetNextWindowSize(v2(S(460), 0), c.ImGuiCond_Always);
@@ -3984,31 +4023,38 @@ pub const App = struct {
             c.igPopStyleColor(2);
             c.igPopStyleVar(2);
         }
-        if (!c.igBeginPopupModal("Configurações", null, c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoResize | c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_AlwaysAutoResize)) return;
+        if (!c.igBeginPopupModal(tr("Configurações###configuracoes"), null, c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoResize | c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_AlwaysAutoResize)) return;
         defer c.igEndPopup();
         const w = S(412);
+        const top = c.igGetCursorPos();
         pushFont(font_bold, 20);
-        textColored(col.header, "Configurações");
+        textColored(col.header, tr("Configurações"));
         popFont();
+        const after = c.igGetCursorPos();
+        // idioma no canto do título (não aumenta a janela)
+        const lw = S(170);
+        c.igSetCursorPos(v2(top.x + w - lw, top.y));
+        a.drawLanguage(lw);
+        c.igSetCursorPos(after);
         c.igDummy(v2(0, S(12)));
 
         fieldLabel("SEU NOME (vale na próxima vez que entrar numa sala)");
         _ = textField("##sname", "como a galera vai te ver", a.cfg.name[0 .. a.cfg.name.len - 1], w, false);
         c.igDummy(v2(0, S(10)));
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
-        _ = c.igCheckbox("Mostrar estatísticas sempre (não só com o mouse em cima)", &a.cfg.stats_always);
-        _ = c.igCheckbox("Notificações com o telinha em segundo plano (chat, ao vivo, quem entrou)", &a.cfg.notifications);
+        _ = c.igCheckbox(tr("Mostrar estatísticas sempre (não só com o mouse em cima)###stats"), &a.cfg.stats_always);
+        _ = c.igCheckbox(tr("Notificações com o telinha em segundo plano (chat, ao vivo, quem entrou)###notif"), &a.cfg.notifications);
         if (build_options.repo.len > 0 or update.getState() != .idle) {
-            if (c.igCheckbox("Avisar quando sair versão nova (pergunta ao GitHub ao abrir)", &a.cfg.check_updates) and a.cfg.check_updates)
+            if (c.igCheckbox(tr("Avisar quando sair versão nova (pergunta ao GitHub ao abrir)###updates"), &a.cfg.check_updates) and a.cfg.check_updates)
                 update.checkAsync(build_options.repo, version_string);
             if (update.getState() == .newer) {
                 c.igSameLine(0, S(8));
-                if (c.igSmallButton("Baixar a nova##upd")) openReleases();
+                if (c.igSmallButton(tr("Baixar a nova##upd"))) openReleases();
             }
         }
-        if (c.igCheckbox("Clipes: guardar os últimos 30 s do que você assiste", &a.cfg.clips)) a.applyClips();
+        if (c.igCheckbox(tr("Clipes: guardar os últimos 30 s do que você assiste###clips"), &a.cfg.clips)) a.applyClips();
         c.igSameLine(0, S(8));
-        if (c.igSmallButton("Abrir a pasta")) a.openClipsFolder();
+        if (c.igSmallButton(tr("Abrir a pasta###clipsdir"))) a.openClipsFolder();
         c.igPopStyleColor(1);
         c.igDummy(v2(0, S(16)));
 
@@ -4020,13 +4066,13 @@ pub const App = struct {
         fieldLabel("MICROFONE");
         {
             const cur = config.getStr(&a.cfg.mic_device);
-            const preview = if (cur.len == 0) "Padrão do sistema" else cur;
+            const preview = if (cur.len == 0) tr("Padrão do sistema") else cur;
             c.igSetNextItemWidth(w);
             c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
             c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(10), S(8)));
             var changed = false;
             if (beginCombo("##mic", fmtZ("{s}", .{preview}).ptr, 0)) {
-                if (c.igSelectable_Bool("Padrão do sistema", cur.len == 0, 0, v2(0, 0))) {
+                if (c.igSelectable_Bool(tr("Padrão do sistema###micdefault"), cur.len == 0, 0, v2(0, 0))) {
                     config.setStr(&a.cfg.mic_device, "");
                     changed = true;
                 }
@@ -4063,14 +4109,14 @@ pub const App = struct {
             c.igDummy(v2(w, S(14)));
         } else {
             pushFont(font_regular, 12);
-            textColored(col.faint, "Liga o microfone pra ver o medidor.");
+            textColored(col.faint, tr("Liga o microfone pra ver o medidor."));
             popFont();
         }
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
-        var reopen = c.igCheckbox("Supressão de ruído (tira ventilador, teclado, chiado)", &a.cfg.noise_suppression);
-        reopen = c.igCheckbox("Cancelamento de eco (pra quem usa caixa de som em vez de fone)", &a.cfg.echo_cancellation) or reopen;
-        _ = c.igCheckbox("Entrar na sala com o microfone ligado", &a.cfg.mic_on_join);
-        _ = c.igCheckbox("Sons de aviso (alguém entrou/saiu, ao vivo, microfone)", &a.cfg.sounds);
+        var reopen = c.igCheckbox(tr("Supressão de ruído (tira ventilador, teclado, chiado)###noise"), &a.cfg.noise_suppression);
+        reopen = c.igCheckbox(tr("Cancelamento de eco (pra quem usa caixa de som em vez de fone)###echo"), &a.cfg.echo_cancellation) or reopen;
+        _ = c.igCheckbox(tr("Entrar na sala com o microfone ligado###micjoin"), &a.cfg.mic_on_join);
+        _ = c.igCheckbox(tr("Sons de aviso (alguém entrou/saiu, ao vivo, microfone)###sounds"), &a.cfg.sounds);
         c.igPopStyleColor(1);
         if (reopen and a.mic != null) {
             a.stopMic();
@@ -4086,7 +4132,7 @@ pub const App = struct {
         {
             var changed = false;
             const cur = config.getStr(&a.cfg.camera_device);
-            var preview: []const u8 = if (a.n_cams == 0) "Nenhuma câmera encontrada" else "A primeira que achar";
+            var preview: []const u8 = if (a.n_cams == 0) tr("Nenhuma câmera encontrada") else tr("A primeira que achar");
             for (a.cams[0..a.n_cams]) |*cd| {
                 if (cur.len > 0 and std.mem.eql(u8, std.mem.sliceTo(&cd.id, 0), cur)) preview = std.mem.sliceTo(&cd.name, 0);
             }
@@ -4094,7 +4140,7 @@ pub const App = struct {
             c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(10), S(8)));
             c.igSetNextItemWidth(w * 0.68);
             if (beginCombo("##camdev", fmtZ("{s}", .{preview}).ptr, 0)) {
-                if (c.igSelectable_Bool("A primeira que achar", cur.len == 0, 0, v2(0, 0))) {
+                if (c.igSelectable_Bool(tr("A primeira que achar###camfirst"), cur.len == 0, 0, v2(0, 0))) {
                     config.setStr(&a.cfg.camera_device, "");
                     changed = true;
                 }
@@ -4131,14 +4177,40 @@ pub const App = struct {
         c.igPushTextWrapPos(c.igGetCursorPosX() + w);
         pushFont(font_regular, 12.5);
         textColored(col.faint, fmtZ("telinha {s} · protocolo v{d} · vídeo H.264 (NVENC/NVDEC, Media Foundation ou openh264) · voz Opus + RNNoise + SpeexDSP · criptografia X25519 + ChaCha20-Poly1305", .{ version_string, proto.version }));
-        textColored(col.faint, "Atalhos: Ctrl+M microfone · Ctrl+D surdo · F11 tela cheia · duplo clique = modo cinema · Esc sai");
+        textColored(col.faint, tr("Atalhos: Ctrl+M microfone · Ctrl+D surdo · F11 tela cheia · duplo clique = modo cinema · Esc sai"));
         popFont();
         c.igPopTextWrapPos();
         c.igDummy(v2(0, S(14)));
-        if (primaryButton("Fechar", v2(w, S(40)), col.blurple, col.blurple_hover, col.blurple_active) or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
+        if (primaryButton(tr("Fechar###fecharconfig"), v2(w, S(40)), col.blurple, col.blurple_hover, col.blurple_active) or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
             config.save(&a.cfg);
             a.settings_modal = false;
             c.igCloseCurrentPopup();
+        }
+    }
+
+    /// Idioma da interface (troca na hora).
+    fn drawLanguage(a: *App, w: f32) void {
+        const cur = config.getStr(&a.cfg.language);
+        const sel: usize = if (std.mem.eql(u8, cur, "pt")) 1 else if (std.mem.eql(u8, cur, "en")) 2 else 0;
+        // Português e English sempre na própria língua
+        const labels = [_][:0]const u8{ tr("Automático###lang0"), "Português###lang1", "English###lang2" };
+        const values = [_][]const u8{ "auto", "pt", "en" };
+        c.igSetNextItemWidth(w);
+        c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(10), S(4)));
+        defer {
+            c.igPopStyleVar(1);
+            c.igPopStyleColor(1);
+        }
+        const open = beginCombo("##lang", fmtZ("{s}  {s}", .{ ic.globe, labels[sel] }).ptr, 0);
+        if (c.igIsItemHovered(0)) tooltipText(tr("Idioma / Language"));
+        if (!open) return;
+        defer c.igEndCombo();
+        for (labels, values, 0..) |lb, v, i| {
+            if (!c.igSelectable_Bool(lb.ptr, sel == i, 0, v2(0, 0))) continue;
+            config.setStr(&a.cfg.language, v);
+            i18n.set(i18n.resolve(v));
+            config.save(&a.cfg);
         }
     }
 
@@ -4185,9 +4257,10 @@ pub const App = struct {
         try w.print(",\"fps\":{d},\"quality\":{d},\"mode\":{d},\"resolution\":{d},\"cursor\":{},\"audio\":{},\"hardware\":{},\"stats_always\":{},\"show_chat\":{}", .{
             cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.stats_always, cf.show_chat,
         });
-        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_apps\":{d}}}", .{
-            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), a.n_audio_apps,
+        try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_apps\":{d},\"language\":{f}}}", .{
+            cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), a.n_audio_apps, s(config.getStr(&cf.language)),
         });
+        try w.print(",\"lang\":{f}", .{s(@tagName(i18n.get()))});
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);
         try w.print(",\"clipboard\":{f},\"chat_input\":{f}", .{ s(if (cb_text != null) std.mem.span(cb_text) else ""), s(std.mem.sliceTo(&a.chat_input, 0)) });
         try w.print(",\"notifications_sent\":{d},\"away\":{}", .{ a.notifications_sent, a.away() });
