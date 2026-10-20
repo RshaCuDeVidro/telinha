@@ -368,6 +368,8 @@ fn segmented(id: [:0]const u8, comptime options: []const [:0]const u8, current: 
 // ---------------------------------------------------------------------------
 // Estado do app
 
+const SettingsPage = enum { geral, aparencia, voz, camera, depuracao, sobre };
+
 const Toast = struct { text: [256]u8, len: usize, until: f64, err: bool };
 
 /// Reconexão automática depois de uma queda (internet oscilou, túnel caiu...).
@@ -496,6 +498,7 @@ pub const App = struct {
     clip_jobs: [6]?*ClipJob = [_]?*ClipJob{null} ** 6,
     pips: [4]?*pip.Pip = [_]?*pip.Pip{null} ** 4, // janelas flutuantes
     iconified: bool = false, // janela principal minimizada (o main.zig avisa)
+    settings_page: SettingsPage = .geral,
     last_saved: [512]u8 = undefined, // último clipe/gravação salvo (modo de testes)
     last_saved_len: usize = 0,
     /// Transmissão com o ponteiro "olha aqui" ligado (o mouse vira o ponteiro).
@@ -1268,7 +1271,10 @@ pub const App = struct {
         else
             i18n.bufPrint(&preview_buf, "Só o som do {s}", .{cur}) catch cur;
         fieldLabel("SOM");
-        c.igSetNextItemWidth(w);
+        // "todo o som": o botão de excluir programas fica do lado
+        const all_mode = a.cfg.audio and cur.len == 0;
+        const excl_w = S(56);
+        c.igSetNextItemWidth(if (all_mode) w - excl_w - S(6) else w);
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(10), S(9)));
         if (beginCombo("##audio", fmtZ("{s}", .{preview}).ptr, 0)) {
@@ -1292,28 +1298,33 @@ pub const App = struct {
             if (c.igSelectable_Bool(tr("Sem som###audionone"), !a.cfg.audio, 0, v2(0, 0))) a.cfg.audio = false;
             c.igEndCombo();
         }
+        const combo_h = c.igGetItemRectSize().y;
         c.igPopStyleVar(1);
         c.igPopStyleColor(1);
+        if (all_mode) {
+            c.igSameLine(0, S(6));
+            a.drawAudioExclude(excl_w, combo_h, w);
+        }
         if (a.n_audio_apps == 0 and !sync.is_windows) {
             pushFont(font_regular, 12);
             textColored(col.faint, tr("Programa tocando som aparece na lista (abra de novo esta janela se não aparecer)."));
             popFont();
         }
-        if (a.cfg.audio and cur.len == 0) a.drawAudioExclude(w);
     }
 
     /// "Todo o som" menos alguns programas (o Discord, pra quem assiste não
     /// ouvir a própria voz de volta, por exemplo).
-    fn drawAudioExclude(a: *App, w: f32) void {
+    fn drawAudioExclude(a: *App, bw: f32, bh: f32, w: f32) void {
         const list = config.getStr(&a.cfg.audio_exclude);
         var n: usize = 0;
         var it = std.mem.splitScalar(u8, list, '\n');
         while (it.next()) |x| {
             if (x.len > 0) n += 1;
         }
-        c.igDummy(v2(0, S(2)));
-        const label = if (n == 0) fmtZ("{s}  Excluir programas do som###audioexcl", .{ic.ban}) else fmtZ("{s}  Excluídos: {d} (mudar)###audioexcl", .{ ic.ban, n });
-        if (secondaryButton(label, v2(w, S(32)))) {
+        const label = if (n == 0) fmtZ("{s}###audioexcl", .{ic.ban}) else fmtZ("{s} {d}###audioexcl", .{ ic.ban, n });
+        const clicked = secondaryButton(label, v2(bw, bh));
+        if (c.igIsItemHovered(0)) tooltipText(tr("Excluir programas do som (ex.: o Discord)"));
+        if (clicked) {
             a.n_audio_apps = audio.listApps(&a.audio_apps); // quem está tocando agora
             _ = c.igOpenPopup_Str("##excluirsom", 0);
         }
@@ -1321,7 +1332,9 @@ pub const App = struct {
             pushFont(font_regular, 12);
             const names = std.mem.replaceOwned(u8, std.heap.c_allocator, list, "\n", ", ") catch null;
             defer if (names) |x| std.heap.c_allocator.free(x);
+            c.igPushTextWrapPos(c.igGetCursorPosX() + w);
             textColored(col.faint, fmtZ("Fora do som: {s}", .{names orelse list}));
+            c.igPopTextWrapPos();
             popFont();
         }
         if (a.sharer) |s| if (s.audio_exclude_ignored) {
@@ -4286,11 +4299,11 @@ pub const App = struct {
     fn drawSettingsModal(a: *App) void {
         _ = c.igOpenPopup_Str(tr("Configurações###configuracoes"), 0);
         const vp = c.igGetMainViewport();
+        const mw = @min(S(800), vp.*.Size.x - S(24));
+        const mh = @min(S(600), vp.*.Size.y - S(24));
         c.igSetNextWindowPos(v2(vp.*.Pos.x + vp.*.Size.x / 2, vp.*.Pos.y + vp.*.Size.y / 2), c.ImGuiCond_Always, v2(0.5, 0.5));
-        c.igSetNextWindowSize(v2(S(460), 0), c.ImGuiCond_Always);
-        // janela baixa: rola em vez de cortar o fim
-        c.igSetNextWindowSizeConstraints(v2(S(460), 0), v2(S(460), @max(S(200), vp.*.Size.y - S(24))), null, null);
-        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(24), S(22)));
+        c.igSetNextWindowSize(v2(mw, mh), c.ImGuiCond_Always);
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(0, 0));
         c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, S(10) * col.round);
         c.igPushStyleColor_U32(c.ImGuiCol_PopupBg, col.bg_main);
         c.igPushStyleColor_U32(c.ImGuiCol_ModalWindowDimBg, rgba(0x000000, 170));
@@ -4298,28 +4311,87 @@ pub const App = struct {
             c.igPopStyleColor(2);
             c.igPopStyleVar(2);
         }
-        if (!c.igBeginPopupModal(tr("Configurações###configuracoes"), null, c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoResize | c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_AlwaysAutoResize)) return;
+        if (!c.igBeginPopupModal(tr("Configurações###configuracoes"), null, c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoResize | c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_NoScrollbar | c.ImGuiWindowFlags_NoScrollWithMouse)) return;
         defer c.igEndPopup();
-        const w = S(412);
-        const top = c.igGetCursorPos();
-        pushFont(font_bold, 20);
+
+        // barra lateral: as páginas
+        const nav_w = S(200);
+        const wp = c.igGetWindowPos();
+        const d = c.igGetWindowDrawList();
+        c.ImDrawList_AddRectFilled(d, wp, v2(wp.x + nav_w, wp.y + mh), col.bg_side, S(10) * col.round, c.ImDrawFlags_RoundTopLeft | c.ImDrawFlags_RoundBottomLeft);
+        c.igSetCursorPos(v2(S(18), S(22)));
+        pushFont(font_bold, 18);
         textColored(col.header, tr("Configurações"));
         popFont();
-        const after = c.igGetCursorPos();
-        // idioma no canto do título (não aumenta a janela)
-        const lw = S(170);
-        c.igSetCursorPos(v2(top.x + w - lw, top.y));
-        a.drawLanguage(lw);
-        c.igSetCursorPos(after);
-        c.igDummy(v2(0, S(12)));
+        var nav_y = S(62);
+        const pages = [_]struct { page: SettingsPage, icon: []const u8, name: [:0]const u8 }{
+            .{ .page = .geral, .icon = ic.gear, .name = tr("Geral") },
+            .{ .page = .aparencia, .icon = ic.image, .name = tr("Aparência") },
+            .{ .page = .voz, .icon = ic.mic, .name = tr("Voz") },
+            .{ .page = .camera, .icon = ic.video, .name = tr("Câmera") },
+            .{ .page = .depuracao, .icon = ic.signal, .name = tr("Depuração") },
+            .{ .page = .sobre, .icon = ic.desktop, .name = tr("Sobre") },
+        };
+        for (pages) |pg| {
+            c.igSetCursorPos(v2(S(10), nav_y));
+            const p = c.igGetCursorScreenPos();
+            const iw = nav_w - S(20);
+            const ih = S(36);
+            nav_y += ih + S(4);
+            c.igPushID_Str(@tagName(pg.page).ptr);
+            const clicked = c.igInvisibleButton(fmtZ("##cfg-{s}", .{@tagName(pg.page)}).ptr, v2(iw, ih), 0);
+            c.igPopID();
+            const sel = a.settings_page == pg.page;
+            if (sel or c.igIsItemHovered(0)) rectFill(d, p.x, p.y, p.x + iw, p.y + ih, if (sel) col.selected else col.hover, S(6));
+            const tcol = if (sel) col.header else col.muted;
+            drawTextF(d, font_regular, 14, v2(p.x + S(12), p.y + S(10)), tcol, pg.icon);
+            drawTextF(d, font_semibold, 14, v2(p.x + S(40), p.y + S(9)), tcol, pg.name);
+            if (clicked) a.settings_page = pg.page;
+        }
+        // Fechar no pé da barra
+        c.igSetCursorPos(v2(S(10), mh - S(56)));
+        var close = primaryButton(tr("Fechar###fecharconfig"), v2(nav_w - S(20), S(40)), col.blurple, col.blurple_hover, col.blurple_active);
+        close = close or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false);
 
+        // a página escolhida (rola sozinha)
+        c.igSetCursorPos(v2(nav_w, 0));
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(28), S(24)));
+        if (c.igBeginChild_Str("##cfgpage", v2(mw - nav_w, mh), c.ImGuiChildFlags_AlwaysUseWindowPadding, 0)) {
+            const w = mw - nav_w - S(56);
+            const title = for (pages) |pg| {
+                if (pg.page == a.settings_page) break pg.name;
+            } else "";
+            pushFont(font_bold, 20);
+            textColored(col.header, title);
+            popFont();
+            c.igDummy(v2(0, S(10)));
+            switch (a.settings_page) {
+                .geral => a.settingsGeneral(w),
+                .aparencia => a.settingsAppearance(w),
+                .voz => a.settingsVoice(w),
+                .camera => a.settingsCamera(w),
+                .depuracao => a.drawDebug(w),
+                .sobre => a.settingsAbout(w),
+            }
+            c.igDummy(v2(0, S(16)));
+        }
+        c.igEndChild();
+        c.igPopStyleVar(1);
+
+        if (close) {
+            config.save(&a.cfg);
+            a.settings_modal = false;
+            c.igCloseCurrentPopup();
+        }
+    }
+
+    fn settingsGeneral(a: *App, w: f32) void {
         fieldLabel("SEU NOME (vale na próxima vez que entrar numa sala)");
         _ = textField("##sname", "como a galera vai te ver", a.cfg.name[0 .. a.cfg.name.len - 1], w, false);
         c.igDummy(v2(0, S(10)));
-        fieldLabel("TEMA");
-        c.igDummy(v2(0, S(2)));
-        a.drawThemes(w);
-        c.igDummy(v2(0, S(10)));
+        fieldLabel("IDIOMA");
+        a.drawLanguage(@min(w, S(260)));
+        c.igDummy(v2(0, S(12)));
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         _ = c.igCheckbox(tr("Mostrar estatísticas sempre (não só com o mouse em cima)###stats"), &a.cfg.stats_always);
         _ = c.igCheckbox(tr("Notificações com o telinha em segundo plano (chat, ao vivo, quem entrou)###notif"), &a.cfg.notifications);
@@ -4335,13 +4407,15 @@ pub const App = struct {
         c.igSameLine(0, S(8));
         if (c.igSmallButton(tr("Abrir a pasta###clipsdir"))) a.openClipsFolder();
         c.igPopStyleColor(1);
-        c.igDummy(v2(0, S(16)));
+    }
 
-        // ---- voz
-        pushFont(font_bold, 15);
-        textColored(col.header, fmtZ("{s}  Voz", .{ic.mic}));
-        popFont();
-        c.igDummy(v2(0, S(6)));
+    fn settingsAppearance(a: *App, w: f32) void {
+        fieldLabel("TEMA");
+        c.igDummy(v2(0, S(2)));
+        a.drawThemes(w);
+    }
+
+    fn settingsVoice(a: *App, w: f32) void {
         fieldLabel("MICROFONE");
         {
             const cur = config.getStr(&a.cfg.mic_device);
@@ -4401,13 +4475,9 @@ pub const App = struct {
             a.stopMic();
             a.applyVoice();
         }
-        c.igDummy(v2(0, S(16)));
+    }
 
-        // ---- câmera
-        pushFont(font_bold, 15);
-        textColored(col.header, fmtZ("{s}  Câmera", .{ic.video}));
-        popFont();
-        c.igDummy(v2(0, S(6)));
+    fn settingsCamera(a: *App, w: f32) void {
         {
             var changed = false;
             const cur = config.getStr(&a.cfg.camera_device);
@@ -4451,31 +4521,27 @@ pub const App = struct {
             // câmera ligada: troca na hora, sem derrubar quem assiste
             if (changed) if (a.camera) |cam| cam.update(a.cameraSettings());
         }
-        c.igDummy(v2(0, S(16)));
+    }
 
-        a.drawDebug(w);
-        c.igDummy(v2(0, S(16)));
-
+    fn settingsAbout(a: *App, w: f32) void {
+        _ = a;
+        const p = c.igGetCursorScreenPos();
+        if (logo_tex == 0) gl.upload(&logo_tex, logo_rgba, 128, 128, gl.RGBA);
+        c.ImDrawList_AddImage(c.igGetWindowDrawList(), texRef(logo_tex), p, v2(p.x + S(72), p.y + S(72)), v2(0, 0), v2(1, 1), col.white);
+        drawTextF(c.igGetWindowDrawList(), font_bold, 22, v2(p.x + S(88), p.y + S(12)), col.header, fmtZ("telinha {s}", .{version_string}));
+        drawTextF(c.igGetWindowDrawList(), font_regular, 13, v2(p.x + S(89), p.y + S(42)), col.muted, tr("compartilha a tela com a galera"));
+        c.igDummy(v2(w, S(86)));
         c.igPushTextWrapPos(c.igGetCursorPosX() + w);
-        pushFont(font_regular, 12.5);
-        textColored(col.faint, fmtZ("telinha {s} · protocolo v{d} · vídeo H.264 (NVENC/NVDEC, Media Foundation ou openh264) · voz Opus + RNNoise + SpeexDSP · criptografia X25519 + ChaCha20-Poly1305", .{ version_string, proto.version }));
+        pushFont(font_regular, 13);
+        textColored(col.faint, fmtZ("protocolo v{d} · vídeo H.264 (NVENC/NVDEC, Media Foundation ou openh264) · voz Opus + RNNoise + SpeexDSP · criptografia X25519 + ChaCha20-Poly1305", .{proto.version}));
+        c.igDummy(v2(0, S(8)));
         textColored(col.faint, tr("Atalhos: Ctrl+M microfone · Ctrl+D surdo · F11 tela cheia · duplo clique = modo cinema · Esc sai"));
         popFont();
         c.igPopTextWrapPos();
-        c.igDummy(v2(0, S(14)));
-        if (primaryButton(tr("Fechar###fecharconfig"), v2(w, S(40)), col.blurple, col.blurple_hover, col.blurple_active) or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
-            config.save(&a.cfg);
-            a.settings_modal = false;
-            c.igCloseCurrentPopup();
-        }
     }
 
     /// Log de depuração: grava tudo num arquivo e manda (gofile.io ou webhook).
     fn drawDebug(a: *App, w: f32) void {
-        pushFont(font_bold, 15);
-        textColored(col.header, fmtZ("{s}  Depuração", .{ic.gear}));
-        popFont();
-        c.igDummy(v2(0, S(6)));
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         var on = debuglog.on();
         if (c.igCheckbox(tr("Gravar log de depuração (desempenho, rede, vídeo, erros: tudo)###debuglog"), &on)) {

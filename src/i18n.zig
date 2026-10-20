@@ -513,14 +513,24 @@ const table = [_][2][]const u8{
     .{ "{s}   Ao vivo", "{s}   Go live" },
 
     // som: excluir programas
-    .{ "{s}  Excluir programas do som", "{s}  Exclude programs from the audio" },
-    .{ "{s}  Excluídos: {d} (mudar)", "{s}  Excluded: {d} (change)" },
+    .{ "Excluir programas do som (ex.: o Discord)", "Exclude programs from the audio (e.g. Discord)" },
     .{ "Fora do som: {s}", "Left out of the audio: {s}" },
     .{ "Esse Windows não deixa excluir programas do som (precisa do Windows 10 versão 2004 ou mais novo).", "This Windows can't exclude programs from the audio (needs Windows 10 version 2004 or newer)." },
     .{ "Quem fica de fora do som da transmissão", "Who stays out of the stream's audio" },
     .{ "Ex.: o Discord, pra quem assiste não ouvir a própria voz de volta.", "E.g. Discord, so viewers don't hear their own voice back." },
     .{ "{s} (não está tocando agora)", "{s} (not playing right now)" },
     .{ "Nenhum programa tocando som agora. Dá o play no que quer excluir e abre de novo.", "No program is playing audio right now. Play something in the one you want to exclude and open this again." },
+
+    // configurações: páginas
+    .{ "Geral", "General" },
+    .{ "Aparência", "Appearance" },
+    .{ "Voz", "Voice" },
+    .{ "Câmera", "Camera" },
+    .{ "Depuração", "Debugging" },
+    .{ "Sobre", "About" },
+    .{ "IDIOMA", "LANGUAGE" },
+    .{ "telinha {s}", "telinha {s}" },
+    .{ "protocolo v{d} · vídeo H.264 (NVENC/NVDEC, Media Foundation ou openh264) · voz Opus + RNNoise + SpeexDSP · criptografia X25519 + ChaCha20-Poly1305", "protocol v{d} · H.264 video (NVENC/NVDEC, Media Foundation or openh264) · Opus voice + RNNoise + SpeexDSP · X25519 + ChaCha20-Poly1305 encryption" },
 
     // temas
     .{ "TEMA", "THEME" },

@@ -175,7 +175,7 @@ def camera():
         # configurações: a câmera aparece na lista; trocar a resolução com ela ligada reinicia
         dono.click("##gear")
         dono.wait(lambda st: st["cfg"]["cameras"] >= 1, 5, "a lista de câmeras ter a de teste")
-        settings_find(dono, "##camres")
+        dono.click("##cfg-camera")
         dono.click("##camdev")
         dono.click(contains="Camera de teste", window="##Combo")
         dono.wait(lambda st: st["cfg"]["camera_device"] != "", 5, "escolher a câmera de teste")
@@ -276,13 +276,15 @@ def sala_controles():
         b.click("##gear")
         b.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
         before = b.state()["cfg"]
-        for label, key in [("Mostrar estatísticas sempre", "stats_always"), ("Sons de aviso", "sounds"),
-                           ("Entrar na sala com o microfone ligado", "mic_on_join"), ("Supressão de ruído", "noise_suppression"),
-                           ("Cancelamento de eco", "echo_cancellation")]:
+        for page, label, key in [("geral", "Mostrar estatísticas sempre", "stats_always"), ("voz", "Sons de aviso", "sounds"),
+                                 ("voz", "Entrar na sala com o microfone ligado", "mic_on_join"), ("voz", "Supressão de ruído", "noise_suppression"),
+                                 ("voz", "Cancelamento de eco", "echo_cancellation")]:
+            b.click(f"##cfg-{page}")
             b.click(contains=label)
             b.wait(lambda st, k=key, v=before[key]: st["cfg"][k] != v, 3, f"marcar {label}")
         b.drag("##sens", 0.5, 0.9)
         b.wait(lambda st: st["cfg"]["voice_sensitivity"] > 70, 3, "a sensibilidade subir")
+        b.click("##cfg-geral")
         b.fill("##sname", "Bruno2")
         settings_click(b, "Fechar")
         b.wait(lambda st: not st["settings_modal"] and st["cfg"]["name"] == "Bruno2", 3, "fechar as configurações")
@@ -983,17 +985,15 @@ def idioma_ingles():
         # configurações em inglês; trocar pra português muda tudo na hora (e fica salvo)
         a.click("##gear")
         a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
-        settings_find(a, "Close")
-        settings_top(a)
-        a.find(contains="Notification sounds", window="Settings")
+        a.find("Close", window="Settings")
+        a.find(contains="Always show statistics", window="Settings")
         a.click("##lang")
         a.click("Português", window="##Combo")
         a.wait(lambda st: st["lang"] == "pt" and st["cfg"]["language"] == "pt", 3, "trocar pra português")
         # (o nome guardado da janela aberta não muda; o ID "###configuracoes" é o mesmo)
-        settings_find(a, "Fechar")
-        settings_top(a)
-        a.find(contains="Sons de aviso", window="###configuracoes")
-        expect(a.find(contains="Notification sounds", timeout=0.5, need=False) is None, "ficou texto em inglês depois de trocar")
+        a.find("Fechar", window="###configuracoes")
+        a.find(contains="Mostrar estatísticas sempre", window="###configuracoes")
+        expect(a.find(contains="Always show statistics", timeout=0.5, need=False) is None, "ficou texto em inglês depois de trocar")
         ini = open(os.path.join(a.cfg, "telinha", "config.ini")).read()
         expect("language=pt" in ini, "o idioma não foi salvo no arquivo")
         # e de volta pro inglês
@@ -1049,6 +1049,7 @@ def log_depuracao():
         b.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "a Bia ver a Ana")
         a.click("##gear")
         a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        a.click("##cfg-depuracao")
         settings_click(a, "##debuglog")
         st = a.wait(lambda st: st["debug_on"], 3, "o log ligar")
         expect(st["cfg"].get("debug_log", True), "não salvou")
@@ -1097,6 +1098,7 @@ def log_depuracao():
         st = a.wait(lambda st: st["debug_send"] == "failed", 30, "o erro do envio")
         log(f"erro: {st['debug_result']}")
         # desliga: para de gravar e fica salvo desligado
+        a.click("##cfg-depuracao")
         settings_click(a, "##debuglog")
         a.wait(lambda st: not st["debug_on"], 3, "o log desligar")
         ini = open(os.path.join(a.cfg, "telinha", "config.ini")).read()
@@ -1116,6 +1118,7 @@ def temas():
         expect(st["cfg"]["theme"] == "escuro", f"tema inicial: {st['cfg']['theme']}")
         a.click("##gear")
         a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        a.click("##cfg-aparencia")
         for t in ["claro", "pwnd", "pwnd-claro", "nord", "dracula", "pwnd"]:
             a.click(f"##tema-{t}", window="###configuracoes")
             a.wait(lambda st: st["cfg"]["theme"] == t, 3, f"trocar pro tema {t}")
@@ -1201,6 +1204,7 @@ def windows_log_depuracao():
             expect(part in txt, f"faltou {part!r} no log do .exe")
         w.click("##gear")
         w.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        w.click("##cfg-depuracao")
         settings_click(w, "##dbgsend")
         st = w.wait(lambda st: st["debug_send"] in ("done", "failed"), 40, "o envio pelo WinHTTP")
         expect(st["debug_send"] == "done" and st["debug_result"] == "https://gofile.io/d/teste1", f"envio: {st['debug_send']} {st['debug_result']}")
