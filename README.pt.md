@@ -83,6 +83,7 @@ sudo dnf install libportal pipewire-libs
 4. **Transmita.** Clique em **Compartilhar tela**, escolha resolução, fps, qualidade e tipo de conteúdo, e clique em **Ao vivo**. Dá pra mudar tudo com a transmissão rolando.
 5. **Assista.** Clique em quem está ao vivo. **F11** é tela cheia, **duplo clique** é modo cinema e **Esc** sai.
 6. **Fale.** **Ctrl+M** liga e desliga o microfone e **Ctrl+D** deixa você surdo. Clique direito em alguém pra mudar o volume da voz dessa pessoa.
+7. **Pule entre canais.** Um servidor pode ter várias salas ao mesmo tempo, como no IRC. Clique num canal no painel, aperte **+** pra criar um, ou digite `/join nome` no chat. A sua transmissão vai junto.
 
 No Wayland o sistema pergunta qual tela ou janela compartilhar na primeira vez e depois lembra.
 
@@ -126,7 +127,9 @@ No Wayland o sistema pergunta qual tela ou janela compartilhar na primeira vez e
 <td valign="top">
 
 ### 🛡️ Salas e controle
+- **Canais, como no IRC**: um servidor, várias salas, cada uma com o seu chat, gente, voz e transmissões. Troca sem reconectar; o convite pode apontar pra um canal.
 - Quem cria a sala ganha a coroa e pode expulsar, banir, silenciar, parar uma transmissão, dar ou tirar o admin e trancar a sala.
+- **Estatísticas do servidor pro admin**: CPU, memória, banda chegando e saindo, quem está atrasando e um palpite em português claro de qual é o gargalo.
 - **Reconexão automática**, que retoma a sua transmissão e as que você estava assistindo.
 - Estatísticas ao vivo: resolução, fps, banda e atraso de ponta a ponta medido.
 - **Atalhos globais configuráveis** pra clipe, microfone, surdo, transmitir, print e um que liga e desliga todos.
@@ -156,6 +159,8 @@ No Wayland o sistema pergunta qual tela ou janela compartilhar na primeira vez e
 |---|---|
 | <img src="docs/img/pt/share.png" alt="Janela de compartilhar tela"> | <img src="docs/img/pt/room_pwnd.jpg" alt="O tema pwnd neon"> |
 | **Ao vivo.** Escolha o que mostrar, qual som mandar, o tipo de conteúdo, a resolução, o fps e a qualidade. | **Temas.** O pwnd neon, um dos seis que vêm prontos. Também dá pra usar o seu próprio CSS. |
+| <img src="docs/img/pt/home.png" alt="A tela inicial"> | <img src="docs/img/pt/stats.png" alt="Estatísticas do servidor"> |
+| **Tela inicial.** Entra ou cria uma sala, se quiser direto num canal. | **Estatísticas do servidor.** O que o admin vê: CPU, memória, banda, gente por canal e o gargalo provável. |
 | <img src="docs/img/pt/shortcuts.png" alt="Configurações de atalhos"> | <img src="docs/img/pt/performance.png" alt="Configurações de desempenho"> |
 | **Atalhos globais.** Qualquer tecla, combinação ou botão do mouse, valendo com o jogo em foco. | **Desempenho.** Qualidade automática, cursor fora do vídeo, transmissão no tamanho de quem assiste e o teste do PC. |
 

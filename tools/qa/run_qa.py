@@ -279,6 +279,85 @@ def tela_inicial_parada():
 
 
 @test
+def canais():
+    """Canais (como no IRC): /join no chat e o + do painel criam/entram; cada canal com o seu chat e quem está nele; a transmissão vai junto quando quem transmite troca; quem assistia no canal velho para; o convite leva o canal; entrar direto num canal pela tela inicial; canal criado some vazio."""
+    with Session("canais") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--senha", "pw"])
+        st = a.wait(lambda st: st["status"] == "connected" and st["channels_supported"], 10, "a sala com canais")
+        expect(st["channel"] == "geral", f"canal inicial: {st['channel']}")
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}#pw", "--transmitir", "--software"])
+        b.wait(lambda st: st["status"] == "connected" and st["channels_supported"], 10, "o Bruno entrar")
+        bid = b.state()["my_id"]
+        a.wait(lambda st: any(m["id"] == bid and m["streaming"] for m in st["members"]), 15, "o Bruno ao vivo no geral")
+        # /join no chat: cria o jogos (nome normalizado) e a transmissão vai junto
+        b.click("##chatin")
+        time.sleep(0.2)
+        b.type("/join Jogos\n")
+        b.wait(lambda st: st["channel"] == "jogos" and not any(l["text"].startswith("/join") for l in st["chat"]), 5, "o Bruno no jogos (sem o comando ir pro chat)")
+        a.wait(lambda st: not any(m["id"] == bid for m in st["members"]) and any(c["name"] == "jogos" and c["people"] == 1 and c["live"] for c in st["channels"]), 10, "o jogos na lista, com o Bruno ao vivo")
+        # chat de um canal não vaza pro outro
+        a.click("##chatin")
+        time.sleep(0.2)
+        a.type("so no geral\n")
+        a.wait(lambda st: any(l["text"] == "so no geral" for l in st["chat"]), 5, "a mensagem no geral")
+        # Carol entra direto no jogos pela tela inicial e assiste o Bruno
+        c = s.app("c", 93, [], config={"name": "Carol"})
+        c.wait(lambda st: st["screen"] == "home", 10, "a tela inicial")
+        c.fill("##addr", f"127.0.0.1:{p}")
+        c.fill("##pass", "pw")
+        c.fill("##chan", "#jogos")
+        c.click("Entrar##go")
+        c.wait(lambda st: st["status"] == "connected" and st["channel"] == "jogos", 10, "a Carol no jogos")
+        c.wait(lambda st: any(m["id"] == bid and m["streaming"] for m in st["members"]), 10, "a Carol ver o Bruno ao vivo")
+        c.click("live")
+        c.wait(lambda st: any(v["stream"] == bid and v["shown"] for v in st["views"]), 20, "a Carol assistindo o Bruno no jogos")
+        expect(not any(l["text"] == "so no geral" for l in b.state()["chat"]), "o chat do geral apareceu no jogos")
+        # o convite de quem está no jogos leva pro jogos
+        c.click("##invite")
+        c.wait(lambda st: st["clipboard"].startswith("telinha://") and "/jogos#pw" in st["clipboard"], 3, "o convite com o canal")
+        # o Bruno volta pro geral clicando no canal: a Carol para de ver
+        b.click("#geral")
+        b.wait(lambda st: st["channel"] == "geral", 5, "o Bruno no geral")
+        c.wait(lambda st: not st["views"], 10, "a Carol parar de assistir (o Bruno saiu do canal)")
+        a.wait(lambda st: any(m["id"] == bid and m["streaming"] for m in st["members"]), 15, "o Bruno ao vivo de novo no geral")
+        # + do painel: cria um canal; voltando, o canal vazio some
+        c.click("##newchan")
+        time.sleep(0.3)
+        c.click("##chanin")
+        c.type("Filmes\n")
+        c.wait(lambda st: st["channel"] == "filmes", 5, "a Carol no filmes")
+        a.wait(lambda st: any(ch["name"] == "filmes" for ch in st["channels"]), 5, "o filmes na lista")
+        time.sleep(1.0)  # limite de troca
+        c.click("#geral")
+        c.wait(lambda st: st["channel"] == "geral", 5, "a Carol no geral")
+        a.wait(lambda st: not any(ch["name"] in ("filmes", "jogos") for ch in st["channels"]), 5, "os canais vazios sumirem")
+        st = a.wait(lambda st: len(st["members"]) == 3, 5, "os três no geral")
+
+
+@test
+def estatisticas_servidor():
+    """Estatísticas do servidor: o botão só aparece pra quem entrou com o token de admin; abre, chegam números (pessoas, canais, CPU), fecha e para de pedir."""
+    with Session("estat") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)])
+        a.wait(lambda st: st["status"] == "connected" and st["channels_supported"], 10, "a sala")
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}"])
+        b.wait(lambda st: st["status"] == "connected" and st["channels_supported"], 10, "o Bruno entrar")
+        a.wait(lambda st: len(st["members"]) == 2, 5, "os dois na sala")
+        expect(b.find("##srvstats", timeout=1.0, need=False) is None, "quem não é dono vê o botão das estatísticas")
+        a.click("##srvstats")
+        st = a.wait(lambda st: st["stats_open"] and st["stats_gen"] >= 2, 8, "as estatísticas chegarem")
+        expect(st["stats"]["conns"] == 2 and st["stats"]["people"] == 2 and st["stats"]["channels"] == 1, f"números errados: {st['stats']}")
+        expect(st["stats"]["hosted"] and st["stats"]["rss_kb"] > 0, f"memória/sala dentro do app: {st['stats']}")
+        a.click("##statsclose")
+        a.wait(lambda st: not st["stats_open"], 3, "fechar")
+        g = a.state()["stats_gen"]
+        time.sleep(4.5)
+        expect(a.state()["stats_gen"] == g, "continuou recebendo estatística depois de fechar")
+
+
+@test
 def sala_controles():
     """Sala: convite, chat (Enter e botão), esconder/mostrar chat, surdo, configurações, compartilhar tela, assistir pelas pílulas do topo e pelo card, modo cinema, F11."""
     with Session("controles") as s:
@@ -1862,6 +1941,26 @@ def windows_chat_imagem():
         log(f"imagem do .exe: {img['img_w']}x{img['img_h']}, {img['img_bytes']} bytes")
         expect((img["img_w"], img["img_h"]) == (320, 180), f"tamanho errado: {img['img_w']}x{img['img_h']}")
         w.wait(lambda st: any(l["img"] and l["img_ready"] for l in st["chat"]), 10, "o .exe mostrar a própria imagem")
+
+
+@test
+def windows_canais_e_estatisticas():
+    """O .exe (wine) hospeda a sala: o Linux troca de canal nela, e o dono (o .exe) vê as estatísticas com CPU e memória do processo (GetProcessTimes/K32GetProcessMemoryInfo)."""
+    with Session("winstats") as s:
+        p = port()
+        w = s.wine_app("w", 96, ["--nome", "Windows", "--criar", str(p)])
+        w.wait(lambda st: st["status"] == "connected" and st["channels_supported"], 60, "o .exe abrir a sala")
+        a = s.app("a", 91, ["--nome", "Linux", "--entrar", f"127.0.0.1:{p}"])
+        a.wait(lambda st: st["status"] == "connected" and st["channels_supported"], 10, "o Linux entrar")
+        a.click("##chatin")
+        time.sleep(0.2)
+        a.type("/join jogos\n")
+        w.wait(lambda st: any(ch["name"] == "jogos" and ch["people"] == 1 for ch in st["channels"]), 10, "o .exe ver o canal novo")
+        w.click("##srvstats")
+        st = w.wait(lambda st: st["stats_gen"] >= 2 and st["stats"]["rss_kb"] > 0, 15, "as estatísticas no .exe")
+        log(f"estatísticas no .exe: {st['stats']}")
+        expect(st["stats"]["conns"] == 2 and st["stats"]["channels"] == 2, f"números errados: {st['stats']}")
+        st = w.wait(lambda st: st["stats"]["cpu"] > 0, 10, "a CPU do processo (GetProcessTimes)")
 
 
 @test

@@ -8,6 +8,9 @@ Conversa com a 3.1 (as mensagens novas são ignoradas por app e servidor antigos
 
 ### Destaques
 
+- 💬 **Canais, como no IRC**: um servidor, várias salas. Cada canal com o seu chat, gente, voz e transmissões; pule de um pro outro pelo painel, pelo **+** ou com `/join nome`, sem reconectar — a sua transmissão vai junto.
+- 📊 **Estatísticas do servidor pro admin**: CPU, memória, banda, quem está atrasando e o gargalo provável, em português claro.
+- ✨ **Tela inicial nova** com vitrine animada, e o quadro "chamando a galera de fora" mais limpo e com rolagem.
 - 🎨 **Layout novo da sala**: barra no topo com quem está ao vivo, o palco no meio, uma cápsula de controles flutuante e um cartão só do lado com quem está na sala e o chat. Nada se sobrepõe, nem em janela pequena.
 - 🖥️ **Botão de tela cheia** em cada transmissão; controles e cursor somem com o mouse parado.
 - 🪟 **Windows**: Intel/AMD transmitem direto pela placa (processador de vídeo do D3D11 → Media Foundation), alt-tab não para mais a transmissão, janelas minimizadas aparecem na lista e a captura de som ficou mais firme.
@@ -19,6 +22,40 @@ Conversa com a 3.1 (as mensagens novas são ignoradas por app e servidor antigos
 
 ### Todas as mudanças
 
+- **Canais (como no IRC)**: um servidor tem vários canais; cada um com o seu
+  chat (histórico), lista de quem está nele, voz e transmissões (só dá pra
+  assistir, apontar ou desenhar em quem está no seu canal). Troca pela lista de
+  canais no painel da direita, pelo botão **+** (cria ou entra pelo nome), ou
+  com `/join nome` (`/j`, `/canal`) no chat; `/canais` lista. A troca é na
+  mesma conexão: a sua tela e a câmera vão junto (são anunciadas de novo no
+  canal novo), e quem te assistia no canal velho para. Canal vazio some, a não
+  ser que seja fixo. O servidor dedicado aceita `--canais "geral,jogos,..."`
+  (canais fixos, o primeiro é o padrão; também `TELINHA_CANAIS`) e
+  `--sem-canais-novos` (ninguém cria outros). A tela inicial ganhou o campo
+  **Canal** (opcional), e o convite pode levar um:
+  `telinha://host:7777/jogos#senha`. Reconectando, volta pro canal em que
+  estava. App antigo continua funcionando (fica no canal padrão); app novo em
+  servidor antigo só não mostra canais.
+- **Estatísticas do servidor** pra quem entrou com o token de admin (botão de
+  medidor no topo): CPU e memória do processo, banda saindo/chegando com
+  gráfico de 2 minutos, gente (e quantos por UDP), canais, e por pessoa: canal,
+  caminho, quanto recebe e manda, a fila de envio e se está atrasando ou
+  recebendo metade. A parte "gargalos" explica o que está pegando (CPU do
+  servidor, upload do servidor, a conexão de uma pessoa, alguém preso no
+  TCP...). O servidor só mede com a janela aberta. Funciona no Linux e no
+  Windows (e, com a sala dentro do app, avisa que os números são do app todo).
+- **Tela inicial nova**: vitrine animada (uma telinha ao vivo com gente
+  assistindo, reações subindo, mensagem do chat aparecendo) e um cartão com a
+  escolha Entrar/Criar deslizando, campos com ícone e brilho no foco, e erro numa
+  caixa. A animação só roda com o telinha em foco e alguém mexendo o mouse
+  (congela depois de 12 s e o app volta a dormir), e dá pra desligar em
+  Aparência. Em janela baixa o cartão rola.
+- **O cartão "Criar sala" não treme mais**: a altura medida e a posição dele se
+  corrigiam a cada quadro (posição em meio pixel).
+- **"Chamando a galera de fora"** (sala vazia do anfitrião): link público e porta
+  no roteador em dois cartões (um embaixo do outro em janela estreita), e a área
+  toda rola — antes, em janela baixa, o fim ficava cortado sem ter como chegar.
+  Abrir o "túnel próprio" rola até ele aparecer.
 - **Layout novo da sala**: a barra lateral, a faixa da sala e o painel do
   usuário viraram uma barra no topo (sala, conexão, pílulas de quem está ao vivo
   — clique pra assistir — e cadeado/convite/chat/configurações na direita), o

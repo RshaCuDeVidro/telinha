@@ -25,6 +25,11 @@ const usage =
     \\  -l, --logs PASTA       guarda os logs de depuração que mandarem pela sala
     \\                         ($TELINHA_LOGS; sem isso eles vão só pra quem
     \\                         estiver na sala com o token de admin)
+    \\  -c, --canais LISTA     canais fixos, separados por vírgula ($TELINHA_CANAIS);
+    \\                         o primeiro é o padrão (sem isso: só "geral").
+    \\                         Quem entra num nome que não existe cria o canal
+    \\                         (some quando esvazia)
+    \\  --sem-canais-novos     ninguém cria canal: só os da lista
     \\  --publico [SERVIDOR]   abre um link público pelo túnel (padrão bore.pub);
     \\                         sem --senha, cria uma senha aleatória
     \\  --upnp                 pede pro roteador abrir a porta (UPnP): conexão
@@ -106,6 +111,8 @@ pub fn main(init: std.process.Init) !void {
     var admin: []const u8 = env("TELINHA_ADMIN") orelse "";
     var logs_dir: []const u8 = env("TELINHA_LOGS") orelse "";
     var max: u32 = 32;
+    var channels: []const u8 = env("TELINHA_CANAIS") orelse "";
+    var new_channels = true;
     var public_host: ?[]const u8 = null;
     var use_upnp = false;
     if (env("TELINHA_PORTA")) |p| port = std.fmt.parseInt(u16, p, 10) catch die("TELINHA_PORTA inválida: {s}", .{p});
@@ -119,6 +126,10 @@ pub fn main(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, a, "--upnp")) {
             use_upnp = true;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--sem-canais-novos")) {
+            new_channels = false;
             continue;
         }
         if (std.mem.eql(u8, a, "--publico")) {
@@ -142,6 +153,8 @@ pub fn main(init: std.process.Init) !void {
             admin = v;
         } else if (std.mem.eql(u8, a, "-l") or std.mem.eql(u8, a, "--logs")) {
             logs_dir = v;
+        } else if (std.mem.eql(u8, a, "-c") or std.mem.eql(u8, a, "--canais")) {
+            channels = v;
         } else if (std.mem.eql(u8, a, "-m") or std.mem.eql(u8, a, "--max")) {
             max = std.fmt.parseInt(u32, v, 10) catch die("número inválido: {s}", .{v});
         } else die("opção desconhecida: {s} (veja --help)", .{a});
@@ -162,14 +175,15 @@ pub fn main(init: std.process.Init) !void {
         const z = std.fmt.bufPrintZ(&lb, "{s}", .{logs_dir}) catch die("pasta de logs longa demais", .{});
         _ = mkdir(z.ptr, 0o750);
     }
-    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir }) catch
+    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir, .channels = channels, .new_channels = new_channels }) catch
         die("não consegui abrir a porta {d} (já está em uso?)", .{port});
 
     var buf: [256]u8 = undefined;
     log(std.fmt.bufPrint(&buf, "sala \"{s}\" aberta na porta {d} (protocolo v{d}, {s}, máx. {d} pessoas)", .{
         room, port, proto.version, if (password.len > 0) "com senha" else "sem senha", max,
     }) catch "sala aberta");
-    if (admin.len == 0) log("dica: use --admin TOKEN pra poder expulsar gente pelo app");
+    if (admin.len == 0) log("dica: use --admin TOKEN pra poder expulsar gente e ver as estatísticas do servidor pelo app");
+    if (channels.len > 0) log(std.fmt.bufPrint(&buf, "canais: {s}{s}", .{ channels, if (new_channels) " (e quem quiser cria outros)" else " (só esses)" }) catch "");
     if (public_host) |h| {
         const t = tunnel.Tunnel.start(h, srv, Server.adoptCallback) catch die("não consegui iniciar o túnel", .{});
         sync.spawn(watchTunnel, .{ t, password }) catch {};

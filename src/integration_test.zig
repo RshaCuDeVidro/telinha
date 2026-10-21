@@ -6,7 +6,8 @@ const sync = @import("sync.zig");
 const net = @import("net.zig");
 const proto = @import("proto.zig");
 const crypto = @import("crypto.zig");
-const Server = @import("server.zig").Server;
+const server_mod = @import("server.zig");
+const Server = server_mod.Server;
 
 var next_port: u16 = 47100;
 fn freshPort() u16 {
@@ -34,6 +35,15 @@ const TestClient = struct {
 
     /// Com os codecs que esse "app" decodifica (bits 1<<codec).
     fn connectCaps(port: u16, name: []const u8, password: []const u8, token: []const u8, key: u64, codecs: u8) !TestClient {
+        return connectFull(port, name, password, token, key, codecs, null);
+    }
+
+    /// Pedindo um canal no hello (null = app antigo, que não manda o campo).
+    fn connectChan(port: u16, name: []const u8, token: []const u8, chan: []const u8) !TestClient {
+        return connectFull(port, name, "", token, 0, proto.codecs_h264, chan);
+    }
+
+    fn connectFull(port: u16, name: []const u8, password: []const u8, token: []const u8, key: u64, codecs: u8, chan: ?[]const u8) !TestClient {
         const s = try net.connect("127.0.0.1", port);
         errdefer net.close(s);
         net.setRecvTimeout(s, 5000);
@@ -50,8 +60,66 @@ const TestClient = struct {
         try b.u64_(key);
         try b.str(proto.app_version);
         try b.u8_(codecs);
+        if (chan) |ch| {
+            try b.u8_(0); // recursos
+            try b.str(ch);
+        }
         try c.send(try b.finish());
         return c;
+    }
+
+    /// Próxima mensagem `channel`: o canal atual e quantos/quais existem.
+    fn channels(c: *TestClient) !ChanList {
+        var r: proto.Reader = .{ .data = try c.expect(.channel) };
+        var l: ChanList = .{};
+        const cur = try r.str();
+        @memcpy(l.cur[0..cur.len], cur);
+        l.cur_len = cur.len;
+        const n = try r.u8_();
+        for (0..n) |_| {
+            const nm = try r.str();
+            const people = try r.u16_();
+            const flags = try r.u8_();
+            if (l.n == l.names.len) continue;
+            @memcpy(l.names[l.n][0..nm.len], nm);
+            l.lens[l.n] = nm.len;
+            l.people[l.n] = people;
+            l.flags[l.n] = flags;
+            l.n += 1;
+        }
+        return l;
+    }
+
+    /// Lê até uma lista de canais em que `cond` vale.
+    fn waitChannels(c: *TestClient, ctx: anytype, cond: fn (@TypeOf(ctx), *const ChanList) bool) !ChanList {
+        while (true) {
+            const l = try c.channels();
+            if (cond(ctx, &l)) return l;
+        }
+    }
+
+    fn joinChannel(c: *TestClient, name: []const u8) !void {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.channel);
+        try b.str(name);
+        try c.send(try b.finish());
+    }
+
+    /// Próxima mensagem de chat de alguém (pula os avisos do sistema).
+    fn userChat(c: *TestClient, out_text: []u8) !struct { from: u32, text: []const u8, history: bool } {
+        while (true) {
+            var r: proto.Reader = .{ .data = try c.expect(.chat) };
+            _ = try r.u32_();
+            const from = try r.u32_();
+            _ = try r.str();
+            const text = try r.str();
+            _ = try r.u64_();
+            const flags = try r.u8_();
+            if (from == 0) continue;
+            @memcpy(out_text[0..text.len], text);
+            return .{ .from = from, .text = out_text[0..text.len], .history = flags & proto.chat_history != 0 };
+        }
     }
 
     fn send(c: *TestClient, m: *proto.Msg) !void {
@@ -158,6 +226,28 @@ const TestClient = struct {
     fn close(c: *TestClient) void {
         c.rb.deinit();
         net.close(c.sock);
+    }
+};
+
+const ChanList = struct {
+    cur: [proto.channel_name_max]u8 = undefined,
+    cur_len: usize = 0,
+    n: usize = 0,
+    names: [proto.max_channels][proto.channel_name_max]u8 = undefined,
+    lens: [proto.max_channels]usize = undefined,
+    people: [proto.max_channels]u16 = undefined,
+    flags: [proto.max_channels]u8 = undefined,
+
+    fn current(l: *const ChanList) []const u8 {
+        return l.cur[0..l.cur_len];
+    }
+    fn has(l: *const ChanList, name: []const u8) bool {
+        for (0..l.n) |i| if (std.mem.eql(u8, l.names[i][0..l.lens[i]], name)) return true;
+        return false;
+    }
+    fn peopleIn(l: *const ChanList, name: []const u8) u16 {
+        for (0..l.n) |i| if (std.mem.eql(u8, l.names[i][0..l.lens[i]], name)) return l.people[i];
+        return 0;
     }
 };
 
@@ -1555,6 +1645,13 @@ test "convite: vários caminhos, IPv6 entre colchetes, senha" {
     try testing.expectEqualStrings("a.b", t[0].hostSlice());
     // endereço só, sem convite
     try testing.expect(connect_mod.splitInvite("x:1").password == null);
+    // com canal: telinha://endereços/canal#senha
+    const ic = connect_mod.splitInvite("telinha://a.com:7777,[2804::1]:7777/jogos#pw");
+    try testing.expectEqualStrings("a.com:7777,[2804::1]:7777", ic.addrs);
+    try testing.expectEqualStrings("jogos", ic.channel.?);
+    try testing.expectEqualStrings("pw", ic.password.?);
+    try testing.expect(connect_mod.splitInvite("telinha://a.com:7777/").channel == null);
+    try testing.expectEqualStrings("a.com:7777", connect_mod.splitInvite("a.com:7777/").addrs);
     // forma curta do IPv6
     var buf: [48]u8 = undefined;
     try testing.expectEqualStrings("[2804:14c::1]", net.fmtIp6(.{ 0x28, 0x04, 0x01, 0x4c, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 }, &buf));
@@ -1634,4 +1731,217 @@ test "vários caminhos: entra pelo que responde (fechado, mudo e lixo ficam pra 
     const only_bad = try std.fmt.bufPrint(&list_buf, "127.0.0.1:{d},127.0.0.1:{d}", .{ closed_port, junk_port });
     const nb = connect_mod.parseList(only_bad, &targets);
     try testing.expectError(error.NotTelinha, connect_mod.race(targets[0..nb], proto.version, 5_000, &cancel, &fail));
+}
+
+test "canais: nome normalizado (sem #, minúsculas, espaço vira -, acento ok, até 24 bytes)" {
+    var b: [proto.channel_name_max]u8 = undefined;
+    try testing.expectEqualStrings("jogos", server_mod.normalizeChannel("#Jogos", &b).?);
+    try testing.expectEqualStrings("filmes-antigos", server_mod.normalizeChannel("  Filmes  Antigos ", &b).?);
+    try testing.expectEqualStrings("ação_2.0", server_mod.normalizeChannel("Ação_2.0", &b).?);
+    try testing.expect(server_mod.normalizeChannel("a/b", &b) == null);
+    try testing.expect(server_mod.normalizeChannel("###", &b) == null);
+    try testing.expect(server_mod.normalizeChannel("", &b) == null);
+    try testing.expectEqual(@as(usize, 24), server_mod.normalizeChannel("abcdefghijklmnopqrstuvwxyz0123", &b).?.len);
+    // não corta letra acentuada no meio
+    const n = server_mod.normalizeChannel("aaaaaaaaaaaaaaaaaaaaaaaçç", &b).?;
+    try testing.expect(std.unicode.utf8ValidateSlice(n));
+}
+
+test "canais: cada um com o seu chat, membros e voz; nome novo cria; trocar leva o histórico; vazio some; app antigo cai no padrão" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port, .channels = "geral,Jogos" });
+    defer srv.stop();
+    var tb: [256]u8 = undefined;
+
+    // app antigo (sem o campo do canal): o padrão
+    var a = try TestClient.connect(port, "Ana", "", "");
+    defer a.close();
+    try a.welcome();
+    var l = try a.channels();
+    try testing.expectEqualStrings("geral", l.current());
+    try testing.expect(l.has("geral") and l.has("jogos"));
+
+    var b = try TestClient.connectChan(port, "Bia", "", "jogos");
+    defer b.close();
+    try b.welcome();
+    l = try b.channels();
+    try testing.expectEqualStrings("jogos", l.current());
+
+    // canal que não existe: cria (normalizado)
+    var c = try TestClient.connectChan(port, "Caio", "", "#Filmes Antigos");
+    defer c.close();
+    try c.welcome();
+    l = try c.channels();
+    try testing.expectEqualStrings("filmes-antigos", l.current());
+    try testing.expectEqual(@as(usize, 3), l.n);
+
+    // membros: só quem está no mesmo canal
+    const ml = try b.members();
+    try testing.expect(ml.get(b.id) != null and ml.get(a.id) == null and ml.get(c.id) == null);
+
+    // chat: fica no canal
+    try b.chat("bora jogar");
+    try a.chat("oi geral");
+    const got = try a.userChat(&tb);
+    try testing.expectEqualStrings("oi geral", got.text);
+    try testing.expectEqual(a.id, got.from);
+
+    // voz: só pra quem está no mesmo canal (Ana fala; Bia não ouve)
+    const pacote = [_]u8{ 0x78, 1, 2, 3 };
+    const vm = try proto.Msg.alloc(.voice, 4 + pacote.len);
+    std.mem.writeInt(u32, vm.payload()[0..4], 1, .little);
+    @memcpy(vm.payload()[4..], &pacote);
+    try a.send(vm);
+    try a.chat("marcador");
+    while (true) {
+        const t = try proto.recvMsg(b.sock, &b.ch, &b.rb);
+        try testing.expect(t != .voice);
+        // a Bia não vê o chat do geral: o próximo de alguém é o dela mesma, depois nada
+        if (t == .chat) {
+            var r: proto.Reader = .{ .data = proto.payloadOf(&b.rb) };
+            _ = try r.u32_();
+            const from = try r.u32_();
+            _ = try r.str();
+            const text = try r.str();
+            if (from == 0) continue;
+            try testing.expectEqualStrings("bora jogar", text);
+            break;
+        }
+    }
+
+    // assistir alguém de outro canal: recusado
+    try b.streamStart(proto.kind_screen, 0);
+    try a.watch(b.id, 0);
+    sync.sleepMs(150);
+    try testing.expectEqual(@as(usize, 0), srv.watchingCount(a.id));
+
+    // Caio vai pro jogos: recebe o canal novo e o histórico dele; o filmes-antigos some
+    try c.watch(b.id, 0); // ainda em outro canal: não vale
+    try c.joinChannel("JOGOS");
+    l = try c.waitChannels({}, struct {
+        fn f(_: void, x: *const ChanList) bool {
+            return std.mem.eql(u8, x.current(), "jogos");
+        }
+    }.f);
+    try testing.expect(!l.has("filmes-antigos"));
+    const hist = try c.userChat(&tb);
+    try testing.expect(hist.history);
+    try testing.expectEqualStrings("bora jogar", hist.text);
+    // agora dá pra assistir a Bia
+    try c.watch(b.id, 0);
+    _ = try b.expect(.keyreq);
+    try testing.expectEqual(@as(usize, 1), srv.watchingCount(c.id));
+
+    // a Bia vai pro geral: o Caio para de assistir ela (ficou no jogos)
+    sync.sleepMs(900); // limite de troca
+    try b.joinChannel("geral");
+    _ = try b.waitChannels({}, struct {
+        fn f(_: void, x: *const ChanList) bool {
+            return std.mem.eql(u8, x.current(), "geral");
+        }
+    }.f);
+    sync.sleepMs(100);
+    try testing.expectEqual(@as(usize, 0), srv.watchingCount(c.id));
+    // e a Ana vê a Bia na lista de membros do geral
+    while (true) {
+        const m2 = try a.members();
+        if (m2.get(b.id) != null) break;
+    }
+    // jogos é fixo: vazio continua na lista (com 1 pessoa: o Caio)
+    l = try a.waitChannels({}, struct {
+        fn f(_: void, x: *const ChanList) bool {
+            return x.peopleIn("geral") == 2;
+        }
+    }.f);
+    try testing.expect(l.has("jogos"));
+}
+
+test "canais: servidor sem canais novos não deixa criar; nome inválido avisa" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port, .channels = "sala-a,sala-b", .new_channels = false });
+    defer srv.stop();
+    var a = try TestClient.connectChan(port, "Ana", "", "outra");
+    defer a.close();
+    try a.welcome();
+    var l = try a.channels();
+    try testing.expectEqualStrings("sala-a", l.current()); // não existe e não pode criar: o padrão
+    try a.joinChannel("nova");
+    var r: proto.Reader = .{ .data = try a.expect(.notice) };
+    try testing.expectEqual(proto.notice_channel, try r.u8_());
+    sync.sleepMs(900);
+    try a.joinChannel("a/b");
+    r = .{ .data = try a.expect(.notice) };
+    try testing.expectEqual(proto.notice_channel, try r.u8_());
+    try a.joinChannel("sala-b");
+    l = try a.waitChannels({}, struct {
+        fn f(_: void, x: *const ChanList) bool {
+            return std.mem.eql(u8, x.current(), "sala-b");
+        }
+    }.f);
+    try testing.expectEqual(@as(usize, 2), l.n);
+}
+
+test "estatísticas: só quem entrou com o token de admin recebe; pessoas, canais e banda" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port, .admin_token = "tok" });
+    defer srv.stop();
+    var dono = try TestClient.connectChan(port, "Dono", "tok", "");
+    defer dono.close();
+    try dono.welcome();
+    var b = try TestClient.connectChan(port, "Bia", "", "outro");
+    defer b.close();
+    try b.welcome();
+
+    // quem não é dono pede: nada
+    var sb: proto.Builder = .{};
+    defer sb.deinit();
+    try sb.begin(.stats);
+    try sb.u8_(1);
+    try b.send(try sb.finish());
+    // o dono pede: chega na hora
+    try sb.begin(.stats);
+    try sb.u8_(1);
+    try dono.send(try sb.finish());
+    var r: proto.Reader = .{ .data = try dono.expect(.stats) };
+    _ = try r.u32_(); // uptime
+    _ = try r.u32_(); // cpu
+    try testing.expect((try r.u8_()) >= 1); // núcleos
+    _ = try r.u32_(); // memória
+    _ = try r.u32_();
+    _ = try r.u32_();
+    try testing.expectEqual(@as(u16, 2), try r.u16_()); // pessoas
+    _ = try r.u16_(); // udp
+    _ = try r.u16_(); // máximo
+    try testing.expectEqual(@as(u8, 2), try r.u8_()); // canais: geral + outro
+    _ = try r.take(2 * 4 + 4 + 1);
+    try testing.expectEqual(@as(u16, 2), try r.u16_());
+    var saw_bia = false;
+    for (0..2) |_| {
+        _ = try r.u32_();
+        const nm = try r.str();
+        const ch = try r.str();
+        if (std.mem.eql(u8, nm, "Bia")) {
+            saw_bia = true;
+            try testing.expectEqualStrings("outro", ch);
+        }
+        _ = try r.take(1 + 1 + 1 + 2 + 4 + 4 + 4 + 2);
+    }
+    try testing.expect(saw_bia);
+    // a Bia não recebeu estatística nenhuma (um chat depois chega antes)
+    try dono.chat("marcador");
+    try b.chat("marcador");
+    while (true) {
+        const t = try proto.recvMsg(b.sock, &b.ch, &b.rb);
+        try testing.expect(t != .stats);
+        if (t == .chat) {
+            var cr: proto.Reader = .{ .data = proto.payloadOf(&b.rb) };
+            _ = try cr.u32_();
+            if ((try cr.u32_()) == b.id) break;
+        }
+    }
+    // a cada 2 s chega outra, enquanto estiver ligado
+    _ = try dono.expect(.stats);
 }

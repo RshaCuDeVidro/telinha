@@ -75,6 +75,30 @@ their `logs-recebidos` folder, next to the config). With `--logs DIR` (or
 `TELINHA_LOGS`), the dedicated server also keeps a copy, so a log sent while no
 admin is around isn't lost. Each person can send one log per minute, up to 8 MB.
 
+## Channels
+
+One server can hold several rooms at once, IRC-style: each channel has its own
+chat, people, voice and streams, and people hop between them without
+reconnecting (the panel on the right, or `/join name` in the chat). The first
+channel is the default.
+
+```sh
+telinha-server --canais "geral,games,movies"      # fixed channels; anyone can create more
+telinha-server --canais "geral,games" --sem-canais-novos   # only these
+```
+
+(or `TELINHA_CANAIS`). A channel someone created disappears when it empties. An
+invite can point straight at a channel: `telinha://host:7777/games#password`.
+
+## Server statistics
+
+Whoever joins with the admin token (`--admin`) gets a gauge button at the top of
+the room: CPU and memory of the server process, bandwidth in and out, people per
+channel, UDP or TCP, what each person is receiving, their send queue, and a
+plain-language guess at the bottleneck (server CPU, the server's upload, one
+person's connection). The server only measures while someone has that window
+open.
+
 ## Firewall and bandwidth
 
 - Open the chosen port in **TCP and UDP** (`ufw allow 7777`). TCP carries control

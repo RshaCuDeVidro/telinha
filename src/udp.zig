@@ -138,6 +138,7 @@ pub const Endpoint = struct {
     done_unordered: [256]u32 = [_]u32{0} ** 256, // ids sem ordem já entregues (repetição)
     done_head: usize = 0,
     rtt_us: std.atomic.Value(u64) = .init(40_000),
+    rtt_measured: std.atomic.Value(bool) = .init(false), // já veio um pong (senão o rtt é só o chute inicial)
     last_rx_ms: std.atomic.Value(u64) = .init(0),
     stats: Stats = .{},
     drop_pct: u32 = 0, // teste: joga fora essa % do que manda (TELINHA_UDP_PERDA)
@@ -372,6 +373,7 @@ pub const Endpoint = struct {
                     const rtt = sync.nowUs() -| std.mem.readInt(u64, body[0..8], .little);
                     const old = ep.rtt_us.load(.monotonic);
                     ep.rtt_us.store((old * 7 + rtt) / 8, .monotonic);
+                    ep.rtt_measured.store(true, .monotonic);
                 },
                 .data => if (body.len >= 12) ep.onData(body, &ready),
                 .nack => if (body.len >= 10) {

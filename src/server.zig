@@ -18,6 +18,7 @@ const net = @import("net.zig");
 const proto = @import("proto.zig");
 const udp = @import("udp.zig");
 const crypto = @import("crypto.zig");
+const procstat = @import("procstat.zig");
 const gpa = proto.gpa;
 const cio = @cImport(@cInclude("stdio.h"));
 
@@ -108,6 +109,13 @@ const Conn = struct {
     log_last_ms: u64 = 0,
     log_refused: bool = false,
     log_buf: std.ArrayList(u8) = .empty, // só com --logs (servidor guarda em disco)
+    chan: *Chan = undefined, // o canal em que a pessoa está (depois do join)
+    chan_switch_ms: u64 = 0, // última troca de canal (limite)
+    stats_on: bool = false, // quer as estatísticas do servidor (só o dono)
+    tx_bytes: u64 = 0, // repassado pra ela (estatística)
+    rx_bytes: u64 = 0, // quadro/som/voz que ela mandou
+    tx_seen: u64 = 0,
+    rx_seen: u64 = 0,
     mic: bool = false, // microfone ligado
     deaf: bool = false, // não quer ouvir a sala (não recebe voz)
     streams: [2]StreamState = .{ .{}, .{} },
@@ -319,6 +327,66 @@ const chat_img_budget = 24 * 1024 * 1024;
 /// Imagem no chat: no máximo uma a cada tanto, por pessoa.
 const chat_img_interval_ms = 1500;
 
+/// Um canal (como no IRC): o chat dele, quem está nele e as transmissões de
+/// quem está nele. Voz, "assistir", ponteiro e desenho só dentro do canal.
+/// Banimento, silenciar, trancar e lotação valem pro servidor inteiro.
+const Chan = struct {
+    name: [proto.channel_name_max]u8 = undefined,
+    name_len: usize = 0,
+    fixed: bool = false, // não some quando esvazia
+    chat_log: [chat_history_len]ChatEntry = undefined,
+    chat_len: usize = 0,
+    chat_head: usize = 0,
+
+    fn nameSlice(ch: *const Chan) []const u8 {
+        return ch.name[0..ch.name_len];
+    }
+
+    fn destroy(ch: *Chan) void {
+        for (0..ch.chat_len) |i| ch.chat_log[(ch.chat_head + i) % chat_history_len].free();
+        gpa.destroy(ch);
+    }
+};
+
+/// Nome de canal no formato do servidor: sem espaços nas pontas e sem "#",
+/// minúsculas, espaço vira "-"; só letras (inclusive acentuadas), números,
+/// "-", "_" e "."; até proto.channel_name_max bytes (sem cortar letra no meio).
+/// null = inválido.
+pub fn normalizeChannel(raw: []const u8, out: *[proto.channel_name_max]u8) ?[]const u8 {
+    var t = std.mem.trim(u8, raw, " \t\r\n");
+    while (t.len > 0 and t[0] == '#') t = std.mem.trim(u8, t[1..], " ");
+    if (t.len == 0) return null;
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < t.len) {
+        const ch = t[i];
+        const len: usize = if (ch < 0x80) 1 else (std.unicode.utf8ByteSequenceLength(ch) catch return null);
+        if (i + len > t.len) return null;
+        if (n + len > out.len) break;
+        if (len == 1) {
+            const lc = std.ascii.toLower(ch);
+            const ok = std.ascii.isAlphanumeric(lc) or lc == '-' or lc == '_' or lc == '.';
+            if (lc == ' ') {
+                if (n > 0 and out[n - 1] != '-') {
+                    out[n] = '-';
+                    n += 1;
+                }
+            } else if (ok) {
+                out[n] = lc;
+                n += 1;
+            } else return null;
+        } else {
+            _ = std.unicode.utf8Decode(t[i .. i + len]) catch return null;
+            @memcpy(out[n .. n + len], t[i .. i + len]);
+            n += len;
+        }
+        i += len;
+    }
+    while (n > 0 and out[n - 1] == '-') n -= 1;
+    if (n == 0) return null;
+    return out[0..n];
+}
+
 pub const Options = struct {
     port: u16,
     password: []const u8 = "",
@@ -333,6 +401,24 @@ pub const Options = struct {
     /// Pasta onde guardar os logs que mandarem pela sala (vazio = não guarda;
     /// eles vão só pra quem tem a coroa).
     logs_dir: []const u8 = "",
+    /// Canais fixos, separados por vírgula ("geral,jogos,filmes"); o primeiro
+    /// é o padrão (quem entra sem pedir canal cai nele). Vazio = só "geral".
+    channels: []const u8 = "",
+    /// Qualquer um pode criar canal novo (entrando num nome que não existe).
+    new_channels: bool = true,
+    /// A sala roda dentro do app (as estatísticas avisam que a CPU é do app todo).
+    hosted: bool = false,
+};
+
+const StatsPrev = struct {
+    at_us: u64 = 0,
+    cpu_us: u64 = 0,
+    relayed: u64 = 0,
+    received: u64 = 0,
+    resyncs: u32 = 0,
+    thins: u32 = 0,
+    keyreqs: u32 = 0,
+    slow: u32 = 0,
 };
 
 pub const Server = struct {
@@ -364,9 +450,11 @@ pub const Server = struct {
     muted_keys: std.ArrayList(u64) = .empty,
     /// Entradas recentes (chave do app ou IP): quem entra e sai sem parar espera.
     recent_joins: std.ArrayList(RecentJoin) = .empty,
-    chat_log: [chat_history_len]ChatEntry = undefined,
-    chat_len: usize = 0,
-    chat_head: usize = 0,
+    chans: std.ArrayList(*Chan) = .empty, // o primeiro é o padrão
+    new_channels: bool = true,
+    hosted: bool = false,
+    chans_sent: [1024]u8 = undefined, // última lista de canais mandada (só manda se mudar)
+    chans_sent_len: usize = 0,
     next_chat_id: u32 = 1,
     stopped: std.atomic.Value(bool) = .init(false),
     /// Dono (quem chamou start) + uma por thread do servidor + uma por conexão
@@ -374,11 +462,30 @@ pub const Server = struct {
     refs: std.atomic.Value(u32) = .init(1),
     // estatística
     relayed_bytes: std.atomic.Value(u64) = .init(0),
+    received_bytes: u64 = 0, // quadro/som/voz que chegaram (com o mutex)
+    n_resyncs: u32 = 0, // espectador recomeçou de um IDR (atrasou)
+    n_thins: u32 = 0, // espectador passou a receber metade dos quadros
+    n_keyreqs: u32 = 0, // IDRs pedidos pros transmissores
+    n_slow: u32 = 0, // pedidos de taxa menor pros transmissores
+    stats_prev: StatsPrev = .{},
 
     pub fn start(opts: Options) !*Server {
         const ls = try net.listen(opts.port);
         const s = try gpa.create(Server);
-        s.* = .{ .listen_sock = ls, .port = opts.port, .max_members = opts.max_members, .clip_key_ms = opts.clip_key_interval_ms, .log_fn = opts.log, .start_us = sync.nowUs() };
+        s.* = .{ .listen_sock = ls, .port = opts.port, .max_members = opts.max_members, .clip_key_ms = opts.clip_key_interval_ms, .log_fn = opts.log, .start_us = sync.nowUs(), .new_channels = opts.new_channels, .hosted = opts.hosted };
+        // canais fixos (o primeiro é o padrão)
+        var it = std.mem.tokenizeScalar(u8, opts.channels, ',');
+        while (it.next()) |raw| {
+            var nb: [proto.channel_name_max]u8 = undefined;
+            const nm = normalizeChannel(raw, &nb) orelse continue;
+            if (s.findChan(nm) != null or s.chans.items.len >= proto.max_channels) continue;
+            _ = s.addChan(nm, true) catch break;
+        }
+        if (s.chans.items.len == 0) _ = s.addChan(proto.default_channel, true) catch {
+            gpa.destroy(s);
+            net.close(ls);
+            return error.OutOfMemory;
+        };
         var rnd: [8]u8 = undefined;
         sync.osRandom(&rnd);
         s.instance = std.mem.readInt(u64, &rnd, .little);
@@ -414,7 +521,8 @@ pub const Server = struct {
 
     pub fn release(s: *Server) void {
         if (s.refs.fetchSub(1, .acq_rel) != 1) return;
-        for (0..s.chat_len) |i| s.chat_log[(s.chat_head + i) % chat_history_len].free();
+        for (s.chans.items) |ch| ch.destroy();
+        s.chans.deinit(gpa);
         s.conns.deinit(gpa);
         s.bans.deinit(gpa);
         s.muted_keys.deinit(gpa);
@@ -537,12 +645,20 @@ pub const Server = struct {
     fn tickLoop(s: *Server) void {
         sync.nameThread("sala-tick");
         defer s.release();
-        while (!s.stopped.load(.acquire)) {
+        var ticks: u32 = 0;
+        while (!s.stopped.load(.acquire)) : (ticks +%= 1) {
             sync.sleepMs(250);
             s.mutex.lock();
             defer s.mutex.unlock();
             const now_ms = sync.nowMs();
             const now_us = sync.nowUs();
+            // estatísticas pra quem pediu (o dono olhando), a cada 2 s
+            if (ticks % 8 == 0) for (s.conns.items) |o| {
+                if (o.stats_on) {
+                    s.sendStats();
+                    break;
+                }
+            };
             for (s.conns.items) |o| {
                 for (o.flows.items) |*f| {
                     const sh = s.findConn(proto.memberOf(f.stream)) orelse continue;
@@ -809,7 +925,8 @@ pub const Server = struct {
         } else |_| {}
         cn.decode_codecs = (r.u8_() catch 0) | proto.codecs_h264;
         cn.features = r.u8_() catch 0;
-        try s.join(cn, name, token);
+        const want_chan = r.str() catch ""; // app antigo não manda: o canal padrão
+        try s.join(cn, name, token, want_chan);
     }
 
     fn readerLoop(cn: *Conn) void {
@@ -855,7 +972,7 @@ pub const Server = struct {
                     if (now -% cn.last_img_ms < chat_img_interval_ms) return; // rajada de imagem: ignora
                     cn.last_img_ms = now;
                 }
-                try s.broadcastChatImg(cn.id, cn.nameSlice(), text, img);
+                try s.broadcastChatImg(cn.chan, cn.id, cn.nameSlice(), text, img);
             },
             .react => {
                 const id = try r.u32_();
@@ -886,7 +1003,7 @@ pub const Server = struct {
                 if (!was) {
                     var tmp: [96]u8 = undefined;
                     const what = if (kind == proto.kind_camera) "ligou a câmera" else "começou a transmitir";
-                    try s.broadcastChat(0, "", std.fmt.bufPrint(&tmp, "{s} {s}", .{ cn.nameSlice(), what }) catch "");
+                    try s.broadcastChat(cn.chan, std.fmt.bufPrint(&tmp, "{s} {s}", .{ cn.nameSlice(), what }) catch "");
                     s.log("{s} {s} ({d}x{d} @ {d} fps)", .{ cn.nameSlice(), what, w, h, fps });
                 }
                 // todo mundo que já assistia precisa de um IDR na resolução nova
@@ -928,7 +1045,8 @@ pub const Server = struct {
                     // só quem existe (e não a si mesmo), e com limite: senão
                     // um cliente mal-intencionado enche a memória do servidor
                     const target = proto.memberOf(stream);
-                    if (target == cn.id or s.findConn(target) == null) return;
+                    const tc = s.findConn(target) orelse return;
+                    if (target == cn.id or tc.chan != cn.chan) return; // só quem está no mesmo canal
                     if (!contains(&cn.watching, stream) and cn.watching.items.len >= s.max_members * 2) return;
                     const changed = !contains(&cn.watching, stream);
                     if (!changed) {
@@ -1026,6 +1144,20 @@ pub const Server = struct {
                 } else try cn.view_sizes.append(gpa, .{ .stream = stream, .h = h });
                 s.updateCodecs();
             },
+            .channel => {
+                const name = try r.str();
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                try s.switchChannel(cn, name);
+            },
+            .stats => {
+                const on = (try r.u8_()) != 0;
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                if (!cn.owner) return; // só quem entrou com o token de admin
+                cn.stats_on = on;
+                if (on) s.sendStats(); // a primeira na hora
+            },
             else => {},
         }
     }
@@ -1055,7 +1187,8 @@ pub const Server = struct {
             if (lock == s.locked) return;
             s.locked = lock;
             var tmp: [96]u8 = undefined;
-            try s.broadcastChat(0, "", std.fmt.bufPrint(&tmp, "{s} {s} a sala", .{ cn.nameSlice(), if (lock) "trancou" else "destrancou" }) catch "");
+            const text = std.fmt.bufPrint(&tmp, "{s} {s} a sala", .{ cn.nameSlice(), if (lock) "trancou" else "destrancou" }) catch "";
+            for (s.chans.items) |ch| try s.broadcastChat(ch, text);
             s.log("{s} {s} a sala", .{ cn.nameSlice(), if (lock) "trancou" else "destrancou" });
             try s.broadcastMembers();
             return;
@@ -1075,7 +1208,9 @@ pub const Server = struct {
                     s.bans.append(gpa, b) catch {};
                 }
                 s.log("{s} {s} {s}", .{ cn.nameSlice(), if (ban) "baniu" else "expulsou", t.nameSlice() });
-                try s.broadcastChat(0, "", std.fmt.bufPrint(&tmp, "{s} {s} {s}", .{ cn.nameSlice(), if (ban) "baniu" else "expulsou", t.nameSlice() }) catch "");
+                const said = std.fmt.bufPrint(&tmp, "{s} {s} {s}", .{ cn.nameSlice(), if (ban) "baniu" else "expulsou", t.nameSlice() }) catch "";
+                try s.broadcastChat(t.chan, said);
+                if (cn.chan != t.chan) try s.broadcastChat(cn.chan, said);
                 const reason = std.fmt.bufPrint(&tmp, "{s} {s} você da sala.", .{ cn.nameSlice(), if (ban) "baniu" else "expulsou" }) catch "Você foi removido da sala.";
                 s.dismiss(t, if (ban) proto.deny_banned else proto.deny_kicked, reason);
             },
@@ -1305,7 +1440,7 @@ pub const Server = struct {
         return false;
     }
 
-    fn join(s: *Server, cn: *Conn, raw_name: []const u8, token: []const u8) !void {
+    fn join(s: *Server, cn: *Conn, raw_name: []const u8, token: []const u8, want_chan: []const u8) !void {
         s.mutex.lock();
         defer s.mutex.unlock();
         // a sala fechou enquanto essa conexão fazia o handshake
@@ -1345,6 +1480,16 @@ pub const Server = struct {
         cn.authed = true;
         cn.owner = is_owner;
         cn.admin = is_owner;
+        // o canal pedido (cria se não existir e der); senão o padrão
+        cn.chan = s.chans.items[0];
+        var nb: [proto.channel_name_max]u8 = undefined;
+        if (normalizeChannel(want_chan, &nb)) |nm| {
+            if (s.findChan(nm)) |ch| {
+                cn.chan = ch;
+            } else if (s.canCreateChan()) {
+                cn.chan = s.addChan(nm, false) catch cn.chan;
+            }
+        }
         try s.conns.append(gpa, cn);
 
         var b: proto.Builder = .{};
@@ -1363,12 +1508,9 @@ pub const Server = struct {
         } else try b.u8_(0);
         cn.queue.pushOwned(try b.finish());
 
-        // o que já foi dito na sala
-        for (0..s.chat_len) |i| {
-            const e = &s.chat_log[(s.chat_head + i) % chat_history_len];
-            const m = try chatMsg(e, proto.chat_history);
-            cn.queue.pushOwned(m);
-        }
+        // em que canal ela está e quais existem; depois o que já foi dito nele
+        s.pushChannels(cn);
+        try s.pushHistory(cn);
 
         // silenciado pelo admin antes de cair: continua silenciado
         if (cn.client_key != 0 and !cn.owner) for (s.muted_keys.items) |k| if (k == cn.client_key) {
@@ -1378,9 +1520,9 @@ pub const Server = struct {
         };
 
         var tmp: [96]u8 = undefined;
-        try s.broadcastChat(0, "", std.fmt.bufPrint(&tmp, "{s} entrou na sala", .{name}) catch "");
+        try s.broadcastChat(cn.chan, std.fmt.bufPrint(&tmp, "{s} entrou na sala", .{name}) catch "");
         try s.broadcastMembers();
-        s.log("{s} entrou ({d} na sala, {s})", .{ name, s.conns.items.len, routeName(cn.route) });
+        s.log("{s} entrou ({d} na sala, {s}, #{s})", .{ name, s.conns.items.len, routeName(cn.route), cn.chan.nameSlice() });
     }
 
     pub fn routeName(route: u8) []const u8 {
@@ -1411,7 +1553,8 @@ pub const Server = struct {
         s.log("{s} saiu ({d} na sala)", .{ cn.nameSlice(), s.conns.items.len });
         if (s.stopped.load(.acquire)) return;
         var tmp: [96]u8 = undefined;
-        s.broadcastChat(0, "", std.fmt.bufPrint(&tmp, "{s} saiu da sala", .{cn.nameSlice()}) catch "") catch {};
+        s.broadcastChat(cn.chan, std.fmt.bufPrint(&tmp, "{s} saiu da sala", .{cn.nameSlice()}) catch "") catch {};
+        s.dropIfEmpty(cn.chan);
         s.broadcastMembers() catch {};
     }
 
@@ -1443,12 +1586,13 @@ pub const Server = struct {
 
     const Image = struct { w: u16, h: u16, data: []const u8 };
 
-    /// Guarda no histórico e manda pra todo mundo. Chamado com o mutex travado.
-    fn broadcastChat(s: *Server, from: u32, name: []const u8, text: []const u8) !void {
-        return s.broadcastChatImg(from, name, text, null);
+    /// Aviso do sistema no chat de um canal (guarda no histórico dele e manda
+    /// pra quem está nele). Chamado com o mutex travado.
+    fn broadcastChat(s: *Server, ch: *Chan, text: []const u8) !void {
+        return s.broadcastChatImg(ch, 0, "", text, null);
     }
 
-    fn broadcastChatImg(s: *Server, from: u32, name: []const u8, text: []const u8, img: ?Image) !void {
+    fn broadcastChatImg(s: *Server, ch: *Chan, from: u32, name: []const u8, text: []const u8, img: ?Image) !void {
         const owned = try gpa.dupe(u8, text[0..@min(text.len, 4000)]);
         var e: ChatEntry = .{ .id = s.next_chat_id, .from = from, .text = owned, .time_us = s.nowUs() };
         if (img) |im| {
@@ -1466,35 +1610,43 @@ pub const Server = struct {
             return err;
         };
         defer m.release();
-        if (s.chat_len == chat_history_len) {
-            s.chat_log[s.chat_head].free();
-            s.chat_log[s.chat_head] = e;
-            s.chat_head = (s.chat_head + 1) % chat_history_len;
+        if (ch.chat_len == chat_history_len) {
+            ch.chat_log[ch.chat_head].free();
+            ch.chat_log[ch.chat_head] = e;
+            ch.chat_head = (ch.chat_head + 1) % chat_history_len;
         } else {
-            s.chat_log[(s.chat_head + s.chat_len) % chat_history_len] = e;
-            s.chat_len += 1;
+            ch.chat_log[(ch.chat_head + ch.chat_len) % chat_history_len] = e;
+            ch.chat_len += 1;
         }
-        // memória: as imagens mais velhas do histórico expiram
+        // memória: as imagens mais velhas expiram (o limite vale pro servidor
+        // todo, contando todos os canais, do mais novo pro mais velho de cada um)
+        s.expireImages();
+        for (s.conns.items) |o| if (o.chan == ch) o.queue.push(m);
+    }
+
+    fn expireImages(s: *Server) void {
         var total: usize = 0;
-        var i: usize = s.chat_len;
-        while (i > 0) {
-            i -= 1;
-            const ent = &s.chat_log[(s.chat_head + i) % chat_history_len];
-            const im = ent.img orelse continue;
-            total += im.len;
-            if (total > chat_img_budget) {
-                gpa.free(im);
-                ent.img = null;
-                ent.img_expired = true;
+        for (s.chans.items) |ch| {
+            var i: usize = ch.chat_len;
+            while (i > 0) {
+                i -= 1;
+                const ent = &ch.chat_log[(ch.chat_head + i) % chat_history_len];
+                const im = ent.img orelse continue;
+                total += im.len;
+                if (total > chat_img_budget) {
+                    gpa.free(im);
+                    ent.img = null;
+                    ent.img_expired = true;
+                }
             }
         }
-        for (s.conns.items) |o| o.queue.push(m);
     }
 
     /// Liga/desliga uma reação numa mensagem do histórico. Mutex travado.
     fn react(s: *Server, cn: *Conn, id: u32, emoji: u8, on: bool) !void {
-        const e = for (0..s.chat_len) |i| {
-            const ent = &s.chat_log[(s.chat_head + i) % chat_history_len];
+        const ch = cn.chan;
+        const e = for (0..ch.chat_len) |i| {
+            const ent = &ch.chat_log[(ch.chat_head + i) % chat_history_len];
             if (ent.id == id) break ent;
         } else return; // mensagem velha demais: ignora
         if (e.from == 0) return; // aviso do sistema não ganha reação
@@ -1513,7 +1665,7 @@ pub const Server = struct {
         std.mem.writeInt(u32, pl[4..8], cn.id, .little);
         pl[8] = emoji;
         pl[9] = @intFromBool(on);
-        for (s.conns.items) |o| o.queue.push(m);
+        for (s.conns.items) |o| if (o.chan == ch) o.queue.push(m);
     }
 
     /// Chamado com o mutex travado.
@@ -1581,14 +1733,27 @@ pub const Server = struct {
         }
     }
 
+    /// Manda a lista de membros de cada canal pra quem está nele (e a lista de
+    /// canais, se ela mudou). Chamado com o mutex travado.
     fn broadcastMembers(s: *Server) !void {
         s.updateCodecs();
+        for (s.chans.items) |ch| try s.broadcastMembersOf(ch);
+        s.broadcastChannels();
+    }
+
+    fn broadcastMembersOf(s: *Server, ch: *Chan) !void {
+        var n: u16 = 0;
+        for (s.conns.items) |o| {
+            if (o.chan == ch) n += 1;
+        }
+        if (n == 0) return;
         var b: proto.Builder = .{};
         defer b.deinit();
         try b.begin(.members);
         try b.u8_(if (s.locked) proto.room_locked else 0);
-        try b.u16_(@intCast(s.conns.items.len));
+        try b.u16_(n);
         for (s.conns.items) |o| {
+            if (o.chan != ch) continue;
             try b.u32_(o.id);
             try b.str(o.nameSlice());
             var flags: u8 = 0;
@@ -1614,10 +1779,236 @@ pub const Server = struct {
             for (o.watching.items[0..k]) |id| try b.u32_(id);
         }
         // versão do app de cada um, na mesma ordem (no fim: quem não lê ignora)
-        for (s.conns.items) |o| try b.str(std.mem.sliceTo(&o.app_version, 0));
+        for (s.conns.items) |o| if (o.chan == ch) try b.str(std.mem.sliceTo(&o.app_version, 0));
         const m = try b.finish();
         defer m.release();
-        for (s.conns.items) |o| o.queue.push(m);
+        for (s.conns.items) |o| if (o.chan == ch) o.queue.push(m);
+    }
+
+    // ------------------------------------------------------ estatísticas
+
+    /// Estatísticas do servidor pra quem pediu (só o dono): CPU e memória do
+    /// processo, banda, filas, quem está atrasando. As taxas são desde a última
+    /// vez. Chamado com o mutex travado.
+    fn sendStats(s: *Server) void {
+        const now = sync.nowUs();
+        const ps = procstat.sample();
+        const relayed = s.relayed_bytes.load(.monotonic);
+        const prev = s.stats_prev;
+        const dt_us = if (prev.at_us == 0) 0 else now -| prev.at_us;
+        const rate = struct {
+            fn per_s(delta: u64, dt: u64) u32 {
+                if (dt == 0) return 0;
+                return @intCast(@min(std.math.maxInt(u32), delta * 1_000_000 / dt));
+            }
+        }.per_s;
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        const ok = blk: {
+            b.begin(.stats) catch break :blk false;
+            b.u32_(@intCast(@min(std.math.maxInt(u32), s.nowUs() / 1_000_000))) catch break :blk false;
+            // CPU em milésimos de um núcleo (1000 = um núcleo inteiro)
+            const cpu: u32 = if (dt_us == 0) 0 else @intCast(@min(std.math.maxInt(u32), (ps.cpu_us -| prev.cpu_us) * 1000 / dt_us));
+            b.u32_(cpu) catch break :blk false;
+            b.u8_(@intCast(@min(255, procstat.cores()))) catch break :blk false;
+            b.u32_(@intCast(@min(std.math.maxInt(u32), ps.rss_kb))) catch break :blk false;
+            b.u32_(rate(relayed -| prev.relayed, dt_us)) catch break :blk false;
+            b.u32_(rate(s.received_bytes -| prev.received, dt_us)) catch break :blk false;
+            var udp_n: u16 = 0;
+            for (s.conns.items) |o| {
+                if (o.udp.load(.acquire)) |l| if (l.isActive()) {
+                    udp_n += 1;
+                };
+            }
+            b.u16_(@intCast(s.conns.items.len)) catch break :blk false;
+            b.u16_(udp_n) catch break :blk false;
+            b.u16_(@intCast(@min(65535, s.max_members))) catch break :blk false;
+            b.u8_(@intCast(s.chans.items.len)) catch break :blk false;
+            b.u16_(@intCast(@min(65535, s.n_resyncs -% prev.resyncs))) catch break :blk false;
+            b.u16_(@intCast(@min(65535, s.n_thins -% prev.thins))) catch break :blk false;
+            b.u16_(@intCast(@min(65535, s.n_keyreqs -% prev.keyreqs))) catch break :blk false;
+            b.u16_(@intCast(@min(65535, s.n_slow -% prev.slow))) catch break :blk false;
+            b.u32_(@intCast(@min(std.math.maxInt(u32), dt_us / 1000))) catch break :blk false;
+            var flags: u8 = 0;
+            if (s.hosted) flags |= 1;
+            if (s.locked) flags |= 2;
+            if (s.new_channels) flags |= 4;
+            b.u8_(flags) catch break :blk false;
+            const n: u16 = @intCast(@min(s.conns.items.len, proto.stats_max_people));
+            b.u16_(n) catch break :blk false;
+            const now_ms = now / 1000;
+            for (s.conns.items[0..n]) |o| {
+                b.u32_(o.id) catch break :blk false;
+                b.str(o.nameSlice()) catch break :blk false;
+                b.str(o.chan.nameSlice()) catch break :blk false;
+                b.u8_(o.route) catch break :blk false;
+                var pf: u8 = 0;
+                for (o.flows.items) |*f| {
+                    if (f.late or f.struggling(now_ms)) pf |= proto.stats_late;
+                    if (f.thin) pf |= proto.stats_thin;
+                }
+                if (o.streams[0].on) pf |= proto.stats_streaming;
+                if (o.streams[1].on) pf |= proto.stats_camera;
+                if (o.owner) pf |= proto.stats_owner;
+                b.u8_(pf) catch break :blk false;
+                const l = o.udp.load(.acquire);
+                const udp_on = if (l) |ll| ll.isActive() else false;
+                b.u8_(@intFromBool(udp_on)) catch break :blk false;
+                // o servidor só responde ping: RTT só de quem ele mediu (senão 0 = não sabe)
+                b.u16_(if (udp_on and l.?.ep.rtt_measured.load(.monotonic)) @intCast(@min(65535, l.?.ep.rttMs())) else 0) catch break :blk false;
+                b.u32_(rate(o.tx_bytes -| o.tx_seen, dt_us)) catch break :blk false;
+                b.u32_(rate(o.rx_bytes -| o.rx_seen, dt_us)) catch break :blk false;
+                b.u32_(@intCast(@min(std.math.maxInt(u32), o.queue.queuedBytes()))) catch break :blk false;
+                b.u16_(@intCast(@min(65535, o.watching.items.len))) catch break :blk false;
+            }
+            break :blk true;
+        };
+        for (s.conns.items) |o| {
+            o.tx_seen = o.tx_bytes;
+            o.rx_seen = o.rx_bytes;
+        }
+        s.stats_prev = .{ .at_us = now, .cpu_us = ps.cpu_us, .relayed = relayed, .received = s.received_bytes, .resyncs = s.n_resyncs, .thins = s.n_thins, .keyreqs = s.n_keyreqs, .slow = s.n_slow };
+        if (!ok) return;
+        const m = b.finish() catch return;
+        defer m.release();
+        for (s.conns.items) |o| if (o.stats_on and o.owner) o.queue.push(m);
+    }
+
+    // ------------------------------------------------------------- canais
+
+    fn findChan(s: *Server, name: []const u8) ?*Chan {
+        for (s.chans.items) |ch| if (std.mem.eql(u8, ch.nameSlice(), name)) return ch;
+        return null;
+    }
+
+    fn canCreateChan(s: *Server) bool {
+        return s.new_channels and s.chans.items.len < proto.max_channels;
+    }
+
+    fn addChan(s: *Server, name: []const u8, fixed: bool) !*Chan {
+        const ch = try gpa.create(Chan);
+        ch.* = .{ .fixed = fixed };
+        copyInto(&ch.name, &ch.name_len, name);
+        s.chans.append(gpa, ch) catch |e| {
+            gpa.destroy(ch);
+            return e;
+        };
+        return ch;
+    }
+
+    /// Canal criado por alguém que ficou vazio some (com o chat dele).
+    fn dropIfEmpty(s: *Server, ch: *Chan) void {
+        if (ch.fixed) return;
+        for (s.conns.items) |o| if (o.chan == ch) return;
+        const i = std.mem.findScalar(*Chan, s.chans.items, ch) orelse return;
+        _ = s.chans.orderedRemove(i);
+        s.log("canal #{s} vazio: fechado", .{ch.nameSlice()});
+        ch.destroy();
+    }
+
+    /// Mensagem `channel` pra `cn`: em que canal ela está + a lista.
+    fn pushChannels(s: *Server, cn: *Conn) void {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        s.buildChannels(&b, cn.chan) catch return;
+        cn.queue.pushOwned(b.finish() catch return);
+    }
+
+    fn buildChannels(s: *Server, b: *proto.Builder, current: *Chan) !void {
+        try b.begin(.channel);
+        try b.str(current.nameSlice());
+        try b.u8_(@intCast(s.chans.items.len));
+        for (s.chans.items) |ch| {
+            var people: u16 = 0;
+            var live = false;
+            for (s.conns.items) |o| {
+                if (o.chan != ch) continue;
+                people += 1;
+                if (o.streams[0].on or o.streams[1].on) live = true;
+            }
+            try b.str(ch.nameSlice());
+            try b.u16_(people);
+            try b.u8_(@as(u8, if (live) proto.chan_live else 0) | @as(u8, if (ch.fixed) proto.chan_fixed else 0));
+        }
+    }
+
+    /// A lista de canais (quantos em cada, quem está ao vivo) mudou: manda pra
+    /// todo mundo. Compara com a última mandada (o "atual" de cada um fica de fora).
+    fn broadcastChannels(s: *Server) void {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        s.buildChannels(&b, s.chans.items[0]) catch return;
+        const m = b.finish() catch return;
+        defer m.release();
+        // montada sempre com o mesmo "atual" (o padrão): igual = nada mudou
+        const body = m.data;
+        if (body.len <= s.chans_sent.len and body.len == s.chans_sent_len and std.mem.eql(u8, body, s.chans_sent[0..body.len])) return;
+        if (body.len <= s.chans_sent.len) {
+            @memcpy(s.chans_sent[0..body.len], body);
+            s.chans_sent_len = body.len;
+        } else s.chans_sent_len = 0;
+        for (s.conns.items) |o| s.pushChannels(o);
+    }
+
+    /// Manda o histórico do canal de `cn` (entrou na sala ou trocou de canal).
+    fn pushHistory(s: *Server, cn: *Conn) !void {
+        _ = s;
+        const ch = cn.chan;
+        for (0..ch.chat_len) |i| {
+            const e = &ch.chat_log[(ch.chat_head + i) % chat_history_len];
+            cn.queue.pushOwned(try chatMsg(e, proto.chat_history));
+        }
+    }
+
+    /// Troca `cn` de canal (cria o canal se não existir e der). As transmissões
+    /// dela seguem pro canal novo (o app anuncia de novo); quem assistia no
+    /// canal velho para de receber. Chamado com o mutex travado.
+    fn switchChannel(s: *Server, cn: *Conn, raw: []const u8) !void {
+        var nb: [proto.channel_name_max]u8 = undefined;
+        const name = normalizeChannel(raw, &nb) orelse {
+            try pushNotice(cn, proto.notice_channel, "Nome de canal inválido: use letras, números, - ou _ (até 24).", 0);
+            return;
+        };
+        if (std.mem.eql(u8, name, cn.chan.nameSlice())) return s.pushChannels(cn);
+        const now = sync.nowMs();
+        if (now -| cn.chan_switch_ms < 800) {
+            try pushNotice(cn, proto.notice_channel, "Calma: trocando de canal rápido demais.", 0);
+            return s.pushChannels(cn);
+        }
+        const target = s.findChan(name) orelse blk: {
+            if (!s.new_channels) {
+                try pushNotice(cn, proto.notice_channel, "Esse servidor não deixa criar canal novo.", 0);
+                return s.pushChannels(cn);
+            }
+            if (s.chans.items.len >= proto.max_channels) {
+                try pushNotice(cn, proto.notice_channel, "O servidor já tem canais demais.", 0);
+                return s.pushChannels(cn);
+            }
+            break :blk try s.addChan(name, false);
+        };
+        cn.chan_switch_ms = now;
+        const old = cn.chan;
+        // quem assistia ela (no canal velho) para; ela para de assistir quem ficou lá
+        for (0..2) |k| {
+            const stream = proto.streamId(cn.id, @intCast(k));
+            for (s.conns.items) |o| if (o != cn) o.forget(stream);
+            const ss = &cn.streams[k];
+            ss.codecs_sent = 0;
+            ss.features_sent = 0;
+            ss.view_sent = 0;
+        }
+        while (cn.watching.items.len > 0) cn.forget(cn.watching.items[cn.watching.items.len - 1]);
+        cn.view_sizes.clearRetainingCapacity();
+        var tmp: [120]u8 = undefined;
+        try s.broadcastChat(old, std.fmt.bufPrint(&tmp, "{s} foi pro #{s}", .{ cn.nameSlice(), name }) catch "");
+        cn.chan = target;
+        s.log("{s}: #{s} → #{s}", .{ cn.nameSlice(), old.nameSlice(), name });
+        s.dropIfEmpty(old); // (antes da lista: ela já sai sem o canal que esvaziou)
+        // primeiro "você está no canal X" (o app limpa o chat), depois o histórico dele
+        s.pushChannels(cn);
+        try s.pushHistory(cn);
+        try s.broadcastChat(target, std.fmt.bufPrint(&tmp, "{s} entrou no #{s}", .{ cn.nameSlice(), name }) catch "");
+        try s.broadcastMembers();
     }
 
     /// Chamado com o mutex travado.
@@ -1634,6 +2025,7 @@ pub const Server = struct {
         const now = sync.nowMs();
         if (!force and now - ss.last_keyreq_ms < keyreq_interval_ms) return;
         ss.last_keyreq_ms = now;
+        s.n_keyreqs +%= 1;
         const m = proto.Msg.alloc(.keyreq, 1) catch return;
         m.payload()[0] = kind;
         o.queue.pushOwned(m);
@@ -1652,10 +2044,13 @@ pub const Server = struct {
         @memcpy(m.payload()[4..], payload);
         s.mutex.lock();
         defer s.mutex.unlock();
+        cn.rx_bytes += payload.len;
+        s.received_bytes += payload.len;
         for (s.conns.items) |o| {
             if (o == cn or !contains(&o.watching, stream)) continue;
             if (o.queue.queuedBytes() > max_viewer_backlog * 2) continue;
             o.queue.pushUrgent(m); // som não espera atrás de quadro
+            o.tx_bytes += m.data.len;
             _ = s.relayed_bytes.fetchAdd(m.data.len, .monotonic);
         }
     }
@@ -1672,11 +2067,14 @@ pub const Server = struct {
         @memcpy(m.payload()[4..], payload);
         s.mutex.lock();
         defer s.mutex.unlock();
+        cn.rx_bytes += payload.len;
+        s.received_bytes += payload.len;
         if (cn.muted) return; // silenciado pelo admin
         for (s.conns.items) |o| {
-            if (o == cn or o.deaf or !o.authed) continue;
+            if (o == cn or o.deaf or !o.authed or o.chan != cn.chan) continue;
             if (o.queue.queuedBytes() > max_viewer_backlog * 2) continue;
             o.queue.pushUrgent(m);
+            o.tx_bytes += m.data.len;
             _ = s.relayed_bytes.fetchAdd(m.data.len, .monotonic);
         }
     }
@@ -1702,7 +2100,7 @@ pub const Server = struct {
         std.mem.writeInt(u32, m.payload()[0..4], cn.id, .little);
         @memcpy(m.payload()[4..13], payload[0..9]);
         for (s.conns.items) |o| {
-            if (o == cn) continue;
+            if (o == cn or o.chan != cn.chan) continue;
             if (o.id != owner and !contains(&o.watching, stream)) continue;
             o.queue.pushUrgent(m);
         }
@@ -1756,7 +2154,7 @@ pub const Server = struct {
         std.mem.writeInt(u32, m.payload()[0..4], cn.id, .little);
         @memcpy(m.payload()[4..], payload);
         for (s.conns.items) |o| {
-            if (o == cn) continue;
+            if (o == cn or o.chan != cn.chan) continue;
             if (o.id != owner and !contains(&o.watching, stream)) continue;
             o.queue.pushUrgent(m);
         }
@@ -1789,6 +2187,8 @@ pub const Server = struct {
         defer s.mutex.unlock();
         const ss = &cn.streams[kind];
         if (!ss.on) return; // parada (pelo admin) e ainda chegando quadro velho
+        cn.rx_bytes += payload.len;
+        s.received_bytes += payload.len;
         const now_ms = sync.nowMs();
         const now_us = sync.nowUs();
         ss.last_frame_ms = now_ms;
@@ -1852,6 +2252,7 @@ pub const Server = struct {
                 // fila também); a taxa da sala toda só desce se nem assim ele der conta
                 _ = o.queue.dropDroppable(stream);
                 f.probe_until_ms = 0;
+                s.n_thins +%= 1;
                 s.log("{s} atrasando {d} ms com {s}: recebendo só metade dos quadros por {d} s", .{ o.nameSlice(), excess / 1000, cn.nameSlice(), f.thin_ms / 1000 });
             }
             // recém-afinado ainda escoando o atraso não conta
@@ -1865,12 +2266,14 @@ pub const Server = struct {
                 f.late = false;
                 f.trend_at_us = 0;
                 resynced = true;
+                s.n_resyncs +%= 1;
                 _ = f.backoff(now_ms);
                 if (thinnable) _ = f.thinOut(now_ms); // depois do IDR, só metade
                 s.log("{s} atrasou {d} ms assistindo {s}: recomeçando de um IDR (próximo em {d} ms)", .{ o.nameSlice(), excess / 1000, cn.nameSlice(), f.resync_after_ms - now_ms });
                 continue;
             }
             o.queue.push(m);
+            o.tx_bytes += m.data.len;
             f.win.sent(seq, now_us, is_key);
             _ = s.relayed_bytes.fetchAdd(m.data.len, .monotonic);
         }
@@ -1897,6 +2300,7 @@ pub const Server = struct {
             hint.payload()[0] = kind;
             hint.payload()[1] = if (majority) 10 else 50;
             cn.queue.pushUrgentOwned(hint);
+            s.n_slow +%= 1;
             s.log("pedindo taxa menor pra {s} ({d} de {d} espectadores com dificuldade{s})", .{ cn.nameSlice(), struggling, viewers, if (resynced) "" else ", atrasando sem escoar" });
         }
     }

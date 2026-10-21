@@ -83,6 +83,7 @@ sudo dnf install libportal pipewire-libs
 4. **Go live.** Click **Share screen**, choose resolution, frame rate, quality and content type, then **Go live**. Everything can be changed mid-stream.
 5. **Watch.** Click anyone who is live. Press **F11** for fullscreen, **double-click** for theater mode and **Esc** to leave.
 6. **Talk.** Toggle the microphone with **Ctrl+M** and deafen with **Ctrl+D**. Right-click a member to change their voice volume.
+7. **Hop between channels.** A server can hold several rooms at once, IRC-style. Click a channel in the panel, press **+** to create one, or type `/join name` in the chat. Your stream comes along.
 
 On Wayland, the system asks which screen or window to share the first time and remembers your choice.
 
@@ -126,7 +127,9 @@ On Wayland, the system asks which screen or window to share the first time and r
 <td valign="top">
 
 ### 🛡️ Rooms and control
+- **Channels, IRC-style**: one server, many rooms, each with its own chat, people, voice and streams. Switch without reconnecting; invites can point at a channel.
 - The room creator gets the crown and can kick, ban, mute, stop a stream, give or remove admin and lock the room.
+- **Server stats for the admin**: CPU, memory, bandwidth in and out, who is lagging and a plain-language guess at the bottleneck.
 - **Automatic reconnection** that resumes your stream and the streams you were watching.
 - Live stats: resolution, frame rate, bandwidth and measured end-to-end latency.
 - **Configurable global hotkeys** for clip, mic, deafen, share, screenshot and a master toggle.
@@ -156,6 +159,8 @@ On Wayland, the system asks which screen or window to share the first time and r
 |---|---|
 | <img src="docs/img/en/share.png" alt="Share screen dialog"> | <img src="docs/img/en/room_pwnd.jpg" alt="The pwnd neon theme"> |
 | **Going live.** Pick what to show, which audio to send, the content type, resolution, frame rate and quality. | **Themes.** The pwnd neon theme, one of six built-ins. You can also bring your own CSS. |
+| <img src="docs/img/en/home.png" alt="The home screen"> | <img src="docs/img/en/stats.png" alt="Server statistics"> |
+| **Home screen.** Join or create a room, optionally straight into a channel. | **Server stats.** What the admin sees: CPU, memory, bandwidth, people per channel and the likely bottleneck. |
 | <img src="docs/img/en/shortcuts.png" alt="Shortcuts settings"> | <img src="docs/img/en/performance.png" alt="Performance settings"> |
 | **Global hotkeys.** Any key, combination or mouse button, active while a game is focused. | **Performance.** Automatic quality, cursor outside the video, viewer-sized streams and a built-in PC test. |
 

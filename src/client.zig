@@ -184,6 +184,67 @@ pub const ChatLine = struct {
 };
 
 /// Algo que o admin fez com a gente (a UI mostra e reage).
+/// Um canal do servidor (lista que ele manda; ver proto.Type.channel).
+pub const ChanInfo = struct {
+    name: [proto.channel_name_max]u8 = undefined,
+    name_len: u8 = 0,
+    people: u16 = 0,
+    flags: u8 = 0, // proto.chan_*
+
+    pub fn nameSlice(ch: *const ChanInfo) []const u8 {
+        return ch.name[0..ch.name_len];
+    }
+};
+
+/// Estatísticas do servidor (só pra quem entrou com o token de admin).
+pub const ServerStats = struct {
+    uptime_s: u32 = 0,
+    cpu_permille: u32 = 0, // CPU do processo em milésimos de um núcleo
+    cores: u8 = 1,
+    rss_kb: u32 = 0,
+    out_bps: u32 = 0, // bytes/s
+    in_bps: u32 = 0,
+    conns: u16 = 0,
+    udp_conns: u16 = 0,
+    max_members: u16 = 0,
+    channels: u8 = 0,
+    resyncs: u16 = 0, // na janela
+    thins: u16 = 0,
+    keyreqs: u16 = 0,
+    slow: u16 = 0,
+    window_ms: u32 = 0,
+    flags: u8 = 0, // 1 = dentro do app, 2 = trancada, 4 = canais novos liberados
+    n_people: usize = 0,
+    people: [proto.stats_max_people]Person = undefined,
+
+    pub const Person = struct {
+        id: u32,
+        name: [48]u8,
+        name_len: u8,
+        chan: [proto.channel_name_max]u8,
+        chan_len: u8,
+        route: u8,
+        flags: u8, // proto.stats_*
+        udp: bool,
+        rtt_ms: u16,
+        tx_bps: u32,
+        rx_bps: u32,
+        queued: u32,
+        watching: u16,
+
+        pub fn nameSlice(p: *const Person) []const u8 {
+            return p.name[0..p.name_len];
+        }
+        pub fn chanSlice(p: *const Person) []const u8 {
+            return p.chan[0..p.chan_len];
+        }
+    };
+
+    pub fn hosted(st: *const ServerStats) bool {
+        return st.flags & 1 != 0;
+    }
+};
+
 const IncomingLog = struct {
     from: u32,
     id: u32,
@@ -758,6 +819,19 @@ pub const Client = struct {
     /// pacote tem que ser o hello, e a voz fura a fila.
     welcomed: std.atomic.Value(bool) = .init(false),
     voice_seq: std.atomic.Value(u32) = .init(0),
+    // canais (servidor antigo não manda: chans_supported fica false)
+    chans_supported: bool = false,
+    chan_name: [proto.channel_name_max]u8 = undefined, // em que canal a gente está
+    chan_name_len: usize = 0,
+    chans: [proto.max_channels]ChanInfo = undefined,
+    n_chans: usize = 0,
+    /// Muda a cada troca de canal: a UI para de assistir o que era do canal
+    /// velho e o transmissor anuncia de novo (a transmissão vai junto).
+    channel_gen: std.atomic.Value(u32) = .init(0),
+    want_chan: [proto.channel_name_max]u8 = undefined, // o canal pedido ao entrar (hello)
+    want_chan_len: usize = 0,
+    stats: ServerStats = .{},
+    stats_gen: u32 = 0, // muda a cada estatística que chega (0 = nenhuma ainda)
 
     pub const Options = struct {
         /// "host:porta" ou vários separados por vírgula (convite com vários caminhos).
@@ -768,6 +842,8 @@ pub const Client = struct {
         /// Identifica esse app (aleatória, guardada na config): banimento.
         client_key: u64 = 0,
         hw_decode: bool = true,
+        /// Canal pra entrar (vazio = o padrão do servidor).
+        channel: []const u8 = "",
         wake: *const fn () void,
     };
 
@@ -782,6 +858,7 @@ pub const Client = struct {
         copyInto(cl.name[0..32], &cl.name_len, o.name);
         copyInto(&cl.pass, &cl.pass_len, o.password);
         copyInto(&cl.admin_token, &cl.admin_token_len, o.admin_token);
+        copyInto(&cl.want_chan, &cl.want_chan_len, o.channel);
         _ = cl.refs.fetchAdd(1, .monotonic); // thread de conexão/leitura
         sync.spawn(connectLoop, .{cl}) catch {
             gpa.destroy(cl);
@@ -946,6 +1023,7 @@ pub const Client = struct {
         b.str(if (getenv("TELINHA_VERSAO_TESTE")) |v| std.mem.span(v) else proto.app_version) catch return;
         b.u8_(if (cl.hw_decode) decodeCodecs() else proto.codecs_h264) catch return;
         b.u8_(proto.features_mine) catch return;
+        b.str(cl.want_chan[0..cl.want_chan_len]) catch return;
         cl.queue.pushOwned(b.finish() catch return);
 
         var rb: proto.RecvBuf = .{};
@@ -1427,6 +1505,8 @@ pub const Client = struct {
                 cl.onPong(t, server_us);
             },
             .log_chunk => try cl.onLogChunk(&r),
+            .channel => try cl.onChannels(&r),
+            .stats => try cl.onStats(&r),
             .log_ack => {
                 _ = try r.u32_(); // id
                 const result = try r.u8_();
@@ -1478,6 +1558,110 @@ pub const Client = struct {
             },
             else => {},
         }
+    }
+
+    /// Em que canal a gente está e quais existem. Canal diferente do que a
+    /// gente sabia = trocou: o chat recomeça (o servidor manda o histórico do
+    /// canal novo logo depois).
+    fn onChannels(cl: *Client, r: *proto.Reader) !void {
+        const cur = try r.str();
+        const n = try r.u8_();
+        var list: [proto.max_channels]ChanInfo = undefined;
+        var k: usize = 0;
+        for (0..n) |_| {
+            const nm = try r.str();
+            const people = try r.u16_();
+            const flags = try r.u8_();
+            if (k == list.len) continue;
+            list[k] = .{ .people = people, .flags = flags };
+            const l = @min(nm.len, proto.channel_name_max);
+            @memcpy(list[k].name[0..l], nm[0..l]);
+            list[k].name_len = @intCast(l);
+            k += 1;
+        }
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        const changed = cl.chans_supported and !std.mem.eql(u8, cur, cl.chan_name[0..cl.chan_name_len]);
+        cl.chans_supported = true;
+        copyInto(&cl.chan_name, &cl.chan_name_len, cur);
+        copyInto(&cl.want_chan, &cl.want_chan_len, cur); // reconectando, volta pra cá
+        @memcpy(cl.chans[0..k], list[0..k]);
+        cl.n_chans = k;
+        if (!changed) return;
+        for (cl.chat.items) |*l| l.free();
+        cl.chat.clearRetainingCapacity();
+        cl.chat_last_id = 0;
+        cl.chat_count += 1;
+        cl.pointers.clearRetainingCapacity();
+        cl.strokes.clearRetainingCapacity();
+        _ = cl.channel_gen.fetchAdd(1, .acq_rel);
+        // a transmissão vai junto: o transmissor anuncia de novo e manda um IDR
+        cl.keyreq[0].store(true, .release);
+        cl.keyreq[1].store(true, .release);
+    }
+
+    fn onStats(cl: *Client, r: *proto.Reader) !void {
+        var st: ServerStats = .{};
+        st.uptime_s = try r.u32_();
+        st.cpu_permille = try r.u32_();
+        st.cores = try r.u8_();
+        st.rss_kb = try r.u32_();
+        st.out_bps = try r.u32_();
+        st.in_bps = try r.u32_();
+        st.conns = try r.u16_();
+        st.udp_conns = try r.u16_();
+        st.max_members = try r.u16_();
+        st.channels = try r.u8_();
+        st.resyncs = try r.u16_();
+        st.thins = try r.u16_();
+        st.keyreqs = try r.u16_();
+        st.slow = try r.u16_();
+        st.window_ms = try r.u32_();
+        st.flags = try r.u8_();
+        const n = try r.u16_();
+        for (0..n) |_| {
+            var p: ServerStats.Person = undefined;
+            p.id = try r.u32_();
+            const nm = try r.str();
+            p.name_len = @intCast(@min(nm.len, p.name.len));
+            @memcpy(p.name[0..p.name_len], nm[0..p.name_len]);
+            const ch = try r.str();
+            p.chan_len = @intCast(@min(ch.len, p.chan.len));
+            @memcpy(p.chan[0..p.chan_len], ch[0..p.chan_len]);
+            p.route = try r.u8_();
+            p.flags = try r.u8_();
+            p.udp = (try r.u8_()) != 0;
+            p.rtt_ms = try r.u16_();
+            p.tx_bps = try r.u32_();
+            p.rx_bps = try r.u32_();
+            p.queued = try r.u32_();
+            p.watching = try r.u16_();
+            if (st.n_people < st.people.len) {
+                st.people[st.n_people] = p;
+                st.n_people += 1;
+            }
+        }
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        cl.stats = st;
+        cl.stats_gen +%= 1;
+        if (cl.stats_gen == 0) cl.stats_gen = 1;
+    }
+
+    /// Entra num canal (cria se não existir, se o servidor deixar).
+    pub fn joinChannel(cl: *Client, name: []const u8) void {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        b.begin(.channel) catch return;
+        b.str(name) catch return;
+        cl.queue.pushOwned(b.finish() catch return);
+    }
+
+    /// Liga/desliga as estatísticas do servidor (o servidor só manda pro dono).
+    pub fn wantStats(cl: *Client, on: bool) void {
+        const m = proto.Msg.alloc(.stats, 1) catch return;
+        m.payload()[0] = @intFromBool(on);
+        cl.queue.pushOwned(m);
     }
 
     /// Próximo aviso do admin pra UI (null = nenhum).

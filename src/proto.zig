@@ -51,6 +51,8 @@ pub const Type = enum(u8) {
     view_size = 26, // C→S u32 stream, u16 altura (pixels em que aparece; view_full = quer tudo) | S→C u8 tipo, u16 altura (a maior entre quem assiste; view_full = sem limite)
     log_chunk = 27, // C→S u32 id, u8 o_que (log_what_*), u32 total, u32 posição, bytes | S→C u32 de, str nome + o mesmo: log de depuração pro dono da sala, em pedaços
     log_ack = 28, // S→C u32 id, u8 resultado (log_ack_*), u8 quantos donos receberam
+    channel = 29, // C→S str canal: entra (cria, se não existir) | S→C str canal_atual, u8 n, n × (str nome, u16 pessoas, u8 flags chan_*)
+    stats = 30, // C→S u8 ligado (só quem entrou com o token de admin) | S→C estatísticas do servidor (ver docs/PROTOCOL.md)
     _,
 };
 
@@ -58,6 +60,23 @@ pub const Type = enum(u8) {
 /// (u8 chat_img_*, e se tiver: u16 w, u16 h, u32 tamanho, bytes). Quem recebe
 /// decodifica com o mesmo decoder do vídeo: nenhum leitor de PNG/JPEG exposto
 /// à rede.
+/// Canais (como no IRC): cada um com o seu chat, quem está nele, voz e
+/// transmissões; trocar é na mesma conexão. Nome normalizado (ver
+/// server.normalizeChannel): minúsculas, sem "#", até channel_name_max bytes.
+pub const channel_name_max = 24;
+pub const max_channels = 32;
+pub const chan_live: u8 = 1; // alguém ao vivo nele
+pub const chan_fixed: u8 = 2; // não some quando esvazia (o padrão e os do --canais)
+pub const default_channel = "geral";
+
+/// stats: no máximo tantas pessoas na lista (o resto só conta no total).
+pub const stats_max_people = 64;
+pub const stats_late: u8 = 1; // atrasando (assistindo alguém)
+pub const stats_thin: u8 = 2; // recebendo só metade dos quadros
+pub const stats_streaming: u8 = 4;
+pub const stats_camera: u8 = 8;
+pub const stats_owner: u8 = 16;
+
 /// log_chunk: o que é e limites (o servidor recusa acima disso).
 pub const log_what_log: u8 = 0;
 pub const log_what_crash: u8 = 1;
@@ -137,6 +156,7 @@ pub const notice_unmuted: u8 = 2;
 pub const notice_stream_stopped: u8 = 3; // texto + o tipo vai no primeiro byte depois do texto
 pub const notice_admin_on: u8 = 4;
 pub const notice_admin_off: u8 = 5;
+pub const notice_channel: u8 = 6; // não deu pra entrar no canal (o texto diz por quê)
 /// Só no app (não vem do servidor): chegou um log mandado pela sala (texto = nome + caminho).
 pub const notice_log_received: u8 = 100;
 

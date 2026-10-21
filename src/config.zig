@@ -18,6 +18,7 @@ pub const Config = struct {
     name: [33]u8 = zstr("", 33),
     join_addr: [256]u8 = zstr("", 256),
     join_pass: [129]u8 = zstr("", 129),
+    join_channel: [32]u8 = zstr("", 32), // canal pra entrar (vazio = o padrão do servidor)
     room_name: [65]u8 = zstr("", 65),
     host_port: i32 = 7777,
     host_pass: [129]u8 = zstr("", 129),
@@ -317,6 +318,8 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         cfg.crt = int != 0;
     } else if (std.mem.eql(u8, k, "animations")) {
         cfg.animations = int != 0;
+    } else if (std.mem.eql(u8, k, "join_channel")) {
+        setStr(&cfg.join_channel, v);
     } else if (std.mem.eql(u8, k, "auto_quality")) {
         cfg.auto_quality = int != 0;
     } else if (std.mem.eql(u8, k, "custom_css")) {
@@ -368,8 +371,8 @@ pub fn save(cfg: *const Config) void {
     }) catch return;
     _ = c.fwrite(s.ptr, 1, s.len, f);
     var more: [1280]u8 = undefined;
-    const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\ncheck_updates={d}\naudio_app={s}\nlanguage={s}\ntheme={s}\ncustom_theme={s}\nauto_quality={d}\nui_zoom={d}\ncrt={d}\nclip_secs={d}\nhotkeys_on={d}\ncursor_apart={d}\nview_size={d}\nui_fps_cap={d}\nhw_effort={d}\nvoice_ptt={d}\nptt_key={d}\nptt_scancode={d}\nptt_mouse={d}\ndebug_log={d}\ndebug_send={d}\ndebug_webhook={s}\nmic_agc={d}\nmic_gain={d}\nanimations={d}\n", .{
-        cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res, @intFromBool(cfg.check_updates), getStr(&cfg.audio_app), getStr(&cfg.language), getStr(&cfg.theme), getStr(&cfg.custom_theme), @intFromBool(cfg.auto_quality), cfg.ui_zoom, @intFromBool(cfg.crt), cfg.clip_secs, @intFromBool(cfg.hotkeys_on), @intFromBool(cfg.cursor_apart), @intFromBool(cfg.view_size), cfg.ui_fps_cap, cfg.hw_effort, @intFromBool(cfg.voice_ptt), cfg.ptt_key, cfg.ptt_scancode, cfg.ptt_mouse, @intFromBool(cfg.debug_log), cfg.debug_send, getStr(&cfg.debug_webhook), @intFromBool(cfg.mic_agc), cfg.mic_gain, @intFromBool(cfg.animations),
+    const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\ncheck_updates={d}\naudio_app={s}\nlanguage={s}\ntheme={s}\ncustom_theme={s}\nauto_quality={d}\nui_zoom={d}\ncrt={d}\nclip_secs={d}\nhotkeys_on={d}\ncursor_apart={d}\nview_size={d}\nui_fps_cap={d}\nhw_effort={d}\nvoice_ptt={d}\nptt_key={d}\nptt_scancode={d}\nptt_mouse={d}\ndebug_log={d}\ndebug_send={d}\ndebug_webhook={s}\nmic_agc={d}\nmic_gain={d}\nanimations={d}\njoin_channel={s}\n", .{
+        cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res, @intFromBool(cfg.check_updates), getStr(&cfg.audio_app), getStr(&cfg.language), getStr(&cfg.theme), getStr(&cfg.custom_theme), @intFromBool(cfg.auto_quality), cfg.ui_zoom, @intFromBool(cfg.crt), cfg.clip_secs, @intFromBool(cfg.hotkeys_on), @intFromBool(cfg.cursor_apart), @intFromBool(cfg.view_size), cfg.ui_fps_cap, cfg.hw_effort, @intFromBool(cfg.voice_ptt), cfg.ptt_key, cfg.ptt_scancode, cfg.ptt_mouse, @intFromBool(cfg.debug_log), cfg.debug_send, getStr(&cfg.debug_webhook), @intFromBool(cfg.mic_agc), cfg.mic_gain, @intFromBool(cfg.animations), getStr(&cfg.join_channel),
     }) catch return;
     _ = c.fwrite(m.ptr, 1, m.len, f);
     inline for (@typeInfo(HotkeyId).@"enum".fields) |fl| {

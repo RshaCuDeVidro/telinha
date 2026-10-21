@@ -8,6 +8,9 @@ Talks to 3.1 (the new messages are ignored by older apps and servers).
 
 ### Highlights
 
+- 💬 **Channels, IRC-style**: one server, many rooms. Each channel has its own chat, people, voice and streams; hop between them from the panel, with **+**, or with `/join name`, without reconnecting — your stream comes along.
+- 📊 **Server stats for the admin**: CPU, memory, bandwidth, who's lagging and the likely bottleneck, in plain language.
+- ✨ **New home screen** with an animated showcase, and a cleaner "invite people from outside" panel that scrolls.
 - 🎨 **New room layout**: a top bar with who's live, the stage in the middle, a floating control dock and a single side card with the members and the chat. Nothing overlaps, even in a small window.
 - 🖥️ **Fullscreen button** on each stream; controls and cursor hide when the mouse stops.
 - 🪟 **Windows**: Intel/AMD streams straight from the GPU (D3D11 video processor → Media Foundation), alt-tab no longer stops the stream, minimized windows show up in the list, and sound capture is sturdier.
@@ -19,6 +22,40 @@ Talks to 3.1 (the new messages are ignored by older apps and servers).
 
 ### All changes
 
+- **Channels (IRC-style)**: a server holds several channels; each has its own
+  chat (history), member list, voice, and streams (you only watch, point at or
+  draw on someone in your channel). Switch from the channel list in the right
+  panel, the **+** button (create or join by name), or `/join name` (`/j`,
+  `/canal`) in the chat; `/canais` lists them. Switching happens on the same
+  connection: your screen and camera follow you (they're announced again in the
+  new channel), and whoever watched you in the old one stops. A channel nobody
+  is in disappears unless it's fixed. The dedicated server takes
+  `--canais "geral,games,..."` (fixed channels, first = default; also
+  `TELINHA_CANAIS`) and `--sem-canais-novos` (no new ones). The home screen has
+  an optional **Channel** field, and invites can carry one:
+  `telinha://host:7777/games#password`. Reconnecting goes back to the channel
+  you were in. Older apps keep working (they stay in the default channel); the
+  new app on an older server simply shows no channels.
+- **Server statistics** for whoever joined with the admin token (gauge button at
+  the top): process CPU and memory, bandwidth out/in with a 2-minute graph,
+  people (and how many over UDP), channels, and per person: channel, path,
+  what they get and send, their send queue and whether they're lagging or
+  thinned. A "bottlenecks" section explains what's wrong (server CPU, the
+  server's upload, one person's connection, someone stuck on TCP...). The server
+  only measures while the window is open. Works on Linux and Windows (and when
+  the room runs inside the app, it says the numbers are the whole app's).
+- **New home screen**: an animated showcase (a little live screen with people
+  watching, reactions floating up, a chat message popping in) and a card with a
+  sliding Join/Create switch, fields with icons and a focus glow, and errors in
+  a box. The animation only runs while telinha is focused and someone is moving
+  the mouse (it freezes after 12 s and the app goes back to sleep), and can be
+  turned off in Appearance. In a short window the card scrolls.
+- **The "Create room" card no longer flickers**: its measured height and its
+  position were correcting each other every frame (half-pixel positions).
+- **"Inviting people from outside"** (empty room of the host): public link and
+  router port as two cards (stacked in a narrow window), and the whole area
+  scrolls — before, in a short window, the bottom was cut off with no way to
+  reach it. Opening "your own tunnel" scrolls it into view.
 - **New room layout**: the old sidebar, room strip and user panel became a top
   bar (room, connection, live pills you click to watch, lock/invite/chat/settings
   on the right), the stage with the streams, a floating dock (you, mic, deafen,

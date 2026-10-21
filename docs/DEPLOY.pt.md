@@ -74,6 +74,30 @@ sala. Ele chega em todo mundo que entrou com o token de admin (vai pra pasta
 `TELINHA_LOGS`), o servidor dedicado também guarda uma cópia: um log mandado com
 nenhum admin na sala não se perde. Cada pessoa manda um log por minuto, até 8 MB.
 
+## Canais
+
+Um servidor só pode ter várias salas ao mesmo tempo, como no IRC: cada canal com
+o seu chat, a sua gente, a sua voz e as suas transmissões, e a galera pula de um
+pro outro sem reconectar (o painel da direita, ou `/join nome` no chat). O
+primeiro canal é o padrão.
+
+```sh
+telinha-server --canais "geral,jogos,filmes"      # canais fixos; qualquer um cria outros
+telinha-server --canais "geral,jogos" --sem-canais-novos   # só esses
+```
+
+(ou `TELINHA_CANAIS`). Canal que alguém criou some quando esvazia. O convite pode
+apontar direto pra um canal: `telinha://host:7777/jogos#senha`.
+
+## Estatísticas do servidor
+
+Quem entra com o token de admin (`--admin`) ganha um botão de medidor no topo da
+sala: CPU e memória do processo do servidor, banda chegando e saindo, gente por
+canal, UDP ou TCP, quanto cada um está recebendo, a fila de envio de cada um, e um
+palpite em português claro de qual é o gargalo (CPU do servidor, upload do
+servidor, a conexão de uma pessoa). O servidor só mede enquanto alguém está com
+essa janela aberta.
+
 ## Firewall e banda
 
 - Libere a porta escolhida em **TCP e UDP** (`ufw allow 7777`). O TCP leva o controle e o

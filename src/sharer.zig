@@ -473,6 +473,7 @@ const Pipeline = struct {
     audio_sender: ?*audio.Sender = null,
     audio_live: std.atomic.Value(bool) = .init(false), // tem som saindo (vai no anúncio)
     reannounce: std.atomic.Value(bool) = .init(false), // o som mudou: anunciar de novo
+    chan_seen: u32 = 0, // troca de canal já anunciada (client.channel_gen)
     audio_seq: u32 = 0,
     fps_gen: u32 = 0, // muda quando fps/modo/qualidade mudam (encoder recria)
     fps: u32 = 30,
@@ -1361,8 +1362,11 @@ const Pipeline = struct {
                 s.w = sl.w;
                 s.h = sl.h;
                 s.mutex.unlock();
+                p.chan_seen = s.client.channel_gen.load(.acquire);
                 announce(s, kind, sl.w, sl.h, fps, p.audio_live.load(.acquire));
-            } else if (p.reannounce.swap(false, .acq_rel)) {
+            } else if (p.reannounce.swap(false, .acq_rel) or s.client.channel_gen.load(.acquire) != p.chan_seen) {
+                // som mudou, ou trocou de canal (o canal novo ainda não sabe da transmissão)
+                p.chan_seen = s.client.channel_gen.load(.acquire);
                 announce(s, kind, sl.w, sl.h, fps, p.audio_live.load(.acquire));
             }
             // ninguém assistindo (e sem gravar a própria tela): não codifica nem

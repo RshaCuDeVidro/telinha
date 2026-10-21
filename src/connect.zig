@@ -57,17 +57,29 @@ pub fn parseList(s: []const u8, out: []Target) usize {
     return n;
 }
 
-/// Convite → endereços + senha.
+/// Convite → endereços + canal + senha: telinha://end1,end2/canal#senha
+/// (o canal e a senha são opcionais).
 pub const Invite = struct {
     addrs: []const u8, // lista separada por vírgula
     password: ?[]const u8,
+    channel: ?[]const u8 = null,
 };
 
 pub fn splitInvite(raw: []const u8) Invite {
     var s = std.mem.trim(u8, raw, " \t\r\n");
     if (std.mem.startsWith(u8, s, "telinha://")) s = s["telinha://".len..];
-    if (std.mem.findScalar(u8, s, '#')) |h| return .{ .addrs = s[0..h], .password = s[h + 1 ..] };
-    return .{ .addrs = s, .password = null };
+    var inv: Invite = .{ .addrs = s, .password = null };
+    if (std.mem.findScalar(u8, s, '#')) |h| {
+        inv.addrs = s[0..h];
+        inv.password = s[h + 1 ..];
+    }
+    // endereço nunca tem "/" (IPv6 vai entre colchetes, sem barra)
+    if (std.mem.findScalar(u8, inv.addrs, '/')) |sl| {
+        const ch = std.mem.trim(u8, inv.addrs[sl + 1 ..], "/ ");
+        if (ch.len > 0) inv.channel = ch;
+        inv.addrs = inv.addrs[0..sl];
+    }
+    return inv;
 }
 
 // ---------------------------------------------------------------------------

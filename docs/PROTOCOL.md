@@ -41,6 +41,9 @@ with the password after the first `#`:
 telinha://192.168.0.10:7777,203.0.113.7:7777,[2804:14c::1]:7777,bore.pub:41234#password
 ```
 
+A channel can come after the addresses, separated by `/`:
+`telinha://203.0.113.7:7777/games#password` joins straight into `#games`.
+
 Each address is `host:port`; IPv6 goes **in brackets** (without brackets it is
 ambiguous and the address is ignored). Up to 8 addresses; the order is the
 preference. The host builds the invite with the local network IP, the port
@@ -86,7 +89,7 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 
 | type | name | direction | payload |
 |---|---|---|---|
-| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (what it decodes, bits `1<<codec`), `u8 recursos` (`feat_*`) |
+| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (what it decodes, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (channel to join; empty or missing = the default) |
 | 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (the server closes right after) |
 | 4 | members | S→C | `u8 sala` (1 = locked), `u16 n`, n × member (below), n × `str versão_do_app` (same order) |
@@ -125,6 +128,10 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | 27 | log_chunk | C→S | `u32 id`, `u8 what` (0 = debug log, 1 = crash report), `u32 total`, `u32 offset`, bytes: a debug log for the room owner, in pieces of up to 64 KB (8 MB max, one per minute) |
 | 27 | log_chunk | S→C | `u32 from`, `str name` + the same fields: relayed to everyone who joined with the admin token |
 | 28 | log_ack | S→C | `u32 id`, `u8 result` (0 = delivered, 1 = only saved on the server, 2 = nobody to receive it, 3 = refused), `u8 how many owners got it` |
+| 29 | channel | C→S | `str canal`: switch to that channel (created if it doesn't exist and the server allows it) |
+| 29 | channel | S→C | `str atual` (the channel you are in), `u8 n`, n × (`str nome`, `u16 pessoas`, `u8 flags`: 1 = someone live, 2 = fixed) |
+| 30 | stats | C→S | `u8 ligado`: start/stop receiving server statistics (only whoever joined with the admin token) |
+| 30 | stats | S→C | server statistics, every 2 s while on (below) |
 
 `versão_do_app` ("3.0.0") only serves to warn whoever is out of date (the
 interface shows "so-and-so is on telinha X: there is a new version"); empty = not
@@ -245,7 +252,23 @@ hides it; flags 1 = visible, 2 = click (ring calling attention).
 
 **notice** — types: 1 = microphone muted, 2 = microphone released, 3 = stream
 stopped (`extra` = its type), 4 = became admin, 5 = is no longer admin. The
-`texto` already comes ready ("Ana muted your microphone.").
+`texto` already comes ready ("Ana muted your microphone."). 6 = couldn't switch
+channel (invalid name, switching too fast, the server doesn't allow new
+channels or has too many).
+
+**stats** (S→C): `u32 uptime_s`, `u32 cpu` (the server process, in thousandths
+of one core), `u8 cores`, `u32 rss_kb`, `u32 out_Bps`, `u32 in_Bps` (relayed and
+received bytes per second since the previous one), `u16 people`, `u16 on_udp`,
+`u16 max_people`, `u8 channels`, then counters since the previous one — `u16
+resyncs` (a viewer fell behind and restarted from an IDR), `u16 thinned`
+(started getting half the frames), `u16 keyreqs`, `u16 slow_hints` — `u32
+window_ms`, `u8 flags` (1 = the room runs inside the app, 2 = locked, 4 = new
+channels allowed), `u16 n` and n × (`u32 id`, `str name`, `str channel`, `u8
+route`, `u8 flags` (1 = lagging, 2 = thinned, 4 = streaming the screen, 8 =
+camera, 16 = owner), `u8 udp`, `u16 udp_rtt_ms`, `u32 to_them_Bps`, `u32
+from_them_Bps`, `u32 queued_bytes`, `u16 watching`). Up to 64 people. The app
+turns these into the "Server" window: CPU, memory, bandwidth, who is lagging and
+what the bottleneck probably is.
 
 ## 2b. Video, sound and voice over UDP
 
@@ -338,6 +361,28 @@ kicked, locked...) — gets a growing `id` (starts at 1 for each server instance
 and the time on the room clock, and enters a ring with the last 50. The client
 ignores a history message with an `id` it has already seen and converts the time
 to the local clock.
+
+### Channels
+
+- A server has one or more channels (like IRC): each one with its own chat
+  (history of 50), its own `members` list, and its own voice. You can only
+  `watch` (and point/draw at) someone in the same channel. Bans, admin mutes,
+  the lock and the people limit apply to the whole server.
+- The first channel is the default (`geral`, or the first of `--canais`). Joining
+  (hello) or switching (`channel`) to a name that doesn't exist creates it, unless
+  the server was started with `--sem-canais-novos`; at most 32 channels. A
+  created channel disappears (with its chat) when it empties; fixed ones stay.
+- Names: no `#`, lowercase, spaces become `-`, only letters (accented ones
+  too), digits, `-`, `_` and `.`, up to 24 bytes.
+- Switching: whoever was watching you in the old channel stops receiving; you stop
+  watching whoever stayed there. The server sends `channel` (with the new
+  current one) and then the new channel's history, and posts "So-and-so went to
+  #x" / "So-and-so joined #x" in each chat. Your streams follow you: the app
+  sends `stream_start` again in the new channel. At most one switch every 800 ms.
+- `channel` (S→C) also goes to everyone whenever the list changes (people,
+  someone going live, a channel created or closed). An old app ignores it and
+  stays in the default channel; a new app on an old server never gets it and
+  shows no channels.
 
 ### Admin
 

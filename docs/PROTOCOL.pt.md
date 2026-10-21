@@ -38,6 +38,9 @@ com a senha depois do primeiro `#`:
 telinha://192.168.0.10:7777,203.0.113.7:7777,[2804:14c::1]:7777,bore.pub:41234#senha
 ```
 
+Um canal pode vir depois dos endereços, separado por `/`:
+`telinha://203.0.113.7:7777/jogos#senha` entra direto no `#jogos`.
+
 Cada endereço é `host:porta`; IPv6 vai **entre colchetes** (sem colchete é
 ambíguo e o endereço é ignorado). Até 8 endereços; a ordem é a preferência.
 Quem hospeda monta o convite com o IP da rede local, a porta aberta no
@@ -82,7 +85,7 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 
 | tipo | nome | direção | payload |
 |---|---|---|---|
-| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (o que decodifica, bits `1<<codec`), `u8 recursos` (`feat_*`) |
+| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (o que decodifica, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (canal pra entrar; vazio ou sem o campo = o padrão) |
 | 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (servidor fecha em seguida) |
 | 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo), n × `str versão_do_app` (mesma ordem) |
@@ -121,6 +124,10 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 27 | log_chunk | C→S | `u32 id`, `u8 o_que` (0 = log de depuração, 1 = relatório de travamento), `u32 total`, `u32 posição`, bytes: log pro dono da sala, em pedaços de até 64 KB (no máximo 8 MB, um por minuto) |
 | 27 | log_chunk | S→C | `u32 de`, `str nome` + os mesmos campos: repassado pra todo mundo que entrou com o token de admin |
 | 28 | log_ack | S→C | `u32 id`, `u8 resultado` (0 = entregue, 1 = só o servidor guardou, 2 = ninguém pra receber, 3 = recusado), `u8 quantos donos receberam` |
+| 29 | channel | C→S | `str canal`: troca pra esse canal (cria se não existir e o servidor deixar) |
+| 29 | channel | S→C | `str atual` (o canal em que você está), `u8 n`, n × (`str nome`, `u16 pessoas`, `u8 flags`: 1 = alguém ao vivo, 2 = fixo) |
+| 30 | stats | C→S | `u8 ligado`: começa/para de receber as estatísticas do servidor (só quem entrou com o token de admin) |
+| 30 | stats | S→C | estatísticas do servidor, a cada 2 s enquanto ligado (abaixo) |
 
 `versão_do_app` ("3.0.0") serve só pra avisar quem está desatualizado (a
 interface mostra "fulano está no telinha X: tem versão nova"); vazia = não
@@ -237,7 +244,23 @@ manda e vale 0, tudo como antes):
 
 **notice** — tipos: 1 = microfone silenciado, 2 = microfone liberado, 3 =
 transmissão parada (`extra` = tipo dela), 4 = virou admin, 5 = deixou de ser
-admin. O `texto` já vem pronto ("Ana silenciou seu microfone.").
+admin. O `texto` já vem pronto ("Ana silenciou seu microfone."). 6 = não deu pra
+trocar de canal (nome inválido, trocando rápido demais, o servidor não deixa
+criar canal ou já tem canais demais).
+
+**stats** (S→C): `u32 no_ar_s`, `u32 cpu` (o processo do servidor, em milésimos
+de um núcleo), `u8 núcleos`, `u32 memória_kb`, `u32 saindo_Bps`, `u32
+chegando_Bps` (bytes por segundo repassados e recebidos desde a anterior), `u16
+pessoas`, `u16 por_udp`, `u16 máximo`, `u8 canais`, depois contadores desde a
+anterior — `u16 recomeços` (espectador atrasou e recomeçou de um IDR), `u16
+afinados` (passou a receber metade dos quadros), `u16 keyreqs`, `u16
+pedidos_de_taxa` — `u32 janela_ms`, `u8 flags` (1 = a sala roda dentro do app, 2
+= trancada, 4 = canais novos liberados), `u16 n` e n × (`u32 id`, `str nome`, `str
+canal`, `u8 rota`, `u8 flags` (1 = atrasando, 2 = afinado, 4 = transmitindo a
+tela, 8 = câmera, 16 = dono), `u8 udp`, `u16 rtt_udp_ms`, `u32 pra_ela_Bps`, `u32
+dela_Bps`, `u32 fila_bytes`, `u16 assistindo`). Até 64 pessoas. O app transforma
+isso na janela "Servidor": CPU, memória, banda, quem está atrasando e qual deve
+ser o gargalo.
 
 ## 2b. Vídeo, som e voz por UDP
 
@@ -330,6 +353,27 @@ expulsou, trancou...) — ganha um `id` crescente (começa em 1 a cada
 instância do servidor) e a hora no relógio da sala, e entra num anel com as
 últimas 50. O cliente ignora mensagem de histórico com `id` que já viu e
 converte a hora pro relógio local.
+
+### Canais
+
+- Um servidor tem um ou mais canais (como no IRC): cada um com o seu chat
+  (histórico de 50), a sua lista de `members` e a sua voz. Só dá pra `watch`
+  (e apontar/desenhar) em quem está no mesmo canal. Banimento, silenciar do
+  admin, trancar e o limite de pessoas valem pro servidor todo.
+- O primeiro canal é o padrão (`geral`, ou o primeiro do `--canais`). Entrar
+  (hello) ou trocar (`channel`) pra um nome que não existe cria o canal, a não
+  ser que o servidor tenha subido com `--sem-canais-novos`; no máximo 32 canais.
+  Canal criado some (com o chat) quando esvazia; os fixos ficam.
+- Nomes: sem `#`, minúsculas, espaço vira `-`, só letras (acentuadas também),
+  números, `-`, `_` e `.`, até 24 bytes.
+- Trocando: quem te assistia no canal velho para de receber; você para de
+  assistir quem ficou lá. O servidor manda `channel` (com o atual novo) e depois
+  o histórico do canal novo, e põe "Fulano foi pro #x" / "Fulano entrou no #x"
+  no chat de cada um. As suas transmissões vão junto: o app manda `stream_start`
+  de novo no canal novo. No máximo uma troca a cada 800 ms.
+- `channel` (S→C) também vai pra todo mundo sempre que a lista muda (gente, alguém
+  ficando ao vivo, canal criado ou fechado). App antigo ignora e fica no canal
+  padrão; app novo em servidor antigo nunca recebe e não mostra canais.
 
 ### Admin
 

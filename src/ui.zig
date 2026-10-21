@@ -655,6 +655,17 @@ pub const App = struct {
     tips_body_h: [2]f32 = .{ 0, 0 },
     empty_h: f32 = 0, // altura do bloco da sala vazia (pra centralizar)
     own_scroll: bool = false,
+    // canais
+    new_chan_open: bool = false, // campo "criar/entrar num canal" aberto no painel
+    focus_new_chan: bool = false,
+    new_chan_buf: [32]u8 = [_]u8{0} ** 32,
+    chan_gen_seen: u32 = 0, // última troca de canal já tratada (client.channel_gen)
+    // estatísticas do servidor (dono)
+    stats_open: bool = false,
+    stats_hist: [60]u16 = [_]u16{0} ** 60, // CPU (milésimos de núcleo) dos últimos 2 min
+    stats_out_hist: [60]u32 = [_]u32{0} ** 60,
+    stats_hist_n: usize = 0,
+    stats_seen: u32 = 0,
     sharer: ?*Sharer = null,
     camera: ?*Sharer = null, // câmera ao vivo (a transmissão de tipo câmera)
     leave_confirm: bool = false, // "fechar a sala?" aberto
@@ -1055,6 +1066,7 @@ pub const App = struct {
         const raw = std.mem.trim(u8, config.getStr(&a.cfg.join_addr), " \t");
         const inv = connect_mod.splitInvite(raw);
         if (inv.password) |pw| config.setStr(&a.cfg.join_pass, pw);
+        if (inv.channel) |ch| config.setStr(&a.cfg.join_channel, ch);
         // deixa o campo só com os endereços
         var tmp: [256]u8 = undefined;
         config.setStr(&tmp, inv.addrs);
@@ -1063,7 +1075,7 @@ pub const App = struct {
         var targets: [connect_mod.max_targets]connect_mod.Target = undefined;
         if (addrs.len == 0 or std.mem.findScalar(u8, addrs, ':') == null) return a.setHomeError(tr("Põe o endereço com a porta. Ex.: 0.tcp.sa.ngrok.io:12345 (ou cola o convite)."));
         if (connect_mod.parseList(addrs, &targets) == 0) return a.setHomeError(tr("Endereço inválido. Ex.: 0.tcp.sa.ngrok.io:12345 (IPv6 entre colchetes: [2804::1]:7777)"));
-        a.connect(addrs, config.getStr(&a.cfg.join_pass), config.getStr(&a.cfg.admin_token));
+        a.connect(addrs, config.getStr(&a.cfg.join_pass), config.getStr(&a.cfg.admin_token), std.mem.trim(u8, config.getStr(&a.cfg.join_channel), " #"));
     }
 
     fn createRoom(a: *App) void {
@@ -1077,12 +1089,12 @@ pub const App = struct {
         var rnd: [16]u8 = undefined;
         sync.osRandom(&rnd);
         const token = std.fmt.bufPrintZ(&a.room_admin_token, "{x}", .{&rnd}) catch "";
-        a.server = Server.start(.{ .port = port, .password = pass, .room_name = rn, .admin_token = token }) catch {
+        a.server = Server.start(.{ .port = port, .password = pass, .room_name = rn, .admin_token = token, .hosted = true }) catch {
             a.setHomeError(tr("Não consegui abrir essa porta. Já tem outra coisa usando? Tenta outra."));
             return;
         };
         var self_addr: [32]u8 = undefined;
-        a.connect(std.fmt.bufPrint(&self_addr, "127.0.0.1:{d}", .{port}) catch "127.0.0.1:7777", pass, token);
+        a.connect(std.fmt.bufPrint(&self_addr, "127.0.0.1:{d}", .{port}) catch "127.0.0.1:7777", pass, token, "");
     }
 
     // ------------------------------------------------------------------ voz
@@ -1401,10 +1413,14 @@ pub const App = struct {
         a.tunnel = null;
     }
 
-    fn connect(a: *App, addrs: []const u8, pass: []const u8, admin_token: []const u8) void {
+    fn connect(a: *App, addrs: []const u8, pass: []const u8, admin_token: []const u8, channel: []const u8) void {
         a.home_error_len = 0;
         config.save(&a.cfg);
-        a.client = Client.create(.{ .addrs = addrs, .name = a.myName(), .password = pass, .admin_token = admin_token, .client_key = a.cfg.client_key, .hw_decode = a.cfg.hardware, .wake = wakeUi }) catch {
+        a.chan_gen_seen = 0;
+        a.stats_open = false;
+        a.stats_hist_n = 0;
+        a.stats_seen = 0;
+        a.client = Client.create(.{ .addrs = addrs, .name = a.myName(), .password = pass, .admin_token = admin_token, .client_key = a.cfg.client_key, .hw_decode = a.cfg.hardware, .channel = channel, .wake = wakeUi }) catch {
             a.setHomeError(tr("Endereço inválido."));
             return;
         };
@@ -1507,7 +1523,13 @@ pub const App = struct {
             if (a.client) |cl| cl.unwatch(v);
         }
         a.views.clearRetainingCapacity();
-        if (a.client) |cl| cl.close();
+        if (a.client) |cl| {
+            // volta pro canal em que estava
+            cl.mutex.lock();
+            if (cl.chans_supported) config.setStr(&a.cfg.join_channel, cl.chan_name[0..cl.chan_name_len]);
+            cl.mutex.unlock();
+            cl.close();
+        }
         a.client = null;
         a.joinRoom();
         if (a.client == null) {
@@ -1788,7 +1810,7 @@ pub const App = struct {
                 proto.notice_log_received => debuglog.line("{s}", .{n.textSlice()}),
                 else => {},
             }
-            const bad = n.kind == proto.notice_muted or n.kind == proto.notice_stream_stopped or n.kind == proto.notice_admin_off;
+            const bad = n.kind == proto.notice_muted or n.kind == proto.notice_stream_stopped or n.kind == proto.notice_admin_off or n.kind == proto.notice_channel;
             var nb: [200]u8 = undefined;
             a.toast("{s}", .{i18n.server(n.textSlice(), &nb)}, bad);
         }
@@ -2133,6 +2155,11 @@ pub const App = struct {
             }
         }
         if (st == .connected) {
+            const g = cl.channel_gen.load(.acquire);
+            if (g != a.chan_gen_seen) {
+                a.chan_gen_seen = g;
+                a.onChannelChanged(cl);
+            }
             a.applyRewatch(cl);
             a.watchMembers(cl);
             a.notifyChat(cl);
@@ -2364,10 +2391,10 @@ pub const App = struct {
         if (std.mem.eql(u8, txt, a.pasted[0..a.pasted_len])) return; // esse já foi colado
         @memcpy(a.pasted[0..txt.len], txt);
         a.pasted_len = txt.len;
-        const body = txt["telinha://".len..];
-        const h = std.mem.findScalar(u8, body, '#');
-        config.setStr(&a.cfg.join_addr, if (h) |i| body[0..i] else body);
-        config.setStr(&a.cfg.join_pass, if (h) |i| body[i + 1 ..] else "");
+        const inv = connect_mod.splitInvite(txt);
+        config.setStr(&a.cfg.join_addr, inv.addrs);
+        config.setStr(&a.cfg.join_pass, inv.password orelse "");
+        config.setStr(&a.cfg.join_channel, inv.channel orelse "");
         a.home_tab = 0;
         a.home_error_len = 0;
         a.paste_hint_until = c.igGetTime() + 8;
@@ -2701,8 +2728,18 @@ pub const App = struct {
                 popFont();
             }
             c.igDummy(v2(0, S(8)));
+            // senha e canal lado a lado (o canal é opcional: vazio = o padrão do servidor)
+            const half = (inner - S(12)) / 2;
+            const row = c.igGetCursorScreenPos();
             fieldLabel("SENHA");
-            if (iconField(d, "##pass", ic.lock, "senha da sala", &a.cfg.join_pass, inner, true, accent, ck)) go = true;
+            if (iconField(d, "##pass", ic.lock, "senha da sala", &a.cfg.join_pass, half, true, accent, ck)) go = true;
+            const after = c.igGetCursorScreenPos();
+            c.igSetCursorScreenPos(v2(row.x + half + S(12), row.y));
+            fieldLabel("CANAL");
+            c.igSetCursorScreenPos(v2(row.x + half + S(12), c.igGetCursorScreenPos().y));
+            if (iconField(d, "##chan", ic.comments, "opcional", &a.cfg.join_channel, half, false, accent, ck)) go = true;
+            if (c.igIsItemHovered(0)) tooltipText(tr("Num servidor com canais (como no IRC), entra direto nesse; vazio = o padrão. Dá pra trocar depois no painel ou com /join no chat."));
+            c.igSetCursorScreenPos(after);
             c.igDummy(v2(0, S(6)));
             // opções avançadas (token de admin de servidor dedicado)
             {
@@ -2825,8 +2862,273 @@ pub const App = struct {
             if (a.share_modal) a.drawShareModal();
             if (a.settings_modal) a.drawSettingsModal();
             if (a.leave_confirm) a.drawLeaveConfirm();
+            if (a.stats_open) a.drawStatsModal(cl, size);
             if (a.img_view != null) a.drawImageViewer(size);
         }
+    }
+
+    // ------------------------------------------------- estatísticas do servidor
+
+    fn setStatsOpen(a: *App, cl: *Client, on: bool) void {
+        a.stats_open = on;
+        cl.wantStats(on);
+        if (on) {
+            a.stats_hist_n = 0;
+            a.stats_seen = 0;
+        }
+    }
+
+    /// Guarda no histórico (gráfico) cada estatística nova que chega.
+    fn takeStats(a: *App, cl: *Client) ?client_mod.ServerStats {
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        if (cl.stats_gen == 0) return null;
+        const st = cl.stats;
+        if (cl.stats_gen != a.stats_seen) {
+            a.stats_seen = cl.stats_gen;
+            if (st.window_ms > 0) {
+                if (a.stats_hist_n == a.stats_hist.len) {
+                    std.mem.copyForwards(u16, a.stats_hist[0 .. a.stats_hist.len - 1], a.stats_hist[1..]);
+                    std.mem.copyForwards(u32, a.stats_out_hist[0 .. a.stats_out_hist.len - 1], a.stats_out_hist[1..]);
+                    a.stats_hist_n -= 1;
+                }
+                a.stats_hist[a.stats_hist_n] = @intCast(@min(65535, st.cpu_permille));
+                a.stats_out_hist[a.stats_hist_n] = st.out_bps;
+                a.stats_hist_n += 1;
+            }
+        }
+        return st;
+    }
+
+    fn mbit(bps: u32) f32 {
+        return @as(f32, @floatFromInt(bps)) * 8 / 1_000_000;
+    }
+
+    /// Um número grande com rótulo, explicação e (se tiver) o gráfico.
+    fn statTile(d: *c.ImDrawList, x: f32, y: f32, w: f32, h: f32, label: []const u8, value: []const u8, sub: []const u8, tint: u32, hist: ?[]const f32) void {
+        rectFill(d, x, y, x + w, y + h, col.bg_side, S(12));
+        c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), withAlpha(col.text, 16), S(12) * col.round, S(1), 0);
+        if (hist) |hs| if (hs.len > 1) {
+            // gráfico ocupando o pé do cartão
+            var mx: f32 = 0.0001;
+            for (hs) |v| mx = @max(mx, v);
+            const gx0 = x + S(10);
+            const gx1 = x + w - S(10);
+            // faixa embaixo do texto (o texto ocupa até ~y + 74)
+            const gy1 = y + h - S(8);
+            const gh = @max(S(8), h - S(84));
+            var pts: [61]c.ImVec2_c = undefined;
+            const n = @min(hs.len, 60);
+            for (hs[hs.len - n ..], 0..) |v, i| {
+                const fx = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(@max(1, n - 1)));
+                pts[i] = v2(gx0 + (gx1 - gx0) * fx, gy1 - gh * (v / mx));
+            }
+            // área embaixo da linha
+            for (0..n - 1) |i| {
+                c.ImDrawList_AddQuadFilled(d, pts[i], pts[i + 1], v2(pts[i + 1].x, gy1), v2(pts[i].x, gy1), withAlpha(tint, 28));
+            }
+            c.ImDrawList_AddPolyline(d, &pts, @intCast(n), withAlpha(tint, 220), S(1.6), 0);
+        };
+        drawTextF(d, font_bold, 10.5, v2(x + S(14), y + S(12)), col.muted, label);
+        drawTextF(d, font_bold, 24, v2(x + S(14), y + S(28)), col.header, value);
+        drawTextF(d, font_regular, 11.5, v2(x + S(14), y + S(60)), col.faint, sub);
+    }
+
+    fn drawStatsModal(a: *App, cl: *Client, size: c.ImVec2_c) void {
+        _ = c.igOpenPopup_Str(tr("Servidor###srvstatsw"), 0);
+        const vp = c.igGetMainViewport();
+        const w = @min(S(900), size.x - S(32));
+        const h = @min(S(680), size.y - S(32));
+        c.igSetNextWindowPos(v2(vp.*.Pos.x + vp.*.Size.x / 2, vp.*.Pos.y + vp.*.Size.y / 2), c.ImGuiCond_Always, v2(0.5, 0.5));
+        c.igSetNextWindowSize(v2(w, h), c.ImGuiCond_Always);
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(22), S(20)));
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, S(14) * col.round);
+        c.igPushStyleColor_U32(c.ImGuiCol_PopupBg, col.bg_main);
+        c.igPushStyleColor_U32(c.ImGuiCol_ModalWindowDimBg, rgba(0x000000, 150));
+        defer {
+            c.igPopStyleColor(2);
+            c.igPopStyleVar(2);
+        }
+        if (!c.igBeginPopupModal(tr("Servidor###srvstatsw"), null, c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoResize | c.ImGuiWindowFlags_NoMove)) return;
+        defer c.igEndPopup();
+        const d = drawList();
+        const inner = w - S(44);
+        const o = c.igGetCursorScreenPos();
+        // título
+        drawTextF(d, font_regular, 18, v2(o.x, o.y + S(2)), col.blurple, ic.gauge);
+        drawTextF(d, font_bold, 19, v2(o.x + S(30), o.y), col.header, tr("Servidor"));
+        c.igSetCursorScreenPos(v2(o.x + inner - S(32), o.y - S(4)));
+        if (iconButton("##statsclose", ic.xmark, S(32), col.muted, col.hover, tr("Fechar")) or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
+            a.setStatsOpen(cl, false);
+            c.igCloseCurrentPopup();
+            return;
+        }
+        const st = a.takeStats(cl) orelse {
+            c.igSetCursorScreenPos(v2(o.x, o.y + S(40)));
+            textColored(col.muted, tr("Pedindo as estatísticas pro servidor…"));
+            redrawIn(0.25);
+            return;
+        };
+        const up = st.uptime_s;
+        const upt = if (up >= 86400)
+            fmtZ("no ar há {d} d {d} h", .{ up / 86400, up / 3600 % 24 })
+        else if (up >= 3600)
+            fmtZ("no ar há {d} h {d} min", .{ up / 3600, up / 60 % 60 })
+        else
+            fmtZ("no ar há {d} min", .{up / 60});
+        var ub: [64]u8 = undefined;
+        const upt_s = std.fmt.bufPrint(&ub, "{s}", .{upt}) catch "";
+        drawTextF(d, font_regular, 12.5, v2(o.x + S(30), o.y + S(26)), col.muted, fmtZ("{s} · atualiza a cada 2 s", .{upt_s}));
+        var y = o.y + S(56);
+
+        // os quatro números
+        const gap = S(12);
+        const cols: usize = if (inner >= S(640)) 4 else 2;
+        const tw = (inner - gap * @as(f32, @floatFromInt(cols - 1))) / @as(f32, @floatFromInt(cols));
+        const th = S(118);
+        const cores: f32 = @floatFromInt(@max(1, st.cores));
+        const cpu_core = @as(f32, @floatFromInt(st.cpu_permille)) / 1000; // em núcleos
+        const cpu_pct = cpu_core / cores * 100;
+        var cpu_h: [60]f32 = undefined;
+        var out_h: [60]f32 = undefined;
+        for (0..a.stats_hist_n) |i| {
+            cpu_h[i] = @floatFromInt(a.stats_hist[i]);
+            out_h[i] = @floatFromInt(a.stats_out_hist[i]);
+        }
+        var vb: [4][32]u8 = undefined;
+        var sb: [4][64]u8 = undefined;
+        const tiles = [_]struct { []const u8, []const u8, []const u8, u32, ?[]const f32 }{
+            .{ tr("CPU"), (if (cpu_pct < 10) std.fmt.bufPrint(&vb[0], "{d:.1}%", .{cpu_pct}) else std.fmt.bufPrint(&vb[0], "{d:.0}%", .{cpu_pct})) catch "", i18n.bufPrint(&sb[0], "{d:.2} de {d} núcleos", .{ cpu_core, st.cores }) catch "", if (cpu_pct >= 85) col.red else if (cpu_pct >= 60) col.yellow else col.green, cpu_h[0..a.stats_hist_n] },
+            .{ tr("MEMÓRIA"), std.fmt.bufPrint(&vb[1], "{d} MB", .{st.rss_kb / 1024}) catch "", tr("usada pelo processo"), col.blurple, null },
+            .{ tr("SAINDO"), std.fmt.bufPrint(&vb[2], "{d:.1} Mbit/s", .{mbit(st.out_bps)}) catch "", tr("pra quem assiste e ouve"), col.blurple, out_h[0..a.stats_hist_n] },
+            .{ tr("CHEGANDO"), std.fmt.bufPrint(&vb[3], "{d:.1} Mbit/s", .{mbit(st.in_bps)}) catch "", tr("de quem transmite e fala"), col.green, null },
+        };
+        for (tiles, 0..) |t, i| {
+            const cx = o.x + @as(f32, @floatFromInt(i % cols)) * (tw + gap);
+            const cy = y + @as(f32, @floatFromInt(i / cols)) * (th + gap);
+            statTile(d, cx, cy, tw, th, t[0], t[1], t[2], t[3], t[4]);
+        }
+        y += @as(f32, @floatFromInt((tiles.len + cols - 1) / cols)) * (th + gap) + S(4);
+
+        // pílulas: gente, UDP, canais, sala
+        {
+            var px = o.x;
+            var pb: [5][64]u8 = undefined;
+            const pills = [_][]const u8{
+                i18n.bufPrint(&pb[0], "{s}  {d} de {d} pessoas", .{ ic.users, st.conns, st.max_members }) catch "",
+                i18n.bufPrint(&pb[1], "{s}  {d} por UDP", .{ ic.signal, st.udp_conns }) catch "",
+                i18n.bufPrint(&pb[2], "#  {d} canais", .{st.channels}) catch "",
+                if (st.flags & 2 != 0) (i18n.bufPrint(&pb[3], "{s}  trancada", .{ic.lock}) catch "") else "",
+                if (st.hosted()) (i18n.bufPrint(&pb[4], "{s}  dentro do seu telinha", .{ic.laptop}) catch "") else "",
+            };
+            for (pills) |pt| {
+                if (pt.len == 0) continue;
+                const pw = textSizeF(font_semibold, 12, pt).x + S(22);
+                if (px + pw > o.x + inner) break;
+                rectFill(d, px, y, px + pw, y + S(26), withAlpha(col.text, 10), S(13));
+                drawTextF(d, font_semibold, 12, v2(px + S(11), y + S(5)), col.text, pt);
+                px += pw + S(8);
+            }
+            y += S(38);
+        }
+
+        // gargalos
+        drawTextF(d, font_bold, 11, v2(o.x, y), col.muted, tr("GARGALOS"));
+        y += S(20);
+        {
+            var lines: [10]struct { u32, [200]u8, usize } = undefined;
+            var nl: usize = 0;
+            const addLine = struct {
+                fn f(ls: *[10]struct { u32, [200]u8, usize }, n: *usize, color: u32, comptime fmt: []const u8, args: anytype) void {
+                    if (n.* == ls.len) return;
+                    const t = i18n.bufPrint(&ls[n.*][1], fmt, args) catch return;
+                    ls[n.*][0] = color;
+                    ls[n.*][2] = t.len;
+                    n.* += 1;
+                }
+            }.f;
+            var late: usize = 0;
+            var thin: usize = 0;
+            var viewers: usize = 0;
+            var late_names: [120]u8 = undefined;
+            var ln_len: usize = 0;
+            var big_q: ?*const client_mod.ServerStats.Person = null;
+            var tcp_names: usize = 0;
+            for (st.people[0..st.n_people]) |*p| {
+                if (p.watching > 0) viewers += 1;
+                if (p.flags & proto.stats_late != 0) {
+                    late += 1;
+                    const part = std.fmt.bufPrint(late_names[ln_len..], "{s}{s}", .{ if (ln_len > 0) ", " else "", p.nameSlice() }) catch "";
+                    ln_len += part.len;
+                }
+                if (p.flags & proto.stats_thin != 0) thin += 1;
+                if (p.queued > 1024 * 1024 and (big_q == null or p.queued > big_q.?.queued)) big_q = p;
+                if (!p.udp and st.udp_conns > 0) tcp_names += 1;
+            }
+            if (cpu_pct >= 85) {
+                addLine(&lines, &nl, col.red, "CPU do servidor no limite ({d:.0}% de {d} núcleos): ele não dá conta de repassar pra todo mundo.", .{ cpu_pct, st.cores });
+            } else if (cpu_pct >= 60) addLine(&lines, &nl, col.yellow, "CPU do servidor alta ({d:.0}%). Se subir mais, começa a atrasar todo mundo.", .{cpu_pct});
+            if (late > 0 and viewers > 0 and late * 2 > viewers) {
+                addLine(&lines, &nl, col.red, "A maioria de quem assiste está atrasando: o gargalo deve ser o upload do servidor (saindo {d:.1} Mbit/s) ou de quem transmite.", .{mbit(st.out_bps)});
+            } else if (late > 0) addLine(&lines, &nl, col.yellow, "Atrasando: {s}. Provavelmente a internet dessa pessoa (o resto está em dia).", .{late_names[0..ln_len]});
+            if (thin > 0) addLine(&lines, &nl, col.yellow, "{d} recebendo só metade dos quadros (a rede ou o PC delas não deu conta).", .{thin});
+            if (big_q) |p| addLine(&lines, &nl, col.yellow, "Fila grande pra {s} ({d} KB esperando pra sair): a conexão dela está lenta.", .{ p.nameSlice(), p.queued / 1024 });
+            if (st.resyncs > 0) addLine(&lines, &nl, col.muted, "{d} recomeço(s) de quadro-chave nos últimos {d} s (alguém atrasou e voltou do zero).", .{ st.resyncs, @max(1, st.window_ms / 1000) });
+            if (st.slow > 0) addLine(&lines, &nl, col.muted, "Pediu {d} vez(es) pra quem transmite baixar a taxa.", .{st.slow});
+            if (st.rss_kb > 1536 * 1024) addLine(&lines, &nl, col.yellow, "Memória alta ({d} MB).", .{st.rss_kb / 1024});
+            if (st.max_members > 0 and st.conns + 1 >= st.max_members) addLine(&lines, &nl, col.yellow, "Sala quase cheia ({d} de {d}).", .{ st.conns, st.max_members });
+            if (tcp_names > 0) addLine(&lines, &nl, col.muted, "{d} pessoa(s) só pelo TCP (o UDP não passou na rede delas): perda de pacote vira atraso.", .{tcp_names});
+            if (nl == 0) addLine(&lines, &nl, col.green, "Tudo tranquilo: nenhum gargalo agora.", .{});
+            if (st.hosted()) addLine(&lines, &nl, col.muted, "A sala roda dentro do seu telinha: a CPU e a memória são do app inteiro (inclui transmitir e assistir).", .{});
+            for (lines[0..nl]) |*ln| {
+                const text = ln[1][0..ln[2]];
+                c.ImDrawList_AddCircleFilled(d, v2(o.x + S(6), y + S(8)), S(4), ln[0], 0);
+                pushFont(font_regular, 13);
+                const ts = c.igCalcTextSize(text.ptr, text.ptr + text.len, false, inner - S(24));
+                popFont();
+                drawTextWrapF(d, font_regular, 13, v2(o.x + S(20), y), col.text, text, inner - S(24));
+                y += ts.y + S(6);
+            }
+        }
+        y += S(10);
+
+        // quem está conectado
+        drawTextF(d, font_bold, 11, v2(o.x, y), col.muted, fmtZ("QUEM ESTÁ CONECTADO · {d}", .{st.conns}));
+        y += S(20);
+        const col_x = [_]f32{ 0, 0.27, 0.44, 0.60, 0.72, 0.84, 0.92 };
+        const heads = [_][]const u8{ tr("NOME"), tr("CANAL"), tr("CAMINHO"), tr("PRA ELA"), tr("DELA"), tr("FILA"), "" };
+        for (heads, 0..) |hd, i| drawTextF(d, font_bold, 10.5, v2(o.x + inner * col_x[i], y), col.faint, hd);
+        y += S(18);
+        // a tabela rola junto com o resto se não couber
+        c.igSetCursorScreenPos(v2(o.x, y));
+        const table_h = @max(S(80), (o.y + h - S(40)) - y);
+        c.igPushStyleColor_U32(c.ImGuiCol_ChildBg, 0);
+        _ = c.igBeginChild_Str("statsppl", v2(inner, table_h), 0, 0);
+        const td = drawList();
+        for (st.people[0..st.n_people], 0..) |*p, i| {
+            const rp = c.igGetCursorScreenPos();
+            const rh = S(30);
+            if (i % 2 == 0) rectFill(td, rp.x, rp.y, rp.x + inner, rp.y + rh, withAlpha(col.text, 6), S(6));
+            const ty = rp.y + (rh - S(16)) / 2;
+            drawAvatar(td, v2(rp.x + S(12), rp.y + rh / 2), S(9), p.id, p.nameSlice(), p.flags & (proto.stats_streaming | proto.stats_camera) != 0);
+            drawTextF(td, font_semibold, 13, v2(rp.x + S(28), ty), col.header, p.nameSlice());
+            if (p.flags & proto.stats_owner != 0) drawTextF(td, font_regular, 11, v2(rp.x + S(32) + textSizeF(font_semibold, 13, p.nameSlice()).x, ty + S(1)), col.yellow, ic.crown);
+            drawTextF(td, font_regular, 12.5, v2(rp.x + inner * col_x[1], ty), col.muted, fmtZ("#{s}", .{p.chanSlice()}));
+            const route = if (p.udp and p.rtt_ms > 0) fmtZ("UDP · {d} ms", .{p.rtt_ms}) else if (p.udp) fmtZ("UDP · {s}", .{routeShort(p.route)}) else fmtZ("TCP · {s}", .{routeShort(p.route)});
+            c.ImDrawList_PushClipRect(td, v2(rp.x + inner * col_x[2], rp.y), v2(rp.x + inner * col_x[3] - S(8), rp.y + rh), true);
+            drawTextF(td, font_regular, 12.5, v2(rp.x + inner * col_x[2], ty), if (p.udp) col.text else col.muted, route);
+            c.ImDrawList_PopClipRect(td);
+            drawTextF(td, font_regular, 12.5, v2(rp.x + inner * col_x[3], ty), col.text, fmtZ("{d:.2} Mbit/s", .{mbit(p.tx_bps)}));
+            drawTextF(td, font_regular, 12.5, v2(rp.x + inner * col_x[4], ty), col.text, fmtZ("{d:.2} Mbit/s", .{mbit(p.rx_bps)}));
+            drawTextF(td, font_regular, 12.5, v2(rp.x + inner * col_x[5], ty), if (p.queued > 1024 * 1024) col.yellow else col.muted, fmtZ("{d} KB", .{p.queued / 1024}));
+            const sit: []const u8 = if (p.flags & proto.stats_late != 0) tr("atrasando") else if (p.flags & proto.stats_thin != 0) tr("metade") else if (p.flags & proto.stats_streaming != 0) tr("ao vivo") else "";
+            const sc = if (p.flags & proto.stats_late != 0) col.red else if (p.flags & proto.stats_thin != 0) col.yellow else col.red;
+            if (sit.len > 0) drawTextF(td, font_semibold, 11.5, v2(rp.x + inner * col_x[6], ty + S(1)), sc, sit);
+            c.igDummy(v2(inner, rh));
+        }
+        c.igEndChild();
+        c.igPopStyleColor(1);
+        redrawIn(0.5); // números novos chegam a cada 2 s (a rede acorda também)
     }
 
     fn closeModals(a: *App) void {
@@ -2836,6 +3138,10 @@ pub const App = struct {
         a.settings_modal = false;
         a.share_modal = false;
         a.leave_confirm = false;
+        if (a.stats_open) {
+            a.stats_open = false;
+            if (a.client) |cl| cl.wantStats(false);
+        }
     }
 
     /// O telinha travou da última vez: manda o relatório? (gofile, ou o
@@ -3072,11 +3378,18 @@ pub const App = struct {
         var members: [64]Member = undefined;
         const n_members = @min(cl.members.items.len, members.len);
         @memcpy(members[0..n_members], cl.members.items[0..n_members]);
+        var chan_buf: [proto.channel_name_max]u8 = undefined;
+        const chan_len = if (cl.chans_supported) cl.chan_name_len else 0;
+        @memcpy(chan_buf[0..chan_len], cl.chan_name[0..chan_len]);
+        // estatísticas do servidor: só quem entrou com o token de admin, em servidor que tem
+        const i_am_owner = cl.chans_supported and for (members[0..n_members]) |*m| {
+            if (m.id == my_id) break m.owner;
+        } else false;
         cl.mutex.unlock();
 
         // onde começam os botões da direita (o resto não passa disso)
         const bs = S(36);
-        const n_btns: f32 = @floatFromInt(2 + @as(u8, @intFromBool(!a.chat_visible)) + @as(u8, @intFromBool(i_am_admin or locked)));
+        const n_btns: f32 = @floatFromInt(2 + @as(u8, @intFromBool(!a.chat_visible)) + @as(u8, @intFromBool(i_am_admin or locked)) + @as(u8, @intFromBool(i_am_owner)));
         const right_start = o.x + size.x - S(12) - n_btns * bs - (n_btns - 1) * S(4) - S(16);
 
         // logo + nome da sala + linha da conexão
@@ -3089,6 +3402,16 @@ pub const App = struct {
         const tx = lx + lz + S(12);
         const title = if (room_name.len > 0) room_name else "telinha";
         drawTextF(d, font_bold, 15.5, v2(tx, o.y + S(10)), col.header, title);
+        var title_end = tx + textSizeF(font_bold, 15.5, title).x;
+        if (chan_len > 0) {
+            // o canal em que a gente está, do lado do nome da sala
+            const ct = fmtZ("#{s}", .{chan_buf[0..chan_len]});
+            const cw = textSizeF(font_semibold, 12, ct).x + S(16);
+            const cx0 = title_end + S(8);
+            rectFill(d, cx0, o.y + S(9), cx0 + cw, o.y + S(29), withAlpha(col.blurple, 45), S(10));
+            drawTextF(d, font_semibold, 12, v2(cx0 + S(8), o.y + S(11)), col.blurple, ct);
+            title_end = cx0 + cw;
+        }
         const pc = if (ping < 80) col.green else if (ping < 200) col.yellow else col.red;
         const where = if (a.server) |sv|
             fmtZ("{s} anfitrião · porta {d}", .{ ic.crown, sv.port })
@@ -3111,7 +3434,7 @@ pub const App = struct {
         sx += S(18);
         drawTextF(d, font_regular, 11.5, v2(sx, sy), col.faint, where_s);
         sx += textSizeF(font_regular, 11.5, where_s).x;
-        const left_end = @max(tx + textSizeF(font_bold, 15.5, title).x, sx) + S(28);
+        const left_end = @max(title_end, sx) + S(28);
         c.ImDrawList_PopClipRect(d);
 
         // direita: configurações, painel, convite, cadeado
@@ -3119,6 +3442,11 @@ pub const App = struct {
         var rx = o.x + size.x - S(12) - bs;
         c.igSetCursorScreenPos(v2(rx, by));
         if (iconButton("##gear", ic.gear, bs, col.muted, col.hover, tr("Configurações"))) a.openSettings();
+        if (i_am_owner) {
+            rx -= bs + S(4);
+            c.igSetCursorScreenPos(v2(rx, by));
+            if (iconButton("##srvstats", ic.gauge, bs, if (a.stats_open) col.header else col.muted, col.hover, tr("Estatísticas do servidor (você entrou com o token de admin)"))) a.setStatsOpen(cl, !a.stats_open);
+        }
         if (!a.chat_visible) {
             rx -= bs + S(4);
             c.igSetCursorScreenPos(v2(rx, by));
@@ -3252,25 +3580,111 @@ pub const App = struct {
         @memcpy(members[0..n_members], cl.members.items[0..n_members]);
         cl.mutex.unlock();
 
-        // quem está na sala
-        const hdr = fmtZ("NA SALA · {d}", .{n_members});
-        drawTextF(d, font_bold, 11, v2(inner_x + S(12), y0 + S(16)), col.muted, hdr);
+        // canais (servidor que tem): clique entra, "+" cria
         c.igSetCursorScreenPos(v2(x1 - S(38), y0 + S(8)));
         if (iconButton("##hidechat", ic.xmark, S(30), col.muted, col.hover, tr("Esconder o painel"))) {
             a.cfg.show_chat = false;
             config.save(&a.cfg);
         }
+        var top = y0 + S(16);
+        cl.mutex.lock();
+        const has_chans = cl.chans_supported;
+        var chans: [proto.max_channels]client_mod.ChanInfo = undefined;
+        const n_chans = cl.n_chans;
+        @memcpy(chans[0..n_chans], cl.chans[0..n_chans]);
+        var cur_buf: [proto.channel_name_max]u8 = undefined;
+        const cur_len = cl.chan_name_len;
+        @memcpy(cur_buf[0..cur_len], cl.chan_name[0..cur_len]);
+        cl.mutex.unlock();
+        const cur = cur_buf[0..cur_len];
+        if (has_chans) {
+            drawTextF(d, font_bold, 11, v2(inner_x + S(12), top), col.muted, fmtZ("CANAIS · {d}", .{n_chans}));
+            c.igSetCursorScreenPos(v2(x1 - S(72), y0 + S(8)));
+            if (iconButton("##newchan", ic.plus, S(30), if (a.new_chan_open) col.header else col.muted, col.hover, tr("Criar ou entrar num canal (no chat: /join nome)"))) {
+                a.new_chan_open = !a.new_chan_open;
+                a.focus_new_chan = a.new_chan_open;
+            }
+            top += S(24);
+            const row_h = S(30);
+            const extra: f32 = if (a.new_chan_open) S(44) else 0;
+            const want_h = row_h * @as(f32, @floatFromInt(n_chans)) + extra + S(4);
+            const ch_h = std.math.clamp(want_h, row_h, (y1 - y0) * 0.3);
+            c.igSetCursorScreenPos(v2(inner_x, top));
+            c.igPushStyleColor_U32(c.ImGuiCol_ScrollbarBg, 0);
+            _ = c.igBeginChild_Str("chanlist", v2(inner_w, ch_h), 0, 0);
+            const ld = drawList();
+            if (a.new_chan_open) {
+                c.igSetCursorPosX(S(8));
+                if (a.focus_new_chan) {
+                    c.igSetKeyboardFocusHere(0);
+                    a.focus_new_chan = false;
+                }
+                if (iconField(ld, "##chanin", ic.plus, "nome do canal (Enter entra)", &a.new_chan_buf, inner_w - S(16), false, col.blurple, 1)) {
+                    const nm = std.mem.trim(u8, std.mem.sliceTo(&a.new_chan_buf, 0), " ");
+                    if (nm.len > 0) cl.joinChannel(nm);
+                    @memset(&a.new_chan_buf, 0);
+                    a.new_chan_open = false;
+                }
+                if (c.igIsItemActive() and c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) a.new_chan_open = false;
+                c.igDummy(v2(0, S(4)));
+            }
+            for (chans[0..n_chans], 0..) |*ch, i| {
+                const name = ch.nameSlice();
+                const here = std.mem.eql(u8, name, cur);
+                c.igSetCursorPosX(S(6));
+                const p = c.igGetCursorScreenPos();
+                const rw = inner_w - S(12);
+                var lb: [64]u8 = undefined;
+                const id = std.fmt.bufPrintZ(&lb, "#{s}###ch{d}", .{ name, i }) catch "###ch";
+                const clicked = c.igInvisibleButton(id.ptr, v2(rw, row_h - S(2)), 0);
+                const hov = c.igIsItemHovered(0);
+                if (here) {
+                    rectFill(ld, p.x, p.y, p.x + rw, p.y + row_h - S(2), withAlpha(col.blurple, 55), S(8));
+                    rectFill(ld, p.x, p.y + S(6), p.x + S(3), p.y + row_h - S(8), col.blurple, S(2));
+                } else if (hov) rectFill(ld, p.x, p.y, p.x + rw, p.y + row_h - S(2), col.hover, S(8));
+                const ty = p.y + (row_h - S(2) - S(17)) / 2;
+                drawTextF(ld, font_bold, 14, v2(p.x + S(12), ty), if (here) col.blurple else col.faint, "#");
+                drawTextF(ld, if (here) font_bold else font_semibold, 14, v2(p.x + S(26), ty), if (here) col.header else if (hov) col.text else col.muted, name);
+                // quantos e se tem alguém ao vivo
+                var rx = p.x + rw - S(10);
+                if (ch.people > 0) {
+                    const cnt = fmtZ("{d}", .{ch.people});
+                    const cw = textSizeF(font_semibold, 12, cnt).x;
+                    rx -= cw;
+                    drawTextF(ld, font_semibold, 12, v2(rx, ty + S(1)), col.muted, cnt);
+                    const us = textSizeF(font_regular, 11, ic.users);
+                    rx -= us.x + S(5);
+                    drawTextF(ld, font_regular, 11, v2(rx, ty + S(2)), col.faint, ic.users);
+                }
+                if (ch.flags & proto.chan_live != 0) {
+                    rx -= S(14);
+                    c.ImDrawList_AddCircleFilled(ld, v2(rx + S(4), p.y + (row_h - S(2)) / 2), S(4), col.red, 0);
+                }
+                if (hov and !here) tooltipText(tr("Entrar nesse canal"));
+                if (clicked and !here) cl.joinChannel(name);
+            }
+            c.igEndChild();
+            c.igPopStyleColor(1);
+            top += ch_h + S(6);
+            rectFill(d, inner_x + S(10), top, inner_x + inner_w - S(10), top + S(1), withAlpha(col.text, 18), 0);
+            top += S(12);
+        }
+
+        // quem está na sala (ou no canal)
+        const hdr = if (has_chans) fmtZ("EM #{s} · {d}", .{ cur, n_members }) else fmtZ("NA SALA · {d}", .{n_members});
+        drawTextF(d, font_bold, 11, v2(inner_x + S(12), top), col.muted, hdr);
         const row_h = S(42);
         const want_h = row_h * @as(f32, @floatFromInt(n_members)) + S(8);
-        const list_h = std.math.clamp(want_h, S(60), (y1 - y0) * 0.38);
-        c.igSetCursorScreenPos(v2(inner_x, y0 + S(40)));
+        const list_top = top + S(22);
+        const list_h = std.math.clamp(want_h, S(60), @max(S(60), (y1 - list_top) * 0.45));
+        c.igSetCursorScreenPos(v2(inner_x, list_top));
         c.igPushStyleColor_U32(c.ImGuiCol_ScrollbarBg, 0);
         _ = c.igBeginChild_Str("lists", v2(inner_w, list_h), 0, 0);
         for (members[0..n_members]) |*m| a.memberRow(m, my_id, inner_w, i_am_admin);
         a.memberMenu(cl, members[0..n_members]);
         c.igEndChild();
         c.igPopStyleColor(1);
-        const div_y = y0 + S(40) + list_h + S(6);
+        const div_y = list_top + list_h + S(6);
         rectFill(d, inner_x + S(10), div_y, inner_x + inner_w - S(10), div_y + S(1), withAlpha(col.text, 18), 0);
 
         // chat
@@ -3362,6 +3776,18 @@ pub const App = struct {
         x += bs + S(6);
         c.igSetCursorScreenPos(v2(x, by));
         if (iconButton("##leave", ic.leave, bs, col.red, withAlpha(col.red, 40), if (a.server != null) tr("Fechar a sala") else tr("Sair da sala"))) a.askLeave();
+    }
+
+    /// Nome curto da rota (tabela das estatísticas).
+    fn routeShort(route: u8) [:0]const u8 {
+        return switch (route) {
+            proto.route_local => tr("esta máquina"),
+            proto.route_lan => tr("rede local"),
+            proto.route_internet => tr("internet"),
+            proto.route_internet6 => tr("IPv6"),
+            proto.route_tunnel => tr("link público"),
+            else => "?",
+        };
     }
 
     fn routeText(route: u8) [:0]const u8 {
@@ -3659,11 +4085,20 @@ pub const App = struct {
             return;
         }
         const pass = if (a.server != null) config.getStr(&a.cfg.host_pass) else config.getStr(&a.cfg.join_pass);
+        // fora do canal padrão (o primeiro da lista): o convite leva pro canal
+        var chan_buf: [proto.channel_name_max + 1]u8 = undefined;
+        var chan: []const u8 = "";
+        if (a.client) |cl| {
+            cl.mutex.lock();
+            if (cl.chans_supported and cl.n_chans > 0 and !std.mem.eql(u8, cl.chans[0].nameSlice(), cl.chan_name[0..cl.chan_name_len]))
+                chan = std.fmt.bufPrint(&chan_buf, "/{s}", .{cl.chan_name[0..cl.chan_name_len]}) catch "";
+            cl.mutex.unlock();
+        }
         var buf: [800]u8 = undefined;
         const inv = (if (pass.len > 0)
-            std.fmt.bufPrintZ(&buf, "telinha://{s}#{s}", .{ addrs, pass })
+            std.fmt.bufPrintZ(&buf, "telinha://{s}{s}#{s}", .{ addrs, chan, pass })
         else
-            std.fmt.bufPrintZ(&buf, "telinha://{s}", .{addrs})) catch return;
+            std.fmt.bufPrintZ(&buf, "telinha://{s}{s}", .{ addrs, chan })) catch return;
         c.igSetClipboardText(inv.ptr);
         const n_paths = std.mem.count(u8, addrs, ",") + 1;
         if (!a.inviteReachesOutside())
@@ -5529,7 +5964,14 @@ pub const App = struct {
         a.chat_sent_len = 0;
         a.updateMentionSuggestions(cl);
         c.igSetNextItemWidth(bw - S(82));
-        const enter = c.igInputTextWithHint("##chatin", tr("Mensagem ou @nome"), &a.chat_input, a.chat_input.len, c.ImGuiInputTextFlags_EnterReturnsTrue | c.ImGuiInputTextFlags_CallbackAlways | c.ImGuiInputTextFlags_CallbackCompletion, chatCallback, a);
+        var hint_buf: [96]u8 = undefined;
+        const hint: [:0]const u8 = blk: {
+            cl.mutex.lock();
+            defer cl.mutex.unlock();
+            if (!cl.chans_supported) break :blk tr("Mensagem ou @nome");
+            break :blk i18n.bufPrintZ(&hint_buf, "Mensagem em #{s} ou /join canal", .{cl.chan_name[0..cl.chan_name_len]}) catch tr("Mensagem ou @nome");
+        };
+        const enter = c.igInputTextWithHint("##chatin", hint.ptr, &a.chat_input, a.chat_input.len, c.ImGuiInputTextFlags_EnterReturnsTrue | c.ImGuiInputTextFlags_CallbackAlways | c.ImGuiInputTextFlags_CallbackCompletion, chatCallback, a);
         const input_active = c.igIsItemActive();
         c.igPopStyleVar(1);
         c.igPopStyleColor(3);
@@ -5571,7 +6013,7 @@ pub const App = struct {
         if (enter or send_click) {
             const raw = if (enter and a.chat_sent_len > 0) a.chat_sent[0..a.chat_sent_len] else std.mem.sliceTo(&a.chat_input, 0);
             const msg = std.mem.trim(u8, raw, " \t");
-            if (msg.len > 0) cl.sendChat(msg);
+            if (msg.len > 0 and !a.chatCommand(cl, msg)) cl.sendChat(msg);
             @memset(&a.chat_input, 0);
             if (send_click) a.focus_chat = true; // o clique no botão tirou o foco
         }
@@ -5579,6 +6021,70 @@ pub const App = struct {
         c.igEndChild();
         c.igPopStyleVar(1);
         c.igPopStyleColor(1);
+    }
+
+    /// Comandos do chat (como no IRC): /join canal (ou /j, /canal, /entrar)
+    /// e /canais. true = era comando (não vai pro chat).
+    fn chatCommand(a: *App, cl: *Client, msg: []const u8) bool {
+        if (msg.len < 2 or msg[0] != '/') return false;
+        var it = std.mem.tokenizeScalar(u8, msg[1..], ' ');
+        const cmd = it.next() orelse return false;
+        const arg = std.mem.trim(u8, it.rest(), " ");
+        const is = struct {
+            fn any(c0: []const u8, names: []const []const u8) bool {
+                for (names) |n| if (std.ascii.eqlIgnoreCase(c0, n)) return true;
+                return false;
+            }
+        }.any;
+        cl.mutex.lock();
+        const supported = cl.chans_supported;
+        cl.mutex.unlock();
+        if (is(cmd, &.{ "join", "j", "canal", "channel", "entrar" })) {
+            if (!supported) {
+                a.toast("Esse servidor não tem canais (é de uma versão mais velha do telinha).", .{}, true);
+            } else if (arg.len == 0) {
+                a.toast("Use /join nome-do-canal (cria o canal se ele não existir).", .{}, false);
+            } else cl.joinChannel(arg);
+            return true;
+        }
+        if (is(cmd, &.{ "canais", "channels", "list" })) {
+            if (!supported) {
+                a.toast("Esse servidor não tem canais (é de uma versão mais velha do telinha).", .{}, true);
+                return true;
+            }
+            var buf: [600]u8 = undefined;
+            var w: std.Io.Writer = .fixed(&buf);
+            cl.mutex.lock();
+            for (cl.chans[0..cl.n_chans], 0..) |*ch, i| w.print("{s}#{s} ({d})", .{ if (i > 0) ", " else "", ch.nameSlice(), ch.people }) catch break;
+            cl.mutex.unlock();
+            a.toast("Canais: {s}", .{w.buffered()}, false);
+            return true;
+        }
+        return false; // outro "/..." vai pro chat normal
+    }
+
+    /// Mudou de canal: o que era assistido no canal velho sai da tela (o
+    /// servidor já parou de mandar), o chat recomeçou.
+    fn onChannelChanged(a: *App, cl: *Client) void {
+        var streams: [32]u32 = undefined;
+        var n: usize = 0;
+        for (a.views.items) |v| {
+            if (n == streams.len) break;
+            streams[n] = v.stream;
+            n += 1;
+        }
+        for (streams[0..n]) |st| a.unwatch(st);
+        a.n_auto_watched = 0;
+        a.chat_h.clearRetainingCapacity();
+        a.n_known = 0; // gente nova na lista: sem som de "entrou" pra cada um
+        a.known_ready = false;
+        cl.mutex.lock();
+        var nb: [proto.channel_name_max]u8 = undefined;
+        const l = cl.chan_name_len;
+        @memcpy(nb[0..l], cl.chan_name[0..l]);
+        cl.mutex.unlock();
+        debuglog.line("canal: #{s}", .{nb[0..l]});
+        a.toast("Você está no #{s}", .{nb[0..l]}, false);
     }
 
     /// Na hora do Enter (ainda dentro do InputText): guarda a mensagem e
@@ -7202,6 +7708,16 @@ pub const App = struct {
                 try w.writeAll("]}");
             }
             try w.writeAll("]");
+            // canais e estatísticas do servidor
+            try w.print(",\"channels_supported\":{},\"channel\":{f},\"channels\":[", .{ cl.chans_supported, s(cl.chan_name[0..cl.chan_name_len]) });
+            for (cl.chans[0..cl.n_chans], 0..) |*ch, i| {
+                if (i > 0) try w.writeByte(',');
+                try w.print("{{\"name\":{f},\"people\":{d},\"live\":{},\"fixed\":{}}}", .{ s(ch.nameSlice()), ch.people, ch.flags & proto.chan_live != 0, ch.flags & proto.chan_fixed != 0 });
+            }
+            const sst = &cl.stats;
+            try w.print("],\"channel_gen\":{d},\"stats_open\":{},\"stats_gen\":{d},\"stats\":{{\"conns\":{d},\"channels\":{d},\"cpu\":{d},\"rss_kb\":{d},\"out_bps\":{d},\"in_bps\":{d},\"people\":{d},\"hosted\":{}}}", .{
+                cl.channel_gen.load(.acquire), a.stats_open, cl.stats_gen, sst.conns, sst.channels, sst.cpu_permille, sst.rss_kb, sst.out_bps, sst.in_bps, sst.n_people, sst.hosted(),
+            });
         } else try w.writeAll(",\"status\":null");
         try w.writeAll("}\n");
     }
