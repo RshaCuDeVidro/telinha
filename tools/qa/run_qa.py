@@ -24,6 +24,9 @@ def test(fn):
     return fn
 
 
+SERVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "zig-out", "bin", "telinha-server-x86_64")
+
+
 def port():
     return random.randint(42000, 46000)
 
@@ -388,6 +391,55 @@ def chat_markdown():
         b.wait(lambda st: st["clipboard"] == "const x = 1;", 3, "o código copiado")
         # link: clicar abre (no teste só registra)
         b.screenshot(os.path.join(s.base, "markdown.png"))
+
+
+@test
+def identidade_servidor():
+    """Identidade do servidor: o convite leva a impressão e quem entra por ele confere; convite com impressão errada não entra; num servidor dedicado, a primeira vez é lembrada e, se a chave mudar, o app avisa e só entra depois de confiar na nova."""
+    with Session("identidade") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--senha", "pw"])
+        st = a.wait(lambda st: st["status"] == "connected" and st["id_state"] == "verified", 10, "a sala com identidade")
+        fp = st["server_fp"]
+        a.click("##invite")
+        st = a.wait(lambda st: st["clipboard"].startswith("telinha://") and f"!{fp}#pw" in st["clipboard"], 3, "o convite com a impressão")
+        inv = st["clipboard"]
+        b = s.app("b", 92, [], config={"name": "Bia"})
+        b.wait(lambda st: st["screen"] == "home", 10, "a tela inicial")
+        b.fill("##addr", inv)
+        b.click("Entrar##go")
+        b.wait(lambda st: st["status"] == "connected" and st["id_state"] == "verified" and st["server_fp"] == fp, 10, "a Bia entrar conferindo a identidade")
+        # convite com a impressão de outro servidor: não entra (e não mostra o botão de confiar)
+        bad = inv.replace(f"!{fp}", "!" + ("a" * 24))
+        c = s.app("c", 93, [], config={"name": "Caio"})
+        c.wait(lambda st: st["screen"] == "home", 10, "a tela inicial")
+        c.fill("##addr", bad)
+        c.click("Entrar##go")
+        c.wait(lambda st: st["screen"] == "home" and "convite" in st["home_error"], 10, "recusar a identidade errada")
+        expect(c.find("###trustid", timeout=0.5, need=False) is None, "botão de confiar com impressão errada no convite")
+
+        # servidor dedicado: a primeira identidade fica lembrada; trocou a chave, avisa
+        p2 = port()
+        k1, k2 = os.path.join(s.base, "k1.key"), os.path.join(s.base, "k2.key")
+        env = {k: os.environ[k] for k in ("HOME", "PATH")}
+        srv = s.spawn("srv1", [SERVER, "--porta", str(p2), "--chave", k1], env)
+        time.sleep(0.6)
+        d = s.app("d", 94, [], config={"name": "Davi"})
+        d.wait(lambda st: st["screen"] == "home", 10, "a tela inicial")
+        d.fill("##addr", f"127.0.0.1:{p2}")
+        d.click("Entrar##go")
+        st = d.wait(lambda st: st["status"] == "connected" and st["id_state"] == "verified", 10, "entrar e lembrar a identidade")
+        fp1 = st["server_fp"]
+        d.click("##leave")
+        d.wait(lambda st: st["screen"] == "home", 5, "sair")
+        s.stop_proc(srv)
+        srv = s.spawn("srv2", [SERVER, "--porta", str(p2), "--chave", k2], env)
+        time.sleep(0.6)
+        d.click("Entrar##go")
+        d.wait(lambda st: st["screen"] == "home" and "mudou" in st["home_error"], 10, "avisar que a identidade mudou")
+        d.click(contains="###trustid")
+        st = d.wait(lambda st: st["status"] == "connected" and st["id_state"] == "verified", 10, "entrar depois de confiar na nova")
+        expect(st["server_fp"] != fp1, "a impressão devia ser outra")
 
 
 @test

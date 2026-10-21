@@ -556,9 +556,9 @@ class App:
                 shift = ch.isupper()
                 if sym == 0:
                     names = {".": "period", ":": "colon", "/": "slash", "-": "minus", "_": "underscore", "#": "numbersign", "@": "at", ",": "comma", "!": "exclam", "?": "question",
-                             "`": "grave", "*": "asterisk", "=": "equal", "(": "parenleft", ")": "parenright", ";": "semicolon", "'": "apostrophe", "+": "plus", "{": "braceleft", "}": "braceright"}
+                             "`": "grave", "*": "asterisk", "=": "equal", "(": "parenleft", ")": "parenright", ";": "semicolon", "'": "apostrophe", "+": "plus", "{": "braceleft", "}": "braceright", "[": "bracketleft", "]": "bracketright", "%": "percent"}
                     sym = XK.string_to_keysym(names.get(ch, ch))
-                    shift = ch in ":_#@!?*()+{}"
+                    shift = ch in ":_#@!?*()+{}%"
             kc = self.d.keysym_to_keycode(sym)
             if kc == 0:
                 raise QAError(f"não sei digitar {ch!r}")

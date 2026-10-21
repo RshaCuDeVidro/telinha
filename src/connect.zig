@@ -57,12 +57,14 @@ pub fn parseList(s: []const u8, out: []Target) usize {
     return n;
 }
 
-/// Convite → endereços + canal + senha: telinha://end1,end2/canal#senha
-/// (o canal e a senha são opcionais).
+/// Convite → endereços + canal + identidade + senha:
+/// telinha://end1,end2/canal!impressão#senha (canal, impressão e senha são
+/// opcionais; a impressão é a identidade que o servidor tem que provar).
 pub const Invite = struct {
     addrs: []const u8, // lista separada por vírgula
     password: ?[]const u8,
     channel: ?[]const u8 = null,
+    fingerprint: ?[]const u8 = null,
 };
 
 pub fn splitInvite(raw: []const u8) Invite {
@@ -72,6 +74,12 @@ pub fn splitInvite(raw: []const u8) Invite {
     if (std.mem.findScalar(u8, s, '#')) |h| {
         inv.addrs = s[0..h];
         inv.password = s[h + 1 ..];
+    }
+    // a impressão vem depois do "!" (endereço e canal nunca têm "!")
+    if (std.mem.findScalar(u8, inv.addrs, '!')) |ex| {
+        const fp = std.mem.trim(u8, inv.addrs[ex + 1 ..], " ");
+        if (fp.len > 0) inv.fingerprint = fp;
+        inv.addrs = inv.addrs[0..ex];
     }
     // endereço nunca tem "/" (IPv6 vai entre colchetes, sem barra)
     if (std.mem.findScalar(u8, inv.addrs, '/')) |sl| {

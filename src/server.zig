@@ -409,6 +409,9 @@ pub const Options = struct {
     new_channels: bool = true,
     /// A sala roda dentro do app (as estatísticas avisam que a CPU é do app todo).
     hosted: bool = false,
+    /// Semente da identidade fixa (Ed25519; ver crypto.Identity). null = sem
+    /// identidade (o app não tem como conferir quem é o servidor).
+    identity_seed: ?[32]u8 = null,
 };
 
 const StatsPrev = struct {
@@ -456,6 +459,7 @@ pub const Server = struct {
     chans: std.ArrayList(*Chan) = .empty, // o primeiro é o padrão
     new_channels: bool = true,
     hosted: bool = false,
+    identity: ?crypto.Identity = null,
     chans_sent: [1024]u8 = undefined, // última lista de canais mandada (só manda se mudar)
     chans_sent_len: usize = 0,
     next_chat_id: u32 = 1,
@@ -476,6 +480,7 @@ pub const Server = struct {
         const ls = try net.listen(opts.port);
         const s = try gpa.create(Server);
         s.* = .{ .listen_sock = ls, .port = opts.port, .max_members = opts.max_members, .clip_key_ms = opts.clip_key_interval_ms, .log_fn = opts.log, .start_us = sync.nowUs(), .new_channels = opts.new_channels, .hosted = opts.hosted };
+        if (opts.identity_seed) |seed| s.identity = crypto.Identity.fromSeed(seed) catch null;
         // canais fixos (o primeiro é o padrão)
         var it = std.mem.tokenizeScalar(u8, opts.channels, ',');
         while (it.next()) |raw| {
@@ -866,6 +871,12 @@ pub const Server = struct {
         return s.password_len > 0;
     }
 
+    /// Impressão da identidade (vai no convite). null = sem identidade.
+    pub fn fingerprint(s: *const Server) ?[crypto.fp_len]u8 {
+        const id = s.identity orelse return null;
+        return crypto.fingerprint(id.publicKey());
+    }
+
     pub fn isLocked(s: *Server) bool {
         s.mutex.lock();
         defer s.mutex.unlock();
@@ -892,6 +903,15 @@ pub const Server = struct {
         @memcpy(pw[0..pw_len], s.password[0..pw_len]);
         s.mutex.unlock();
         cn.channel = try crypto.Channel.derive(&hs, peer, false, pw[0..pw_len]);
+        // quem eu sou, provado já: o app confere antes de mandar nome e token
+        if (s.identity) |*id| {
+            const t = crypto.transcript(peer, crypto.myHello(&hs, proto.version));
+            const sig = try id.sign(t);
+            const m = try proto.Msg.alloc(.identity, 96);
+            @memcpy(m.payload()[0..32], &id.publicKey());
+            @memcpy(m.payload()[32..96], &sig);
+            try proto.sendNow(cn.sock, &cn.channel, m);
+        }
         // caminho UDP (o cliente abre mandando um hello pro mesmo endereço);
         // pelo túnel público não tem UDP
         if (s.udp_sock) |us| if (!cn.via_tunnel) {

@@ -188,6 +188,9 @@ pub const ChatLine = struct {
 
 /// Algo que o admin fez com a gente (a UI mostra e reage).
 /// Um canal do servidor (lista que ele manda; ver proto.Type.channel).
+/// O servidor provou quem é? (crypto.Identity)
+pub const IdState = enum { unknown, verified, none, mismatch };
+
 pub const ChanInfo = struct {
     name: [proto.channel_name_max]u8 = undefined,
     name_len: u8 = 0,
@@ -835,6 +838,13 @@ pub const Client = struct {
     want_chan: [proto.channel_name_max]u8 = undefined, // o canal pedido ao entrar (hello)
     want_chan_len: usize = 0,
     stats: ServerStats = .{},
+    // identidade do servidor (crypto.Identity)
+    expect_fp: [crypto.fp_len]u8 = undefined,
+    expect_fp_len: usize = 0,
+    tofu: bool = false,
+    transcript: [32]u8 = undefined,
+    server_fp: [crypto.fp_len]u8 = undefined, // a que o servidor provou
+    id_state: IdState = .unknown,
     stats_gen: u32 = 0, // muda a cada estatística que chega (0 = nenhuma ainda)
 
     pub const Options = struct {
@@ -848,6 +858,10 @@ pub const Client = struct {
         hw_decode: bool = true,
         /// Canal pra entrar (vazio = o padrão do servidor).
         channel: []const u8 = "",
+        /// Impressão da identidade que o servidor tem que provar (do convite,
+        /// ou a vista da última vez: `tofu`). Vazio = aceita a que vier.
+        expect_fp: []const u8 = "",
+        tofu: bool = false,
         wake: *const fn () void,
     };
 
@@ -863,6 +877,8 @@ pub const Client = struct {
         copyInto(&cl.pass, &cl.pass_len, o.password);
         copyInto(&cl.admin_token, &cl.admin_token_len, o.admin_token);
         copyInto(&cl.want_chan, &cl.want_chan_len, o.channel);
+        copyInto(&cl.expect_fp, &cl.expect_fp_len, o.expect_fp);
+        cl.tofu = o.tofu;
         _ = cl.refs.fetchAdd(1, .monotonic); // thread de conexão/leitura
         sync.spawn(connectLoop, .{cl}) catch {
             gpa.destroy(cl);
@@ -1008,6 +1024,8 @@ pub const Client = struct {
             return;
         };
 
+        cl.transcript = crypto.transcript(crypto.myHello(&won.hs, proto.version), won.peer);
+
         // escritora
         _ = cl.refs.fetchAdd(1, .monotonic);
         sync.spawn(writerLoop, .{cl}) catch {
@@ -1016,6 +1034,35 @@ pub const Client = struct {
             cl.setError("Falha ao criar thread.", .{});
             return;
         };
+
+        var rb: proto.RecvBuf = .{};
+        defer rb.deinit();
+        // tem identidade esperada: o servidor prova quem é antes de a gente
+        // mandar nome e token (quem estiver no meio não leva nada)
+        if (cl.expect_fp_len > 0) {
+            net.setRecvTimeout(cl.sock, 8000);
+            const ok = blk: {
+                const typ = proto.recvMsg(cl.sock, &cl.channel, &rb) catch |e| {
+                    cl.setFinal();
+                    if (e == error.AuthFailed or e == error.WrongPassword) {
+                        cl.setError("Senha errada.", .{});
+                    } else cl.setError("O servidor não provou quem é (versão antiga do telinha, ou alguém no meio do caminho). Não mandei nada.", .{});
+                    break :blk false;
+                };
+                if (typ != .identity) {
+                    cl.setFinal();
+                    cl.setError("O servidor não provou quem é (versão antiga do telinha, ou alguém no meio do caminho). Não mandei nada.", .{});
+                    break :blk false;
+                }
+                break :blk cl.checkIdentity(proto.payloadOf(&rb));
+            };
+            if (!ok) {
+                cl.queue.close();
+                net.shutdown(cl.sock);
+                return;
+            }
+            net.setRecvTimeout(cl.sock, 0);
+        }
 
         var b: proto.Builder = .{};
         defer b.deinit();
@@ -1030,11 +1077,11 @@ pub const Client = struct {
         b.str(cl.want_chan[0..cl.want_chan_len]) catch return;
         cl.queue.pushOwned(b.finish() catch return);
 
-        var rb: proto.RecvBuf = .{};
-        defer rb.deinit();
         while (!cl.closing.load(.acquire)) {
             const typ = proto.recvMsg(cl.sock, &cl.channel, &rb) catch |e| {
-                if (e == error.WrongPassword) {
+                // servidor novo manda a identidade primeiro: com a senha errada
+                // ela não decifra (antes de entrar, isso só pode ser a senha)
+                if (e == error.WrongPassword or (e == error.AuthFailed and !cl.welcomed.load(.acquire))) {
                     cl.setFinal();
                     cl.setError("Senha errada.", .{});
                 }
@@ -1219,6 +1266,8 @@ pub const Client = struct {
                 }
                 cl.clock_offset.store(@as(i64, @intCast(server_us)) - @as(i64, @intCast(sync.nowUs())), .monotonic);
                 cl.status = .connected;
+                // servidor sem identidade (versão antiga, ou sem chave): nada a conferir
+                if (cl.id_state == .unknown) cl.id_state = .none;
                 cl.welcomed.store(true, .release);
                 _ = cl.refs.fetchAdd(1, .monotonic);
                 sync.spawn(pingLoop, .{cl}) catch {
@@ -1519,6 +1568,7 @@ pub const Client = struct {
                 cl.onPong(t, server_us);
             },
             .log_chunk => try cl.onLogChunk(&r),
+            .identity => if (cl.id_state == .unknown and !cl.checkIdentity(payload)) return error.Identity,
             .channel => try cl.onChannels(&r),
             .stats => try cl.onStats(&r),
             .log_ack => {
@@ -1572,6 +1622,36 @@ pub const Client = struct {
             },
             else => {},
         }
+    }
+
+    /// Confere a identidade que o servidor mandou (a assinatura deste
+    /// handshake e, se tiver, a impressão esperada). false = recusa (o erro já
+    /// fica escrito, e não adianta reconectar).
+    fn checkIdentity(cl: *Client, payload: []const u8) bool {
+        if (payload.len < 96) return false;
+        const public = payload[0..32].*;
+        const sig = payload[32..96].*;
+        if (!crypto.verifyIdentity(public, sig, cl.transcript)) {
+            cl.setFinal();
+            cl.setError("A assinatura do servidor não confere: alguém pode estar no meio do caminho. Não entrei.", .{});
+            cl.id_state = .mismatch;
+            return false;
+        }
+        const fp = crypto.fingerprint(public);
+        cl.mutex.lock();
+        cl.server_fp = fp;
+        cl.mutex.unlock();
+        if (cl.expect_fp_len > 0 and !std.mem.eql(u8, &fp, cl.expect_fp[0..cl.expect_fp_len])) {
+            cl.id_state = .mismatch;
+            cl.setFinal();
+            if (cl.tofu)
+                cl.setError("A identidade do servidor mudou desde a última vez ({s} → {s}). Se o dono reinstalou o servidor, confie na nova; senão, alguém pode estar no meio do caminho.", .{ cl.expect_fp[0..cl.expect_fp_len], &fp })
+            else
+                cl.setError("A identidade do servidor não bate com a do convite ({s}, o convite diz {s}): alguém pode estar no meio do caminho. Peça um convite novo.", .{ &fp, cl.expect_fp[0..cl.expect_fp_len] });
+            return false;
+        }
+        cl.id_state = .verified;
+        return true;
     }
 
     /// Em que canal a gente está e quais existem. Canal diferente do que a

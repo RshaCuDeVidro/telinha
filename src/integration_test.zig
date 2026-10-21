@@ -24,6 +24,7 @@ const TestClient = struct {
     route: u8 = 0,
     seen: [32]bool = [_]bool{false} ** 32, // tipos de mensagem já recebidos
     last_slow_floor: u8 = 0,
+    transcript: [32]u8 = undefined, // o handshake (pra conferir a identidade)
 
     fn connect(port: u16, name: []const u8, password: []const u8, token: []const u8) !TestClient {
         return connectKey(port, name, password, token, 0);
@@ -51,7 +52,8 @@ const TestClient = struct {
         try net.sendAll(s, &hs.helloBytes(proto.version));
         var hb: [crypto.hello_len]u8 = undefined;
         try net.recvAll(s, &hb);
-        var c: TestClient = .{ .sock = s, .ch = try crypto.Channel.derive(&hs, try crypto.parseHello(&hb), true, password) };
+        const peer = try crypto.parseHello(&hb);
+        var c: TestClient = .{ .sock = s, .ch = try crypto.Channel.derive(&hs, peer, true, password), .transcript = crypto.transcript(crypto.myHello(&hs, proto.version), peer) };
         var b: proto.Builder = .{};
         defer b.deinit();
         try b.begin(.hello);
@@ -1656,6 +1658,13 @@ test "convite: vários caminhos, IPv6 entre colchetes, senha" {
     try testing.expectEqualStrings("pw", ic.password.?);
     try testing.expect(connect_mod.splitInvite("telinha://a.com:7777/").channel == null);
     try testing.expectEqualStrings("a.com:7777", connect_mod.splitInvite("a.com:7777/").addrs);
+    // com a impressão da identidade
+    const fi = connect_mod.splitInvite("telinha://a.com:7777/jogos!abcdefghijklmnopqrstuvwx#s!nh#a");
+    try testing.expectEqualStrings("a.com:7777", fi.addrs);
+    try testing.expectEqualStrings("jogos", fi.channel.?);
+    try testing.expectEqualStrings("abcdefghijklmnopqrstuvwx", fi.fingerprint.?);
+    try testing.expectEqualStrings("s!nh#a", fi.password.?);
+    try testing.expectEqualStrings("abcdefghijklmnopqrstuvwx", connect_mod.splitInvite("x:1!abcdefghijklmnopqrstuvwx").fingerprint.?);
     // forma curta do IPv6
     var buf: [48]u8 = undefined;
     try testing.expectEqualStrings("[2804:14c::1]", net.fmtIp6(.{ 0x28, 0x04, 0x01, 0x4c, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 }, &buf));
@@ -1948,4 +1957,43 @@ test "estatísticas: só quem entrou com o token de admin recebe; pessoas, canai
     }
     // a cada 2 s chega outra, enquanto estiver ligado
     _ = try dono.expect(.stats);
+}
+
+test "identidade: o servidor prova quem é antes do hello (assinatura deste handshake); sem chave, não manda nada" {
+    net.init();
+    const port = freshPort();
+    const seed = [_]u8{42} ** 32;
+    const srv = try Server.start(.{ .port = port, .identity_seed = seed });
+    defer srv.stop();
+    const want = try crypto.Identity.fromSeed(seed);
+    try testing.expectEqualSlices(u8, &crypto.fingerprint(want.publicKey()), &srv.fingerprint().?);
+    // a identidade chega sem a gente mandar nada além do handshake
+    const s = try net.connect("127.0.0.1", port);
+    defer net.close(s);
+    net.setRecvTimeout(s, 5000);
+    const hs = try crypto.Handshake.init();
+    try net.sendAll(s, &hs.helloBytes(proto.version));
+    var hb: [crypto.hello_len]u8 = undefined;
+    try net.recvAll(s, &hb);
+    const peer = try crypto.parseHello(&hb);
+    var ch = try crypto.Channel.derive(&hs, peer, true, "");
+    var rb: proto.RecvBuf = .{};
+    defer rb.deinit();
+    try testing.expectEqual(proto.Type.identity, try proto.recvMsg(s, &ch, &rb));
+    const pl = proto.payloadOf(&rb);
+    const t = crypto.transcript(crypto.myHello(&hs, proto.version), peer);
+    try testing.expect(crypto.verifyIdentity(pl[0..32].*, pl[32..96].*, t));
+    try testing.expectEqualSlices(u8, &want.publicKey(), pl[0..32]);
+    // a assinatura é desta conexão: com outro handshake ela não vale
+    const other = try crypto.Handshake.init();
+    try testing.expect(!crypto.verifyIdentity(pl[0..32].*, pl[32..96].*, crypto.transcript(crypto.myHello(&other, proto.version), peer)));
+
+    // servidor sem chave: a primeira mensagem já é o welcome
+    const p2 = freshPort();
+    const srv2 = try Server.start(.{ .port = p2 });
+    defer srv2.stop();
+    try testing.expect(srv2.fingerprint() == null);
+    var c = try TestClient.connect(p2, "Ana", "", "");
+    defer c.close();
+    try testing.expectEqual(proto.Type.welcome, try proto.recvMsg(c.sock, &c.ch, &c.rb));
 }

@@ -11,6 +11,7 @@ const proto = @import("proto.zig");
 const Server = @import("server.zig").Server;
 const tunnel = @import("tunnel.zig");
 const upnp = @import("upnp.zig");
+const crypto = @import("crypto.zig");
 
 const usage =
     \\telinha-server — servidor dedicado de salas do telinha
@@ -30,6 +31,11 @@ const usage =
     \\                         Quem entra num nome que não existe cria o canal
     \\                         (some quando esvazia)
     \\  --sem-canais-novos     ninguém cria canal: só os da lista
+    \\  -k, --chave ARQUIVO    a identidade do servidor ($TELINHA_CHAVE; criada na
+    \\                         primeira vez). Padrão: /var/lib/telinha/servidor.key
+    \\                         (root) ou ~/.config/telinha/servidor.key. A impressão
+    \\                         vai no convite (telinha://...!impressão) e o app
+    \\                         confere que é mesmo este servidor
     \\  --publico [SERVIDOR]   abre um link público pelo túnel (padrão bore.pub);
     \\                         sem --senha, cria uma senha aleatória
     \\  --upnp                 pede pro roteador abrir a porta (UPnP): conexão
@@ -39,6 +45,54 @@ const usage =
 ;
 
 extern "c" fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
+extern "c" fn getuid() c_uint;
+extern "c" fn chmod(path: [*:0]const u8, mode: c_uint) c_int;
+
+/// "!impressão" pro convite (vazio sem identidade).
+var fp_suffix: [crypto.fp_len + 1]u8 = undefined;
+var fp_suffix_len: usize = 0;
+fn fpSuffix() []const u8 {
+    return fp_suffix[0..fp_suffix_len];
+}
+
+/// Lê (ou cria, só o dono lendo) a semente da identidade do servidor.
+fn loadKey(given: []const u8) ?[32]u8 {
+    var pb: [400]u8 = undefined;
+    const path: [:0]const u8 = if (given.len > 0)
+        std.fmt.bufPrintZ(&pb, "{s}", .{given}) catch return null
+    else if (getuid() == 0) blk: {
+        _ = mkdir("/var/lib/telinha", 0o750);
+        break :blk "/var/lib/telinha/servidor.key";
+    } else blk: {
+        const home = std.mem.span(getenv("HOME") orelse break :blk "telinha-servidor.key");
+        const d1 = std.fmt.bufPrintZ(&pb, "{s}/.config", .{home}) catch return null;
+        _ = mkdir(d1.ptr, 0o755);
+        const d2 = std.fmt.bufPrintZ(&pb, "{s}/.config/telinha", .{home}) catch return null;
+        _ = mkdir(d2.ptr, 0o700);
+        break :blk std.fmt.bufPrintZ(&pb, "{s}/.config/telinha/servidor.key", .{home}) catch return null;
+    };
+    if (std.c.fopen(path.ptr, "rb")) |f| {
+        defer _ = std.c.fclose(f);
+        var seed: [32]u8 = undefined;
+        if (std.c.fread(&seed, 1, 32, f) == 32) {
+            var lb: [500]u8 = undefined;
+            log(std.fmt.bufPrint(&lb, "identidade: {s}", .{path}) catch "identidade carregada");
+            return seed;
+        }
+    }
+    const seed = crypto.Identity.newSeed();
+    const f = std.c.fopen(path.ptr, "wb") orelse {
+        var lb: [500]u8 = undefined;
+        log(std.fmt.bufPrint(&lb, "não consegui criar {s}: a identidade muda a cada vez que o servidor sobe (use --chave)", .{path}) catch "sem arquivo de identidade");
+        return seed;
+    };
+    _ = std.c.fwrite(&seed, 1, 32, f);
+    _ = std.c.fclose(f);
+    _ = chmod(path.ptr, 0o600);
+    var lb: [500]u8 = undefined;
+    log(std.fmt.bufPrint(&lb, "identidade nova criada em {s} (guarde: trocar de chave faz o app avisar quem já entrou)", .{path}) catch "identidade nova");
+    return seed;
+}
 
 fn log(msg: []const u8) void {
     const t = sync.localTime();
@@ -60,8 +114,8 @@ fn watchTunnel(t: *tunnel.Tunnel, password: []const u8) void {
         const st = t.status();
         if (st.state != last or st.public_port != last_port) {
             switch (st.state) {
-                .ready => log(std.fmt.bufPrint(&buf, "link público: {s}:{d}  —  convite: telinha://{s}:{d}#{s}", .{
-                    t.hostSlice(), st.public_port, t.hostSlice(), st.public_port, password,
+                .ready => log(std.fmt.bufPrint(&buf, "link público: {s}:{d}  —  convite: telinha://{s}:{d}{s}#{s}", .{
+                    t.hostSlice(), st.public_port, t.hostSlice(), st.public_port, fpSuffix(), password,
                 }) catch "link público pronto"),
                 .connecting => log("o túnel caiu; reconectando..."),
                 .failed => log(std.fmt.bufPrint(&buf, "link público falhou: {s} (tentando de novo)", .{st.err}) catch "link público falhou"),
@@ -84,7 +138,7 @@ fn watchUpnp(m: *upnp.Mapper, password: []const u8) void {
             .ready => {
                 var abuf: [64]u8 = undefined;
                 const addr = m.address(&abuf);
-                log(std.fmt.bufPrint(&buf, "porta aberta no roteador: {s}  —  convite: telinha://{s}#{s}", .{ addr, addr, password }) catch "porta aberta no roteador");
+                log(std.fmt.bufPrint(&buf, "porta aberta no roteador: {s}  —  convite: telinha://{s}{s}#{s}", .{ addr, addr, fpSuffix(), password }) catch "porta aberta no roteador");
                 return;
             },
             .failed => {
@@ -113,6 +167,7 @@ pub fn main(init: std.process.Init) !void {
     var max: u32 = 32;
     var channels: []const u8 = env("TELINHA_CANAIS") orelse "";
     var new_channels = true;
+    var key_path: []const u8 = env("TELINHA_CHAVE") orelse "";
     var public_host: ?[]const u8 = null;
     var use_upnp = false;
     if (env("TELINHA_PORTA")) |p| port = std.fmt.parseInt(u16, p, 10) catch die("TELINHA_PORTA inválida: {s}", .{p});
@@ -153,6 +208,8 @@ pub fn main(init: std.process.Init) !void {
             admin = v;
         } else if (std.mem.eql(u8, a, "-l") or std.mem.eql(u8, a, "--logs")) {
             logs_dir = v;
+        } else if (std.mem.eql(u8, a, "-k") or std.mem.eql(u8, a, "--chave")) {
+            key_path = v;
         } else if (std.mem.eql(u8, a, "-c") or std.mem.eql(u8, a, "--canais")) {
             channels = v;
         } else if (std.mem.eql(u8, a, "-m") or std.mem.eql(u8, a, "--max")) {
@@ -175,13 +232,19 @@ pub fn main(init: std.process.Init) !void {
         const z = std.fmt.bufPrintZ(&lb, "{s}", .{logs_dir}) catch die("pasta de logs longa demais", .{});
         _ = mkdir(z.ptr, 0o750);
     }
-    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir, .channels = channels, .new_channels = new_channels }) catch
+    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir, .channels = channels, .new_channels = new_channels, .identity_seed = loadKey(key_path) }) catch
         die("não consegui abrir a porta {d} (já está em uso?)", .{port});
 
     var buf: [256]u8 = undefined;
     log(std.fmt.bufPrint(&buf, "sala \"{s}\" aberta na porta {d} (protocolo v{d}, {s}, máx. {d} pessoas)", .{
         room, port, proto.version, if (password.len > 0) "com senha" else "sem senha", max,
     }) catch "sala aberta");
+    if (srv.fingerprint()) |f| {
+        fp_suffix[0] = '!';
+        @memcpy(fp_suffix[1..], &f);
+        fp_suffix_len = f.len + 1;
+        log(std.fmt.bufPrint(&buf, "impressão da identidade: {s}  (no convite: telinha://ENDEREÇO:{d}!{s}#senha)", .{ &f, port, &f }) catch "");
+    }
     if (admin.len == 0) log("dica: use --admin TOKEN pra poder expulsar gente e ver as estatísticas do servidor pelo app");
     if (channels.len > 0) log(std.fmt.bufPrint(&buf, "canais: {s}{s}", .{ channels, if (new_channels) " (e quem quiser cria outros)" else " (só esses)" }) catch "");
     if (public_host) |h| {

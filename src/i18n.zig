@@ -218,6 +218,14 @@ pub fn server(text: []const u8, buf: []u8) []const u8 {
 // vários lugares aparece uma vez só.
 
 const table = [_][2][]const u8{
+    // identidade do servidor
+    .{ "A assinatura do servidor não confere: alguém pode estar no meio do caminho. Não entrei.", "The server's signature doesn't check out: someone may be in the middle. I didn't join." },
+    .{ "A identidade do servidor mudou desde a última vez ({s} → {s}). Se o dono reinstalou o servidor, confie na nova; senão, alguém pode estar no meio do caminho.", "The server's identity changed since last time ({s} → {s}). If the owner reinstalled the server, trust the new one; otherwise someone may be in the middle." },
+    .{ "A identidade do servidor não bate com a do convite ({s}, o convite diz {s}): alguém pode estar no meio do caminho. Peça um convite novo.", "The server's identity doesn't match the invite ({s}, the invite says {s}): someone may be in the middle. Ask for a new invite." },
+    .{ "O servidor não provou quem é (versão antiga do telinha, ou alguém no meio do caminho). Não mandei nada.", "The server didn't prove who it is (an older telinha, or someone in the middle). I sent nothing." },
+    .{ "{s}  Confiar na identidade nova ({s})", "{s}  Trust the new identity ({s})" },
+    .{ "Conexão criptografada (X25519 + ChaCha20-Poly1305)\nIdentidade do servidor conferida: {s}", "Encrypted connection (X25519 + ChaCha20-Poly1305)\nServer identity verified: {s}" },
+    .{ "Conexão criptografada (X25519 + ChaCha20-Poly1305)\nO servidor não tem identidade fixa (versão antiga): não dá pra conferir quem é", "Encrypted connection (X25519 + ChaCha20-Poly1305)\nThe server has no fixed identity (older version): it can't be verified" },
     // pincel
     .{ "A minha cor (a do meu avatar)", "My color (my avatar's)" },
     .{ "Apagar os meus traços (ou botão direito)", "Erase my strokes (or right-click)" },

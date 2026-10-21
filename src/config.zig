@@ -2,9 +2,9 @@
 //! Linux: ~/.config/telinha/config.ini   Windows: %APPDATA%\telinha\config.ini
 const std = @import("std");
 const sync = @import("sync.zig");
-const is_windows = sync.is_windows;
+pub const is_windows = sync.is_windows;
 
-const c = if (is_windows) @cImport({
+pub const c = if (is_windows) @cImport({
     @cDefine("WIN32_LEAN_AND_MEAN", "1");
     @cInclude("windows.h");
     @cInclude("stdio.h");
@@ -19,6 +19,8 @@ pub const Config = struct {
     join_addr: [256]u8 = zstr("", 256),
     join_pass: [129]u8 = zstr("", 129),
     join_channel: [32]u8 = zstr("", 32), // canal pra entrar (vazio = o padrão do servidor)
+    join_fp: [32]u8 = zstr("", 32), // impressão da identidade que veio no convite...
+    join_fp_for: [256]u8 = zstr("", 256), // ...e pra quais endereços ela vale
     room_name: [65]u8 = zstr("", 65),
     host_port: i32 = 7777,
     host_pass: [129]u8 = zstr("", 129),
@@ -163,7 +165,7 @@ fn dirPathUncached(buf: []u8) ?[]const u8 {
     return base;
 }
 
-fn openNamed(comptime name: []const u8, write: bool) ?*c.FILE {
+pub fn openNamed(comptime name: []const u8, write: bool) ?*c.FILE {
     if (is_windows) {
         var dir: [600]u16 = undefined;
         var n = c.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("TELINHA_PASTA_CONFIG"), &dir, 500);
@@ -327,6 +329,10 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         cfg.draw_size = @intCast(std.math.clamp(int, 0, 3));
     } else if (std.mem.eql(u8, k, "show_drawings")) {
         cfg.show_drawings = int != 0;
+    } else if (std.mem.eql(u8, k, "join_fp")) {
+        setStr(&cfg.join_fp, v);
+    } else if (std.mem.eql(u8, k, "join_fp_for")) {
+        setStr(&cfg.join_fp_for, v);
     } else if (std.mem.eql(u8, k, "join_channel")) {
         setStr(&cfg.join_channel, v);
     } else if (std.mem.eql(u8, k, "auto_quality")) {
@@ -385,9 +391,9 @@ pub fn save(cfg: *const Config) void {
     }) catch return;
     _ = c.fwrite(m.ptr, 1, m.len, f);
     // (um format só aceita 32 valores: o resto vai aqui)
-    var more2: [256]u8 = undefined;
-    const m2 = std.fmt.bufPrint(&more2, "animations={d}\njoin_channel={s}\ndraw_color={d}\ndraw_size={d}\nshow_drawings={d}\n", .{
-        @intFromBool(cfg.animations), getStr(&cfg.join_channel), cfg.draw_color, cfg.draw_size, @intFromBool(cfg.show_drawings),
+    var more2: [700]u8 = undefined;
+    const m2 = std.fmt.bufPrint(&more2, "animations={d}\njoin_channel={s}\ndraw_color={d}\ndraw_size={d}\nshow_drawings={d}\njoin_fp={s}\njoin_fp_for={s}\n", .{
+        @intFromBool(cfg.animations), getStr(&cfg.join_channel), cfg.draw_color, cfg.draw_size, @intFromBool(cfg.show_drawings), getStr(&cfg.join_fp), getStr(&cfg.join_fp_for),
     }) catch return;
     _ = c.fwrite(m2.ptr, 1, m2.len, f);
     inline for (@typeInfo(HotkeyId).@"enum".fields) |fl| {

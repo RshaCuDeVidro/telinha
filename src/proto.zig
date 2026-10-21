@@ -53,6 +53,7 @@ pub const Type = enum(u8) {
     log_ack = 28, // S→C u32 id, u8 resultado (log_ack_*), u8 quantos donos receberam
     channel = 29, // C→S str canal: entra (cria, se não existir) | S→C str canal_atual, u8 n, n × (str nome, u16 pessoas, u8 flags chan_*)
     stats = 30, // C→S u8 ligado (só quem entrou com o token de admin) | S→C estatísticas do servidor (ver docs/PROTOCOL.md)
+    identity = 31, // S→C [32] chave pública Ed25519 do servidor, [64] assinatura do handshake (crypto.transcript): a primeira mensagem, antes do hello
     _,
 };
 
@@ -708,3 +709,13 @@ pub const SendQueue = struct {
         }
     }
 };
+
+/// Cifra e manda uma mensagem na hora, sem fila (o servidor manda a
+/// identidade antes de existir a thread escritora). Solta a mensagem.
+pub fn sendNow(s: net.Socket, ch: *crypto.Channel, m: *Msg) !void {
+    defer m.release();
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    try SendQueue.sealInto(&out, ch, m);
+    try net.sendAll(s, out.items);
+}

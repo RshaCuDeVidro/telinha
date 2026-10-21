@@ -26,6 +26,8 @@ const update = @import("update.zig");
 const chatimg = @import("chatimg.zig");
 const chatsend = @import("chatsend.zig");
 const markdown = @import("markdown.zig");
+const known = @import("known.zig");
+const crypto = @import("crypto.zig");
 const debuglog = @import("debuglog.zig");
 const theme = @import("theme.zig");
 const fonts_mod = @import("fonts.zig");
@@ -644,6 +646,10 @@ pub const App = struct {
     home_error_len: usize = 0,
     port_buf: [8]u8 = undefined,
     home_card_h: f32 = 460,
+    conn_addrs: [256]u8 = undefined, // os endereços da última conexão (identidade já vista)
+    conn_addrs_len: usize = 0,
+    trust_fp: [crypto.fp_len]u8 = undefined, // identidade nova que o usuário pode aceitar (botão)
+    trust_fp_len: usize = 0,
     home_tab_anim: f32 = 0, // o destaque da aba, deslizando até home_tab
     home_switch_at: f64 = -10, // quando trocou de aba (o conteúdo entra deslizando)
     home_enter_at: f64 = -10, // quando a tela inicial apareceu (entrada animada)
@@ -1078,6 +1084,11 @@ pub const App = struct {
         const inv = connect_mod.splitInvite(raw);
         if (inv.password) |pw| config.setStr(&a.cfg.join_pass, pw);
         if (inv.channel) |ch| config.setStr(&a.cfg.join_channel, ch);
+        // a impressão do convite vale pros endereços dele (digitou outro: não vale mais)
+        if (inv.fingerprint) |fp| {
+            config.setStr(&a.cfg.join_fp, fp);
+            config.setStr(&a.cfg.join_fp_for, inv.addrs);
+        } else if (std.mem.startsWith(u8, raw, "telinha://")) config.setStr(&a.cfg.join_fp, "");
         // deixa o campo só com os endereços
         var tmp: [256]u8 = undefined;
         config.setStr(&tmp, inv.addrs);
@@ -1086,7 +1097,20 @@ pub const App = struct {
         var targets: [connect_mod.max_targets]connect_mod.Target = undefined;
         if (addrs.len == 0 or std.mem.findScalar(u8, addrs, ':') == null) return a.setHomeError(tr("Põe o endereço com a porta. Ex.: 0.tcp.sa.ngrok.io:12345 (ou cola o convite)."));
         if (connect_mod.parseList(addrs, &targets) == 0) return a.setHomeError(tr("Endereço inválido. Ex.: 0.tcp.sa.ngrok.io:12345 (IPv6 entre colchetes: [2804::1]:7777)"));
-        a.connect(addrs, config.getStr(&a.cfg.join_pass), config.getStr(&a.cfg.admin_token), std.mem.trim(u8, config.getStr(&a.cfg.join_channel), " #"));
+        // a identidade que o servidor tem que provar: a do convite, ou a já vista
+        // nesse endereço (como no SSH); sem nenhuma, aceita e guarda a primeira
+        var kb: [crypto.fp_len]u8 = undefined;
+        var expect: []const u8 = "";
+        var tofu = false;
+        const jfp = config.getStr(&a.cfg.join_fp);
+        if (jfp.len > 0 and std.mem.eql(u8, config.getStr(&a.cfg.join_fp_for), addrs)) {
+            expect = jfp;
+        } else if (known.lookup(addrs)) |k| {
+            kb = k;
+            expect = &kb;
+            tofu = true;
+        }
+        a.connect(addrs, config.getStr(&a.cfg.join_pass), config.getStr(&a.cfg.admin_token), std.mem.trim(u8, config.getStr(&a.cfg.join_channel), " #"), expect, tofu);
     }
 
     fn createRoom(a: *App) void {
@@ -1100,12 +1124,13 @@ pub const App = struct {
         var rnd: [16]u8 = undefined;
         sync.osRandom(&rnd);
         const token = std.fmt.bufPrintZ(&a.room_admin_token, "{x}", .{&rnd}) catch "";
-        a.server = Server.start(.{ .port = port, .password = pass, .room_name = rn, .admin_token = token, .hosted = true }) catch {
+        a.server = Server.start(.{ .port = port, .password = pass, .room_name = rn, .admin_token = token, .hosted = true, .identity_seed = known.hostSeed() }) catch {
             a.setHomeError(tr("Não consegui abrir essa porta. Já tem outra coisa usando? Tenta outra."));
             return;
         };
         var self_addr: [32]u8 = undefined;
-        a.connect(std.fmt.bufPrint(&self_addr, "127.0.0.1:{d}", .{port}) catch "127.0.0.1:7777", pass, token, "");
+        const own_fp = a.server.?.fingerprint();
+        a.connect(std.fmt.bufPrint(&self_addr, "127.0.0.1:{d}", .{port}) catch "127.0.0.1:7777", pass, token, "", if (own_fp) |*f| f else "", false);
     }
 
     // ------------------------------------------------------------------ voz
@@ -1424,14 +1449,17 @@ pub const App = struct {
         a.tunnel = null;
     }
 
-    fn connect(a: *App, addrs: []const u8, pass: []const u8, admin_token: []const u8, channel: []const u8) void {
+    fn connect(a: *App, addrs: []const u8, pass: []const u8, admin_token: []const u8, channel: []const u8, expect_fp: []const u8, tofu: bool) void {
         a.home_error_len = 0;
+        a.trust_fp_len = 0;
+        a.conn_addrs_len = @min(addrs.len, a.conn_addrs.len);
+        @memcpy(a.conn_addrs[0..a.conn_addrs_len], addrs[0..a.conn_addrs_len]);
         config.save(&a.cfg);
         a.chan_gen_seen = 0;
         a.stats_open = false;
         a.stats_hist_n = 0;
         a.stats_seen = 0;
-        a.client = Client.create(.{ .addrs = addrs, .name = a.myName(), .password = pass, .admin_token = admin_token, .client_key = a.cfg.client_key, .hw_decode = a.cfg.hardware, .channel = channel, .wake = wakeUi }) catch {
+        a.client = Client.create(.{ .addrs = addrs, .name = a.myName(), .password = pass, .admin_token = admin_token, .client_key = a.cfg.client_key, .hw_decode = a.cfg.hardware, .channel = channel, .expect_fp = expect_fp, .tofu = tofu, .wake = wakeUi }) catch {
             a.setHomeError(tr("Endereço inválido."));
             return;
         };
@@ -2151,6 +2179,8 @@ pub const App = struct {
         cl.mutex.unlock();
         if (st == .connected and !a.was_connected) {
             a.was_connected = true;
+            // provou quem é: da próxima vez nesse endereço, tem que ser o mesmo
+            if (cl.id_state == .verified and a.server == null) known.remember(a.conn_addrs[0..a.conn_addrs_len], &cl.server_fp);
             if (cl.viaTarget()) |t| {
                 const lbl = std.fmt.bufPrint(&a.connect_label, "{s}{s}{s}:{d}", .{
                     if (std.mem.findScalar(u8, t.hostSlice(), ':') != null) "[" else "", t.hostSlice(),
@@ -2216,6 +2246,11 @@ pub const App = struct {
             if (!a.was_connected) {
                 // não conectou: volta pra tela inicial com o erro
                 a.setHomeError(if (a.reconnect.attempt > 0) tr("Não consegui reconectar na sala.") else cl.errSlice());
+                // identidade mudou desde a última vez: dá pra confiar na nova (botão)
+                if (cl.id_state == .mismatch and cl.tofu) {
+                    a.trust_fp = cl.server_fp;
+                    a.trust_fp_len = crypto.fp_len;
+                }
                 a.leaveRoom();
                 return;
             }
@@ -2818,6 +2853,14 @@ pub const App = struct {
             c.igPopTextWrapPos();
             c.igSetCursorScreenPos(v2(p.x, p.y + eh));
             c.igDummy(v2(inner, 0));
+            if (a.trust_fp_len > 0 and a.home_tab == 0) {
+                c.igDummy(v2(0, S(6)));
+                if (secondaryButton(fmtZ("{s}  Confiar na identidade nova ({s})###trustid", .{ ic.shield, a.trust_fp[0..a.trust_fp_len] }), v2(inner, S(38)))) {
+                    known.remember(a.conn_addrs[0..a.conn_addrs_len], a.trust_fp[0..a.trust_fp_len]);
+                    a.trust_fp_len = 0;
+                    a.joinRoom();
+                }
+            }
         }
         c.igEndGroup();
 
@@ -3445,8 +3488,13 @@ pub const App = struct {
         drawTextF(d, font_regular, 11.5, v2(sx, sy), col.muted, pt);
         sx += textSizeF(font_regular, 11.5, pt).x + S(10);
         drawTextF(d, font_regular, 11, v2(sx, sy + S(1)), col.green, ic.lock);
-        if (c.igIsMouseHoveringRect(v2(sx - S(4), sy - S(2)), v2(sx + S(14), sy + S(16)), true))
-            tooltipText(tr("Conexão criptografada (X25519 + ChaCha20-Poly1305)"));
+        if (c.igIsMouseHoveringRect(v2(sx - S(4), sy - S(2)), v2(sx + S(14), sy + S(16)), true)) {
+            const idt = switch (cl.id_state) {
+                .verified => fmtZ("Conexão criptografada (X25519 + ChaCha20-Poly1305)\nIdentidade do servidor conferida: {s}", .{&cl.server_fp}),
+                else => fmtZ("Conexão criptografada (X25519 + ChaCha20-Poly1305)\nO servidor não tem identidade fixa (versão antiga): não dá pra conferir quem é", .{}),
+            };
+            tooltipText(idt);
+        }
         sx += S(18);
         drawTextF(d, font_regular, 11.5, v2(sx, sy), col.faint, where_s);
         sx += textSizeF(font_regular, 11.5, where_s).x;
@@ -4112,11 +4160,19 @@ pub const App = struct {
                 chan = std.fmt.bufPrint(&chan_buf, "/{s}", .{cl.chan_name[0..cl.chan_name_len]}) catch "";
             cl.mutex.unlock();
         }
+        // a identidade do servidor: quem receber confere que é ele mesmo
+        var fp_buf: [crypto.fp_len + 1]u8 = undefined;
+        var fp: []const u8 = "";
+        if (a.server) |sv| {
+            if (sv.fingerprint()) |f| fp = std.fmt.bufPrint(&fp_buf, "!{s}", .{&f}) catch "";
+        } else if (a.client) |cl| {
+            if (cl.id_state == .verified) fp = std.fmt.bufPrint(&fp_buf, "!{s}", .{&cl.server_fp}) catch "";
+        }
         var buf: [800]u8 = undefined;
         const inv = (if (pass.len > 0)
-            std.fmt.bufPrintZ(&buf, "telinha://{s}{s}#{s}", .{ addrs, chan, pass })
+            std.fmt.bufPrintZ(&buf, "telinha://{s}{s}{s}#{s}", .{ addrs, chan, fp, pass })
         else
-            std.fmt.bufPrintZ(&buf, "telinha://{s}{s}", .{ addrs, chan })) catch return;
+            std.fmt.bufPrintZ(&buf, "telinha://{s}{s}{s}", .{ addrs, chan, fp })) catch return;
         c.igSetClipboardText(inv.ptr);
         const n_paths = std.mem.count(u8, addrs, ",") + 1;
         if (!a.inviteReachesOutside())
@@ -8029,6 +8085,7 @@ pub const App = struct {
             }
             try w.writeAll("]");
             // canais e estatísticas do servidor
+            try w.print(",\"id_state\":{f},\"server_fp\":{f}", .{ s(@tagName(cl.id_state)), s(if (cl.id_state == .verified or cl.id_state == .mismatch) &cl.server_fp else "") });
             try w.print(",\"channels_supported\":{},\"channel\":{f},\"channels\":[", .{ cl.chans_supported, s(cl.chan_name[0..cl.chan_name_len]) });
             for (cl.chans[0..cl.n_chans], 0..) |*ch, i| {
                 if (i > 0) try w.writeByte(',');

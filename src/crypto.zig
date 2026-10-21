@@ -9,15 +9,20 @@
 //! Depois disso cada mensagem vai cifrada com ChaCha20-Poly1305, nonce =
 //! contador por direção (nunca repete dentro de uma conexão).
 //!
-//! Protege contra quem escuta o tráfego (túneis públicos, Wi-Fi). Um atacante
-//! ativo no meio do caminho consegue tentar adivinhar a senha offline, então
-//! use senhas que não sejam óbvias.
+//! Protege contra quem escuta o tráfego (túneis públicos, Wi-Fi). Contra
+//! quem se põe no meio do caminho: o servidor tem uma identidade fixa
+//! (Ed25519) e assina o handshake de cada conexão (mensagem `identity`, logo
+//! depois do handshake); o app confere com a impressão que veio no convite
+//! (telinha://...!impressão) ou com a que viu da primeira vez naquele
+//! endereço. Sem isso, um atacante ativo ainda conseguiria tentar adivinhar a
+//! senha offline: use senhas que não sejam óbvias.
 const std = @import("std");
 const sync = @import("sync.zig");
 const X25519 = std.crypto.dh.X25519;
 const Aead = std.crypto.aead.chacha_poly.ChaCha20Poly1305;
 const Hkdf = std.crypto.kdf.hkdf.HkdfSha256;
 const Sha256 = std.crypto.hash.sha2.Sha256;
+const Ed25519 = std.crypto.sign.Ed25519;
 
 pub const tag_len = Aead.tag_length;
 pub const hello_len = 4 + 2 + 32 + 16;
@@ -58,6 +63,79 @@ pub fn parseHello(bytes: *const [hello_len]u8) !Hello {
         .public = bytes[6..38].*,
         .nonce = bytes[38..54].*,
     };
+}
+
+/// Identidade fixa do servidor (a semente fica num arquivo; ver server_main.zig).
+pub const Identity = struct {
+    kp: Ed25519.KeyPair,
+
+    pub fn fromSeed(seed: [32]u8) !Identity {
+        return .{ .kp = try Ed25519.KeyPair.generateDeterministic(seed) };
+    }
+
+    pub fn newSeed() [32]u8 {
+        var seed: [32]u8 = undefined;
+        sync.osRandom(&seed);
+        return seed;
+    }
+
+    pub fn publicKey(id: *const Identity) [32]u8 {
+        return id.kp.public_key.toBytes();
+    }
+
+    /// Assina o handshake de uma conexão (ver `transcript`).
+    pub fn sign(id: *const Identity, t: [32]u8) ![64]u8 {
+        return (try id.kp.sign(&t, null)).toBytes();
+    }
+};
+
+/// O que o servidor assina: as duas metades do handshake (chaves e nonces
+/// dos dois lados). Quem estiver no meio tem o próprio handshake com cada
+/// lado, então a assinatura do servidor de verdade não serve pra ele.
+pub fn transcript(client: Hello, server: Hello) [32]u8 {
+    var h = Sha256.init(.{});
+    h.update("telinha-identidade-v1");
+    h.update(&client.public);
+    h.update(&client.nonce);
+    h.update(&server.public);
+    h.update(&server.nonce);
+    var out: [32]u8 = undefined;
+    h.final(&out);
+    return out;
+}
+
+pub fn verifyIdentity(public: [32]u8, sig: [64]u8, t: [32]u8) bool {
+    const pk = Ed25519.PublicKey.fromBytes(public) catch return false;
+    Ed25519.Signature.fromBytes(sig).verify(&t, pk) catch return false;
+    return true;
+}
+
+/// Impressão da identidade: 24 letras/números (base32 dos primeiros 15 bytes
+/// do SHA-256 da chave pública: 120 bits). Vai no convite depois do "!".
+pub const fp_len = 24;
+pub fn fingerprint(public: [32]u8) [fp_len]u8 {
+    var hash: [32]u8 = undefined;
+    Sha256.hash(&public, &hash, .{});
+    const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
+    var out: [fp_len]u8 = undefined;
+    var bits: u32 = 0;
+    var acc: u32 = 0;
+    var n: usize = 0;
+    for (hash[0..15]) |b| {
+        acc = (acc << 8) | b;
+        bits += 8;
+        while (bits >= 5) {
+            bits -= 5;
+            out[n] = alphabet[(acc >> @intCast(bits)) & 31];
+            n += 1;
+        }
+    }
+    return out;
+}
+
+/// O Hello que eu mandei (pra montar o `transcript` do meu lado).
+pub fn myHello(h: *const Handshake, version: u16) Hello {
+    return .{ .version = version, .public = h.keys.public_key, .nonce = h.nonce };
 }
 
 pub const Channel = struct {
@@ -116,3 +194,21 @@ pub const Channel = struct {
         ch.recv_ctr += 1;
     }
 };
+
+test "identidade: assina o handshake, confere, impressão estável" {
+    const id = try Identity.fromSeed([_]u8{7} ** 32);
+    const a = try Handshake.init();
+    const b = try Handshake.init();
+    const t = transcript(myHello(&a, 6), myHello(&b, 6));
+    const sig = try id.sign(t);
+    try std.testing.expect(verifyIdentity(id.publicKey(), sig, t));
+    // outro handshake (quem está no meio): a mesma assinatura não serve
+    const c = try Handshake.init();
+    try std.testing.expect(!verifyIdentity(id.publicKey(), sig, transcript(myHello(&a, 6), myHello(&c, 6))));
+    // outra chave: não confere
+    const other = try Identity.fromSeed([_]u8{8} ** 32);
+    try std.testing.expect(!verifyIdentity(other.publicKey(), sig, t));
+    const fp = fingerprint(id.publicKey());
+    try std.testing.expectEqualSlices(u8, &fp, &fingerprint(id.publicKey()));
+    try std.testing.expect(!std.mem.eql(u8, &fp, &fingerprint(other.publicKey())));
+}
