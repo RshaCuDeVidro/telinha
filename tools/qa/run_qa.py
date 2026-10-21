@@ -9,6 +9,7 @@ Antes: zig build -Dnative-only=true (usa zig-out/bin/telinha).
 """
 import os
 import random
+import re
 import sys
 import time
 import traceback
@@ -25,6 +26,12 @@ def test(fn):
 
 
 SERVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "zig-out", "bin", "telinha-server-x86_64")
+
+
+def invite_addrs(clip, pw):
+    """Os endereços de um convite telinha://end1,end2[/canal][!impressão]#senha (None se não bater)."""
+    m = re.fullmatch(r"telinha://([^/!#]+)(/[^!#]+)?(![a-z2-7]{24})?#" + re.escape(pw), clip)
+    return m.group(1).split(",") if m else None
 
 
 def port():
@@ -419,7 +426,7 @@ def estatisticas_servidor():
 
 @test
 def chat_markdown():
-    """Chat com markdown: Shift+Enter quebra linha (Enter manda), bloco de código com o botão de copiar, `código`, **negrito** e link clicável; a caixa cresce com o texto e não perde o foco depois do Enter."""
+    """Chat com markdown: Shift+Enter quebra linha (Enter manda), bloco de código com o botão de copiar, `código`, **negrito** e link clicável; clique direito copia ou responde a mensagem; a caixa cresce com o texto e não perde o foco depois do Enter."""
     with Session("markdown") as s:
         p = port()
         a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)])
@@ -446,6 +453,19 @@ def chat_markdown():
         # copiar o bloco
         b.click(f"##cpcode{mid}_1")
         b.wait(lambda st: st["clipboard"] == "const x = 1;", 3, "o código copiado")
+        # clique direito numa mensagem: copiar o texto e responder (@nome na caixa)
+        mid2 = next(l["id"] for l in b.state()["chat"] if l["text"] == "de novo")
+        for y in range(90, 740, 10):
+            b.move(1150, y)
+            if b.state()["react_hover"] == mid2:
+                break
+        expect(b.state()["react_hover"] == mid2, "achar a mensagem 'de novo' com o mouse")
+        b.click_at(1150, y, button=3)
+        b.click("###mcopy")
+        b.wait(lambda st: st["clipboard"] == "de novo", 3, "o texto da mensagem copiado")
+        b.click_at(1150, y, button=3)
+        b.click("###mreply")
+        b.wait(lambda st: st["chat_input"] == "@Ana ", 3, "o @nome na caixa pra responder")
         # link: clicar abre (no teste só registra)
         b.screenshot(os.path.join(s.base, "markdown.png"))
 
@@ -487,8 +507,15 @@ def identidade_servidor():
         d.click("Entrar##go")
         st = d.wait(lambda st: st["status"] == "connected" and st["id_state"] == "verified", 10, "entrar e lembrar a identidade")
         fp1 = st["server_fp"]
-        d.click("##leave")
-        d.wait(lambda st: st["screen"] == "home", 5, "sair")
+        # logo depois de entrar a cápsula ainda está aparecendo: o clique pode cair antes do botão
+        for tentativa in range(3):
+            d.click("##leave")
+            try:
+                d.wait(lambda st: st["screen"] == "home", 3, "sair")
+                break
+            except QAError:
+                if tentativa == 2:
+                    raise
         s.stop_proc(srv)
         srv = s.spawn("srv2", [SERVER, "--porta", str(p2), "--chave", k2], env)
         time.sleep(0.6)
@@ -515,7 +542,7 @@ def sala_controles():
         expect(any("link público" in t or "caminhos" in t for t in st["toasts"]), f"aviso inesperado: {st['toasts']}")
         expect(f":{p}" in st["clipboard"], f"convite sem a porta da sala: {st['clipboard']}")
         b.click("##invite")
-        b.wait(lambda st: st["clipboard"] == f"telinha://127.0.0.1:{p}#pw1", 3, "o convite na área de transferência")
+        b.wait(lambda st: invite_addrs(st["clipboard"], "pw1") == [f"127.0.0.1:{p}"], 3, "o convite na área de transferência")
         # chat: Enter e o botão de enviar
         b.click("##chatin")
         b.type("ola sala\n")
@@ -626,7 +653,7 @@ def upnp_e_tunel_proprio():
         expect(st["upnp"]["addr"] == f"203.0.113.7:{p}", f"endereço errado: {st['upnp']}")
         a.click(contains="Copiar convite##upnp")
         # o convite leva o IP de fora entre os caminhos (rede local primeiro: na mesma casa é o mais rápido)
-        a.wait(lambda st: st["clipboard"].endswith("#pw2") and f"203.0.113.7:{p}" in st["clipboard"][len("telinha://"):-len("#pw2")].split(","), 3, "o convite com o IP de fora")
+        a.wait(lambda st: f"203.0.113.7:{p}" in (invite_addrs(st["clipboard"], "pw2") or []), 3, "o convite com o IP de fora")
         a.click(contains="Fechar porta")
         a.wait(lambda st: st["upnp"] is None, 3, "fechar a porta")
         time.sleep(1)
@@ -646,7 +673,7 @@ def upnp_e_tunel_proprio():
         a.wait(lambda st: st["clipboard"].startswith("ngrok tcp ") or st["clipboard"].startswith("bore ") or st["clipboard"].startswith("ssh "), 3, "copiar um comando")
         a.fill("##pub", "0.tcp.sa.ngrok.io:12345")
         a.click(contains="Copiar convite##proprio")
-        a.wait(lambda st: st["clipboard"].endswith("#pw2") and "0.tcp.sa.ngrok.io:12345" in st["clipboard"][len("telinha://"):-len("#pw2")].split(","), 3, "o convite do túnel próprio")
+        a.wait(lambda st: "0.tcp.sa.ngrok.io:12345" in (invite_addrs(st["clipboard"], "pw2") or []), 3, "o convite do túnel próprio")
 
 
 @test
@@ -904,7 +931,7 @@ def convite_colado():
         a = s.app("a", 92, ["--nome", "Ana", "--entrar", f"127.0.0.1:{p}", "--senha", "abc123"])
         a.wait(lambda st: st["status"] == "connected", 10, "a Ana entrar")
         a.click("##invite")
-        a.wait(lambda st: st["clipboard"] == f"telinha://127.0.0.1:{p}#abc123", 3, "o convite copiado")
+        a.wait(lambda st: invite_addrs(st["clipboard"], "abc123") == [f"127.0.0.1:{p}"], 3, "o convite copiado")
         # outro telinha abre na mesma tela (mesma área de transferência)
         b = s.app("b", 92, [])
         b.wait(lambda st: st["cfg"]["join_addr"] == f"127.0.0.1:{p}" and st["cfg"]["join_pass"] == "abc123", 5, "o convite aparecer preenchido")

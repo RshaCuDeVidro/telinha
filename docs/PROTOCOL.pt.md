@@ -41,6 +41,9 @@ telinha://192.168.0.10:7777,203.0.113.7:7777,[2804:14c::1]:7777,bore.pub:41234#s
 Um canal pode vir depois dos endereços, separado por `/`:
 `telinha://203.0.113.7:7777/jogos#senha` entra direto no `#jogos`.
 
+Forma completa: `telinha://endereços[/canal][!impressão][#senha]` — os três
+opcionais (ver "Identidade do servidor" e "Canais").
+
 Cada endereço é `host:porta`; IPv6 vai **entre colchetes** (sem colchete é
 ambíguo e o endereço é ignorado). Até 8 endereços; a ordem é a preferência.
 Quem hospeda monta o convite com o IP da rede local, a porta aberta no
@@ -73,6 +76,27 @@ Senha errada → chaves diferentes → a primeira mensagem do cliente não
 decifra. O servidor então manda `u32 0xFFFFFFFF` em claro (= "senha errada")
 e fecha. Até o `hello` cifrado chegar, cada leitura do servidor tem prazo de
 10 s.
+
+### Identidade do servidor
+
+O servidor tem uma chave Ed25519 fixa (a semente de 32 bytes num arquivo:
+`--chave`). Logo depois do handshake, antes de ler qualquer coisa, ele manda
+`identity` (31): a chave pública e a assinatura de
+
+```
+transcrito = SHA-256("telinha-identidade-v1" || pública_cliente || nonce_cliente || pública_servidor || nonce_servidor)
+```
+
+Quem estiver no meio tem um handshake diferente com cada lado, então a
+assinatura do servidor de verdade não serve pra ele. A **impressão** é o base32
+(minúsculo, `a-z2-7`) dos primeiros 15 bytes do SHA-256 da chave pública: 24
+caracteres, que vão no convite depois do `!`. O app confere **antes de mandar o
+`hello`** (nome e token de admin nunca chegam num impostor): com impressão no
+convite, tem que bater; sem, a primeira vista naquele endereço fica lembrada
+(`servidores.txt`, como no SSH) e passa a ser exigida — se mudar, o app recusa e
+oferece "Confiar na identidade nova". Servidor sem chave não manda `identity`
+(app antigo só ignora a mensagem). Com a senha errada a `identity` não decifra, e
+o app diz que a senha está errada.
 
 ## 2. Mensagens (cifradas)
 
@@ -128,6 +152,9 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 29 | channel | S→C | `str atual` (o canal em que você está), `u8 n`, n × (`str nome`, `u16 pessoas`, `u8 flags`: 1 = alguém ao vivo, 2 = fixo) |
 | 30 | stats | C→S | `u8 ligado`: começa/para de receber as estatísticas do servidor (só quem entrou com o token de admin) |
 | 30 | stats | S→C | estatísticas do servidor, a cada 2 s enquanto ligado (abaixo) |
+| 31 | identity | S→C | `[32] chave pública`, `[64] assinatura` deste handshake (ver "Identidade do servidor"): a primeira mensagem, antes do `hello` |
+| 32 | chan_admin | C→S | `u8 ação`, `str canal`, `str valor`, `u32 alvo` (só admin; tabela abaixo) |
+| 33 | call | C→S | `str canal` (vazio = sai da call), `str senha`: entra na call desse canal |
 
 `versão_do_app` ("3.0.0") serve só pra avisar quem está desatualizado (a
 interface mostra "fulano está no telinha X: tem versão nova"); vazia = não
@@ -180,7 +207,10 @@ os 7 de baixo = rota, tabela acima), `u16 w`, `u16 h`, `u8 fps` (tela),
 `u16 w`, `u16 h`, `u8 fps` (câmera), `u16 k`, k × `u32` (streams que essa
 pessoa assiste, no máximo 64). Transmissão desligada vai com tamanho e fps 0.
 Flags: 1 = transmitindo a tela, 2 = admin, 4 = tela com áudio, 8 = microfone
-ligado, 16 = surdo, 32 = silenciado pelo admin, 64 = câmera ligada.
+ligado, 16 = surdo, 32 = silenciado pelo admin, 64 = câmera ligada, 128 = o
+admin tirou o pincel. Na `rota`, além do `0x80` (dono) e da rota nos 5 bits de
+baixo: `0x40` = está no meu canal de texto, `0x20` = está na minha call (cada um
+recebe a sua lista: todo mundo do seu chat mais todo mundo da sua call).
 
 **Frame** (cabeçalho de 21 bytes):
 
@@ -228,6 +258,11 @@ manda e vale 0, tudo como antes):
 **Áudio:** `u32 seq`, `u64 hora_da_captura`, pacote Opus até o fim
 (48 kHz, estéreo, 10 ms por pacote, ~96 kbit/s). Só a tela tem áudio.
 
+**Desenho** — flags: 1 = traço novo, 2 = apaga os meus traços nessa
+transmissão, bits 2–3 = espessura (0 normal, 1 fina, 2 grossa, 3 marca-texto),
+bits 4–7 = cor da paleta (0 = a cor da pessoa; `proto.draw_colors`). App antigo
+ignora os bits de estilo.
+
 **Ponteiro** ("olha aqui"): `x`, `y` relativos ao quadro (0..65534),
 `0xFFFF` = esconde; flags 1 = visível, 2 = clique (anel chamando atenção).
 
@@ -241,10 +276,17 @@ manda e vale 0, tudo como antes):
 | 4 | parar uma transmissão | tipo (0 = tela, 1 = câmera) |
 | 5 | dar/tirar admin (só o dono) | 1 = dá, 0 = tira |
 | 6 | trancar a sala (alvo ignorado) | 1 = tranca, 0 = destranca |
+| 7 | pincel | 1 = devolve, 0 = tira (os desenhos dela somem; lembrado pela chave) |
+
+**chan_admin** — ações: 1 = fixar (`valor` "1"/"0": canal fixo fica vazio e
+depois de reiniciar), 2 = trancar (só admin entra), 3 = senha (`valor`; vazio
+tira), 4 = tópico (`valor`, até 120 bytes), 5 = levar `alvo` pro canal (chat e
+call, mesmo trancado).
 
 **notice** — tipos: 1 = microfone silenciado, 2 = microfone liberado, 3 =
 transmissão parada (`extra` = tipo dela), 4 = virou admin, 5 = deixou de ser
-admin. O `texto` já vem pronto ("Ana silenciou seu microfone."). 6 = não deu pra
+admin, 7/8 = pincel tirado/devolvido, 9 = um admin te levou pra outro canal. O
+`texto` já vem pronto ("Ana silenciou seu microfone."). 6 = não deu pra
 trocar de canal (nome inválido, trocando rápido demais, o servidor não deixa
 criar canal ou já tem canais demais).
 
@@ -356,10 +398,21 @@ converte a hora pro relógio local.
 
 ### Canais
 
-- Um servidor tem um ou mais canais (como no IRC): cada um com o seu chat
-  (histórico de 50), a sua lista de `members` e a sua voz. Só dá pra `watch`
-  (e apontar/desenhar) em quem está no mesmo canal. Banimento, silenciar do
-  admin, trancar e o limite de pessoas valem pro servidor todo.
+- Um servidor tem um ou mais canais (como no IRC). Cada pessoa está num **canal
+  de texto** (o chat dele, histórico de 50) e em no máximo uma **call** (voz e
+  transmissões) — não precisa ser o mesmo canal (`feat_calls`). Só dá pra
+  `watch` (e apontar/desenhar) em quem está na mesma call. Banimento, silenciar
+  do admin, trancar a sala e o limite de pessoas valem pro servidor todo.
+- Entrar na sala põe na call do canal em que entrou. `channel` troca só o chat;
+  `call` troca a call (as transmissões vão junto: o app manda `stream_start` de
+  novo). App sem `feat_calls` troca os dois juntos.
+- Canal pode ter senha (`channel`/`call` levam ela; sem, o servidor responde
+  `notice` 6 com `extra` = 1 e o app pergunta), ser trancado (só admin) e ter
+  tópico. Canal fixo — com senha, trava e tópico — mais banidos, silenciados e
+  sem pincel ficam no arquivo de estado (`--estado`) e voltam quando o servidor
+  reinicia.
+- `channel` (S→C), depois da lista: n × `u16` na call, n × `str` tópico, `str` a
+  minha call (vazio = nenhuma); flags 4 = senha, 8 = trancado.
 - O primeiro canal é o padrão (`geral`, ou o primeiro do `--canais`). Entrar
   (hello) ou trocar (`channel`) pra um nome que não existe cria o canal, a não
   ser que o servidor tenha subido com `--sem-canais-novos`; no máximo 32 canais.

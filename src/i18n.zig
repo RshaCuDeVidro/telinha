@@ -264,6 +264,10 @@ const table = [_][2][]const u8{
     .{ "Entre na call de um canal pra ouvir, falar e ver as transmissões. O chat continua aqui do lado.", "Join a channel's call to hear, talk and watch streams. The chat stays right here." },
     .{ "{s}   Entrar na call do #{s}", "{s}   Join the #{s} call" },
     .{ "{s}  NA CALL, LENDO OUTRO CANAL · {d}", "{s}  IN THE CALL, READING ANOTHER CHANNEL · {d}" },
+    .{ "Mandar uma imagem (escolher o arquivo; também dá pra arrastar pra janela ou colar com Ctrl+V)", "Send an image (pick the file; you can also drag it onto the window or paste with Ctrl+V)" },
+    .{ "Escolha uma imagem pro chat", "Pick an image for the chat" },
+    .{ "{s}  Copiar texto", "{s}  Copy text" },
+    .{ "{s}  Responder", "{s}  Reply" },
     // pincel
     .{ "A minha cor (a do meu avatar)", "My color (my avatar's)" },
     .{ "Apagar os meus traços (ou botão direito)", "Erase my strokes (or right-click)" },

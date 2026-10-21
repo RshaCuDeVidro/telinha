@@ -89,6 +89,27 @@ telinha-server --canais "geral,jogos" --sem-canais-novos   # só esses
 (ou `TELINHA_CANAIS`). Canal que alguém criou some quando esvazia. O convite pode
 apontar direto pra um canal: `telinha://host:7777/jogos#senha`.
 
+### Admin dos canais, calls e o que sobrevive a reiniciar
+
+Cada canal tem o seu chat; a **call** (voz e transmissões) é separada: dá pra
+ler um canal e continuar na call de outro (o fone em cada canal, `/call nome`,
+ou o botão da cápsula). Quem entrou com o token de admin clica com o botão
+direito num canal pra **fixar**, **trancar** (só admin entra), pôr **senha** ou
+**tópico**, e numa pessoa pra levar ela pra outro canal. Canais fixos (com senha,
+trava e tópico), banidos, silenciados e sem pincel vão pra um arquivo de estado
+(`--estado ARQUIVO` / `TELINHA_ESTADO`; por padrão `estado.txt` do lado da chave) e
+voltam depois de reiniciar.
+
+## Identidade do servidor
+
+O servidor guarda uma chave fixa (`--chave ARQUIVO` / `TELINHA_CHAVE`; por padrão
+`/var/lib/telinha/servidor.key` rodando como root, senão
+`~/.config/telinha/servidor.key`), criada na primeira vez com permissão 0600. A
+impressão aparece no log ao subir e vai no convite
+(`telinha://host:7777!impressão#senha`): o app confere que é mesmo este servidor
+antes de mandar qualquer coisa. Guarde o arquivo da chave ao reinstalar — chave
+nova faz quem já entrou ver o aviso "a identidade do servidor mudou".
+
 ## Estatísticas do servidor
 
 Quem entra com o token de admin (`--admin`) ganha um botão de medidor no topo da

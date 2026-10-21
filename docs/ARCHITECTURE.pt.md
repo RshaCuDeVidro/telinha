@@ -31,7 +31,10 @@ pipeline, o mesmo controle de taxa e confirmações separadas.
 |---|---|
 | `src/main.zig` | janela (GLFW), OpenGL, loop principal que dorme quando nada acontece; saída com `sync.hardExit` |
 | `src/ui.zig` | toda a interface (Dear ImGui via cimgui) |
-| `src/fonts.zig` | fontes embutidas (Inter + ícones); cada contexto do ImGui carrega as suas |
+| `src/fonts.zig` | fontes embutidas (Inter + ícones); cada contexto do ImGui carrega as suas; a fonte de emoji colorida do sistema entra na primeira vez que aparece um emoji (desenhada pelo FreeType no `src/c/emoji_loader.cpp`) |
+| `src/markdown.zig` | markdown do chat: separa blocos de código e trechos (código, negrito, itálico, link); quem desenha é a `ui.zig` |
+| `src/known.zig` | identidades de servidor já vistas (`servidores.txt`) e a chave fixa da sala hospedada no app |
+| `src/c/filepick.c` | seletor de arquivo do sistema (portal no Linux, `GetOpenFileNameW` no Windows) |
 | `src/pip.zig` | janela flutuante: segunda janela do GLFW com contexto GL compartilhado e ImGui próprio |
 | `src/client.zig` | conexão com a sala, estado (membros, chat, relógio), `View` = transmissão assistida |
 | `src/connect.zig` | convite com vários endereços e a corrida entre eles (o primeiro que responder como sala ganha) |

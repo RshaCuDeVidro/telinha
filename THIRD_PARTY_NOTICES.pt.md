@@ -17,10 +17,16 @@ O telinha é MIT (ver [LICENSE](LICENSE)). Ele usa estes projetos:
 | [stb_image](https://github.com/nothings/stb) 2.30 | lê a imagem (PNG/JPEG/GIF/BMP) que você manda no chat — só no seu PC; pela rede ela vai como um quadro H.264 | MIT / domínio público | baixado pelo `build.zig.zon` |
 | [nv-codec-headers](https://github.com/FFmpeg/nv-codec-headers) 11.1 | headers do NVENC/NVDEC (as libs vêm do driver) | MIT | baixado pelo `build.zig.zon` |
 | [libva](https://github.com/intel/libva) 2.22 | headers do VA-API (a libva e o driver vêm do sistema, carregados em runtime) | MIT | baixado pelo `build.zig.zon` |
+| [FreeType](https://freetype.org) 2.13.3 | desenha o emoji colorido (a fonte de emoji vem do sistema) | FreeType License (FTL)¹ | baixado pelo `build.zig.zon` |
+| [libpng](http://www.libpng.org/pub/png/libpng.html) 1.6.44 | lê os emoji em PNG da fonte de emoji, pro FreeType | PNG Reference Library License v2 | baixado pelo `build.zig.zon` |
+| [zlib](https://zlib.net) 1.3.1 | descompressão, pro libpng | zlib | baixado pelo `build.zig.zon` |
 | [NASM](https://www.nasm.us) 2.16.03 | só no build: monta o assembly SIMD do openh264 | BSD 2-Clause | baixado pelo `build.zig.zon` |
 | [Inter](https://rsms.me/inter/) | fonte da interface | SIL Open Font License 1.1 | `src/assets/Inter-*.ttf` |
 | [Fira Code](https://github.com/tonsky/FiraCode) | fonte dos temas pwnd (instâncias 400/600/700 da variável, só o alfabeto latino) | SIL Open Font License 1.1 | `src/assets/FiraCode-*.ttf` |
 | [Font Awesome Free](https://fontawesome.com) 6.7 | ícones | fonte: SIL OFL 1.1; ícones: CC BY 4.0 | `src/assets/fa-solid-900.ttf` |
+
+¹ Portions of this software are copyright © 2024 The FreeType Project
+(www.freetype.org). All rights reserved.
 
 No Linux o app também usa bibliotecas do sistema: libportal (LGPL-3.0), PipeWire
 (MIT), Xlib (MIT) e o GLFW da distro.

@@ -90,6 +90,28 @@ telinha-server --canais "geral,games" --sem-canais-novos   # only these
 (or `TELINHA_CANAIS`). A channel someone created disappears when it empties. An
 invite can point straight at a channel: `telinha://host:7777/games#password`.
 
+### Channel admin, calls, and what survives a restart
+
+Each channel has its own chat; the **call** (voice and streams) is separate: people
+can read one channel while staying in another's call (the headphones icon on
+each channel, `/call name`, or the dock button). Whoever joined with the admin
+token can right-click a channel to **pin** it, **lock** it (admins only), set a
+**password** or a **topic**, and right-click a person to move them to another
+channel. Pinned channels (with their password, lock and topic), bans, admin mutes
+and pen removals are written to a state file (`--estado FILE` / `TELINHA_ESTADO`;
+by default `estado.txt` next to the key) and come back after a restart.
+
+## Server identity
+
+The server keeps a fixed key (`--chave FILE` / `TELINHA_CHAVE`; by default
+`/var/lib/telinha/servidor.key` when running as root, otherwise
+`~/.config/telinha/servidor.key`), created on the first run with mode 0600. Its
+fingerprint is printed at startup and goes in invites
+(`telinha://host:7777!fingerprint#password`): the app checks that it's really
+this server before sending anything. Keep the key file across reinstalls — a new
+key makes everyone who joined before see a "the server's identity changed"
+warning.
+
 ## Server statistics
 
 Whoever joins with the admin token (`--admin`) gets a gauge button at the top of

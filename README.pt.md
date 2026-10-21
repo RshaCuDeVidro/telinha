@@ -105,7 +105,7 @@ No Wayland o sistema pergunta qual tela ou janela compartilhar na primeira vez e
 
 ### 👀 Assistir
 - **Zoom** com a roda do mouse, arrastar pra mover, ou seguir o cursor de quem transmite, com minimapa.
-- **Ponteiro "olha aqui"** e **desenhar por cima**, que todo mundo que está vendo enxerga.
+- **Ponteiro "olha aqui"** e **desenhar por cima** em 15 cores e 4 espessuras (com marca-texto), que todo mundo que está vendo enxerga. Dá pra esconder os desenhos dos outros, e o admin pode tirar o pincel de alguém.
 - **Clipe** dos últimos 5 s a 10 min num clique ou num atalho global.
 - **Gravação em MP4** sem recodificar, com o som. A gravação sobrevive a mudança de resolução.
 - Print em PNG na resolução da transmissão.
@@ -120,14 +120,15 @@ No Wayland o sistema pergunta qual tela ou janela compartilhar na primeira vez e
 - Supressão de ruído com RNNoise: tira ventilador, teclado e chiado.
 - Ativação por voz ou **apertar pra falar**, valendo com o jogo em foco.
 - Opus com FEC, e a voz fura a fila: nunca espera atrás do vídeo.
-- Chat com imagens, reações, @menções e histórico pra quem chega depois.
+- Chat com imagens, reações, @menções, histórico pra quem chega depois e Markdown: blocos de código com botão de copiar, `código`, **negrito**, *itálico* e links clicáveis (Shift+Enter quebra a linha). Emoji colorido, e clique direito copia ou responde uma mensagem.
 - Notificações do sistema com o telinha em segundo plano.
 
 </td>
 <td valign="top">
 
 ### 🛡️ Salas e controle
-- **Canais, como no IRC**: um servidor, várias salas, cada uma com o seu chat, gente, voz e transmissões. Troca sem reconectar; o convite pode apontar pra um canal.
+- **Canais, como no IRC**: um servidor, várias salas. Cada canal tem o seu chat; a **call** (voz e transmissões) é separada, então dá pra ler um canal e continuar na call de outro. Canal pode ter senha, trava e tópico; os fixos sobrevivem a reiniciar.
+- **Identidade do servidor conferida**: o convite leva a impressão do servidor e o app confere antes de mandar qualquer coisa, então ninguém no meio do caminho se passa por ele.
 - Quem cria a sala ganha a coroa e pode expulsar, banir, silenciar, parar uma transmissão, dar ou tirar o admin e trancar a sala.
 - **Estatísticas do servidor pro admin**: CPU, memória, banda chegando e saindo, quem está atrasando e um palpite em português claro de qual é o gargalo.
 - **Reconexão automática**, que retoma a sua transmissão e as que você estava assistindo.
@@ -181,7 +182,7 @@ Numa tela de código de verdade em 1080p, o NVENC chega a **57 dB de PSNR com 0,
 
 ## Compilar
 
-Precisa do [Zig 0.16](https://ziglang.org/download/). As dependências de C e C++ são baixadas pelo próprio `zig build`: openh264, Dear ImGui, GLFW, NASM e os headers do NVENC e do VA-API.
+Precisa do [Zig 0.16](https://ziglang.org/download/). As dependências de C e C++ são baixadas pelo próprio `zig build`: openh264, Dear ImGui, GLFW, FreeType, NASM e os headers do NVENC e do VA-API.
 
 No Linux, instale as bibliotecas do sistema pra interface e pra captura:
 

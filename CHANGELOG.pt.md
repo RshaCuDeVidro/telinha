@@ -8,7 +8,10 @@ Conversa com a 3.1 (as mensagens novas são ignoradas por app e servidor antigos
 
 ### Destaques
 
-- 💬 **Canais, como no IRC**: um servidor, várias salas. Cada canal com o seu chat, gente, voz e transmissões; pule de um pro outro pelo painel, pelo **+** ou com `/join nome`, sem reconectar — a sua transmissão vai junto.
+- 💬 **Canais, como no IRC**: um servidor, várias salas. Cada canal com o seu chat, e a **call** (voz e transmissões) é separada: dá pra ler um canal e continuar na call de outro. Canal pode ter senha, trava e tópico; os fixos sobrevivem a reiniciar.
+- 🔐 **Identidade do servidor conferida**: o convite leva a impressão do servidor e o app confere antes de mandar qualquer coisa.
+- 📝 **Markdown no chat**: blocos de código com botão de copiar, `código`, **negrito**, *itálico*, links; Shift+Enter quebra linha. Emoji colorido.
+- 🖍️ **Cores e espessuras no pincel** (com marca-texto), esconder os desenhos dos outros, admin tira o pincel de alguém.
 - 📊 **Estatísticas do servidor pro admin**: CPU, memória, banda, quem está atrasando e o gargalo provável, em português claro.
 - ✨ **Tela inicial nova** com vitrine animada, e o quadro "chamando a galera de fora" mais limpo e com rolagem.
 - 🎨 **Layout novo da sala**: barra no topo com quem está ao vivo, o palco no meio, uma cápsula de controles flutuante e um cartão só do lado com quem está na sala e o chat. Nada se sobrepõe, nem em janela pequena.
@@ -22,6 +25,47 @@ Conversa com a 3.1 (as mensagens novas são ignoradas por app e servidor antigos
 
 ### Todas as mudanças
 
+- **A call é separada do canal de texto** (como no Discord): `/join` e o clique no
+  nome do canal trocam só o chat; o fone de cada canal, `/call nome` ou o botão
+  da cápsula entram/saem da call dele — onde ficam a voz e as transmissões (a
+  sua transmissão vai junto pra call nova). Entrar na sala põe na call do canal
+  de entrada; fora de call, o palco convida a entrar e transmitir entra
+  sozinho. O painel mostra quem está no seu chat e, embaixo, quem está na sua
+  call lendo outro canal. App antigo continua com chat e call juntos.
+- **Admin dos canais**: clique direito num canal pra fixar, trancar (só admin
+  entra), pôr senha (o painel pergunta quando alguém tenta entrar) ou tópico (no
+  topo do chat); clique direito numa pessoa pra levar ela pra outro canal. Canais
+  fixos com as configurações, banidos, silenciados e sem pincel ficam num arquivo
+  de estado (`--estado`, do lado da chave por padrão) e voltam quando o servidor
+  reinicia.
+- **Identidade do servidor**: o servidor tem uma chave Ed25519 fixa e assina as
+  duas metades de cada handshake logo depois dele (antes de o app mandar nome ou
+  token de admin). O convite leva a impressão
+  (`telinha://host!impressão#senha`) e o app exige ela; sem, lembra a primeira
+  identidade vista naquele endereço e avisa (com o botão "Confiar na identidade
+  nova") se ela mudar. A sala hospedada no app também tem chave fixa; o servidor
+  dedicado usa `--chave` (padrão `/var/lib/telinha/servidor.key` ou
+  `~/.config/telinha/servidor.key`, permissão 0600) e mostra a impressão.
+- **Markdown no chat**: blocos de código entre ```` ``` ```` (fonte monoespaçada,
+  a linguagem no canto, botão de copiar), `código`, **negrito**, *itálico*
+  (inclinado na hora: a fonte não tem itálico) e links clicáveis. A caixa de
+  mensagem é multilinha (Enter manda sem perder o foco, Shift+Enter quebra linha,
+  cresce até ~7 linhas, 4000 bytes).
+- **Emoji colorido** em nomes, chat e canais, com a fonte de emoji do sistema
+  (Noto Color Emoji no Linux, Segoe UI Emoji no Windows) desenhada pelo
+  FreeType. A fonte só é carregada quando aparece o primeiro emoji: quem não usa
+  não gasta memória. Emoji compostos (família, tom de pele) aparecem na versão
+  básica.
+- **Clique direito numa mensagem**: copiar o texto ou responder (põe o @nome na
+  caixa).
+- **Escolher a imagem pelo seletor do sistema** no botão de anexar (portal no
+  Linux, a janela de abrir arquivo no Windows); colar e arrastar continuam.
+- **Pincel**: paleta embaixo da transmissão com 15 cores mais a sua, 4 espessuras
+  (fina, normal, grossa, marca-texto), um botão pra esconder os desenhos dos
+  outros (só pra você; também em Aparência) e a borracha dos seus. Cor e espessura
+  vão em bits livres da mensagem de desenho (app antigo desenha na cor da pessoa).
+  O admin pode tirar o pincel de alguém (os desenhos dela somem na hora; lembrado
+  pela chave, como o silenciar) e devolver.
 - **Canais (como no IRC)**: um servidor tem vários canais; cada um com o seu
   chat (histórico), lista de quem está nele, voz e transmissões (só dá pra
   assistir, apontar ou desenhar em quem está no seu canal). Troca pela lista de

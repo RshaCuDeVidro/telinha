@@ -50,6 +50,9 @@ pub fn build(b: *std.Build) void {
     const rnnoise = b.lazyDependency("rnnoise", .{});
     const speexdsp = b.lazyDependency("speexdsp", .{});
     const stb = b.lazyDependency("stb", .{});
+    const freetype = b.lazyDependency("freetype", .{});
+    const libpng = b.lazyDependency("libpng", .{});
+    const zlib = b.lazyDependency("zlib", .{});
     const nasm = nasmProgram(b) orelse return;
     const deps: Deps = .{
         .imgui = imgui orelse return,
@@ -63,6 +66,9 @@ pub fn build(b: *std.Build) void {
         .rnnoise = rnnoise orelse return,
         .speexdsp = speexdsp orelse return,
         .stb = stb orelse return,
+        .freetype = freetype orelse return,
+        .libpng = libpng orelse return,
+        .zlib = zlib orelse return,
         .nasm = nasm,
         .options = b.addOptions(),
     };
@@ -194,6 +200,9 @@ const Deps = struct {
     rnnoise: *std.Build.Dependency,
     speexdsp: *std.Build.Dependency,
     stb: *std.Build.Dependency,
+    freetype: *std.Build.Dependency,
+    libpng: *std.Build.Dependency,
+    zlib: *std.Build.Dependency,
     nasm: NasmProgram,
     options: *std.Build.Step.Options, // build_options do app (repo)
 };
@@ -393,9 +402,65 @@ fn linkOpenh264(b: *std.Build, deps: Deps, into: *std.Build.Module, target: std.
 }
 
 // ---------------------------------------------------------------------------
+// FreeType (+ libpng e zlib): só pra desenhar a fonte de emoji do sistema
+
+const ft_options = "-DFT_CONFIG_OPTIONS_H=<ftoption_telinha.h>";
+const ft_modules = "-DFT_CONFIG_MODULES_H=<ftmodule_telinha.h>";
+
+fn addFreetype(b: *std.Build, deps: Deps, mod: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+    const optimize: std.builtin.OptimizeMode = .ReleaseFast;
+    // zlib (o PNG precisa)
+    const zm = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    zm.addIncludePath(deps.zlib.path("."));
+    zm.addCSourceFiles(.{
+        .root = deps.zlib.path("."),
+        .files = &.{ "adler32.c", "crc32.c", "deflate.c", "trees.c", "inffast.c", "inflate.c", "inftrees.c", "zutil.c" },
+        .flags = &.{ "-O2", "-Wno-everything", "-DZ_HAVE_UNISTD_H" },
+    });
+    // libpng (só leitura) com o pnglibconf.h pronto que vem com ela
+    const wf = b.addWriteFiles();
+    _ = wf.addCopyFile(deps.libpng.path("scripts/pnglibconf.h.prebuilt"), "pnglibconf.h");
+    const pm = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    pm.addIncludePath(wf.getDirectory());
+    pm.addIncludePath(deps.libpng.path("."));
+    pm.addIncludePath(deps.zlib.path("."));
+    const png_flags: []const []const u8 = &.{ "-O2", "-Wno-everything", "-DPNG_ARM_NEON_OPT=0", "-DPNG_INTEL_SSE_OPT=0", "-DPNG_POWERPC_VSX_OPT=0", "-DPNG_MIPS_MSA_OPT=0", "-DPNG_MIPS_MMI_OPT=0", "-DPNG_LOONGARCH_LSX_OPT=0" };
+    pm.addCSourceFiles(.{
+        .root = deps.libpng.path("."),
+        .files = &.{ "png.c", "pngerror.c", "pngget.c", "pngmem.c", "pngread.c", "pngrio.c", "pngrtran.c", "pngrutil.c", "pngset.c", "pngtrans.c", "pngwio.c", "pngwrite.c", "pngwtran.c", "pngwutil.c" },
+        .flags = png_flags,
+    });
+    // FreeType com só o que o emoji precisa (ver src/c/freetype)
+    const fm = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    fm.addIncludePath(b.path("src/c/freetype"));
+    fm.addIncludePath(deps.freetype.path("include"));
+    fm.addIncludePath(wf.getDirectory());
+    fm.addIncludePath(deps.libpng.path("."));
+    fm.addIncludePath(deps.zlib.path("."));
+    fm.addCSourceFiles(.{
+        .root = deps.freetype.path("src"),
+        .files = &.{
+            "base/ftsystem.c", "base/ftinit.c",   "base/ftdebug.c",   "base/ftbase.c",   "base/ftbitmap.c",
+            "base/ftglyph.c",  "base/ftsynth.c",  "base/ftmm.c",      "base/ftbbox.c",   "base/ftfstype.c",
+            "base/ftgasp.c",   "truetype/truetype.c", "sfnt/sfnt.c", "smooth/smooth.c", "autofit/autofit.c",
+            "psnames/psnames.c",
+        },
+        .flags = &.{ "-O2", "-Wno-everything", "-DFT2_BUILD_LIBRARY", ft_options, ft_modules },
+    });
+    const zlib_lib = b.addLibrary(.{ .name = "zlib", .root_module = zm, .linkage = .static });
+    const png_lib = b.addLibrary(.{ .name = "png", .root_module = pm, .linkage = .static });
+    const ft_lib = b.addLibrary(.{ .name = "freetype", .root_module = fm, .linkage = .static });
+    mod.linkLibrary(ft_lib);
+    mod.linkLibrary(png_lib);
+    mod.linkLibrary(zlib_lib);
+    mod.addIncludePath(b.path("src/c/freetype"));
+    mod.addIncludePath(deps.freetype.path("include"));
+}
+
+// ---------------------------------------------------------------------------
 // Dear ImGui + cimgui
 
-fn addImgui(b: *std.Build, deps: Deps, mod: *std.Build.Module) void {
+fn addImgui(b: *std.Build, deps: Deps, mod: *std.Build.Module, target: std.Build.ResolvedTarget) void {
     const flags: []const []const u8 = &.{
         "-fno-exceptions",
         "-fno-rtti",
@@ -404,7 +469,10 @@ fn addImgui(b: *std.Build, deps: Deps, mod: *std.Build.Module) void {
         "-DCIMGUI_USE_OPENGL3",
         // ganchos de teste: só trabalham com TELINHA_QA (ver src/c/qa_hooks.cpp)
         "-DIMGUI_ENABLE_TEST_ENGINE",
+        // emoji ficam acima de U+FFFF
+        "-DIMGUI_USE_WCHAR32",
     };
+    addFreetype(b, deps, mod, target);
     // o cimgui inclui "./imgui/imgui.h": montamos um diretório com essa cara
     // (todos os includes apontam pra essa cópia, senão o mesmo header entra
     // por dois caminhos e o #pragma once não pega)
@@ -420,6 +488,8 @@ fn addImgui(b: *std.Build, deps: Deps, mod: *std.Build.Module) void {
         .flags = flags,
     });
     mod.addCSourceFiles(.{ .root = deps.cimgui.path("."), .files = &.{ "cimgui.cpp", "cimgui_impl.cpp" }, .flags = flags });
+    // emoji: carregador próprio com o FreeType (só a fonte de emoji usa; ver src/c/emoji_loader.cpp)
+    mod.addCSourceFile(.{ .file = b.path("src/c/emoji_loader.cpp"), .flags = flags ++ &[_][]const u8{ ft_options, ft_modules } });
     mod.addCSourceFile(.{ .file = b.path("src/c/qa_hooks.cpp"), .flags = flags });
 
     // cimgui.h que o translate-c do Zig aceita (ver tools/patch_cimgui.zig)
@@ -552,7 +622,7 @@ fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: st
     // log de depuração (desvio da saída de erro, CPU/memória, envio do arquivo)
     mod.addCSourceFile(.{ .file = b.path("src/c/debugsys.c"), .flags = &.{"-O2"} });
     mod.addCSourceFile(.{ .file = b.path("src/c/crash.c"), .flags = &.{"-O2"} });
-    addImgui(b, deps, mod);
+    addImgui(b, deps, mod, target);
     linkOpenh264(b, deps, mod, target, optimize);
     addHwenc(b, deps, mod);
     addAudio(b, deps, mod, target, optimize);
@@ -567,13 +637,15 @@ fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: st
         mod.addCSourceFile(.{ .file = b.path("src/c/netaddr_win.c"), .flags = &.{"-O2"} });
         mod.addCSourceFile(.{ .file = b.path("src/c/httpget_win.c"), .flags = &.{"-O2"} });
         mod.addCSourceFile(.{ .file = b.path("src/c/audio_apps_win.c"), .flags = &.{"-O2"} });
+        mod.addCSourceFile(.{ .file = b.path("src/c/filepick.c"), .flags = &.{"-O2"} });
         mod.addWin32ResourceFile(.{ .file = b.path("assets/telinha.rc") });
-        for ([_][]const u8{ "opengl32", "gdi32", "user32", "shell32", "ws2_32", "d3d11", "dxgi", "ole32", "dwmapi", "winmm", "advapi32", "iphlpapi", "winhttp" }) |lib|
+        for ([_][]const u8{ "opengl32", "gdi32", "user32", "shell32", "ws2_32", "d3d11", "dxgi", "ole32", "dwmapi", "winmm", "advapi32", "iphlpapi", "winhttp", "comdlg32" }) |lib|
             mod.linkSystemLibrary(lib, .{});
     } else {
         mod.addCSourceFile(.{ .file = b.path("src/c/capture_linux.c"), .flags = &.{"-O2"} });
         mod.addCSourceFile(.{ .file = b.path("src/c/camera_linux.c"), .flags = &.{"-O2"} });
         mod.addCSourceFile(.{ .file = b.path("src/c/notify_linux.c"), .flags = &.{"-O2"} });
+        mod.addCSourceFile(.{ .file = b.path("src/c/filepick.c"), .flags = &.{"-O2"} });
         hostSystemPaths(b, mod);
         // GLFW embutido (o da distro pode ser velho: 3.3 no Ubuntu 22.04/24.04 não
         // tem glfwGetPlatform); ele mesmo carrega X11/Wayland na hora de rodar

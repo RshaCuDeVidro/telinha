@@ -8,7 +8,10 @@ Talks to 3.1 (the new messages are ignored by older apps and servers).
 
 ### Highlights
 
-- 💬 **Channels, IRC-style**: one server, many rooms. Each channel has its own chat, people, voice and streams; hop between them from the panel, with **+**, or with `/join name`, without reconnecting — your stream comes along.
+- 💬 **Channels, IRC-style**: one server, many rooms. Each channel has its own chat, and the **call** (voice and streams) is separate, so you can read one channel while staying in another's call. Channels can have a password, a lock and a topic; pinned ones survive a restart.
+- 🔐 **Verified server identity**: the invite carries the server's fingerprint and the app checks it before sending anything.
+- 📝 **Markdown in the chat**: code blocks with a copy button, `code`, **bold**, *italic*, links; Shift+Enter for a new line. Color emoji.
+- 🖍️ **Pen colors and widths** (highlighter too), hide other people's drawings, admins can take someone's pen away.
 - 📊 **Server stats for the admin**: CPU, memory, bandwidth, who's lagging and the likely bottleneck, in plain language.
 - ✨ **New home screen** with an animated showcase, and a cleaner "invite people from outside" panel that scrolls.
 - 🎨 **New room layout**: a top bar with who's live, the stage in the middle, a floating control dock and a single side card with the members and the chat. Nothing overlaps, even in a small window.
@@ -22,6 +25,46 @@ Talks to 3.1 (the new messages are ignored by older apps and servers).
 
 ### All changes
 
+- **The call is separate from the text channel** (like Discord): `/join` and
+  clicking a channel's name change only the chat; the headphones on each
+  channel, `/call name` or the dock button join/leave its call — where voice and
+  streams live (your stream follows you to the new call). Joining the room puts
+  you in the call of the channel you joined; out of a call, the stage invites you
+  into one and sharing joins it for you. The panel lists who's in your chat and,
+  below, who's in your call reading another channel. Older apps keep chat and
+  call together.
+- **Channel admin**: right-click a channel to pin it, lock it (admins only), set
+  a password (the panel asks for it when someone tries to get in) or a topic
+  (shown at the top of the chat); right-click a person to move them to another
+  channel. Pinned channels with their settings, bans, admin mutes and pen
+  removals are kept in a state file (`--estado`, next to the key by default) and
+  come back when the server restarts.
+- **Server identity**: the server has a fixed Ed25519 key and signs both halves of
+  each handshake right after it (before the app sends name or admin token).
+  Invites carry the fingerprint (`telinha://host!fingerprint#password`) and the
+  app requires it; without one, it remembers the first identity seen at that
+  address and warns (with a "Trust the new identity" button) if it changes. The
+  room hosted inside the app has a fixed key too; the dedicated server uses
+  `--chave` (default `/var/lib/telinha/servidor.key` or
+  `~/.config/telinha/servidor.key`, mode 0600) and prints the fingerprint.
+- **Markdown in the chat**: ```` ``` ```` code blocks (monospace, language label,
+  copy button), `inline code`, **bold**, *italic* (slanted on the fly: the font has
+  no italic) and clickable links. The message box is multi-line (Enter sends
+  without losing focus, Shift+Enter adds a line, it grows up to ~7 lines, 4000
+  bytes).
+- **Color emoji** in names, chat and channels, using the system emoji font (Noto
+  Color Emoji on Linux, Segoe UI Emoji on Windows) drawn by FreeType. The font is
+  only loaded when the first emoji shows up: no memory spent if you never see
+  one. Composed emoji (families, skin tones) show their basic form.
+- **Right-click a message** to copy its text or reply (puts the @name in the box).
+- **Pick the image with the system file picker** from the attach button (portal
+  on Linux, the open-file dialog on Windows); paste and drag still work.
+- **Pen**: a palette under the stream with 15 colors plus your own, 4 widths
+  (thin, normal, thick, highlighter), a toggle to hide other people's drawings
+  (just for you; also in Appearance) and an eraser for yours. Color and width ride
+  in spare bits of the drawing message (older apps draw in the person's color).
+  Admins can take someone's pen away (their drawings disappear right away;
+  remembered by key, like mutes) and give it back.
 - **Channels (IRC-style)**: a server holds several channels; each has its own
   chat (history), member list, voice, and streams (you only watch, point at or
   draw on someone in your channel). Switch from the channel list in the right

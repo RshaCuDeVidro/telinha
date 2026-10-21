@@ -31,7 +31,10 @@ same rate control and separate acknowledgements.
 |---|---|
 | `src/main.zig` | window (GLFW), OpenGL, main loop that sleeps when nothing happens; exit with `sync.hardExit` |
 | `src/ui.zig` | the whole interface (Dear ImGui through cimgui) |
-| `src/fonts.zig` | embedded fonts (Inter + icons); each ImGui context loads its own |
+| `src/fonts.zig` | embedded fonts (Inter + icons); each ImGui context loads its own; the system color emoji font is merged in the first time an emoji shows up (drawn by FreeType in `src/c/emoji_loader.cpp`) |
+| `src/markdown.zig` | chat markdown: splits code blocks and spans (code, bold, italic, link); `ui.zig` draws them |
+| `src/known.zig` | server identities already seen (`servidores.txt`) and the fixed key of a room hosted in the app |
+| `src/c/filepick.c` | system file picker (portal on Linux, `GetOpenFileNameW` on Windows) |
 | `src/pip.zig` | floating window: second GLFW window with a shared GL context and its own ImGui |
 | `src/client.zig` | room connection, state (members, chat, clock), `View` = watched stream |
 | `src/connect.zig` | invite with several addresses and the race between them (the first that answers as a room wins) |

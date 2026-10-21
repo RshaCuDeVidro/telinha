@@ -60,6 +60,23 @@
             .hash = "N-V-__8AAFNETgDxQPwefsoBQhY7el1SUgPWt8Q8IYvZyOt9",
             .lazy = true,
         },
+        .freetype = .{
+            // só pra fonte de emoji (o resto do texto continua no stb_truetype)
+            .url = "https://github.com/freetype/freetype/archive/refs/tags/VER-2-13-3.tar.gz",
+            .hash = "N-V-__8AAKfbpwAXnUJ6TJEaqZGWgp6F_8OhiLErejRxQ7Y5",
+            .lazy = true,
+        },
+        .libpng = .{
+            // emoji do Linux (Noto Color Emoji guarda cada um como PNG)
+            .url = "https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.44.tar.gz",
+            .hash = "N-V-__8AAF9GXgBOG-9Fli-wPkVxDfX1YVk83NC29k421PfU",
+            .lazy = true,
+        },
+        .zlib = .{
+            .url = "https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz",
+            .hash = "N-V-__8AAB0eQwD-0MdOEBmz7intriBReIsIDNlukNVoNu6o",
+            .lazy = true,
+        },
         .imgui = .{
             .url = "https://github.com/ocornut/imgui/archive/6d32174508fb8c518e7a832cc1d571fadd5cba76.tar.gz",
             .hash = "N-V-__8AAGNjfgBD2GOqdPUGkR89I-Ygw93OyAENnPPahX_t",

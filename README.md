@@ -105,7 +105,7 @@ On Wayland, the system asks which screen or window to share the first time and r
 
 ### 👀 Watching
 - **Zoom** with the mouse wheel, drag to pan, or follow the streamer's cursor, with a minimap.
-- A **"look here" pointer** and **drawing on the stream**, visible to everyone watching.
+- A **"look here" pointer** and **drawing on the stream** in 15 colors and 4 widths (highlighter included), visible to everyone watching. Hide other people's drawings if you want; admins can take someone's pen away.
 - **Clips** of the last 5 s to 10 min with one click or a global hotkey.
 - **MP4 recording** without re-encoding, including audio. Recordings survive resolution changes.
 - PNG screenshots at the stream's native resolution.
@@ -120,14 +120,15 @@ On Wayland, the system asks which screen or window to share the first time and r
 - RNNoise noise suppression for fans, keyboards and hiss.
 - Voice activation or **push-to-talk** that works while a game is focused.
 - Opus with FEC, sent ahead of video so it never waits behind a frame.
-- Chat with images, reactions, @mentions and history for late joiners.
+- Chat with images, reactions, @mentions, history for late joiners, and Markdown: code blocks with a copy button, `inline code`, **bold**, *italic* and clickable links (Shift+Enter for a new line). Color emoji, and right-click a message to copy or reply.
 - Desktop notifications while telinha is in the background.
 
 </td>
 <td valign="top">
 
 ### 🛡️ Rooms and control
-- **Channels, IRC-style**: one server, many rooms, each with its own chat, people, voice and streams. Switch without reconnecting; invites can point at a channel.
+- **Channels, IRC-style**: one server, many rooms. Each channel has its own chat; the **call** (voice and streams) is separate, so you can read one channel while staying in another's call. Channels can have a password, a lock and a topic; pinned ones survive restarts.
+- **Verified server identity**: invites carry the server's fingerprint and the app checks it before sending anything, so nobody in the middle can pose as the server.
 - The room creator gets the crown and can kick, ban, mute, stop a stream, give or remove admin and lock the room.
 - **Server stats for the admin**: CPU, memory, bandwidth in and out, who is lagging and a plain-language guess at the bottleneck.
 - **Automatic reconnection** that resumes your stream and the streams you were watching.
@@ -181,7 +182,7 @@ On a real 1080p code screen, NVENC reaches **57 dB PSNR at 0.36 Mbit/s**, includ
 
 ## Building from source
 
-You need [Zig 0.16](https://ziglang.org/download/). The C and C++ dependencies are fetched by `zig build`: openh264, Dear ImGui, GLFW, NASM, and the NVENC and VA-API headers.
+You need [Zig 0.16](https://ziglang.org/download/). The C and C++ dependencies are fetched by `zig build`: openh264, Dear ImGui, GLFW, FreeType, NASM, and the NVENC and VA-API headers.
 
 On Linux, install the system libraries for the UI and capture:
 

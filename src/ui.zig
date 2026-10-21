@@ -58,6 +58,26 @@ const avatar_colors = [_]u32{ rgb(0x5865F2), rgb(0x3BA55C), rgb(0xFAA61A), rgb(0
 pub var font_regular: *c.ImFont = undefined;
 pub var fonts_sans: fonts_mod.Set = undefined;
 pub var fonts_mono: fonts_mod.Set = undefined;
+/// Apareceu um emoji (chat, nome, texto digitado): o main.zig carrega a fonte
+/// de emoji do sistema antes do próximo quadro (ver fonts.addEmoji).
+pub var emoji_wanted = false;
+
+/// Tem emoji no texto? (os blocos onde quase todos moram: U+1Fxxx e os
+/// símbolos de U+2600–27BF e U+2B00–2BFF)
+fn hasEmoji(text: []const u8) bool {
+    var i: usize = 0;
+    while (i + 1 < text.len) : (i += 1) {
+        const b0 = text[i];
+        const b1 = text[i + 1];
+        if (b0 == 0xF0 and b1 == 0x9F) return true;
+        if (b0 == 0xE2 and ((b1 >= 0x98 and b1 <= 0x9E) or b1 == 0xAD)) return true;
+    }
+    return false;
+}
+
+fn noteEmoji(text: []const u8) void {
+    if (!emoji_wanted and hasEmoji(text)) emoji_wanted = true;
+}
 /// A Fira Code é mais larga que a Inter: um pouco menor pra caber igual.
 var font_k: f32 = 1.0;
 /// Escala da tela (DPI) e o zoom escolhido nas configurações (scale = os dois).
@@ -811,6 +831,12 @@ pub const App = struct {
     // desenhar por cima de uma transmissão
     draw_tile: ?u32 = null,
     strokes_drawn: u32 = 0, // traços desenhados nesse quadro (testes)
+    picking_file: bool = false, // a janela de escolher imagem está aberta
+    // menu de uma mensagem do chat (clique direito)
+    msg_menu_text: [4000]u8 = undefined,
+    msg_menu_len: usize = 0,
+    msg_menu_name: [48]u8 = undefined,
+    msg_menu_name_len: usize = 0,
     draw_pts: [proto.draw_max_points][2]u16 = undefined,
     draw_n: usize = 0,
     draw_new: bool = false, // o próximo envio começa um traço
@@ -6232,6 +6258,7 @@ pub const App = struct {
         // a caixa cresce com o texto (Shift+Enter quebra linha), até umas 7 linhas
         const box_w = size.x - S(24) - S(82) - S(16);
         const typed = std.mem.sliceTo(&a.chat_input, 0);
+        noteEmoji(typed);
         pushFont(font_regular, 15);
         const typed_h = if (typed.len == 0) 0 else c.igCalcTextSize(typed.ptr, typed.ptr + typed.len, false, box_w).y;
         popFont();
@@ -6269,6 +6296,8 @@ pub const App = struct {
         var hover_line: ?u32 = null;
         for (cl.chat.items) |*line| {
             const text = line.text;
+            noteEmoji(text);
+            noteEmoji(line.nameSlice());
             // o histórico (de antes da gente entrar) fica separado do que é novo
             if (line.history and !in_history) {
                 in_history = true;
@@ -6355,7 +6384,17 @@ pub const App = struct {
                 c.ImDrawList_ChannelsSetCurrent(mdl, 1);
             }
             // mouse em cima: barra de reações no canto da mensagem
-            if (msgs_hovered and mouse.y >= top - S(10) and mouse.y < bottom + S(2)) hover_line = line.id;
+            if (msgs_hovered and mouse.y >= top - S(10) and mouse.y < bottom + S(2)) {
+                hover_line = line.id;
+                // clique direito: copiar o texto / responder
+                if (c.igIsMouseClicked_Bool(1, false) and text.len > 0) {
+                    a.msg_menu_len = @min(text.len, a.msg_menu_text.len);
+                    @memcpy(a.msg_menu_text[0..a.msg_menu_len], text[0..a.msg_menu_len]);
+                    a.msg_menu_name_len = @min(line.name_len, a.msg_menu_name.len);
+                    @memcpy(a.msg_menu_name[0..a.msg_menu_name_len], line.name[0..a.msg_menu_name_len]);
+                    _ = c.igOpenPopup_Str("##msgmenu", 0);
+                }
+            }
             if (a.react_hover == line.id) {
                 const bs = S(26);
                 const bx0 = c.igGetWindowPos().x + size.x - S(14) - bs * proto.reactions - S(8);
@@ -6373,6 +6412,28 @@ pub const App = struct {
             last_from = line.from;
         }
         c.ImDrawList_ChannelsMerge(mdl);
+        if (c.igBeginPopup("##msgmenu", 0)) {
+            if (c.igSelectable_Bool(fmtZ("{s}  Copiar texto###mcopy", .{ic.copy}), false, 0, v2(S(200), 0))) {
+                var z: [4001]u8 = undefined;
+                @memcpy(z[0..a.msg_menu_len], a.msg_menu_text[0..a.msg_menu_len]);
+                z[a.msg_menu_len] = 0;
+                c.igSetClipboardText(@ptrCast(&z));
+            }
+            if (c.igSelectable_Bool(fmtZ("{s}  Responder###mreply", .{ic.arrow_right}), false, 0, v2(S(200), 0))) {
+                // "@nome " no começo da caixa (a pessoa é avisada pela menção)
+                const cur_len = std.mem.indexOfScalar(u8, &a.chat_input, 0) orelse a.chat_input.len;
+                const name = a.msg_menu_name[0..a.msg_menu_name_len];
+                if (name.len + 2 + cur_len < a.chat_input.len) {
+                    std.mem.copyBackwards(u8, a.chat_input[name.len + 2 .. name.len + 2 + cur_len], a.chat_input[0..cur_len]);
+                    a.chat_input[0] = '@';
+                    @memcpy(a.chat_input[1 .. 1 + name.len], name);
+                    a.chat_input[1 + name.len] = ' ';
+                    a.chat_input[name.len + 2 + cur_len] = 0;
+                }
+                a.focus_chat = true;
+            }
+            c.igEndPopup();
+        }
         a.react_hover = hover_line;
         cl.mutex.unlock();
         c.igDummy(v2(0, S(8)));
@@ -6452,8 +6513,26 @@ pub const App = struct {
         }
         c.igSameLine(0, 0);
         c.igSetCursorScreenPos(v2(bx + bw - S(76), by + bh - S(39)));
-        if (iconButton("##attach", ic.image, S(34), col.muted, col.hover, tr("Imagem: arraste o arquivo pra janela ou copie e aperte Ctrl+V aqui"))) {
-            if (!chatsend.paste(cl)) a.toast("Pra mandar imagem: arraste o arquivo pra janela do telinha, ou copie a imagem e aperte Ctrl+V no chat.", .{}, false);
+        if (iconButton("##attach", ic.image, S(34), col.muted, col.hover, tr("Mandar uma imagem (escolher o arquivo; também dá pra arrastar pra janela ou colar com Ctrl+V)"))) {
+            // imagem copiada: manda; senão abre a janela do sistema pra escolher o arquivo
+            if (!chatsend.paste(cl)) {
+                // (nos testes nunca abre: a janela do portal poderia aparecer na tela de verdade)
+                if (!qa.enabled() and c.filepick_start(tr("Escolha uma imagem pro chat")) == 0) {
+                    a.picking_file = true;
+                } else a.toast("Pra mandar imagem: arraste o arquivo pra janela do telinha, ou copie a imagem e aperte Ctrl+V no chat.", .{}, false);
+            }
+        }
+        if (a.picking_file) {
+            var pb: [4096]u8 = undefined;
+            switch (c.filepick_poll(&pb, pb.len)) {
+                0 => redrawIn(0.2),
+                1 => {
+                    a.picking_file = false;
+                    const path = std.mem.sliceTo(&pb, 0);
+                    if (chatsend.looksLikeImage(path)) chatsend.sendFile(cl, path) else a.toast("Só dá pra mandar imagem (PNG, JPEG, GIF ou BMP).", .{}, true);
+                },
+                else => a.picking_file = false,
+            }
         }
         c.igSetCursorScreenPos(v2(bx + bw - S(40), by + bh - S(39)));
         const send_click = iconButton("##send", ic.send, S(34), col.muted, col.hover, tr("Enviar"));

@@ -9,6 +9,7 @@ const client_mod = @import("client.zig");
 const qa = @import("qa.zig");
 const crash = @import("crash.zig");
 const config = @import("config.zig");
+const debuglog = @import("debuglog.zig");
 
 /// Panic do Zig: anota no relatório de travamento antes do padrão (que
 /// imprime a pilha e aborta). No Linux o abort também cai no relatório (com a
@@ -116,6 +117,7 @@ pub fn main(init: std.process.Init) !void {
     io.*.ConfigInputTextEnterKeepActive = true;
     qa.init(); // TELINHA_QA: modo de testes (posição dos botões + estado em arquivos)
     const base = 15 * ui.scale;
+    var emoji_loaded = false;
     ui.fonts_sans = fonts.load(io.*.Fonts, base);
     ui.fonts_mono = fonts.loadMono(io.*.Fonts, base);
     ui.useFonts(ui.fonts_sans, 1.0);
@@ -177,6 +179,12 @@ pub fn main(init: std.process.Init) !void {
 
         c.ImGui_ImplOpenGL3_NewFrame();
         c.ImGui_ImplGlfw_NewFrame();
+        // primeiro emoji na tela: carrega a fonte de emoji (uma vez)
+        if (ui.emoji_wanted and !emoji_loaded) {
+            emoji_loaded = true;
+            const ok = fonts.addEmoji(io.*.Fonts, ui.fonts_sans, base) and fonts.addEmoji(io.*.Fonts, ui.fonts_mono, base);
+            debuglog.line("emoji: {s}", .{if (ok) "fonte do sistema carregada" else "nenhuma fonte de emoji no sistema"});
+        }
         c.igNewFrame();
         app.updateUnread();
         app.iconified = iconified;

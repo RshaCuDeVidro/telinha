@@ -34,6 +34,9 @@ report "different version") and closes.
 
 ### Invite and several paths
 
+Full form: `telinha://addresses[/channel][!fingerprint][#password]` — all three
+optional (see "Server identity" and "Channels").
+
 The invite can carry several addresses for the same room, separated by commas,
 with the password after the first `#`:
 
@@ -77,6 +80,27 @@ Wrong password → different keys → the client's first message doesn't decrypt
 The server then sends `u32 0xFFFFFFFF` in the clear (= "wrong password") and
 closes. Until the encrypted `hello` arrives, every server read has a 10 s
 deadline.
+
+### Server identity
+
+The server has a fixed Ed25519 key (a 32-byte seed in a file: `--chave`). Right
+after the handshake, before reading anything, it sends `identity` (31): its
+public key and a signature over
+
+```
+transcript = SHA-256("telinha-identidade-v1" || client_public || client_nonce || server_public || server_nonce)
+```
+
+Someone in the middle has a different handshake with each side, so the real
+server's signature is useless to them. The **fingerprint** is base32 (lowercase,
+`a-z2-7`) of the first 15 bytes of SHA-256(public key): 24 characters, carried in
+the invite after `!`. The app checks it **before sending `hello`** (so name and
+admin token never reach an impostor): with a fingerprint from the invite it must
+match; without one, the first fingerprint seen at that address is remembered
+(`servidores.txt`, like SSH) and required afterwards — if it changes, the app
+refuses and offers "Trust the new identity". A server without a key sends no
+`identity` (an old app just ignores the message). With the wrong password the
+`identity` doesn't decrypt, which the app reports as a wrong password.
 
 ## 2. Messages (encrypted)
 
@@ -132,6 +156,9 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | 29 | channel | S→C | `str atual` (the channel you are in), `u8 n`, n × (`str nome`, `u16 pessoas`, `u8 flags`: 1 = someone live, 2 = fixed) |
 | 30 | stats | C→S | `u8 ligado`: start/stop receiving server statistics (only whoever joined with the admin token) |
 | 30 | stats | S→C | server statistics, every 2 s while on (below) |
+| 31 | identity | S→C | `[32] public key`, `[64] signature` of this handshake (see "Server identity"): the first message, before `hello` |
+| 32 | chan_admin | C→S | `u8 action`, `str channel`, `str value`, `u32 target` (admins; table below) |
+| 33 | call | C→S | `str channel` (empty = leave the call), `str password`: join that channel's call |
 
 `versão_do_app` ("3.0.0") only serves to warn whoever is out of date (the
 interface shows "so-and-so is on telinha X: there is a new version"); empty = not
@@ -184,7 +211,10 @@ low 7 = route, table above), `u16 w`, `u16 h`, `u8 fps` (screen), `u16 w`,
 `u16 h`, `u8 fps` (camera), `u16 k`, k × `u32` (streams that person watches, at
 most 64). A stream that is off goes with size and fps 0. Flags: 1 = streaming
 the screen, 2 = admin, 4 = screen with audio, 8 = microphone on, 16 = deafened,
-32 = muted by an admin, 64 = camera on.
+32 = muted by an admin, 64 = camera on, 128 = the admin took their pen. In
+`rota`, besides `0x80` (owner) and the route in the low 5 bits: `0x40` = in my
+text channel, `0x20` = in my call (each person gets their own list: everyone in
+their chat plus everyone in their call).
 
 **Frame** (21-byte header):
 
@@ -239,6 +269,10 @@ stereo, 10 ms per packet, ~96 kbit/s). Only the screen has audio.
 **Pointer** ("look here"): `x`, `y` relative to the frame (0..65534), `0xFFFF` =
 hides it; flags 1 = visible, 2 = click (ring calling attention).
 
+**Draw** flags: 1 = new stroke, 2 = clear my strokes on that stream, bits 2–3 =
+width (0 normal, 1 thin, 2 thick, 3 highlighter), bits 4–7 = palette color (0 =
+the person's own color; `proto.draw_colors`). An old app ignores the style bits.
+
 **admin** — actions:
 
 | action | | value |
@@ -249,9 +283,16 @@ hides it; flags 1 = visible, 2 = click (ring calling attention).
 | 4 | stop a stream | type (0 = screen, 1 = camera) |
 | 5 | give/remove admin (owner only) | 1 = gives, 0 = removes |
 | 6 | lock the room (target ignored) | 1 = locks, 0 = unlocks |
+| 7 | pen | 1 = gives it back, 0 = takes it away (their drawings disappear; remembered by key) |
+
+**chan_admin** — actions: 1 = pin (`value` "1"/"0": a pinned channel stays empty
+and across restarts), 2 = lock (only admins get in), 3 = password (`value`; empty
+removes it), 4 = topic (`value`, up to 120 bytes), 5 = move `target` to the
+channel (chat and call, even if locked).
 
 **notice** — types: 1 = microphone muted, 2 = microphone released, 3 = stream
-stopped (`extra` = its type), 4 = became admin, 5 = is no longer admin. The
+stopped (`extra` = its type), 4 = became admin, 5 = is no longer admin, 7/8 = pen
+taken away/given back, 9 = an admin moved you to another channel. The
 `texto` already comes ready ("Ana muted your microphone."). 6 = couldn't switch
 channel (invalid name, switching too fast, the server doesn't allow new
 channels or has too many).
@@ -364,10 +405,21 @@ to the local clock.
 
 ### Channels
 
-- A server has one or more channels (like IRC): each one with its own chat
-  (history of 50), its own `members` list, and its own voice. You can only
-  `watch` (and point/draw at) someone in the same channel. Bans, admin mutes,
-  the lock and the people limit apply to the whole server.
+- A server has one or more channels (like IRC). Each person is in one **text
+  channel** (its chat, history of 50) and in at most one **call** (voice and
+  streams) — not necessarily the same channel (`feat_calls`). You can only
+  `watch` (and point/draw at) someone in the same call. Bans, admin mutes, the
+  room lock and the people limit apply to the whole server.
+- Joining the room puts you in the call of the channel you joined. `channel`
+  changes only the chat; `call` changes the call (your streams follow: the app
+  sends `stream_start` again). An app without `feat_calls` moves both together.
+- A channel can have a password (`channel`/`call` carry it; without it the
+  server answers `notice` 6 with `extra` = 1 and the app asks), be locked (only
+  admins) and have a topic. A pinned channel — with its password, lock and topic —
+  plus bans, admin mutes and pen removals are kept in the state file (`--estado`)
+  and come back when the server restarts.
+- `channel` (S→C), after the list: n × `u16` in the call, n × `str` topic, `str`
+  my current call (empty = none); flags 4 = password, 8 = locked.
 - The first channel is the default (`geral`, or the first of `--canais`). Joining
   (hello) or switching (`channel`) to a name that doesn't exist creates it, unless
   the server was started with `--sem-canais-novos`; at most 32 channels. A
