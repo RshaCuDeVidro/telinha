@@ -465,6 +465,9 @@ const Pipeline = struct {
     cg: ?*c.cudagl = null,
     /// Intel/AMD no Linux: o conversor VA-API (VPP) no lugar do CUDA.
     vapp: ?*c.vapp = null,
+    // Windows: encoders do Media Foundation abertos com o dispositivo da captura
+    d3d_on: std.atomic.Value(bool) = .init(false),
+    d3d_dev: ?*anyopaque = null,
     gpu_on: bool = false,
     hevc_ok: bool = false, // a placa codifica HEVC (testado no começo)
     audio_sender: ?*audio.Sender = null,
@@ -589,6 +592,7 @@ const Pipeline = struct {
         p.cg = null;
         if (!sync.is_windows) if (p.vapp) |vp| c.vapp_close(vp);
         p.vapp = null;
+        p.d3d_on.store(false, .release);
         gpa.free(p.cur);
         gpa.free(p.prev);
         gpa.free(p.preview_back);
@@ -641,9 +645,40 @@ const Pipeline = struct {
         } else c.vapp_close(vp);
     }
 
+    /// Windows Intel/AMD: captura → processador de vídeo do D3D11 → textura NV12
+    /// → encoder do Media Foundation, tudo no mesmo dispositivo.
+    fn enableD3d(p: *Pipeline) void {
+        if (!sync.is_windows) return;
+        const src = p.cap orelse return;
+        if (src != .screen) return;
+        var err: [256]u8 = [_]u8{0} ** 256;
+        if (c.cap_gpu_enable_d3d(src.screen, outputRect, &err, err.len) == 0) {
+            if (debugEnabled()) std.debug.print("[telinha] captura pela placa (D3D11) não ligou: {s}\n", .{std.mem.sliceTo(&err, 0)});
+            return;
+        }
+        const dev = c.cap_d3d_device(src.screen);
+        // o encoder aceita a textura? (senão segue tudo pela CPU, como antes)
+        var e2: [256]u8 = undefined;
+        const ok = if (codec.HwEncoder.init(.{ .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000, .d3d_device = dev }, &e2)) |probe| blk: {
+            var pr = probe;
+            defer pr.deinit();
+            break :blk pr.acceptsD3d();
+        } else |_| false;
+        if (!ok) {
+            if (debugEnabled()) std.debug.print("[telinha] o encoder do Media Foundation não aceitou a textura: tudo pela CPU\n", .{});
+            c.cap_gpu_disable(src.screen);
+            return;
+        }
+        p.d3d_dev = dev;
+        p.d3d_on.store(true, .release);
+        p.gpu_on = true;
+    }
+
     fn disableGpu(p: *Pipeline) void {
         if (!p.gpu_on) return;
         p.gpu_on = false;
+        // encoders novos voltam a receber pela CPU
+        p.d3d_on.store(false, .release);
         if (p.cap) |src| if (src == .screen) c.cap_gpu_disable(src.screen);
         const s = p.s;
         s.mutex.lock();
@@ -669,9 +704,10 @@ const Pipeline = struct {
                 var pr = probe;
                 const cuda = pr.acceptsCuda();
                 const is_va = pr.isVa();
+                const is_mf = pr.isMf();
                 pr.deinit();
                 p.use_hw.store(true, .release);
-                if (cuda) p.enableGpu() else if (is_va) p.enableVa();
+                if (cuda) p.enableGpu() else if (is_va) p.enableVa() else if (is_mf) p.enableD3d();
                 if (getenv("TELINHA_SEM_HEVC") == null) {
                     if (codec.HwEncoder.init(.{ .codec = .hevc, .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000 }, &err)) |hp| {
                         var hh = hp;
@@ -1289,7 +1325,7 @@ const Pipeline = struct {
                 // graça; com texto, o NVENC gasta ~3x mais bits (zig build bench
                 // com TELINHA_BENCH_CAMADAS), então lá fica uma camada só
                 const layers: u8 = if (want_hw and (mode == .screen or want_codec != .h264)) 1 else 2;
-                const opts: codec.EncoderOptions = .{ .codec = want_codec, .width = sl.w, .height = sl.h, .fps = fps, .bitrate = bw.bps, .mode = mode, .temporal_layers = layers };
+                const opts: codec.EncoderOptions = .{ .codec = want_codec, .width = sl.w, .height = sl.h, .fps = fps, .bitrate = bw.bps, .mode = mode, .temporal_layers = layers, .d3d_device = if (p.d3d_on.load(.acquire)) p.d3d_dev else null };
                 if (want_hw) {
                     var err: [256]u8 = undefined;
                     if (codec.HwEncoder.init(opts, &err)) |h| {

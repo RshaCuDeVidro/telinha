@@ -112,6 +112,11 @@ typedef struct cap_va_ops {
     void (*forget)(void *ctx, const void *key);
 } cap_va_ops;
 int cap_gpu_enable_va(cap_ctx *ctx, const cap_va_ops *ops, cap_rect_fn rect);
+// Windows Intel/AMD: o mesmo pelo processador de vídeo do D3D11 (d3dvp_win.c):
+// o quadro sai como textura NV12 (gpu_dev = ID3D11Texture2D *) pro encoder do
+// Media Foundation, que precisa do mesmo dispositivo (cap_d3d_device). 1 = ligou.
+int cap_gpu_enable_d3d(cap_ctx *ctx, cap_rect_fn rect, char *err, int errlen);
+void *cap_d3d_device(cap_ctx *ctx);
 // A placa falhou no meio (os quadros voltaram a vir pela CPU)?
 int cap_gpu_failed(cap_ctx *ctx);
 // Chamar logo depois de criar um encoder novo: solta buffers de tamanho

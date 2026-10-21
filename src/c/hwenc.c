@@ -3,6 +3,10 @@
 // AMD, ...) e no Linux o VA-API (Intel/AMD). Sem nenhum, hwenc_open falha e o
 // app usa o openh264.
 #include "hwenc.h"
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +27,9 @@ int mfenc_encode(mfenc *e, const uint8_t *pixels, int stride, int format, int fo
 void mfenc_set_bitrate(mfenc *e, int bitrate);
 const char *mfenc_name(mfenc *e);
 void mfenc_close(mfenc *e);
+int mfenc_encode_texture(mfenc *e, void *texture, int force_idr, const uint8_t **out, int *out_len, int *is_idr);
+int mfenc_takes_textures(mfenc *e);
+void mfenc_set_d3d_device(void *dev);
 #else
 typedef struct vaenc vaenc;
 vaenc *vaenc_open(int codec, int width, int height, int fps, int bitrate, int screen_mode, int temporal_layers, char *err, int errlen);
@@ -121,6 +128,10 @@ int vaenc_encode_surface(vaenc *e, uint32_t surface, int force_idr, const uint8_
 #endif
 
 int hwenc_encode_dev(hwenc *h, uint64_t dev, int pitch, int format, int force_idr, const uint8_t **out, int *out_len, int *is_idr) {
+#ifdef _WIN32
+    // Media Foundation: `dev` é a textura NV12 da captura (d3dvp_win.c)
+    if (h->kind == KIND_MF) return mfenc_encode_texture(h->impl, (void *)(uintptr_t)dev, force_idr, out, out_len, is_idr);
+#endif
 #ifndef _WIN32
     // VA-API: `dev` é a superfície NV12 do conversor (mesmo dispositivo)
     if (h->kind == KIND_VA) return vaenc_encode_surface(h->impl, (uint32_t)dev, force_idr, out, out_len, is_idr);
@@ -164,4 +175,39 @@ void hwenc_close(hwenc *h) {
 #endif
         nvenc_close(h->impl);
     free(h);
+}
+
+int hwenc_accepts_d3d(hwenc *h) {
+#ifdef _WIN32
+    return h && h->kind == KIND_MF && mfenc_takes_textures(h->impl);
+#else
+    (void)h;
+    return 0;
+#endif
+}
+
+hwenc *hwenc_open_d3d(void *d3d_dev, int codec, int width, int height, int fps, int bitrate, int screen_mode, int temporal_layers, char *err, int errlen) {
+#ifdef _WIN32
+    // o dispositivo vale só pra esse encoder (a câmera, aberta em outra
+    // thread, continua recebendo pela CPU)
+    static SRWLOCK lock = SRWLOCK_INIT;
+    AcquireSRWLockExclusive(&lock);
+    mfenc_set_d3d_device(d3d_dev);
+    hwenc *h = hwenc_open(codec, width, height, fps, bitrate, screen_mode, temporal_layers, err, errlen);
+    mfenc_set_d3d_device(NULL);
+    ReleaseSRWLockExclusive(&lock);
+    return h;
+#else
+    (void)d3d_dev;
+    return hwenc_open(codec, width, height, fps, bitrate, screen_mode, temporal_layers, err, errlen);
+#endif
+}
+
+int hwenc_is_mf(hwenc *h) {
+#ifdef _WIN32
+    return h && h->kind == KIND_MF;
+#else
+    (void)h;
+    return 0;
+#endif
 }

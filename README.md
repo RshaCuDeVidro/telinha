@@ -230,6 +230,7 @@ Binaries land in `zig-out/bin/`. Add `-Dcpu=x86_64_v2` for portable builds that 
 | `TELINHA_IDIOMA=en\|pt` | Force the interface language. |
 | `TELINHA_PASTA_CONFIG`, `TELINHA_PASTA_CLIPES` | Use other config and clips folders for a portable setup. |
 | `TELINHA_SEM_GPU_CAPTURA=1` | Disable the zero-copy GPU capture path. |
+| `TELINHA_SEM_D3DVP=1` | Windows Intel/AMD: send the image to the encoder through the CPU instead of as a GPU texture. |
 | `TELINHA_SEM_CUDAGL=1` | Disable CUDA–OpenGL sharing: NVDEC straight to a texture when watching, and NVIDIA zero-copy capture when streaming. |
 | `TELINHA_SEM_SHADER=1` | Do color conversion on the CPU. |
 | `TELINHA_SEM_DMABUF=1` | Capture through shared memory instead of DMA-BUF. |

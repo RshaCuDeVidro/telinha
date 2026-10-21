@@ -228,6 +228,7 @@ Os binários saem em `zig-out/bin/`. Com `-Dcpu=x86_64_v2` eles rodam em CPUs x8
 | `TELINHA_IDIOMA=en\|pt` | Força o idioma da interface. |
 | `TELINHA_PASTA_CONFIG`, `TELINHA_PASTA_CLIPES` | Trocam as pastas de configuração e de clipes (telinha portátil). |
 | `TELINHA_SEM_GPU_CAPTURA=1` | Desliga a captura sem cópias pela placa. |
+| `TELINHA_SEM_D3DVP=1` | Windows Intel/AMD: manda a imagem pro encoder pela CPU em vez de textura na placa. |
 | `TELINHA_SEM_CUDAGL=1` | Desliga a ponte CUDA–OpenGL: o NVDEC direto na textura pra quem assiste e a captura sem cópias na NVIDIA pra quem transmite. |
 | `TELINHA_SEM_SHADER=1` | Faz a conversão de cor na CPU. |
 | `TELINHA_SEM_DMABUF=1` | Captura por memória compartilhada em vez de DMA-BUF. |

@@ -40,6 +40,13 @@ int hwenc_accepts_cuda(hwenc *e);
 // É o VA-API (Intel/AMD no Linux)? Aí o caminho pela placa é o conversor
 // (vapp, hwva.h), e o "ponteiro" do hwenc_encode_dev é uma superfície dele.
 int hwenc_is_va(hwenc *e);
+// Windows: o encoder (Media Foundation) recebe a textura NV12 da captura direto.
+int hwenc_accepts_d3d(hwenc *e);
+// Windows: como hwenc_open, mas o encoder do Media Foundation recebe as
+// texturas NV12 do dispositivo D3D11 da captura (ver d3dvp_win.c).
+hwenc *hwenc_open_d3d(void *d3d_dev, int codec, int width, int height, int fps, int bitrate, int screen_mode, int temporal_layers, char *err, int errlen);
+// Windows: é o encoder do Media Foundation (Intel/AMD/qualquer placa)?
+int hwenc_is_mf(hwenc *e);
 
 // Codifica um quadro RGBX/BGRX que já está na placa (hwenc_accepts_cuda).
 int hwenc_encode_dev(hwenc *e, uint64_t dev, int pitch, int format, int force_idr,

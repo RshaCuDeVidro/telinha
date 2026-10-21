@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "capture.h"
+#include "d3dvp_win.h"
 #include "cudagl.h"
 
 enum { KIND_DXGI = 1, KIND_GDI = 2, KIND_WGC = 3, KIND_PRINT = 4 };
@@ -273,8 +274,13 @@ static int cursor_pos(struct cap_ctx *c, cap_frame *out) {
 // DXGI
 
 static void gpu_release_d3d(struct cap_ctx *c);
+static void gpu_fail(struct cap_ctx *c, const char *what);
+static void gpu_device_lost(struct cap_ctx *c);
 
 static void release_dxgi(struct cap_ctx *c) {
+    // processador de vídeo e texturas NV12 são do dispositivo que vai embora
+    // (perdeu a tela): daqui pra frente pela CPU
+    gpu_device_lost(c);
     gpu_release_d3d(c); // a cópia registrada no CUDA é do device que vai embora
     if (c->have_frame && c->dupl) IDXGIOutputDuplication_ReleaseFrame(c->dupl);
     c->have_frame = 0;
@@ -318,10 +324,34 @@ static HRESULT open_dxgi(struct cap_ctx *c) {
         return E_FAIL;
     }
 
-    hr = D3D11CreateDevice((IDXGIAdapter *)found_adapter, D3D_DRIVER_TYPE_UNKNOWN, NULL, 0, NULL, 0,
+    // com suporte a vídeo (o processador de vídeo do caminho pela placa); driver
+    // velho que recuse: sem
+    hr = D3D11CreateDevice((IDXGIAdapter *)found_adapter, D3D_DRIVER_TYPE_UNKNOWN, NULL, D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT, NULL, 0,
                            D3D11_SDK_VERSION, &c->dev, NULL, &c->ctx);
+    if (FAILED(hr))
+        hr = D3D11CreateDevice((IDXGIAdapter *)found_adapter, D3D_DRIVER_TYPE_UNKNOWN, NULL, 0, NULL, 0,
+                               D3D11_SDK_VERSION, &c->dev, NULL, &c->ctx);
     IDXGIAdapter1_Release(found_adapter);
     if (FAILED(hr)) return hr;
+    // a captura e o encoder (outra thread) usam o mesmo dispositivo
+    {
+        static const GUID iid_mt = {0x9b7e4e00, 0x342c, 0x4106, {0xa1, 0x9f, 0x4f, 0x27, 0x04, 0xf6, 0x89, 0xf0}}; // ID3D10Multithread
+        struct mt_vtbl {
+            HRESULT(STDMETHODCALLTYPE *QueryInterface)(void *, REFIID, void **);
+            ULONG(STDMETHODCALLTYPE *AddRef)(void *);
+            ULONG(STDMETHODCALLTYPE *Release)(void *);
+            void(STDMETHODCALLTYPE *Enter)(void *);
+            void(STDMETHODCALLTYPE *Leave)(void *);
+            BOOL(STDMETHODCALLTYPE *SetMultithreadProtected)(void *, BOOL);
+        };
+        struct mt {
+            const struct mt_vtbl *v;
+        } *m = NULL;
+        if (SUCCEEDED(ID3D11Device_QueryInterface(c->dev, &iid_mt, (void **)&m)) && m) {
+            m->v->SetMultithreadProtected(m, TRUE);
+            m->v->Release(m);
+        }
+    }
     return IDXGIOutput1_DuplicateOutput(c->output, (IUnknown *)c->dev, &c->dupl);
 }
 
@@ -335,12 +365,15 @@ static HRESULT open_dxgi(struct cap_ctx *c) {
 
 #define N_GPU_SLOTS 4
 struct gpu_slot {
-    uint64_t dev;
+    uint64_t dev; // CUDA: memória da placa; D3D: a textura NV12 (ID3D11Texture2D *)
+    ID3D11Texture2D *tex;
     int pitch, w, h;
     volatile LONG held; // com o encoder (outra thread devolve com cap_gpu_release)
     int src_w, src_h;
 };
 struct gpu_path {
+    int d3d;     // processador de vídeo do D3D11 → Media Foundation (Intel/AMD), em vez do CUDA
+    d3dvp *vp;
     cudagl *cg;
     cap_rect_fn rect_fn;
     int failed;
@@ -370,9 +403,16 @@ static void gpu_fail(struct cap_ctx *c, const char *what) {
     c->gpu->failed = 1;
 }
 
+// O dispositivo da captura vai embora: o caminho pelo D3D11 (processador de
+// vídeo e texturas NV12 eram dele) passa pra CPU.
+static void gpu_device_lost(struct cap_ctx *c) {
+    if (c->gpu && c->gpu->d3d && c->dev && !c->gpu->failed) gpu_fail(c, "o dispositivo da tela mudou");
+}
+
 static void gpu_release_d3d(struct cap_ctx *c) {
     struct gpu_path *g = c->gpu;
     if (!g) return;
+    if (g->d3d && g->vp && g->tex) d3dvp_forget(g->vp, g->tex);
     if (g->res) cudagl_unregister(g->cg, g->res);
     g->res = NULL;
     if (g->tex) ID3D11Texture2D_Release(g->tex);
@@ -433,7 +473,7 @@ static int gpu_take_texture(struct cap_ctx *c, ID3D11Texture2D *src) {
         gpu_release_d3d(c);
         D3D11_TEXTURE2D_DESC d = desc;
         d.Usage = D3D11_USAGE_DEFAULT;
-        d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        d.BindFlags = D3D11_BIND_SHADER_RESOURCE | (g->d3d ? D3D11_BIND_RENDER_TARGET : 0);
         d.CPUAccessFlags = 0;
         d.MiscFlags = 0;
         d.MipLevels = 1;
@@ -445,7 +485,7 @@ static int gpu_take_texture(struct cap_ctx *c, ID3D11Texture2D *src) {
             gpu_fail(c, "textura");
             return 0;
         }
-        g->res = cudagl_register_d3d11(g->cg, g->tex);
+        g->res = g->d3d ? (void *)1 : cudagl_register_d3d11(g->cg, g->tex);
         if (!g->res) {
             gpu_fail(c, "registro no CUDA (a tela é de outra placa?)");
             return 0;
@@ -467,8 +507,11 @@ static struct gpu_slot *gpu_free_slot(struct gpu_path *g) {
 
 // Da textura registrada até um slot pronto pro NVENC (e a prévia, se pedida).
 // 1 = quadro em *out; 0 = nada (slots ocupados ou falhou).
+static int gpu_produce_d3d(struct cap_ctx *c, cap_frame *out);
+
 static int gpu_produce(struct cap_ctx *c, cap_frame *out) {
     struct gpu_path *g = c->gpu;
+    if (g->d3d) return gpu_produce_d3d(c, out);
     const int sw = g->tex_w < c->w ? g->tex_w : c->w, sh = g->tex_h < c->h ? g->tex_h : c->h;
     if (!g->full || g->full_w != sw || g->full_h != sh) {
         if (g->full) cudagl_free(g->cg, g->full);
@@ -564,6 +607,90 @@ static int gpu_produce(struct cap_ctx *c, cap_frame *out) {
     out->format = CAP_BGRX;
     out->cursor_draw = 0;
     // ponta do cursor (fora do vídeo), em pixels do quadro de saída
+    cap_frame pos = {0};
+    cursor_pos(c, &pos);
+    out->cursor_known = 0;
+    if (pos.cursor_known && pos.cursor_px >= x && pos.cursor_py >= y && pos.cursor_px < x + w && pos.cursor_py < y + h) {
+        out->cursor_known = 1;
+        out->cursor_px = (int)((long long)(pos.cursor_px - x) * ow / w);
+        out->cursor_py = (int)((long long)(pos.cursor_py - y) * oh / h);
+    }
+    return 1;
+}
+
+// O mesmo pelo processador de vídeo do D3D11: recorte, escala e NV12 numa
+// textura que o encoder do Media Foundation lê direto (mesmo dispositivo).
+static int gpu_produce_d3d(struct cap_ctx *c, cap_frame *out) {
+    struct gpu_path *g = c->gpu;
+    const int sw = g->tex_w < c->w ? g->tex_w : c->w, sh = g->tex_h < c->h ? g->tex_h : c->h;
+    int x = 0, y = 0, w = sw, h = sh, ow = sw, oh = sh;
+    if (g->rect_fn) g->rect_fn(sw, sh, g->crop, g->max_h, &x, &y, &w, &h, &ow, &oh);
+    memcpy(g->used_crop, g->crop, sizeof g->crop);
+    g->used_max_h = g->max_h;
+    ow &= ~1;
+    oh &= ~1;
+    if (ow < 2 || oh < 2 || w < 1 || h < 1) return 0;
+    struct gpu_slot *sl = gpu_free_slot(g);
+    g->retry = sl == NULL;
+    if (!sl) return 0;
+    if (!sl->tex || sl->w != ow || sl->h != oh) {
+        if (sl->tex) {
+            d3dvp_forget(g->vp, sl->tex);
+            ID3D11Texture2D_Release(sl->tex);
+        }
+        sl->tex = d3dvp_new_nv12(g->vp, ow, oh);
+        sl->w = ow;
+        sl->h = oh;
+        if (!sl->tex) {
+            gpu_fail(c, "textura NV12");
+            return 0;
+        }
+    }
+    if (d3dvp_convert(g->vp, g->tex, x, y, w, h, sl->tex, ow, oh) != 0) {
+        gpu_fail(c, "conversão no processador de vídeo");
+        return 0;
+    }
+    sl->src_w = w;
+    sl->src_h = h;
+    out->preview = NULL;
+    const DWORD now = GetTickCount();
+    if (g->want_preview && now - g->prev_last_ms >= 66) {
+        g->prev_last_ms = now;
+        const int full = g->want_preview == 2;
+        const int fx = full ? 0 : x, fy = full ? 0 : y, fw = full ? sw : w, fh = full ? sh : h;
+        const int bw = full ? sw : ow, bh = full ? sh : oh;
+        int pw = bw, ph = bh;
+        if (g->preview_max_w > 0 && pw > g->preview_max_w) {
+            pw = g->preview_max_w;
+            ph = (int)((long long)bh * pw / bw);
+        }
+        pw &= ~1;
+        ph &= ~1;
+        const size_t need = (size_t)pw * ph * 4;
+        if (g->prev_cap < need) {
+            free(g->prev_buf);
+            g->prev_buf = malloc(need);
+            g->prev_cap = g->prev_buf ? need : 0;
+        }
+        if (pw >= 2 && ph >= 2 && g->prev_buf && d3dvp_preview(g->vp, g->tex, fx, fy, fw, fh, pw, ph, g->prev_buf) == 0) {
+            out->preview = g->prev_buf;
+            out->preview_w = pw;
+            out->preview_h = ph;
+            out->preview_full = full;
+        }
+    }
+    InterlockedExchange(&sl->held, 1);
+    out->gpu = sl;
+    out->gpu_dev = (uint64_t)(uintptr_t)sl->tex;
+    out->gpu_pitch = 0;
+    out->gpu_src_w = w;
+    out->gpu_src_h = h;
+    out->data = NULL;
+    out->width = ow;
+    out->height = oh;
+    out->stride = 0;
+    out->format = CAP_BGRX;
+    out->cursor_draw = 0;
     cap_frame pos = {0};
     cursor_pos(c, &pos);
     out->cursor_known = 0;
@@ -1343,7 +1470,13 @@ static void gpu_free_all(struct cap_ctx *c) {
     if (!g) return;
     gpu_release_d3d(c);
     cap_gpu_gc(c);
-    for (int i = 0; i < N_GPU_SLOTS; i++) cudagl_free(g->cg, g->slots[i].dev);
+    for (int i = 0; i < N_GPU_SLOTS; i++) {
+        if (g->d3d) {
+            if (g->slots[i].tex) ID3D11Texture2D_Release(g->slots[i].tex);
+        } else
+            cudagl_free(g->cg, g->slots[i].dev);
+    }
+    if (g->vp) d3dvp_close(g->vp);
     cudagl_free(g->cg, g->full);
     cudagl_free(g->cg, g->prev_dev);
     free(g->prev_buf);
@@ -1368,4 +1501,30 @@ int cap_set_cursor_apart(cap_ctx *c, int on) {
 int cap_gpu_enable_va(cap_ctx *c, const cap_va_ops *ops, cap_rect_fn rect) {
     (void)c; (void)ops; (void)rect;
     return 0; // VA-API é só no Linux
+}
+
+int cap_gpu_enable_d3d(cap_ctx *c, cap_rect_fn rect, char *err, int errlen) {
+    if (!c || c->kind != KIND_DXGI || !c->dev || getenv("TELINHA_SEM_GPU_CAPTURA")) {
+        if (err && errlen > 0) snprintf(err, errlen, "só na captura do monitor (DXGI)");
+        return 0;
+    }
+    if (c->gpu) return c->gpu->d3d && !c->gpu->failed;
+    d3dvp *vp = d3dvp_open(c->dev, c->ctx, c->w, c->h, err, errlen);
+    if (!vp) return 0;
+    c->gpu = calloc(1, sizeof *c->gpu);
+    if (!c->gpu) {
+        d3dvp_close(vp);
+        return 0;
+    }
+    c->gpu->d3d = 1;
+    c->gpu->vp = vp;
+    c->gpu->crop[2] = c->gpu->crop[3] = 1;
+    c->gpu->used_crop[2] = c->gpu->used_crop[3] = 1;
+    c->gpu->rect_fn = rect;
+    fprintf(stderr, "[telinha] captura pela placa: ligada (DXGI → processador de vídeo do D3D11 → Media Foundation)\n");
+    return 1;
+}
+
+void *cap_d3d_device(cap_ctx *c) {
+    return c && c->kind == KIND_DXGI ? (void *)c->dev : NULL;
 }

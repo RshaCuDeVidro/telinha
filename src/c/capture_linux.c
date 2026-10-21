@@ -2222,6 +2222,18 @@ int cap_gpu_enable(cap_ctx *c, void *cg, cap_rect_fn rect, cap_cursor_fn cursor)
     return 1;
 }
 
+int cap_gpu_enable_d3d(cap_ctx *c, cap_rect_fn rect, char *err, int errlen) {
+    (void)c;
+    (void)rect;
+    if (err && errlen > 0) err[0] = 0;
+    return 0; // D3D11 é só no Windows
+}
+
+void *cap_d3d_device(cap_ctx *c) {
+    (void)c;
+    return NULL;
+}
+
 int cap_gpu_enable_va(cap_ctx *c, const cap_va_ops *ops, cap_rect_fn rect) {
     if (!c || !ops || !ops->ctx || c->kind != KIND_PIPEWIRE || !c->egl || getenv("TELINHA_SEM_GPU_CAPTURA")) return 0;
     pthread_mutex_lock(&c->lock);

@@ -10,6 +10,7 @@
 #define COBJMACROS
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <d3d11.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mftransform.h>
@@ -47,6 +48,8 @@ static const GUID G_GOP_SIZE = {0x95f31b26, 0x95a4, 0x41aa, {0x93, 0x03, 0x24, 0
 static const GUID G_B_FRAMES = {0x8d390aac, 0xdc5c, 0x4200, {0xb5, 0x7f, 0x81, 0x4d, 0x04, 0xba, 0xba, 0xb2}};
 static const GUID G_FORCE_KEY = {0x398c1b98, 0x8353, 0x475a, {0x9e, 0xf2, 0x8f, 0x26, 0x5d, 0x26, 0x03, 0x45}};
 static const GUID G_QUALITY_SPEED = {0x98332df8, 0x03cd, 0x476b, {0x89, 0xfa, 0x3f, 0x9e, 0x44, 0x2d, 0xec, 0x9f}};
+static const GUID G_D3D11_AWARE = {0x206b4fc8, 0xfcf9, 0x4c51, {0xaf, 0xe3, 0x97, 0x64, 0x36, 0x9e, 0x33, 0xa0}};
+static const GUID G_IID_D3D11_TEXTURE2D = {0x6f15aaf2, 0xd208, 0x4e89, {0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3, 0x4f, 0x9c}};
 
 #define EVENT_NEED_INPUT 601
 #define EVENT_HAVE_OUTPUT 602
@@ -61,7 +64,20 @@ static struct {
     HRESULT(WINAPI *CreateMediaType)(IMFMediaType **);
     HRESULT(WINAPI *CreateSample)(IMFSample **);
     HRESULT(WINAPI *CreateMemoryBuffer)(DWORD, IMFMediaBuffer **);
+    // textura do D3D11 direto no encoder (opcionais: Windows 8+)
+    HRESULT(WINAPI *CreateDXGIDeviceManager)(UINT *, IMFDXGIDeviceManager **);
+    HRESULT(WINAPI *CreateDXGISurfaceBuffer)(REFIID, IUnknown *, UINT, BOOL, IMFMediaBuffer **);
 } mf;
+
+// Dispositivo D3D11 da captura (caminho pela placa: d3dvp_win.c). Encoder
+// aberto com ele ligado recebe as texturas NV12 da captura direto.
+static ID3D11Device *g_d3d_dev;
+
+void mfenc_set_d3d_device(void *dev) {
+    if (dev) ID3D11Device_AddRef((ID3D11Device *)dev);
+    if (g_d3d_dev) ID3D11Device_Release(g_d3d_dev);
+    g_d3d_dev = (ID3D11Device *)dev;
+}
 
 static int mf_load(void) {
     if (mf.tried) return mf.ok;
@@ -73,6 +89,8 @@ static int mf_load(void) {
     mf.CreateMediaType = (HRESULT(WINAPI *)(IMFMediaType **))(void *)GetProcAddress(plat, "MFCreateMediaType");
     mf.CreateSample = (HRESULT(WINAPI *)(IMFSample **))(void *)GetProcAddress(plat, "MFCreateSample");
     mf.CreateMemoryBuffer = (HRESULT(WINAPI *)(DWORD, IMFMediaBuffer **))(void *)GetProcAddress(plat, "MFCreateMemoryBuffer");
+    mf.CreateDXGIDeviceManager = (HRESULT(WINAPI *)(UINT *, IMFDXGIDeviceManager **))(void *)GetProcAddress(plat, "MFCreateDXGIDeviceManager");
+    mf.CreateDXGISurfaceBuffer = (HRESULT(WINAPI *)(REFIID, IUnknown *, UINT, BOOL, IMFMediaBuffer **))(void *)GetProcAddress(plat, "MFCreateDXGISurfaceBuffer");
     if (!mf.Startup || !mf.TEnumEx || !mf.CreateMediaType || !mf.CreateSample || !mf.CreateMemoryBuffer) return 0;
     if (FAILED(mf.Startup(0x00020070, 1 /* MFSTARTUP_LITE */))) return 0;
     mf.ok = 1;
@@ -92,6 +110,8 @@ struct mfenc {
     size_t out_cap, out_len;
     int out_key;
     char name[96];
+    IMFDXGIDeviceManager *mgr; // com o dispositivo da captura: entrada por textura
+    int d3d;
 };
 
 static void set_err(char *err, int errlen, const char *msg, HRESULT hr) {
@@ -137,12 +157,36 @@ void mfenc_close(struct mfenc *e) {
     if (!e) return;
     if (e->mft) {
         IMFTransform_ProcessMessage(e->mft, MFT_MESSAGE_NOTIFY_END_STREAMING, 0);
+        if (e->d3d) IMFTransform_ProcessMessage(e->mft, MFT_MESSAGE_SET_D3D_MANAGER, 0);
         IMFTransform_Release(e->mft);
     }
+    if (e->mgr) IMFDXGIDeviceManager_Release(e->mgr);
     if (e->events) IMFMediaEventGenerator_Release(e->events);
     if (e->codec) ICodecAPI_Release(e->codec);
     free(e->out);
     free(e);
+}
+
+// Liga a entrada por textura (dispositivo da captura). 0 = ligou.
+static int use_d3d(struct mfenc *e) {
+    if (!mf.CreateDXGIDeviceManager || !mf.CreateDXGISurfaceBuffer || getenv("TELINHA_SEM_D3DVP")) return -1;
+    IMFAttributes *attr = NULL;
+    UINT32 aware = 0;
+    if (SUCCEEDED(IMFTransform_GetAttributes(e->mft, &attr)) && attr) {
+        IMFAttributes_GetUINT32(attr, &G_D3D11_AWARE, &aware);
+        IMFAttributes_Release(attr);
+    }
+    if (!aware) return -1;
+    UINT token = 0;
+    if (FAILED(mf.CreateDXGIDeviceManager(&token, &e->mgr)) || !e->mgr) return -1;
+    if (FAILED(IMFDXGIDeviceManager_ResetDevice(e->mgr, (IUnknown *)g_d3d_dev, token)) ||
+        FAILED(IMFTransform_ProcessMessage(e->mft, MFT_MESSAGE_SET_D3D_MANAGER, (ULONG_PTR)e->mgr))) {
+        IMFDXGIDeviceManager_Release(e->mgr);
+        e->mgr = NULL;
+        return -1;
+    }
+    e->d3d = 1;
+    return 0;
 }
 
 // Configura um encoder já ativado. 0 = pronto.
@@ -231,9 +275,28 @@ struct mfenc *mfenc_open(int codec, int width, int height, int fps, int bitrate,
         short_name(friendly, t->name, sizeof t->name);
         if (friendly) CoTaskMemFree(friendly);
         hr = IMFActivate_ActivateObject(acts[i], &G_IID_TRANSFORM, (void **)&t->mft);
+        if (SUCCEEDED(hr) && t->mft && g_d3d_dev && use_d3d(t) == 0 && FAILED(configure(t, bitrate, screen_mode))) {
+            // com a textura não configurou: recomeça esse encoder sem ela
+            fprintf(stderr, "[telinha] encoder Media Foundation %s: com textura não configurou, tentando sem\n", t->name);
+            IMFTransform_Release(t->mft);
+            t->mft = NULL;
+            if (t->mgr) IMFDXGIDeviceManager_Release(t->mgr);
+            t->mgr = NULL;
+            t->d3d = 0;
+            if (t->events) IMFMediaEventGenerator_Release(t->events);
+            t->events = NULL;
+            if (t->codec) ICodecAPI_Release(t->codec);
+            t->codec = NULL;
+            IMFActivate_ShutdownObject(acts[i]);
+            hr = IMFActivate_ActivateObject(acts[i], &G_IID_TRANSFORM, (void **)&t->mft);
+        } else if (t->d3d) {
+            hr = S_OK; // já configurou com a textura
+            goto configured;
+        }
         if (SUCCEEDED(hr) && t->mft && SUCCEEDED(hr = configure(t, bitrate, screen_mode))) {
+        configured:
             e = t;
-            fprintf(stderr, "[telinha] encoder Media Foundation: %s (%ux%u, %s, a imagem entra pela CPU em NV12)\n", t->name, (unsigned)t->w, (unsigned)t->h, t->events ? "assíncrono" : "síncrono");
+            fprintf(stderr, "[telinha] encoder Media Foundation: %s (%ux%u, %s, a imagem entra %s)\n", t->name, (unsigned)t->w, (unsigned)t->h, t->events ? "assíncrono" : "síncrono", t->d3d ? "pela placa (textura NV12 da captura)" : "pela CPU em NV12");
         } else {
             fprintf(stderr, "[telinha] encoder Media Foundation %s recusou (0x%08lx), tentando o próximo\n", t->name, (unsigned long)hr);
             set_err(err, errlen, "o encoder de hardware não aceitou a configuração", hr);
@@ -348,6 +411,8 @@ static int pump(struct mfenc *e, int until, int ms) {
     return 0;
 }
 
+static int submit(struct mfenc *e, IMFSample *sample, int force_idr, const uint8_t **out, int *out_len, int *is_idr);
+
 int mfenc_encode(struct mfenc *e, const uint8_t *pixels, int stride, int format, int force_idr,
                  const uint8_t **out, int *out_len, int *is_idr) {
     e->out_len = 0;
@@ -370,6 +435,31 @@ int mfenc_encode(struct mfenc *e, const uint8_t *pixels, int stride, int format,
     }
     IMFSample_AddBuffer(sample, buf);
     IMFMediaBuffer_Release(buf);
+    return submit(e, sample, force_idr, out, out_len, is_idr);
+}
+
+// Textura NV12 da captura (mesmo dispositivo), sem passar pela CPU.
+int mfenc_encode_texture(struct mfenc *e, void *texture, int force_idr, const uint8_t **out, int *out_len, int *is_idr) {
+    if (!e->d3d || !texture) return -1;
+    e->out_len = 0;
+    e->out_key = 0;
+    IMFMediaBuffer *buf = NULL;
+    IMFSample *sample = NULL;
+    if (FAILED(mf.CreateDXGISurfaceBuffer(&G_IID_D3D11_TEXTURE2D, (IUnknown *)texture, 0, FALSE, &buf)) || !buf) return -1;
+    if (FAILED(mf.CreateSample(&sample))) {
+        IMFMediaBuffer_Release(buf);
+        return -1;
+    }
+    IMFSample_AddBuffer(sample, buf);
+    IMFMediaBuffer_Release(buf);
+    return submit(e, sample, force_idr, out, out_len, is_idr);
+}
+
+int mfenc_takes_textures(struct mfenc *e) {
+    return e && e->d3d;
+}
+
+static int submit(struct mfenc *e, IMFSample *sample, int force_idr, const uint8_t **out, int *out_len, int *is_idr) {
     const LONGLONG dur = 10000000LL / e->fps;
     IMFSample_SetSampleTime(sample, e->ts);
     IMFSample_SetSampleDuration(sample, dur);

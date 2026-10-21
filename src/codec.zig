@@ -387,6 +387,8 @@ pub const EncoderOptions = struct {
     /// 2 = quadros alternados que ninguém usa de referência (dá pra pular
     /// pra um espectador que não dá conta sem estragar a decodificação).
     temporal_layers: u8 = 1,
+    /// Windows: dispositivo D3D11 da captura (o Media Foundation recebe a textura dela).
+    d3d_device: ?*anyopaque = null,
 };
 
 pub const Encoder = struct {
@@ -519,7 +521,10 @@ pub const HwEncoder = struct {
     /// Falha (com o motivo em `err`) se não houver GPU/driver compatível.
     pub fn init(opts: EncoderOptions, err: []u8) !HwEncoder {
         @memset(err, 0);
-        const h = hw.hwenc_open(@intFromEnum(opts.codec), @intCast(opts.width), @intCast(opts.height), @intCast(@max(1, opts.fps)), @intCast(opts.bitrate), @intFromBool(opts.mode == .screen), opts.temporal_layers, err.ptr, @intCast(err.len)) orelse return error.HwUnavailable;
+        const h = (if (opts.d3d_device) |dev|
+            hw.hwenc_open_d3d(dev, @intFromEnum(opts.codec), @intCast(opts.width), @intCast(opts.height), @intCast(@max(1, opts.fps)), @intCast(opts.bitrate), @intFromBool(opts.mode == .screen), opts.temporal_layers, err.ptr, @intCast(err.len))
+        else
+            hw.hwenc_open(@intFromEnum(opts.codec), @intCast(opts.width), @intCast(opts.height), @intCast(@max(1, opts.fps)), @intCast(opts.bitrate), @intFromBool(opts.mode == .screen), opts.temporal_layers, err.ptr, @intCast(err.len))) orelse return error.HwUnavailable;
         return .{ .h = h, .opts = opts };
     }
 
@@ -543,6 +548,16 @@ pub const HwEncoder = struct {
     /// É o VA-API (Intel/AMD no Linux)?
     pub fn isVa(e: *HwEncoder) bool {
         return hw.hwenc_is_va(e.h) != 0;
+    }
+
+    /// É o Media Foundation (Windows: Intel, AMD, qualquer placa)?
+    pub fn isMf(e: *HwEncoder) bool {
+        return hw.hwenc_is_mf(e.h) != 0;
+    }
+
+    /// Windows: recebe a textura NV12 da captura direto (dispositivo da captura ligado)?
+    pub fn acceptsD3d(e: *HwEncoder) bool {
+        return hw.hwenc_accepts_d3d(e.h) != 0;
     }
 
     /// Codifica um quadro RGBX/BGRX que já está na placa (acceptsCuda). Retorna se foi IDR.
