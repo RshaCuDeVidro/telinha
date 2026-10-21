@@ -1,6 +1,6 @@
 # Servidor dedicado do telinha. Imagem final: só o binário estático (FROM scratch).
 #   docker build -t telinha-server .
-#   docker run -p 7777:7777 -e TELINHA_SENHA=... telinha-server
+#   docker run -p 7777:7777/tcp -p 7777:7777/udp -e TELINHA_SENHA=... telinha-server
 FROM --platform=$BUILDPLATFORM alpine:3.20 AS build
 ARG ZIG_VERSION=0.16.0
 ARG BUILDARCH
@@ -21,5 +21,6 @@ RUN zig build server -Dserver-only=true -Doptimize=ReleaseSafe \
 
 FROM scratch
 COPY --from=build /telinha-server /telinha-server
-EXPOSE 7777
+# TCP (controle, chat) e UDP na mesma porta (vídeo, som e voz)
+EXPOSE 7777/tcp 7777/udp
 ENTRYPOINT ["/telinha-server"]

@@ -1,426 +1,434 @@
-# Protocolo (versão 6)
+# Protocol (version 6)
 
-Tudo vai sobre **uma conexão TCP** por pessoa, cliente → servidor da sala.
-Inteiros são little-endian. `str` = `u16` tamanho + bytes UTF-8 (quem monta
-corta em 4000 bytes).
+<sub>[🇺🇸 English](PROTOCOL.md) · [🇧🇷 Português](PROTOCOL.pt.md)</sub>
 
-Cada pessoa pode transmitir duas coisas ao mesmo tempo: a tela e a câmera.
-Uma transmissão é identificada por um **stream** de 32 bits:
+Everything goes over **one TCP connection** per person, client → room server.
+Integers are little-endian. `str` = `u16` length + UTF-8 bytes (the sender
+truncates at 4000 bytes).
+
+Field names in the tables below are the identifiers used in the code, which is
+written in Portuguese.
+
+Each person can stream two things at the same time: the screen and the camera.
+A stream is identified by a 32-bit **stream**:
 
 ```
-stream = id_da_pessoa | (tipo << 31)        tipo: 0 = tela, 1 = câmera
+stream = person_id | (type << 31)           type: 0 = screen, 1 = camera
 ```
 
-O id da pessoa nunca usa o bit de cima, então o stream da tela é o próprio id.
+The person id never uses the top bit, so the screen's stream is the id itself.
 
-## 1. Handshake (em claro)
+## 1. Handshake (in the clear)
 
-Os dois lados mandam, ao mesmo tempo, 54 bytes:
+Both sides send, at the same time, 54 bytes:
 
-| campo | tamanho | |
+| field | size | |
 |---|---|---|
-| `"TLNH"` | 4 | identifica o protocolo |
-| versão | u16 | hoje `6` |
-| chave pública X25519 | 32 | efêmera, nova a cada conexão |
-| nonce | 16 | aleatório |
+| `"TLNH"` | 4 | identifies the protocol |
+| version | u16 | today `6` |
+| X25519 public key | 32 | ephemeral, new for every connection |
+| nonce | 16 | random |
 
-Se as versões forem diferentes, o servidor ainda manda o hello dele (pro
-cliente poder avisar "versão diferente") e fecha.
+If the versions differ, the server still sends its hello (so the client can
+report "different version") and closes.
 
-### Convite e vários caminhos
+### Invite and several paths
 
-O convite pode trazer vários endereços pra mesma sala, separados por vírgula,
-com a senha depois do primeiro `#`:
-
-```
-telinha://192.168.0.10:7777,203.0.113.7:7777,[2804:14c::1]:7777,bore.pub:41234#senha
-```
-
-Cada endereço é `host:porta`; IPv6 vai **entre colchetes** (sem colchete é
-ambíguo e o endereço é ignorado). Até 8 endereços; a ordem é a preferência.
-Quem hospeda monta o convite com o IP da rede local, a porta aberta no
-roteador (UPnP), os IPv6 globais da máquina, o túnel digitado (ngrok etc.) e o
-link público por último. Quem entrou passa adiante os caminhos que usou.
-
-Quem entra faz uma corrida (`connect.zig`): uma tentativa por endereço, a
-tentativa *i* começando *i* × 250 ms depois da primeira (os primeiros da
-lista, os diretos, saem na frente). Cada uma conecta, manda o hello acima e
-espera o do outro lado (até 8 s). **Ganha a primeira que responder um hello
-do telinha com a mesma versão**: as outras desistem, e as que terminarem
-depois são fechadas. Porta fechada, caminho mudo e outro serviço na porta (sem
-`"TLNH"`) ficam pra trás sozinhos. A senha só é conferida depois, na conexão
-que ganhou (próxima seção). Se ninguém ganhar (todas falharam ou passaram
-20 s), o erro mostrado segue esta ordem: versão diferente → "não é uma sala do
-telinha" → conexão recusada → endereço não encontrado (só com um endereço) →
-não conectou.
-
-### Derivação de chaves
+The invite can carry several addresses for the same room, separated by commas,
+with the password after the first `#`:
 
 ```
-segredo   = X25519(minha_secreta, pública_do_outro)
-senha     = SHA-256("telinha-senha-v1" || senha_da_sala)
-prk       = HKDF-Extract(sal = nonce_cliente || nonce_servidor, ikm = segredo || senha)
+telinha://192.168.0.10:7777,203.0.113.7:7777,[2804:14c::1]:7777,bore.pub:41234#password
+```
+
+Each address is `host:port`; IPv6 goes **in brackets** (without brackets it is
+ambiguous and the address is ignored). Up to 8 addresses; the order is the
+preference. The host builds the invite with the local network IP, the port
+opened on the router (UPnP), the machine's global IPv6 addresses, the typed
+tunnel (ngrok etc.) and the public link last. Whoever joined passes on the paths
+they used.
+
+Whoever joins runs a race (`connect.zig`): one attempt per address, attempt *i*
+starting *i* × 250 ms after the first (the first ones in the list, the direct
+ones, go ahead). Each one connects, sends the hello above and waits for the
+other side's (up to 8 s). **The first one that answers a telinha hello with the
+same version wins**: the others give up, and the ones that finish later are
+closed. A closed port, a silent path and another service on the port (no
+`"TLNH"`) fall behind by themselves. The password is only checked afterwards, on
+the connection that won (next section). If nobody wins (all failed or 20 s went
+by), the error shown follows this order: different version → "not a telinha
+room" → connection refused → address not found (only with one address) → did not
+connect.
+
+### Key derivation
+
+```
+secret    = X25519(my_private, their_public)
+password  = SHA-256("telinha-senha-v1" || room_password)
+prk       = HKDF-Extract(salt = client_nonce || server_nonce, ikm = secret || password)
 k_c2s     = HKDF-Expand(prk, "telinha c2s", 32)
 k_s2c     = HKDF-Expand(prk, "telinha s2c", 32)
 ```
 
-Senha errada → chaves diferentes → a primeira mensagem do cliente não
-decifra. O servidor então manda `u32 0xFFFFFFFF` em claro (= "senha errada")
-e fecha. Até o `hello` cifrado chegar, cada leitura do servidor tem prazo de
-10 s.
+Wrong password → different keys → the client's first message doesn't decrypt.
+The server then sends `u32 0xFFFFFFFF` in the clear (= "wrong password") and
+closes. Until the encrypted `hello` arrives, every server read has a 10 s
+deadline.
 
-## 2. Mensagens (cifradas)
+## 2. Messages (encrypted)
 
 ```
-u32 tamanho | ChaCha20-Poly1305( u8 tipo | payload ) | tag (16 bytes)
+u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 ```
 
-`tamanho` conta o texto cifrado + tag. Nonce de 12 bytes = contador `u64`
-da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 MiB.
+`size` counts the ciphertext + tag. 12-byte nonce = the direction's `u64` counter
++ 4 zeros (starts at 0, never repeats on a connection). Maximum 32 MiB.
 
-| tipo | nome | direção | payload |
+| type | name | direction | payload |
 |---|---|---|---|
-| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (o que decodifica, bits `1<<codec`), `u8 recursos` (`feat_*`) |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1) |
-| 3 | denied | S→C | `str motivo`, `u8 código` (servidor fecha em seguida) |
-| 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo), n × `str versão_do_app` (mesma ordem) |
-| 5 | chat | C→S | `str texto`, imagem (opcional, abaixo) |
-| 5 | chat | S→C | `u32 id`, `u32 de` (0 = sistema), `str nome`, `str texto`, `u64 hora` (relógio da sala, µs), `u8 flags` (1 = histórico), imagem, `u8 n`, n × (`u8 reação`, `u32 de`) |
-| 6 | stream_start | C→S | `u8 tipo`, `u16 w`, `u16 h`, `u8 fps`, `u8 flags` (1 = com áudio; só vale pra tela) |
+| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (what it decodes, bits `1<<codec`), `u8 recursos` (`feat_*`) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1) |
+| 3 | denied | S→C | `str motivo`, `u8 código` (the server closes right after) |
+| 4 | members | S→C | `u8 sala` (1 = locked), `u16 n`, n × member (below), n × `str versão_do_app` (same order) |
+| 5 | chat | C→S | `str texto`, image (optional, below) |
+| 5 | chat | S→C | `u32 id`, `u32 de` (0 = system), `str nome`, `str texto`, `u64 hora` (room clock, µs), `u8 flags` (1 = history), image, `u8 n`, n × (`u8 reação`, `u32 de`) |
+| 6 | stream_start | C→S | `u8 tipo`, `u16 w`, `u16 h`, `u8 fps`, `u8 flags` (1 = with audio; screen only) |
 | 7 | stream_stop | C→S | `u8 tipo` |
-| 8 | frame | C→S | frame (abaixo) |
+| 8 | frame | C→S | frame (below) |
 | 8 | frame | S→C | `u32 stream`, frame |
-| 9 | watch | C→S | `u32 stream`, `u8 ligado`, `u8 opções` (1 = clipes: quer IDR de vez em quando) |
-| 10 | keyreq | S→C | `u8 tipo` (mande um IDR dessa transmissão) |
-| 10 | keyreq | C→S | `u32 stream`, `u8 motivo` (0 = perdi a referência, 1 = gravação começando) |
+| 9 | watch | C→S | `u32 stream`, `u8 ligado`, `u8 opções` (1 = clips: wants an IDR now and then) |
+| 10 | keyreq | S→C | `u8 tipo` (send an IDR for that stream) |
+| 10 | keyreq | C→S | `u32 stream`, `u8 motivo` (0 = I lost the reference, 1 = recording starting) |
 | 11 | ping | C→S | `u64 t` |
-| 12 | pong | S→C | `u64 t` (eco), `u64 relógio_µs` |
-| 13 | kick | C→S | `u32 alvo` (o mesmo que `admin` com ação 1; ainda aceito) |
-| 14 | audio | C→S | áudio (abaixo) |
-| 14 | audio | S→C | `u32 stream` (sempre o da tela), áudio |
-| 15 | ack | S→C | `u8 tipo`, `u32 seq` (o servidor recebeu esse frame seu) |
-| 15 | ack | C→S | `u32 stream`, `u32 seq` (recebi esse frame de `stream`) |
-| 16 | viewer_slow | S→C | `u8 tipo`, `u8 piso` (espectador não dá conta: baixe a taxa, até `piso`% do alvo) |
-| 17 | voice | C→S | `u32 seq`, pacote Opus (voz: 48 kHz mono, 20 ms) |
-| 17 | voice | S→C | `u32 de`, `u32 seq`, pacote Opus |
-| 18 | voice_state | C→S | `u8 flags` (1 = microfone ligado, 2 = surdo) |
-| 19 | admin | C→S | `u8 ação`, `u32 alvo`, `u8 valor` (só admin, ver §3) |
-| 20 | notice | S→C | `u8 tipo`, `str texto`, `u8 extra`: algo que um admin fez com você |
+| 12 | pong | S→C | `u64 t` (echo), `u64 relógio_µs` |
+| 13 | kick | C→S | `u32 alvo` (the same as `admin` with action 1; still accepted) |
+| 14 | audio | C→S | audio (below) |
+| 14 | audio | S→C | `u32 stream` (always the screen's), audio |
+| 15 | ack | S→C | `u8 tipo`, `u32 seq` (the server received that frame of yours) |
+| 15 | ack | C→S | `u32 stream`, `u32 seq` (I received that frame of `stream`) |
+| 16 | viewer_slow | S→C | `u8 tipo`, `u8 piso` (the viewer can't keep up: lower the rate, down to `piso`% of the target) |
+| 17 | voice | C→S | `u32 seq`, Opus packet (voice: 48 kHz mono, 20 ms) |
+| 17 | voice | S→C | `u32 de`, `u32 seq`, Opus packet |
+| 18 | voice_state | C→S | `u8 flags` (1 = microphone on, 2 = deafened) |
+| 19 | admin | C→S | `u8 ação`, `u32 alvo`, `u8 valor` (admin only, see §3) |
+| 20 | notice | S→C | `u8 tipo`, `str texto`, `u8 extra`: something an admin did to you |
 | 21 | pointer | C→S | `u32 stream`, `u16 x`, `u16 y`, `u8 flags` |
 | 21 | pointer | S→C | `u32 de`, `u32 stream`, `u16 x`, `u16 y`, `u8 flags` |
 | 22 | react | C→S | `u32 id_da_mensagem`, `u8 reação` (0–5), `u8 ligado` |
 | 22 | react | S→C | `u32 id_da_mensagem`, `u32 de`, `u8 reação`, `u8 ligado` |
-| 23 | codec | S→C | `u8 tipo` (tela/câmera), `u8 codecs`: o que todo mundo que assiste essa transmissão decodifica; `u8 recursos`: o que todo mundo que assiste entende |
-| 24 | draw | C→S / S→C | desenho por cima da transmissão (ver `proto.zig`) |
-| 25 | cursor | C→S | `u8 tipo`, `u16 x`, `u16 y` (`0xFFFF` = escondido): o cursor de quem transmite, fora do vídeo |
+| 23 | codec | S→C | `u8 tipo` (screen/camera), `u8 codecs`: what everyone watching that stream decodes; `u8 recursos`: what everyone watching understands |
+| 24 | draw | C→S / S→C | drawing on top of the stream (see `proto.zig`) |
+| 25 | cursor | C→S | `u8 tipo`, `u16 x`, `u16 y` (`0xFFFF` = hidden): the streamer's cursor, outside the video |
 | 25 | cursor | S→C | `u32 stream`, `u16 x`, `u16 y` |
-| 26 | view_size | C→S | `u32 stream`, `u16 altura` em que essa transmissão aparece (`0xFFFF` = quer tudo: tela cheia, gravando) |
-| 26 | view_size | S→C | `u8 tipo`, `u16 altura`: a maior entre quem assiste (`0xFFFF` = sem limite) |
+| 26 | view_size | C→S | `u32 stream`, `u16 altura` at which that stream appears (`0xFFFF` = wants everything: fullscreen, recording) |
+| 26 | view_size | S→C | `u8 tipo`, `u16 altura`: the largest among those watching (`0xFFFF` = no limit) |
 
-`versão_do_app` ("3.0.0") serve só pra avisar quem está desatualizado (a
-interface mostra "fulano está no telinha X: tem versão nova"); vazia = não
-informou. Também é campo do fim, lido com padrão vazio.
+`versão_do_app` ("3.0.0") only serves to warn whoever is out of date (the
+interface shows "so-and-so is on telinha X: there is a new version"); empty = not
+informed. It is also a field at the end, read with an empty default.
 
-Alguns campos do fim são lidos com valor padrão (0, ou "tela") se faltarem:
-`chave_do_cliente`, `flags` do stream_start, `tipo` do stream_stop, `opções`
-do watch, `motivo` do keyreq e `valor` do admin no servidor; `código` do
-denied, `tipo` do keyreq e `extra` do notice no cliente. É só tolerância:
-versão diferente já é recusada no handshake.
+Some fields at the end are read with a default value (0, or "screen") if
+missing: `chave_do_cliente`, `flags` of stream_start, `tipo` of stream_stop,
+`opções` of watch, `motivo` of keyreq and `valor` of admin on the server;
+`código` of denied, `tipo` of keyreq and `extra` of notice on the client. It's
+only tolerance: a different version is already refused in the handshake.
 
-**hello:** `chave_do_cliente` é um número aleatório sorteado uma vez e
-guardado na configuração do app (nunca 0); serve pro banimento.
-`token_admin` certo = dono da sala.
+**hello:** `chave_do_cliente` is a random number drawn once and kept in the app's
+settings (never 0); it is used for banning. The right `token_admin` = room owner.
 
-**welcome:** `sou_admin` = 1 pro dono. `instância` é sorteada quando o
-servidor sobe (se mudou, o servidor reiniciou e os ids do chat recomeçaram).
-`rota` = por onde você chegou:
+**welcome:** `sou_admin` = 1 for the owner. `instância` is drawn when the server
+starts (if it changed, the server restarted and the chat ids started over).
+`rota` = how you got in:
 
 | rota | |
 |---|---|
-| 0 | desconhecida |
-| 1 | nessa máquina (loopback, ou conectou no próprio IP) |
-| 2 | rede local: 10/8, 172.16/12, 192.168/16, 169.254/16, 100.64/10 (CGNAT, Tailscale), fe80::/10, fc00::/7 |
-| 3 | internet, IPv4 (porta aberta no roteador, servidor dedicado) |
+| 0 | unknown |
+| 1 | on this machine (loopback, or connected to its own IP) |
+| 2 | local network: 10/8, 172.16/12, 192.168/16, 169.254/16, 100.64/10 (CGNAT, Tailscale), fe80::/10, fc00::/7 |
+| 3 | internet, IPv4 (port opened on the router, dedicated server) |
 | 4 | internet, IPv6 |
-| 5 | link público (conexão entregue pelo túnel embutido) |
+| 5 | public link (connection delivered by the embedded tunnel) |
 
-**denied:** `código` 0 = genérico, 1 = expulso, 2 = banido, 3 = o dono fechou
-a sala, 4 = o link público por onde você entrou foi desligado, 5 = sala
-trancada, 6 = sala cheia. Com qualquer um o cliente não tenta reconectar.
+**denied:** `código` 0 = generic, 1 = kicked, 2 = banned, 3 = the owner closed
+the room, 4 = the public link you came in through was turned off, 5 = room
+locked, 6 = room full. With any of them the client doesn't try to reconnect.
 
-**Imagem no chat:** `u8 tipo` — 0 = nenhuma; 1 = `u16 w`, `u16 h`, `u32 tamanho`,
-bytes; 2 = era uma imagem, mas o servidor já não guarda (histórico). Os bytes
-são **um quadro H.264 (IDR)**: quem manda lê o arquivo/área de transferência no
-próprio PC, reduz pra no máximo 1600 px e codifica com o openh264; quem
-recebe decodifica com o mesmo decoder do vídeo e confere que o tamanho bate.
-Assim nenhum leitor de PNG/JPEG fica exposto ao que vem da rede. Limites:
-lado entre 16 e 1920 px, até 1,5 MB, uma imagem a cada 1,5 s por pessoa
-(rajada é ignorada); fora disso a mensagem é inválida e o servidor derruba a
-conexão. O histórico guarda até 24 MB de imagens; as mais velhas viram tipo 2.
+**Image in the chat:** `u8 tipo` — 0 = none; 1 = `u16 w`, `u16 h`, `u32 tamanho`,
+bytes; 2 = it was an image, but the server no longer keeps it (history). The
+bytes are **one H.264 frame (IDR)**: the sender reads the file/clipboard on its
+own PC, shrinks it to at most 1600 px and encodes it with openh264; the receiver
+decodes it with the same video decoder and checks that the size matches. That way
+no PNG/JPEG reader is exposed to what comes from the network. Limits: side
+between 16 and 1920 px, up to 1.5 MB, one image every 1.5 s per person (a burst
+is ignored); outside that the message is invalid and the server drops the
+connection. History keeps up to 24 MB of images; the oldest become type 2.
 
-**Reações:** 0 curti, 1 amei, 2 haha, 3 fogo, 4 uau, 5 triste. Uma por pessoa
-e por tipo em cada mensagem (ligar de novo não muda nada); só em mensagens que
-ainda estão no histórico, e não em avisos do sistema. No histórico, a
-mensagem de chat já vem com as reações; depois disso elas chegam uma a uma.
+**Reactions:** 0 like, 1 love, 2 haha, 3 fire, 4 wow, 5 sad. One per person and
+per type on each message (turning it on again changes nothing); only on messages
+that are still in the history, and not on system notices. In the history, the
+chat message already comes with the reactions; after that they arrive one by
+one.
 
-**Membro:** `u32 id`, `str nome`, `u8 flags`, `u8 rota` (bit `0x80` = dono;
-os 7 de baixo = rota, tabela acima), `u16 w`, `u16 h`, `u8 fps` (tela),
-`u16 w`, `u16 h`, `u8 fps` (câmera), `u16 k`, k × `u32` (streams que essa
-pessoa assiste, no máximo 64). Transmissão desligada vai com tamanho e fps 0.
-Flags: 1 = transmitindo a tela, 2 = admin, 4 = tela com áudio, 8 = microfone
-ligado, 16 = surdo, 32 = silenciado pelo admin, 64 = câmera ligada.
+**Member:** `u32 id`, `str nome`, `u8 flags`, `u8 rota` (bit `0x80` = owner; the
+low 7 = route, table above), `u16 w`, `u16 h`, `u8 fps` (screen), `u16 w`,
+`u16 h`, `u8 fps` (camera), `u16 k`, k × `u32` (streams that person watches, at
+most 64). A stream that is off goes with size and fps 0. Flags: 1 = streaming
+the screen, 2 = admin, 4 = screen with audio, 8 = microphone on, 16 = deafened,
+32 = muted by an admin, 64 = camera on.
 
-**Frame** (cabeçalho de 21 bytes):
+**Frame** (21-byte header):
 
-| campo | tamanho | |
+| field | size | |
 |---|---|---|
-| seq | u32 | por transmissão; volta pra 0 quando ela recomeça |
-| flags | u8 | 1 = IDR, 2 = pulável, bits 2–3 = codec (0 H.264, 1 HEVC, 2 AV1), `0x10` = cursor fora do vídeo, `0x80` = câmera |
-| hora_da_captura | u64 | relógio da sala, µs |
+| seq | u32 | per stream; goes back to 0 when it restarts |
+| flags | u8 | 1 = IDR, 2 = skippable, bits 2–3 = codec (0 H.264, 1 HEVC, 2 AV1), `0x10` = cursor outside the video, `0x80` = camera |
+| hora_da_captura | u64 | room clock, µs |
 | w, h | u16, u16 | |
-| cursor_x, cursor_y | u16, u16 | ponta do cursor de quem transmite, relativa ao quadro (0..65534); `0xFFFF` = sem cursor |
+| cursor_x, cursor_y | u16, u16 | the streamer's cursor tip, relative to the frame (0..65534); `0xFFFF` = no cursor |
 
-e o bitstream Annex B (H.264 ou HEVC, ver flags) até o fim. Todo IDR leva
-SPS/PPS (no HEVC também o VPS). O servidor
-descobre o stream pelo bit de câmera. "Pulável" = ninguém usa esse quadro de
-referência (todas as fatias com `nal_ref_idc = 0`; o transmissor codifica com
-duas camadas temporais, um quadro sim, um não): o servidor pode deixar de
-mandar pra quem não dá conta sem quebrar a decodificação dos seguintes. Quem
-não conhece o bit ignora. Um quadro reenviado com a tela parada leva a hora do
-reenvio (ele é o estado atual da tela).
+and the Annex B bitstream (H.264 or HEVC, see flags) until the end. Every IDR
+carries SPS/PPS (and VPS for HEVC as well). The server figures out the stream
+from the camera bit. "Skippable" = nobody uses that frame as reference (all
+slices with `nal_ref_idc = 0`; the streamer encodes with two temporal layers, one
+frame yes, one no): the server may stop sending it to whoever can't keep up
+without breaking the decoding of the following ones. Whoever doesn't know the bit
+ignores it. A frame resent with the screen still carries the resend time (it is
+the current state of the screen).
 
-**Codec:** H.264 todo mundo decodifica (openh264 em software, se preciso);
-HEVC só quem tem decoder na placa (hoje NVDEC). No `hello` cada um diz o que
-decodifica; o servidor manda pro transmissor, a cada mudança de quem assiste,
-a interseção (`codec`), e ele escolhe o melhor que o encoder dele faz — HEVC
-se puder, senão H.264. Entrou alguém que só tem H.264: a transmissão volta pro
-H.264 na hora (encoder novo, começando num IDR); quem já assistia troca de
-decoder ao ver o codec mudar nas flags.
+**Codec:** everyone decodes H.264 (openh264 in software, if needed); HEVC only
+those with a GPU decoder (today NVDEC). In `hello` each one says what it
+decodes; the server sends the streamer, on every change in who is watching, the
+intersection (`codec`), and the streamer picks the best its encoder can do — HEVC
+if it can, otherwise H.264. Someone with only H.264 joined: the stream goes back
+to H.264 right away (new encoder, starting on an IDR); those already watching
+switch decoders when they see the codec change in the flags.
 
-**Recursos** (`hello` e `codec`, um byte no fim; app ou servidor antigo não
-manda e vale 0, tudo como antes):
+**Features** (`hello` and `codec`, one byte at the end; an old app or server
+doesn't send it and it counts as 0, everything as before):
 
-- `feat_cursor` (1): quem assiste desenha a seta. Se todo mundo que assiste
-  entende, quem transmite para de pintar o cursor no vídeo, marca os quadros
-  com a flag `0x10` e manda a posição na mensagem `cursor` (até ~120 por
-  segundo; o servidor corta acima de 130). Mexer o mouse com a tela parada
-  não gera quadro. Entrou alguém que não entende: o cursor volta pro vídeo
-  na hora. Gravando a própria tela, também (a gravação leva o cursor).
-- `feat_view_size` (2): quem assiste diz em que altura mostra cada
-  transmissão (`view_size`, em degraus: 360, 480, 540, 720, 900, 1080,
-  1440, 2160; sobe na hora, só desce depois de 3 s menor). O servidor manda
-  pro transmissor a maior entre quem assiste (quem não entende conta como
-  "tudo"), e ele usa isso como altura máxima — junto da escolhida e da
-  qualidade automática, vale a menor.
+- `feat_cursor` (1): viewers draw the arrow. If everyone watching understands
+  it, the streamer stops painting the cursor into the video, marks the frames
+  with the `0x10` flag and sends the position in the `cursor` message (up to
+  ~120 per second; the server cuts above 130). Moving the mouse over a still
+  screen generates no frame. Someone who doesn't understand joined: the cursor
+  goes back into the video right away. Recording your own screen too (the
+  recording carries the cursor).
+- `feat_view_size` (2): viewers say at what height they show each stream
+  (`view_size`, in steps: 360, 480, 540, 720, 900, 1080, 1440, 2160; it goes up
+  instantly, and only down after 3 s smaller). The server sends the streamer the
+  largest among those watching (whoever doesn't understand counts as
+  "everything"), and it uses that as the maximum height — together with the
+  chosen one and automatic quality, the smallest wins.
 
-**Áudio:** `u32 seq`, `u64 hora_da_captura`, pacote Opus até o fim
-(48 kHz, estéreo, 10 ms por pacote, ~96 kbit/s). Só a tela tem áudio.
+**Audio:** `u32 seq`, `u64 hora_da_captura`, Opus packet until the end (48 kHz,
+stereo, 10 ms per packet, ~96 kbit/s). Only the screen has audio.
 
-**Ponteiro** ("olha aqui"): `x`, `y` relativos ao quadro (0..65534),
-`0xFFFF` = esconde; flags 1 = visível, 2 = clique (anel chamando atenção).
+**Pointer** ("look here"): `x`, `y` relative to the frame (0..65534), `0xFFFF` =
+hides it; flags 1 = visible, 2 = click (ring calling attention).
 
-**admin** — ações:
+**admin** — actions:
 
-| ação | | valor |
+| action | | value |
 |---|---|---|
-| 1 | expulsar | — |
-| 2 | banir (expulsa e não deixa voltar enquanto a sala existir) | — |
-| 3 | silenciar o microfone | 1 = silencia, 0 = libera |
-| 4 | parar uma transmissão | tipo (0 = tela, 1 = câmera) |
-| 5 | dar/tirar admin (só o dono) | 1 = dá, 0 = tira |
-| 6 | trancar a sala (alvo ignorado) | 1 = tranca, 0 = destranca |
+| 1 | kick | — |
+| 2 | ban (kicks and doesn't let back in while the room exists) | — |
+| 3 | mute the microphone | 1 = mutes, 0 = releases |
+| 4 | stop a stream | type (0 = screen, 1 = camera) |
+| 5 | give/remove admin (owner only) | 1 = gives, 0 = removes |
+| 6 | lock the room (target ignored) | 1 = locks, 0 = unlocks |
 
-**notice** — tipos: 1 = microfone silenciado, 2 = microfone liberado, 3 =
-transmissão parada (`extra` = tipo dela), 4 = virou admin, 5 = deixou de ser
-admin. O `texto` já vem pronto ("Ana silenciou seu microfone.").
+**notice** — types: 1 = microphone muted, 2 = microphone released, 3 = stream
+stopped (`extra` = its type), 4 = became admin, 5 = is no longer admin. The
+`texto` already comes ready ("Ana muted your microphone.").
 
-## 2b. Vídeo, som e voz por UDP
+## 2b. Video, sound and voice over UDP
 
-Se o servidor tem a porta UDP (a mesma do TCP) e a conexão não veio pelo link
-público, o `welcome` oferece UDP com um token. O cliente manda `hello` por UDP
-pro mesmo endereço e porta (de 250 em 250 ms, depois de 3 em 3 s) até
-receber `hello_ok`; daí em diante **quadro, áudio e voz** vão por UDP nos dois
-sentidos — todo o resto (e o que não couber) continua no TCP. Sem resposta, ou
-5–6 s sem nada chegar, volta pro TCP sozinho; o `hello` continua tentando.
+If the server has the UDP port (the same as TCP) and the connection didn't come
+through the public link, `welcome` offers UDP with a token. The client sends
+`hello` over UDP to the same address and port (every 250 ms, then every 3 s)
+until it receives `hello_ok`; from then on **frames, audio and voice** go over
+UDP in both directions — everything else (and whatever doesn't fit) stays on
+TCP. With no reply, or 5–6 s with nothing arriving, it goes back to TCP by
+itself; the `hello` keeps trying.
 
-Datagrama:
+Datagram:
 
-| campo | tamanho | |
+| field | size | |
 |---|---|---|
-| marca | u8 | `0xA7` |
-| token | u32 | de que conexão é (o servidor acha a conexão por ele) |
-| número | u64 | por sentido, nunca repete; é o nonce |
-| cifrado | resto | ChaCha20-Poly1305 de `u8 tipo` + corpo; o cabeçalho entra como dado associado |
+| mark | u8 | `0xA7` |
+| token | u32 | which connection it is (the server finds the connection by it) |
+| number | u64 | per direction, never repeats; it is the nonce |
+| ciphertext | rest | ChaCha20-Poly1305 of `u8 type` + body; the header goes in as associated data |
 
-Chave de cada sentido = SHA-256("telinha udp v1" ‖ chave do TCP nesse
-sentido). Pacote que não decifra, repetido, ou mais de 128 números atrás do
-maior já visto é ignorado. O servidor passa a responder pro endereço de onde
-veio o último pacote que decifrou (NAT que muda de porta).
+Key for each direction = SHA-256("telinha udp v1" ‖ TCP key in that direction). A
+packet that doesn't decrypt, repeats, or is more than 128 numbers behind the
+highest already seen is ignored. The server starts replying to the address the
+last decrypted packet came from (NAT that changes port).
 
-| tipo | corpo |
+| type | body |
 |---|---|
 | 1 hello / 2 hello_ok | — |
-| 3 ping / 4 pong | `u64 t` (eco): mantém o NAT aberto, mede o RTT |
-| 5 dados | `u32 canal`, `u32 id`, `u16 pedaço`, `u16 total`, bytes (até 1150) |
-| 6 nack | `u32 canal`, `u32 id`, `u16 n`, n × `u16 pedaço` (`n = 0xFFFF` = a mensagem inteira) |
+| 3 ping / 4 pong | `u64 t` (echo): keeps the NAT open, measures the RTT |
+| 5 data | `u32 canal`, `u32 id`, `u16 pedaço`, `u16 total`, bytes (up to 1150) |
+| 6 nack | `u32 canal`, `u32 id`, `u16 n`, n × `u16 pedaço` (`n = 0xFFFF` = the whole message) |
 
-Uma mensagem (`u8 tipo` + payload, igual ao TCP) vai em pedaços de 1150
-bytes. **Canal:** quadros andam em ordem por transmissão (canal = stream; do
-cliente pro servidor, `0x80000000` tela / `0x80000001` câmera), com ids
-1, 2, 3... por canal; som e voz usam o canal `0xFFFFFFFF`, sem ordem (cada um
-tem a própria sequência e buffer). Quem recebe remonta; pedaço faltando (fora
-de ordem por mais de ~RTT/4) vira NACK, repetido a cada ~1,25 × RTT; mensagem
-de que nada chegou é descoberta pela seguinte (buraco nos ids) e pedida
-inteira. Quem manda guarda o que mandou por 1,5 s pra reenviar. Desiste de
-uma mensagem quando os pedaços param de chegar por `4 × RTT` (150–400 ms) ou
-depois de 1 s: os quadros seguintes são entregues e o decoder pede um IDR
-(`keyreq`) se precisar. O envio é cadenciado (rajada de até 128 KB, depois no
-máximo 4× a taxa média), pra um IDR grande não estourar o buffer do roteador.
+A message (`u8 type` + payload, same as TCP) goes in 1150-byte pieces.
+**Channel:** frames go in order per stream (channel = stream; from client to
+server, `0x80000000` screen / `0x80000001` camera), with ids 1, 2, 3... per
+channel; sound and voice use channel `0xFFFFFFFF`, without order (each has its
+own sequence and buffer). The receiver reassembles; a missing piece (out of order
+for more than ~RTT/4) becomes a NACK, repeated every ~1.25 × RTT; a message of
+which nothing arrived is discovered by the next one (a hole in the ids) and
+requested whole. The sender keeps what it sent for 1.5 s to resend. It gives up
+on a message when the pieces stop arriving for `4 × RTT` (150–400 ms) or after
+1 s: the following frames are delivered and the decoder asks for an IDR
+(`keyreq`) if needed. Sending is paced (a burst of up to 128 KB, then at most 4×
+the average rate), so a big IDR doesn't overflow the router's buffer.
 
-## 3. Regras do servidor
+## 3. Server rules
 
-### Entrada
+### Entry
 
-- Nome sem espaços nas pontas, até 32 bytes; vazio vira `anônimo`. Nomes
-  repetidos ganham sufixo: `Ana (2)`.
-- Quem não é o dono é recusado (`denied`) se estiver banido (2), se a sala
-  estiver trancada (5) ou cheia (6; 32 pessoas por padrão). O dono passa por
-  cima de tudo isso.
-- Logo depois do `welcome`, quem entra recebe as últimas **50** mensagens do
-  chat (com a flag de histórico: sem som nem notificação); depois todo mundo
-  recebe "Fulano entrou na sala" e o `members` novo.
+- Name without leading/trailing spaces, up to 32 bytes; empty becomes `anônimo`.
+  Repeated names get a suffix: `Ana (2)`.
+- Whoever isn't the owner is refused (`denied`) if banned (2), if the room is
+  locked (5) or full (6; 32 people by default). The owner goes over all of that.
+- Right after `welcome`, whoever joins receives the last **50** chat messages
+  (with the history flag: no sound or notification); then everyone receives
+  "So-and-so joined the room" and the new `members`.
 
-### Transmissões
+### Streams
 
-- Frames só vão pra quem mandou `watch` pro stream. Só dá pra assistir quem
-  existe e não a si mesmo, até 2 × o limite de pessoas em streams. `watch`
-  ligado de novo pro mesmo stream só muda as opções.
-- Quem começa a assistir (ou quando o transmissor muda de resolução com um
-  `stream_start` novo) só recebe a partir de um IDR; o servidor manda
-  `keyreq` pro transmissor (no máximo um a cada 500 ms por transmissão, fora
-  quem acabou de começar a assistir).
-- Frame de transmissão que não está ligada (o admin parou e ainda está
-  chegando quadro velho) é descartado.
-- `keyreq` com motivo "gravação" só pede o IDR (respeitando os 500 ms), sem
-  mexer no controle de atraso daquele espectador.
-- **Clipes:** quem assiste com a opção de clipes guarda os últimos 30 s, e um
-  clipe só começa num IDR. A cada 250 ms o servidor confere: se o último IDR
-  daquela transmissão tem mais de 20 s e não pediu nenhum nesse tempo, pede.
-- `ack`, `viewer_slow`, `voice` e `pointer` furam a fila de envio (não
-  esperam atrás de frames), mantendo a ordem entre eles.
-- Voz vai pra todo mundo da sala, menos quem fala e quem está surdo; a de quem
-  foi silenciado pelo admin é jogada fora. Só é descartada se a fila do
-  destinatário passar de 6 MiB.
-- Áudio vai pra quem assiste a tela do transmissor, sem esperar IDR; só é
-  descartado se a fila do espectador passar de 6 MiB.
-- Ponteiro: só é aceito de quem transmite aquele stream ou assiste ele, no
-  máximo 40 por segundo por pessoa (o resto é jogado fora); vai pro dono do
-  stream e pra todo mundo que assiste, menos quem mandou.
+- Frames only go to whoever sent `watch` for the stream. You can only watch
+  someone who exists and not yourself, up to 2 × the people limit in streams.
+  `watch` turned on again for the same stream only changes the options.
+- Whoever starts watching (or when the streamer changes resolution with a new
+  `stream_start`) only receives from an IDR on; the server sends `keyreq` to the
+  streamer (at most one every 500 ms per stream, except for whoever just started
+  watching).
+- A frame of a stream that isn't on (the admin stopped it and old frames are
+  still arriving) is discarded.
+- `keyreq` with reason "recording" only asks for the IDR (respecting the 500 ms),
+  without touching that viewer's delay control.
+- **Clips:** viewers with the clips option keep the last 30 s, and a clip can only
+  start on an IDR. Every 250 ms the server checks: if that stream's last IDR is
+  older than 20 s and none was requested in that time, it asks for one.
+- `ack`, `viewer_slow`, `voice` and `pointer` jump the send queue (they don't wait
+  behind frames), keeping their order relative to each other.
+- Voice goes to everyone in the room, except the speaker and those deafened; the
+  voice of whoever was muted by an admin is thrown away. It is only discarded if
+  the recipient's queue passes 6 MiB.
+- Audio goes to whoever watches the streamer's screen, without waiting for an
+  IDR; it is only discarded if the viewer's queue passes 6 MiB.
+- Pointer: only accepted from whoever streams that stream or watches it, at most
+  40 per second per person (the rest is thrown away); it goes to the stream's
+  owner and to everyone watching, except the sender.
 
 ### Chat
 
-Texto sem espaços nas pontas; vazio é ignorado. Toda mensagem — inclusive as
-do sistema (`de` = 0: entrou, saiu, começou a transmitir, ligou a câmera,
-expulsou, trancou...) — ganha um `id` crescente (começa em 1 a cada
-instância do servidor) e a hora no relógio da sala, e entra num anel com as
-últimas 50. O cliente ignora mensagem de histórico com `id` que já viu e
-converte a hora pro relógio local.
+Text without leading/trailing spaces; empty is ignored. Every message — including
+the system ones (`de` = 0: joined, left, started streaming, turned the camera on,
+kicked, locked...) — gets a growing `id` (starts at 1 for each server instance)
+and the time on the room clock, and enters a ring with the last 50. The client
+ignores a history message with an `id` it has already seen and converts the time
+to the local clock.
 
 ### Admin
 
-- Só quem é admin; pedido de quem não é é ignorado em silêncio.
-- Trancar/destrancar: qualquer admin. Vai pro chat de todo mundo e o
-  `members` sai com o estado da sala.
-- O resto precisa de um alvo que existe, que não seja você nem o dono.
-  Admin promovido (não dono) não mexe em outro admin. Dar/tirar admin é só
-  do dono.
-- Expulsar/banir: o chat de todo mundo fica sabendo; o alvo recebe `denied`
-  (1 ou 2, "Fulano expulsou você da sala.") e sai. O banimento guarda a
-  `chave_do_cliente`, o nome sem o sufixo ` (n)` (comparado sem diferenciar
-  maiúsculas) e o IP — esse último não vale pra quem veio pelo link público
-  (todo mundo ali tem o IP do túnel) nem pra quem está na mesma máquina.
-  Bater em qualquer um dos três já barra a entrada.
-- Silenciar, parar transmissão e dar/tirar admin mandam um `notice` pro alvo
-  e um `members` novo pra sala; parar transmissão funciona como se o alvo
-  tivesse mandado `stream_stop`.
+- Only admins; a request from someone who isn't is silently ignored.
+- Lock/unlock: any admin. It goes to everyone's chat and `members` comes out with
+  the room state.
+- The rest needs a target that exists, that isn't you or the owner. A promoted
+  admin (not the owner) can't touch another admin. Giving/removing admin is the
+  owner's alone.
+- Kick/ban: everyone's chat finds out; the target receives `denied` (1 or 2,
+  "So-and-so kicked you out of the room.") and leaves. The ban keeps the
+  `chave_do_cliente`, the name without the ` (n)` suffix (compared
+  case-insensitively) and the IP — the latter doesn't apply to whoever came
+  through the public link (everyone there has the tunnel's IP) nor to whoever is
+  on the same machine. Hitting any of the three already blocks entry.
+- Mute, stop stream and give/remove admin send a `notice` to the target and a new
+  `members` to the room; stopping a stream works as if the target had sent
+  `stream_stop`.
 
-### Saída
+### Leaving
 
-- Quem sai: todo mundo para de receber as duas transmissões dele, recebe
-  "Fulano saiu da sala" e o `members` novo.
-- O servidor nunca derruba alguém sem o motivo chegar: manda o `denied`,
-  espera a fila dele esvaziar (até 600 ms), fecha só o lado de envio do socket
-  e espera o cliente fechar (até 600 ms) antes de derrubar de vez.
-- Sala fechando: todo mundo recebe `denied` 3 ("O dono fechou a sala.").
-- Link público desligado: quem entrou por ele recebe `denied` 4 e sai; o
-  resto continua.
+- Whoever leaves: everyone stops receiving their two streams, receives
+  "So-and-so left the room" and the new `members`.
+- The server never drops someone without the reason arriving: it sends `denied`,
+  waits for their queue to empty (up to 600 ms), closes only the sending side of
+  the socket and waits for the client to close (up to 600 ms) before dropping it
+  for good.
+- Room closing: everyone receives `denied` 3 ("The owner closed the room.").
+- Public link turned off: whoever came in through it receives `denied` 4 and
+  leaves; the rest carries on.
 
-## 4. Controle de atraso de ponta a ponta
+## 4. End-to-end delay control
 
-Túneis (ngrok, bore…) têm buffers enormes: o TCP de quem manda nunca sente o
-congestionamento, e só olhar a própria fila não adianta. Por isso tudo é
-medido com confirmações — separadamente pra cada transmissão (a tela e a
-câmera de alguém têm controles independentes):
+Tunnels (ngrok, bore...) have huge buffers: the sender's TCP never feels the
+congestion, and looking only at your own queue doesn't help. That is why
+everything is measured with acknowledgements — separately for each stream
+(someone's screen and camera have independent controls):
 
-- O servidor manda `ack tipo seq` pro transmissor assim que recebe cada frame.
-  O transmissor guarda a hora em que enfileirou cada frame e calcula
-  `atraso acumulado = idade do frame mais velho sem ack − RTT de referência`
-  (o RTT de referência é o menor atraso de ack em janelas de 10 s, sem contar
-  IDR — o atraso dele inclui a transferência — e limitado a 400 ms).
-- Cada espectador manda `ack stream seq` assim que recebe um frame (antes de
-  decodificar). O servidor faz a mesma conta por espectador e por stream.
+- The server sends `ack tipo seq` to the streamer as soon as it receives each
+  frame. The streamer keeps the time it queued each frame and computes
+  `accumulated delay = age of the oldest unacknowledged frame − reference RTT`
+  (the reference RTT is the lowest ack delay in 10 s windows, not counting IDRs —
+  their delay includes the transfer — and capped at 400 ms).
+- Each viewer sends `ack stream seq` as soon as it receives a frame (before
+  decoding). The server does the same math per viewer and per stream.
 
-**Transmissor** (`ratectl.zig`), antes de cada quadro:
-- atraso > 100 ms: taxa −7% (no máximo a cada 500 ms), sem pular quadro;
-- atraso > 250 ms: pula o quadro; se persistir 300 ms (ou voltar em menos de
-  1 s), taxa −25%. Atraso explicado por um IDR recente (folga = o tempo que
-  ele levou, diminuindo em 4 s) só faz pular quadro, não baixa a taxa;
-- atraso < 60 ms e 2 s sem problema: sobe 12% até 90% do "teto" (a taxa em que
-  deu problema da última vez); acima disso, depois de 15 s sem problema, só
-  +2%/s. Depois de 30 s sem problema o teto é esquecido.
-- `viewer_slow tipo piso`: −20% (no máximo a cada 2 s), não abaixo de `piso`%
-  do alvo; a taxa não sobe por 12 s.
+**Streamer** (`ratectl.zig`), before each frame:
+- delay > 100 ms: rate −7% (at most every 500 ms), without skipping a frame;
+- delay > 250 ms: skip the frame; if it persists for 300 ms (or comes back in
+  less than 1 s), rate −25%. Delay explained by a recent IDR (slack = the time it
+  took, decreasing over 4 s) only causes a frame skip, doesn't lower the rate;
+- delay < 60 ms and 2 s without trouble: climb 12% up to 90% of the "ceiling" (the
+  rate at which there was trouble last time); above that, after 15 s without
+  trouble, only +2%/s. After 30 s without trouble the ceiling is forgotten.
+- `viewer_slow tipo piso`: −20% (at most every 2 s), not below `piso`% of the
+  target; the rate doesn't climb for 12 s.
 
-**Servidor**, a cada frame, pra cada espectador:
-- atraso > 500 ms (+ folga de IDR) ou mais de 3 MiB na fila: descarta os
-  frames que ainda não saíram, espera os que já saíram serem confirmados (o
-  IDR não pode ficar atrás deles) e recomeça de um IDR. Quem atrasa de novo em
-  menos de 10 s espera mais pelo próximo IDR (0,5 → 1 → 2 → 4 → 8 s), pra não
-  encher a sala de IDR;
-- atrasado > 150 ms e sem escoar (não caiu 50 ms em 1 s): `viewer_slow` pro
-  transmissor antes de chegar no ponto de recomeçar;
-- o piso do `viewer_slow` é 10% se mais da metade dos espectadores está com
-  dificuldade (gargalo comum, ex.: o upload de quem hospeda a sala, ou só tem
-  um espectador) e 50% se é a minoria — quem não dá conta nem com metade fica
-  recomeçando de IDR de vez em quando, sem estragar a qualidade dos outros;
-- **afinar** (se a transmissão tem quadros puláveis): quem atrasa sendo a
-  minoria passa a receber só os quadros de referência — metade dos quadros,
-  ~metade da banda —, e os puláveis que ainda estavam na fila dele são
-  descartados na hora. Fica assim 10 s (o dobro, até 1 min, se precisar de novo
-  em menos de 30 s); quando volta a receber tudo e atrasa nos 3 s seguintes,
-  afina de novo na hora. Afinado só conta como "com dificuldade" pro
-  `viewer_slow` se nem assim der conta (atrasando 3 s depois de afinar, ou
-  recomeçando de IDR). Quem pede IDR porque o decoder não deu conta é afinado
-  sempre (metade do trabalho pro decoder).
+**Server**, on every frame, for every viewer:
+- delay > 500 ms (+ IDR slack) or more than 3 MiB in the queue: discard the frames
+  that haven't gone out yet, wait for the ones already out to be acknowledged (the
+  IDR can't stay behind them) and restart from an IDR. Whoever lags again in less
+  than 10 s waits longer for the next IDR (0.5 → 1 → 2 → 4 → 8 s), so the room
+  doesn't fill up with IDRs;
+- delayed > 150 ms and not draining (didn't fall 50 ms in 1 s): `viewer_slow` to
+  the streamer before reaching the restart point;
+- the `viewer_slow` floor is 10% if more than half the viewers are struggling (a
+  common bottleneck, e.g. the upload of whoever hosts the room, or there is only
+  one viewer) and 50% if it's the minority — whoever can't even with half keeps
+  restarting from an IDR now and then, without ruining the others' quality;
+- **thinning** (if the stream has skippable frames): whoever lags as the minority
+  starts receiving only the reference frames — half the frames, ~half the
+  bandwidth —, and the skippable ones still in their queue are discarded right
+  away. It stays like that for 10 s (double, up to 1 min, if needed again in less
+  than 30 s); when it goes back to receiving everything and lags in the next 3 s,
+  it thins again right away. A thinned viewer only counts as "struggling" for
+  `viewer_slow` if it can't keep up even then (lagging 3 s after thinning, or
+  restarting from an IDR). Whoever asks for an IDR because the decoder couldn't
+  keep up is always thinned (half the work for the decoder).
 
-**Espectador:** confirma na hora; se o decoder fica mais de 150 ms atrasado,
-joga a fila fora e manda `keyreq stream` com motivo 0 (o servidor aplica a
-mesma espera crescente). Quadros que já têm um mais novo esperando são
-decodificados mas não vão pra tela.
+**Viewer:** acknowledges right away; if the decoder falls more than 150 ms behind,
+it throws the queue away and sends `keyreq stream` with reason 0 (the server
+applies the same growing wait). Frames that already have a newer one waiting are
+decoded but don't go to the screen.
 
-O pedido de IDR pra um espectador esperando normalmente sai quando chega o
-próximo quadro do transmissor; com a tela dele parada (nada chegando há 1 s e
-nenhum pedido nos últimos 2 s), o servidor pede sozinho — verifica a cada
-250 ms —, senão o espectador ficaria preso na imagem velha.
+The IDR request for a viewer waiting normally goes out when the streamer's next
+frame arrives; with their screen still (nothing arriving for 1 s and no request in
+the last 2 s), the server asks by itself — checks every 250 ms —, otherwise the
+viewer would be stuck on the old picture.
 
-No Linux os sockets usam `TCP_NOTSENT_LOWAT` = 32 KB: o kernel segura pouco
-dado ainda não enviado e o resto espera na fila do app, onde dá pra descartar.
+On Linux the sockets use `TCP_NOTSENT_LOWAT` = 32 KB: the kernel holds little
+not-yet-sent data and the rest waits in the app's queue, where it can be
+discarded.
 
-## 5. Relógio e latência
+## 5. Clock and latency
 
-O servidor tem um relógio (µs desde que subiu). O cliente estima o offset com
-os pings (`offset = relógio_servidor + RTT/2 − agora`, ponderando as medições
-com RTT menor). O transmissor marca cada frame com a hora da captura nesse
-relógio; o espectador calcula `atraso = agora_na_sala − hora_da_captura` na
-hora em que o quadro vai pra GPU. A hora das mensagens do chat também vem
-nesse relógio.
+The server has a clock (µs since it started). The client estimates the offset with
+the pings (`offset = server_clock + RTT/2 − now`, weighting measurements with a
+lower RTT). The streamer marks each frame with the capture time on that clock;
+viewers compute `delay = now_in_room − hora_da_captura` when the frame goes to the
+GPU. Chat message times also come from that clock.

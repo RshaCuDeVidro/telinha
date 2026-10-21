@@ -4,7 +4,8 @@ services:
     image: telinha-server
     restart: unless-stopped
     ports:
-      - "7777:7777"
+      - "7777:7777/tcp"
+      - "7777:7777/udp" # vídeo, som e voz (sem ele tudo vai pelo TCP)
     environment:
       TELINHA_NOME: "Sala da galera"
       TELINHA_SENHA: "troque-esta-senha"

@@ -1,19 +1,38 @@
 name: CI
 
+# Push na main / pull request: testa e compila tudo (os binários ficam nos
+# artefatos da execução). Tag vX.Y.Z: faz o mesmo e publica nos Releases.
+#   git tag v3.1.0 && git push origin v3.1.0
 on:
   push:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # o commit exato vai no relatório de travamento (git describe)
+
+      - name: Tag e versão batem
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          v=$(sed -n 's/^ *\.version = "\(.*\)",/\1/p' build.zig.zon)
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::a tag é $GITHUB_REF_NAME mas o build.zig.zon diz $v"
+            exit 1
+          fi
 
       - name: Dependências do sistema (Linux)
         run: |
@@ -29,23 +48,42 @@ jobs:
       - name: Testes
         run: zig build test --summary all
 
-      - name: Build (Linux, Windows, servidor)
-        # x86_64_v2 = qualquer CPU x86-64 de ~2009 pra cá (o openh264 detecta AVX2 em tempo de execução)
+      - name: Build (Windows, servidor)
+        # x86_64_v2 = qualquer CPU x86-64 de ~2009 pra cá (openh264 e RNNoise
+        # escolhem AVX2 em tempo de execução)
         run: zig build -Dcpu=x86_64_v2 -Drepo=${{ github.repository }} --summary all
 
+      - name: Build (Linux, glibc 2.31)
+        # glibc fixada numa versão velha: roda no Ubuntu/Pop!_OS 20.04 em diante,
+        # Debian 11+, Mint 20+, Fedora, Arch... (a glibc só é compatível pra frente)
+        run: |
+          zig build -Dnative-only -Dtarget=x86_64-linux-gnu.2.31 -Dcpu=x86_64_v2 \
+            -Drepo=${{ github.repository }} --prefix linux-out --summary all
+          max=$(objdump -T linux-out/bin/telinha | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)
+          echo "glibc exigida: $max"
+          if [ "$(printf '%s\nGLIBC_2.31\n' "$max" | sort -V | tail -1)" != "GLIBC_2.31" ]; then
+            echo "::error::o binário Linux exige $max (o limite é GLIBC_2.31)"
+            exit 1
+          fi
+
       - name: Benchmark
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         run: zig build bench -Dcpu=x86_64_v2
 
       - name: Empacota
         run: |
           mkdir dist
           cp zig-out/bin/telinha.exe dist/telinha-windows-x86_64.exe
-          tar -C zig-out/bin -czf dist/telinha-linux-x86_64.tar.gz telinha
+          tar -C linux-out/bin -czf dist/telinha-linux-x86_64.tar.gz telinha
           cp zig-out/bin/telinha-server-x86_64 dist/telinha-server-linux-x86_64
           cp zig-out/bin/telinha-server-aarch64 dist/telinha-server-linux-aarch64
-          # símbolos do mesmo build (pra ler relatórios de travamento: tools/simbolos.py)
-          tar -C zig-out/bin -czf dist/telinha-simbolos.tar.gz telinha.debug telinha.pdb
+          # símbolos dos mesmos binários (pra ler relatórios de travamento: tools/simbolos.py)
+          mkdir simbolos
+          cp linux-out/bin/telinha.debug simbolos/telinha.debug
+          cp zig-out/bin/telinha.pdb simbolos/telinha.pdb
+          tar -C simbolos -czf dist/telinha-simbolos.tar.gz telinha.debug telinha.pdb
           (cd dist && sha256sum * > SHA256SUMS)
+          ls -la dist
 
       - uses: actions/upload-artifact@v4
         with:

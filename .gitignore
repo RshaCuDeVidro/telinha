@@ -1,5 +1,31 @@
+# build do Zig (o .zig-cache cresce sem parar: dá pra apagar quando quiser)
 zig-out/
 .zig-cache/
 zig-pkg/
+linux-out/
+dist/
+simbolos/
+
+# Python (ferramentas e QA)
 __pycache__/
+*.pyc
+
+# logs e relatórios gerados pelo app
+telinha-debug*.log
+telinha-debug*.txt
+telinha-crash*.txt
+
+# editores e sistema
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# chaves e segredos nunca vão pro repositório
+*.key
+*.pem
+.env
+
 .claude/

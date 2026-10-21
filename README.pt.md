@@ -22,7 +22,7 @@
   <a href="#o-que-tem">O que tem</a> ·
   <a href="#desempenho">Desempenho</a> ·
   <a href="#compilar">Compilar</a> ·
-  <a href="docs/ARCHITECTURE.md">Arquitetura</a> ·
+  <a href="docs/ARCHITECTURE.pt.md">Arquitetura</a> ·
   <a href="README.md">🇺🇸 English</a>
 </p>
 
@@ -48,11 +48,22 @@ Pegue a versão mais recente na [página de Releases](../../releases/latest).
 |---|---|
 | Windows 10/11 (x86-64) | `telinha-windows-x86_64.exe` |
 | Linux (x86-64) | `telinha-linux-x86_64.tar.gz` |
-| Servidor dedicado | `telinha-server-linux-x86_64` / `telinha-server-linux-aarch64`, ou monte a imagem Docker (ver [DEPLOY.md](docs/DEPLOY.md)) |
+| Servidor dedicado | `telinha-server-linux-x86_64` / `telinha-server-linux-aarch64`, ou monte a imagem Docker (ver [DEPLOY.md](docs/DEPLOY.pt.md)) |
 | Símbolos pros relatórios de travamento | `telinha-simbolos.tar.gz` |
 
 > [!NOTE]
 > O `.exe` não é assinado, então o SmartScreen avisa na primeira vez. Clique em **Mais informações → Executar assim mesmo**.
+
+No Linux, o binário roda em qualquer distro com glibc 2.31 ou mais nova, como Ubuntu e Pop!_OS 20.04 em diante, Debian 11+, Fedora e Arch. Ele usa algumas bibliotecas do sistema que nem toda distro instala por padrão:
+
+```sh
+# Debian / Ubuntu / Pop!_OS / Mint
+sudo apt install libglfw3 libportal1 libpipewire-0.3-0
+# Arch
+sudo pacman -S glfw libportal pipewire
+# Fedora
+sudo dnf install glfw libportal pipewire-libs
+```
 
 ## Começando
 
@@ -224,11 +235,11 @@ Pra traduzir a pilha de um relatório de travamento em linhas do código, use `t
 
 ## Documentação
 
-- [Arquitetura](docs/ARCHITECTURE.md): threads, pipeline de vídeo, controle de banda e decisões de desempenho.
-- [Protocolo](docs/PROTOCOL.md): handshake, criptografia e cada tipo de mensagem.
-- [Servidor dedicado](docs/DEPLOY.md): binário estático, Docker e systemd.
-- [Contribuindo](CONTRIBUTING.md) e o [changelog](CHANGELOG.md).
+- [Arquitetura](docs/ARCHITECTURE.pt.md): threads, pipeline de vídeo, controle de banda e decisões de desempenho.
+- [Protocolo](docs/PROTOCOL.pt.md): handshake, criptografia e cada tipo de mensagem.
+- [Servidor dedicado](docs/DEPLOY.pt.md): binário estático, Docker e systemd.
+- [Contribuindo](CONTRIBUTING.pt.md) e o [changelog](CHANGELOG.pt.md).
 
 ## Licença
 
-MIT. Ver [LICENSE](LICENSE). Componentes de terceiros e suas licenças estão em [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+MIT. Ver [LICENSE](LICENSE). Componentes de terceiros e suas licenças estão em [THIRD_PARTY_NOTICES.pt.md](THIRD_PARTY_NOTICES.pt.md).

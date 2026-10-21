@@ -54,6 +54,17 @@ Grab the latest build from the [Releases page](../../releases/latest).
 > [!NOTE]
 > The Windows executable is not code-signed, so SmartScreen will warn on first launch. Choose **More info → Run anyway**.
 
+On Linux, the binary runs on any distro with glibc 2.31 or newer, such as Ubuntu or Pop!_OS 20.04+, Debian 11+, Fedora and Arch. It uses a few system libraries that some distros don't install by default:
+
+```sh
+# Debian / Ubuntu / Pop!_OS / Mint
+sudo apt install libglfw3 libportal1 libpipewire-0.3-0
+# Arch
+sudo pacman -S glfw libportal pipewire
+# Fedora
+sudo dnf install glfw libportal pipewire-libs
+```
+
 ## Quick start
 
 1. **Create a room.** Open telinha and pick **Create room**. The default port is 7777 and the password is optional.
@@ -231,7 +242,7 @@ To turn a crash report's stack trace into source lines, use `tools/simbolos.py` 
 - [Dedicated server](docs/DEPLOY.md): static binary, Docker and systemd.
 - [Contributing](CONTRIBUTING.md) and the [changelog](CHANGELOG.md).
 
-The deeper docs are written in Portuguese.
+Every doc has a Portuguese version: [README](README.pt.md), [changelog](CHANGELOG.pt.md), [contributing](CONTRIBUTING.pt.md), [architecture](docs/ARCHITECTURE.pt.md), [protocol](docs/PROTOCOL.pt.md), [dedicated server](docs/DEPLOY.pt.md) and [third-party notices](THIRD_PARTY_NOTICES.pt.md).
 
 ## License
 

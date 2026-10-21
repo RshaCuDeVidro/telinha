@@ -123,6 +123,7 @@ pub fn build(b: *std.Build) void {
     addHwenc(b, deps, vb_mod);
     addAudio(b, deps, vb_mod, host, .ReleaseFast);
     const vb_exe = b.addExecutable(.{ .name = "voicebot", .root_module = vb_mod });
+    allowHostLibs(vb_exe, host);
     const run_vb = b.addRunArtifact(vb_exe);
     if (b.args) |args| run_vb.addArgs(args);
     b.step("voicebot", "robô que entra numa sala e fala (teste da voz)").dependOn(&run_vb.step);
@@ -140,6 +141,7 @@ pub fn build(b: *std.Build) void {
         cap_mod.addIncludePath(deps.nv_headers.path("include"));
         cap_mod.addCSourceFile(.{ .file = b.path("src/c/capture_linux.c"), .flags = &.{"-O2"} });
         cap_mod.addCSourceFile(.{ .file = b.path("src/c/cudagl.c"), .flags = &.{ "-O2", "-Wno-everything" } });
+        hostSystemPaths(b, cap_mod);
         for ([_][]const u8{ "libportal", "libpipewire-0.3", "x11", "xext", "xfixes" }) |lib|
             cap_mod.linkSystemLibrary(lib, .{});
         const cap_exe = b.addExecutable(.{ .name = "captest", .root_module = cap_mod });
@@ -158,6 +160,7 @@ pub fn build(b: *std.Build) void {
         });
         addAudio(b, deps, aud_mod, host, .ReleaseFast);
         const aud_exe = b.addExecutable(.{ .name = "audiotest", .root_module = aud_mod });
+        allowHostLibs(aud_exe, host);
         const run_aud = b.addRunArtifact(aud_exe);
         if (b.args) |args| run_aud.addArgs(args);
         b.step("audiotest", "diagnóstico da captura do som do computador").dependOn(&run_aud.step);
@@ -212,7 +215,10 @@ fn addAudio(b: *std.Build, deps: Deps, mod: *std.Build.Module, target: std.Build
     mod.addCSourceFile(.{ .file = b.path("src/c/audio.c"), .flags = &.{ "-O2", "-Wno-everything" } });
     // apertar pra falar (a voz lê a tecla na thread do microfone)
     mod.addCSourceFile(.{ .file = b.path("src/c/ptt.c"), .flags = &.{"-O2"} });
-    if (target.result.os.tag == .linux) mod.linkSystemLibrary("x11", .{});
+    if (target.result.os.tag == .linux) {
+        hostSystemPaths(b, mod);
+        mod.linkSystemLibrary("x11", .{});
+    }
     addRnnoise(b, deps, mod, target, optimize);
     addSpeexdsp(b, deps, mod, target, optimize);
     // Linux: som dos aplicativos pelo grafo do PipeWire (sem o próprio telinha)
@@ -529,6 +535,7 @@ fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: st
         mod.addCSourceFile(.{ .file = b.path("src/c/capture_linux.c"), .flags = &.{"-O2"} });
         mod.addCSourceFile(.{ .file = b.path("src/c/camera_linux.c"), .flags = &.{"-O2"} });
         mod.addCSourceFile(.{ .file = b.path("src/c/notify_linux.c"), .flags = &.{"-O2"} });
+        hostSystemPaths(b, mod);
         for ([_][]const u8{ "glfw3", "gl", "libportal", "libpipewire-0.3", "x11", "xext", "xfixes" }) |lib|
             mod.linkSystemLibrary(lib, .{});
     }
@@ -539,13 +546,53 @@ fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: st
     return exe;
 }
 
-/// Linux com uma glibc mais velha que a da máquina (-Dtarget=x86_64-linux-gnu.2.34,
-/// pra rodar em distro mais antiga): as bibliotecas do sistema usadas no link
-/// (GLFW, GLib...) foram feitas pra glibc daqui e citam funções mais novas. Isso
-/// não importa: quem roda carrega as bibliotecas da própria máquina. O que o
-/// telinha mesmo usa continua conferido contra a glibc escolhida.
+/// Linux com a glibc fixada numa versão mais velha (-Dtarget=x86_64-linux-gnu.2.31,
+/// o build de release: roda em distro antiga e nas novas). O Zig trata isso como
+/// compilação cruzada e não procura nada no sistema.
+fn pinnedGlibc(target: std.Build.ResolvedTarget) bool {
+    return target.result.os.tag == .linux and target.query.glibc_version != null;
+}
+
+/// As bibliotecas do sistema usadas no link (GLFW, GLib...) foram feitas pra
+/// glibc daqui e citam funções mais novas. Isso não importa: quem roda carrega
+/// as bibliotecas da própria máquina. O que o telinha mesmo usa continua
+/// conferido contra a glibc escolhida.
 fn allowHostLibs(exe: *std.Build.Step.Compile, target: std.Build.ResolvedTarget) void {
-    if (target.result.os.tag == .linux and !target.query.isNative()) exe.linker_allow_shlib_undefined = true;
+    if (pinnedGlibc(target)) exe.linker_allow_shlib_undefined = true;
+}
+
+var host_headers: ?std.Build.LazyPath = null;
+
+/// Com a glibc fixada: as bibliotecas do sistema (/usr/lib...) e só os headers
+/// que ficam direto em /usr/include (X11, GL, GLFW...). /usr/include inteiro não:
+/// ele traz os headers da glibc daqui, que brigam com os da versão escolhida.
+/// Os outros (glib, pipewire, libportal) vêm do pkg-config, em pastas próprias.
+fn hostSystemPaths(b: *std.Build, mod: *std.Build.Module) void {
+    if (!pinnedGlibc(mod.resolved_target.?)) return;
+    if (host_headers == null) {
+        const wf = b.addWriteFiles();
+        for ([_][]const u8{ "X11", "GL", "KHR", "EGL", "GLFW", "libportal" }) |d| {
+            const src = b.fmt("/usr/include/{s}", .{d});
+            std.Io.Dir.accessAbsolute(b.graph.io, src, .{}) catch continue;
+            _ = wf.addCopyDirectory(.{ .cwd_relative = src }, d, .{});
+        }
+        host_headers = wf.getDirectory();
+    }
+    mod.addSystemIncludePath(host_headers.?);
+    // pastas próprias (sem headers da glibc dentro): entram direto
+    for ([_][]const u8{
+        "/usr/include/pipewire-0.3",                  "/usr/include/spa-0.2",
+        "/usr/include/glib-2.0",                      "/usr/include/gio-unix-2.0",
+        "/usr/lib/x86_64-linux-gnu/glib-2.0/include", "/usr/lib/glib-2.0/include",
+        "/usr/lib64/glib-2.0/include",
+    }) |d| {
+        std.Io.Dir.accessAbsolute(b.graph.io, d, .{}) catch continue;
+        mod.addSystemIncludePath(.{ .cwd_relative = d });
+    }
+    for ([_][]const u8{ "/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib" }) |d| {
+        std.Io.Dir.accessAbsolute(b.graph.io, d, .{}) catch continue;
+        mod.addLibraryPath(.{ .cwd_relative = d });
+    }
 }
 
 fn serverExe(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
