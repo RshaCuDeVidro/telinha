@@ -67,10 +67,14 @@ fn onGlfwError(code: c_int, desc: [*c]const u8) callconv(.c) void {
     _ = desc;
 }
 
+/// Teste: o app se comporta como minimizado (ver o laço principal).
+var teste_minimizado = false;
+
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     config.initDir();
     crash.install();
+    teste_minimizado = std.c.getenv("TELINHA_TESTE_MINIMIZADO") != null;
     sync.tuneMalloc();
     net.init();
     sync.pool.start(@max(2, sync.cpuCount() - 1));
@@ -156,7 +160,8 @@ pub fn main(init: std.process.Init) !void {
         }
         // dorme quando nada está acontecendo; rede e captura acordam o loop,
         // e o que anima pede o próximo redesenho (ui.redrawIn)
-        const iconified = c.glfwGetWindowAttrib(win, c.GLFW_ICONIFIED) != 0;
+        // TELINHA_TESTE_MINIMIZADO: testes (no Xvfb sem gerenciador de janelas não dá pra minimizar)
+        const iconified = c.glfwGetWindowAttrib(win, c.GLFW_ICONIFIED) != 0 or teste_minimizado;
         if (idle_frames > 3) {
             // sem foco (o jogo na frente): o redesenho "de segurança" fica raro;
             // rede, vídeo e eventos acordam o laço na hora do mesmo jeito

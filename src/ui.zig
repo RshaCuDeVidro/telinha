@@ -620,6 +620,7 @@ pub const App = struct {
     print_job: ?*PrintJob = null,
     pips: [4]?*pip.Pip = [_]?*pip.Pip{null} ** 4, // janelas flutuantes
     iconified: bool = false, // janela principal minimizada (o main.zig avisa)
+    preview_uploads: u64 = 0, // miniaturas da própria tela subidas pra placa (QA)
     settings_page: SettingsPage = .geral,
     fb_viewport: [4]c_int = .{ 0, 0, 0, 0 },
     theme_dirty: bool = false, // tema mudou: aplica no começo do próximo quadro
@@ -1910,9 +1911,14 @@ pub const App = struct {
         }
         for ([_]?*Sharer{ a.sharer, a.camera }) |maybe| {
             const s = maybe orelse continue;
+            // minimizado: a miniatura fica marcada e sobe quando a janela voltar
+            // (subir sem trocar a tela acumula memória no driver: o log do Ryzen
+            // foi de 200 MB pra 900 MB em 90 s minimizado)
+            if (a.iconified) continue;
             s.mutex.lock();
             defer s.mutex.unlock();
             if (s.preview_new and s.preview.len > 0) {
+                a.preview_uploads += 1;
                 const fmt = if (s.preview_bgr) gl.BGRA else gl.RGBA;
                 // mesmo tamanho: atualiza a textura no lugar (sem realocar na GPU)
                 if (s.preview_tex != 0 and s.preview_tex_w == s.preview_w and s.preview_tex_h == s.preview_h) {
@@ -3385,7 +3391,9 @@ pub const App = struct {
 
     fn drawTile(a: *App, t: *const Tile, cell_x: f32, cell_y: f32, cell_w: f32, cell_h: f32, big: bool) void {
         // minha prévia na tela: a captura continua gerando a miniatura
-        if (t.view == null) {
+        // (minimizado não: ninguém vê, e a miniatura subindo pra placa sem a tela
+        // ser trocada fazia o driver da AMD juntar centenas de MB)
+        if (t.view == null and !a.iconified) {
             const sh = if (proto.kindOf(t.stream) == proto.kind_camera) a.camera else a.sharer;
             if (sh) |x| x.preview_wanted_ms.store(sync.nowMs(), .monotonic);
         }
@@ -6363,7 +6371,7 @@ pub const App = struct {
         try w.print(",\"lang\":{f}", .{s(@tagName(i18n.get()))});
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);
         try w.print(",\"clipboard\":{f},\"chat_input\":{f}", .{ s(if (cb_text != null) std.mem.span(cb_text) else ""), s(std.mem.sliceTo(&a.chat_input, 0)) });
-        try w.print(",\"notifications_sent\":{d},\"away\":{}", .{ a.notifications_sent, a.away() });
+        try w.print(",\"notifications_sent\":{d},\"away\":{},\"iconified\":{},\"preview_uploads\":{d}", .{ a.notifications_sent, a.away(), a.iconified, a.preview_uploads });
         try w.writeAll(",\"sources\":[");
         for (a.sources[0..a.n_sources], 0..) |*src, i| {
             if (i > 0) try w.writeByte(',');

@@ -911,6 +911,27 @@ def transmissao_retoma_sozinha():
 
 
 @test
+def minimizado_nao_sobe_miniatura():
+    """Minimizado e transmitindo: a miniatura da própria tela não é pedida nem sobe pra placa (subir sem trocar a tela juntava centenas de MB no driver da AMD); a transmissão continua."""
+    with Session("minimizado") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"], extra_env={"TELINHA_TESTE_MINIMIZADO": "1"})
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        aid = b.member_id("Ana")
+        b.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "o Bruno ver a Ana")
+        try:
+            st = a.wait(lambda st: st["iconified"] and st["sharer"] and st["sharer"]["state"] == "live" and st["sharer"]["frames"] >= 1, 10, "a Ana transmitindo minimizada")
+        except QAError:
+            x = a.state()
+            log(f"iconified={x.get('iconified')} sharer={x.get('sharer')}")
+            raise
+        time.sleep(4)
+        st = a.state()
+        expect(st["preview_uploads"] <= 1, f"a miniatura subiu {st['preview_uploads']} vezes minimizada")
+        log(f"minimizada: {st['sharer']['frames']} quadros enviados, {st['preview_uploads']} miniaturas subidas")
+
+
+@test
 def cursor_e_tamanho():
     """Cursor fora do vídeo (mexer o mouse com a tela parada não gera quadro; quem assiste recebe a posição) e transmissão no tamanho em que aparece (sobe na tela cheia, desce depois)."""
     with Session("cursortam") as s:
