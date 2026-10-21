@@ -66,13 +66,13 @@
     <path d="M169.5 104.5 A13 11.6 8 1 1 143.5 104.5 A13 11.6 8 1 1 169.5 104.5 Z" fill="#120d19"/>
     <g clip-path="url(#olhoE)">
       <circle cx="99.5" cy="104.5" r="9.2" fill="url(#irisAzul)"/>
-      <circle cx="99.5" cy="104.5" r="4.3" fill="#050505"/>
-      <circle cx="96.8" cy="101.4" r="2" fill="#ffffff"/>
+      <circle cx="99.5" cy="104.5" r="6.2" fill="#050505"/>
+      <circle cx="96.4" cy="101.2" r="2.2" fill="#ffffff"/>
     </g>
     <g clip-path="url(#olhoD)">
       <circle cx="156.5" cy="104.5" r="9.2" fill="url(#irisMarrom)"/>
-      <circle cx="156.5" cy="104.5" r="4.3" fill="#050505"/>
-      <circle cx="153.8" cy="101.4" r="2" fill="#ffffff"/>
+      <circle cx="156.5" cy="104.5" r="6.2" fill="#050505"/>
+      <circle cx="153.4" cy="101.2" r="2.2" fill="#ffffff"/>
     </g>
     <g fill="#231b33">
       <path d="M87.2 101.4 Q83.6 99.2 80.8 97.6 Q83.6 103 87 105.8 Z"/>
