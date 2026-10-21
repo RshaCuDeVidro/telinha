@@ -25,6 +25,7 @@ const net = @import("net.zig");
 const update = @import("update.zig");
 const chatimg = @import("chatimg.zig");
 const chatsend = @import("chatsend.zig");
+const markdown = @import("markdown.zig");
 const debuglog = @import("debuglog.zig");
 const theme = @import("theme.zig");
 const fonts_mod = @import("fonts.zig");
@@ -683,8 +684,8 @@ pub const App = struct {
     controls_hidden: bool = false,
     saved_win: [4]c_int = .{ 0, 0, 1280, 760 },
 
-    chat_input: [1024]u8 = [_]u8{0} ** 1024,
-    chat_sent: [1024]u8 = undefined, // mensagem guardada no Enter (ver chatCallback)
+    chat_input: [4000]u8 = [_]u8{0} ** 4000,
+    chat_sent: [4000]u8 = undefined, // mensagem guardada no Enter (ver chatCallback)
     chat_sent_len: usize = 0,
     chat_seen: u64 = 0,
     chat_unread: u32 = 0,
@@ -5795,8 +5796,15 @@ pub const App = struct {
         drawTextF(d, font_bold, 11, v2(o.x + S(16), o.y + S(12)), col.muted, tr("CHAT"));
         c.igSetCursorScreenPos(v2(o.x, o.y + hh));
 
+        // a caixa cresce com o texto (Shift+Enter quebra linha), até umas 7 linhas
+        const box_w = size.x - S(24) - S(82) - S(16);
+        const typed = std.mem.sliceTo(&a.chat_input, 0);
+        pushFont(font_regular, 15);
+        const typed_h = if (typed.len == 0) 0 else c.igCalcTextSize(typed.ptr, typed.ptr + typed.len, false, box_w).y;
+        popFont();
+        const box_h = std.math.clamp(typed_h + S(18), S(44), S(160));
         // mensagens
-        const input_h = S(68);
+        const input_h = box_h + S(24);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(14), S(10)));
         c.igPushStyleColor_U32(c.ImGuiCol_ScrollbarBg, 0);
         _ = c.igBeginChild_Str("msgs", v2(size.x, size.y - hh - input_h), c.ImGuiChildFlags_AlwaysUseWindowPadding, 0);
@@ -5886,7 +5894,9 @@ pub const App = struct {
                 c.igSetCursorPosX(c.igGetCursorPosX() + S(48));
             }
             const left = c.igGetCursorScreenPos().x;
-            if (text.len > 0) {
+            if (text.len > 0 and markdown.hasMarkup(text)) {
+                a.drawRichText(text, c.igGetWindowPos().x + size.x - S(18), line.id);
+            } else if (text.len > 0) {
                 c.igPushTextWrapPos(size.x - S(18));
                 pushFont(font_regular, 14.5);
                 textColored(col.text, text);
@@ -5947,7 +5957,7 @@ pub const App = struct {
         const bx = ip.x + S(12);
         const by = ip.y + S(10);
         const bw = size.x - S(24);
-        const bh = S(44);
+        const bh = box_h;
         rectFill(d, bx, by, bx + bw, by + bh, col.chat_input, S(8));
         c.igSetCursorScreenPos(v2(bx + S(4), by + S(4)));
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, 0);
@@ -5958,9 +5968,10 @@ pub const App = struct {
             c.igSetKeyboardFocusHere(0);
             a.focus_chat = false;
         }
-        // a caixa continua ativa depois do Enter (io.ConfigInputTextEnterKeepActive):
-        // sem buraco de foco, nenhuma letra digitada logo depois se perde. O
-        // callback guarda a mensagem e esvazia a caixa no mesmo quadro do Enter.
+        // caixa multilinha: Enter manda (o callback tira a quebra que o Enter
+        // pôs, guarda a mensagem e esvazia a caixa no mesmo quadro, sem a caixa
+        // perder o foco: nenhuma letra digitada logo depois se perde) e
+        // Shift+Enter quebra a linha.
         a.chat_sent_len = 0;
         a.updateMentionSuggestions(cl);
         c.igSetNextItemWidth(bw - S(82));
@@ -5969,9 +5980,12 @@ pub const App = struct {
             cl.mutex.lock();
             defer cl.mutex.unlock();
             if (!cl.chans_supported) break :blk tr("Mensagem ou @nome");
-            break :blk i18n.bufPrintZ(&hint_buf, "Mensagem em #{s} ou /join canal", .{cl.chan_name[0..cl.chan_name_len]}) catch tr("Mensagem ou @nome");
+            break :blk i18n.bufPrintZ(&hint_buf, "Mensagem em #{s}", .{cl.chan_name[0..cl.chan_name_len]}) catch tr("Mensagem ou @nome");
         };
-        const enter = c.igInputTextWithHint("##chatin", hint.ptr, &a.chat_input, a.chat_input.len, c.ImGuiInputTextFlags_EnterReturnsTrue | c.ImGuiInputTextFlags_CallbackAlways | c.ImGuiInputTextFlags_CallbackCompletion, chatCallback, a);
+        c.igPushStyleColor_U32(c.ImGuiCol_ScrollbarBg, 0);
+        _ = c.igInputTextEx("##chatin", hint.ptr, &a.chat_input, @intCast(a.chat_input.len), v2(bw - S(82), bh - S(8)), c.ImGuiInputTextFlags_Multiline | c.ImGuiInputTextFlags_WordWrap | c.ImGuiInputTextFlags_CallbackAlways | c.ImGuiInputTextFlags_CallbackCompletion, chatCallback, a);
+        c.igPopStyleColor(1);
+        const enter = a.chat_sent_len > 0;
         const input_active = c.igIsItemActive();
         c.igPopStyleVar(1);
         c.igPopStyleColor(3);
@@ -6004,11 +6018,11 @@ pub const App = struct {
             drawTextF(d, font_regular, 12, v2(bx + S(6), by - S(18)), col.muted, fmtZ("{s}  mandando imagem...", .{ic.image}));
         }
         c.igSameLine(0, 0);
-        c.igSetCursorScreenPos(v2(bx + bw - S(76), by + S(5)));
+        c.igSetCursorScreenPos(v2(bx + bw - S(76), by + bh - S(39)));
         if (iconButton("##attach", ic.image, S(34), col.muted, col.hover, tr("Imagem: arraste o arquivo pra janela ou copie e aperte Ctrl+V aqui"))) {
             if (!chatsend.paste(cl)) a.toast("Pra mandar imagem: arraste o arquivo pra janela do telinha, ou copie a imagem e aperte Ctrl+V no chat.", .{}, false);
         }
-        c.igSetCursorScreenPos(v2(bx + bw - S(40), by + S(5)));
+        c.igSetCursorScreenPos(v2(bx + bw - S(40), by + bh - S(39)));
         const send_click = iconButton("##send", ic.send, S(34), col.muted, col.hover, tr("Enviar"));
         if (enter or send_click) {
             const raw = if (enter and a.chat_sent_len > 0) a.chat_sent[0..a.chat_sent_len] else std.mem.sliceTo(&a.chat_input, 0);
@@ -6021,6 +6035,171 @@ pub const App = struct {
         c.igEndChild();
         c.igPopStyleVar(1);
         c.igPopStyleColor(1);
+    }
+
+    // ------------------------------------------------------- texto formatado
+
+    /// Mensagem com markdown (ver markdown.zig): blocos de código com botão de
+    /// copiar, `código`, **negrito**, *itálico* e links clicáveis, quebrando
+    /// linha em `max_x`. Avança o cursor pela altura usada.
+    fn drawRichText(a: *App, text: []const u8, max_x: f32, id: u32) void {
+        _ = a;
+        const d = drawList();
+        const p0 = c.igGetCursorScreenPos();
+        const fs: f32 = 14.5;
+        const lh = textSizeF(font_regular, fs, "Ag").y;
+        var y = p0.y;
+        var pos: usize = 0;
+        var k: u32 = 0;
+        var first = true;
+        while (markdown.nextBlock(text, &pos)) |blk| : (k += 1) {
+            switch (blk) {
+                .text => |t| {
+                    if (t.len == 0) continue;
+                    if (!first) y += S(2);
+                    y = richInline(d, t, p0.x, max_x, y, fs, lh);
+                },
+                .code => |cb| {
+                    if (!first) y += S(4);
+                    y = codeBlock(d, cb.lang, cb.body, p0.x, max_x, y, id, k);
+                },
+            }
+            first = false;
+        }
+        c.igSetCursorScreenPos(p0);
+        c.igDummy(v2(@max(1, max_x - p0.x), @max(lh, y - p0.y)));
+    }
+
+    /// Texto corrido com estilos; devolve o y da linha de baixo.
+    fn richInline(d: *c.ImDrawList, text: []const u8, x0: f32, max_x: f32, y_start: f32, fs: f32, lh: f32) f32 {
+        var buf: [128]markdown.Span = undefined;
+        const n = markdown.spans(text, &buf);
+        var x = x0;
+        var y = y_start;
+        const mono = fonts_mono.regular;
+        const space_w = textSizeF(font_regular, fs, " ").x;
+        for (buf[0..n]) |sp| {
+            const st = sp.style;
+            const font = if (st.code) mono else if (st.bold) font_bold else font_regular;
+            const size = if (st.code) fs - 1.5 else fs;
+            const color = if (st.link) col.blurple else if (st.bold) col.header else col.text;
+            // link: o trecho inteiro é um alvo de clique (desenhado em pedaços)
+            var i: usize = 0;
+            while (i < sp.text.len) {
+                const ch = sp.text[i];
+                if (ch == '\n') {
+                    x = x0;
+                    y += lh;
+                    i += 1;
+                    continue;
+                }
+                if (ch == ' ' or ch == '\t') {
+                    if (x > x0 or st.code) x += space_w * @as(f32, if (ch == '\t') 4 else 1);
+                    i += 1;
+                    continue;
+                }
+                var j = i;
+                while (j < sp.text.len and sp.text[j] != ' ' and sp.text[j] != '\n' and sp.text[j] != '\t') : (j += 1) {}
+                var word = sp.text[i..j];
+                const pad: f32 = if (st.code) S(4) else 0;
+                while (word.len > 0) {
+                    var w = textSizeF(font, size, word).x + pad * 2;
+                    if (x + w > max_x and x > x0) {
+                        x = x0;
+                        y += lh;
+                    }
+                    // palavra maior que a linha inteira: corta onde couber
+                    var piece = word;
+                    if (w > max_x - x0) {
+                        var cut: usize = 0;
+                        var it = (std.unicode.Utf8View.init(word) catch break).iterator();
+                        while (it.nextCodepointSlice()) |cp| {
+                            const next = cut + cp.len;
+                            if (textSizeF(font, size, word[0..next]).x + pad * 2 > max_x - x) break;
+                            cut = next;
+                        }
+                        if (cut == 0) cut = std.unicode.utf8ByteSequenceLength(word[0]) catch 1;
+                        piece = word[0..cut];
+                        w = textSizeF(font, size, piece).x + pad * 2;
+                    }
+                    const ty = y + (lh - S(size) * font_k) / 2;
+                    if (st.code) rectFill(d, x, y + S(1), x + w, y + lh - S(1), withAlpha(col.text, 24), S(4));
+                    const vtx0 = d.*.VtxBuffer.Size;
+                    drawTextF(d, font, size, v2(x + pad, ty), color, piece);
+                    if (st.italic) {
+                        // sem fonte itálica: inclina o que acabou de ser desenhado
+                        const base = y + lh;
+                        var vi: c_int = vtx0;
+                        while (vi < d.*.VtxBuffer.Size) : (vi += 1) {
+                            const v = &d.*.VtxBuffer.Data[@intCast(vi)];
+                            v.pos.x += (base - v.pos.y) * 0.2;
+                        }
+                    }
+                    if (st.link) {
+                        c.ImDrawList_AddLine(d, v2(x, y + lh - S(2)), v2(x + w, y + lh - S(2)), withAlpha(col.blurple, 140), S(1), 0);
+                        if (c.igIsMouseHoveringRect(v2(x, y), v2(x + w, y + lh), true) and c.igIsWindowHovered(0)) {
+                            c.igSetMouseCursor(c.ImGuiMouseCursor_Hand);
+                            tooltipText(fmtZ("{s}", .{sp.text}));
+                            if (c.igIsMouseClicked_Bool(0, false)) _ = openPath(sp.text);
+                        }
+                    }
+                    x += w;
+                    word = word[piece.len..];
+                    if (word.len > 0) {
+                        x = x0;
+                        y += lh;
+                    }
+                }
+                i = j;
+            }
+        }
+        return y + lh;
+    }
+
+    /// Bloco de código: fundo escuro, fonte monoespaçada, linguagem no canto e
+    /// botão de copiar. Linha comprida quebra (no chat não dá pra rolar de lado).
+    fn codeBlock(d: *c.ImDrawList, lang: []const u8, body_raw: []const u8, x0: f32, max_x: f32, y0: f32, id: u32, k: u32) f32 {
+        // tab vira 4 espaços (a fonte não tem largura de tab)
+        var tb: [4096]u8 = undefined;
+        var n: usize = 0;
+        for (body_raw) |ch| {
+            if (n + 4 >= tb.len) break;
+            if (ch == '\t') {
+                @memcpy(tb[n .. n + 4], "    ");
+                n += 4;
+            } else if (ch != '\r') {
+                tb[n] = ch;
+                n += 1;
+            }
+        }
+        const body = tb[0..n];
+        const mono = fonts_mono.regular;
+        const fs: f32 = 13;
+        const pad = S(12);
+        const top: f32 = if (lang.len > 0) S(22) else S(10);
+        const inner_w = max_x - x0 - pad * 2;
+        c.igPushFont(mono, S(fs) * font_k);
+        const ts = c.igCalcTextSize(body.ptr, body.ptr + body.len, false, inner_w);
+        c.igPopFont();
+        const h = top + ts.y + S(10);
+        rectFill(d, x0, y0, max_x, y0 + h, withAlpha(col.bg_dark, 230), S(8));
+        c.ImDrawList_AddRect(d, v2(x0, y0), v2(max_x, y0 + h), withAlpha(col.text, 22), S(8) * col.round, S(1), 0);
+        rectFill(d, x0, y0 + S(6), x0 + S(3), y0 + h - S(6), withAlpha(col.blurple, 160), S(2));
+        if (lang.len > 0) drawTextF(d, font_semibold, 11, v2(x0 + pad, y0 + S(5)), col.faint, lang);
+        c.ImDrawList_AddText_FontPtr(d, mono, S(fs) * font_k, v2(x0 + pad, y0 + top), col.text, body.ptr, body.ptr + body.len, inner_w, null);
+        // copiar
+        const bs = S(24);
+        const back = c.igGetCursorScreenPos();
+        c.igSetCursorScreenPos(v2(max_x - bs - S(4), y0 + S(3)));
+        if (iconButton(fmtZ("##cpcode{d}_{d}", .{ id, k }), ic.copy, bs, col.muted, col.hover, tr("Copiar o código"))) {
+            var cz: [4097]u8 = undefined;
+            const m = @min(body.len, cz.len - 1);
+            @memcpy(cz[0..m], body[0..m]);
+            cz[m] = 0;
+            c.igSetClipboardText(@ptrCast(&cz));
+        }
+        c.igSetCursorScreenPos(back);
+        return y0 + h;
     }
 
     /// Comandos do chat (como no IRC): /join canal (ou /j, /canal, /entrar)
@@ -6108,7 +6287,14 @@ pub const App = struct {
             }
             a.mention_apply_len = 0;
         }
-        if (c.igIsKeyPressed_Bool(c.ImGuiKey_Enter, false) or c.igIsKeyPressed_Bool(c.ImGuiKey_KeypadEnter, false)) {
+        const io = c.igGetIO_Nil();
+        if ((c.igIsKeyPressed_Bool(c.ImGuiKey_Enter, false) or c.igIsKeyPressed_Bool(c.ImGuiKey_KeypadEnter, false)) and !io.*.KeyShift) {
+            // a quebra de linha que o Enter acabou de pôr não faz parte da mensagem
+            const cur: usize = @intCast(data.*.CursorPos);
+            // (Ctrl+Enter não põe quebra; o ImGui solta a caixa: pega o foco de volta)
+            if (io.*.KeyCtrl) {
+                a.focus_chat = true;
+            } else if (cur > 0 and data.*.Buf[cur - 1] == '\n') c.ImGuiInputTextCallbackData_DeleteChars(data, @intCast(cur - 1), 1);
             const n: usize = @intCast(@min(data.*.BufTextLen, a.chat_sent.len));
             @memcpy(a.chat_sent[0..n], data.*.Buf[0..n]);
             a.chat_sent_len = n;

@@ -9,6 +9,7 @@ const audio = @import("audio.zig");
 
 test {
     _ = @import("integration_test.zig");
+    _ = @import("markdown.zig");
     _ = @import("procstat.zig");
     _ = @import("config.zig");
     _ = @import("hotkey.zig");

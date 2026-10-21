@@ -217,6 +217,7 @@ pub fn server(text: []const u8, buf: []u8) []const u8 {
 
 const table = [_][2][]const u8{
     // canais
+    .{ "Copiar o código", "Copy the code" },
     .{ "CANAIS · {d}", "CHANNELS · {d}" },
     .{ "Canais: {s}", "Channels: {s}" },
     .{ "CANAL", "CHANNEL" },
@@ -225,7 +226,7 @@ const table = [_][2][]const u8{
     .{ "Entrar nesse canal", "Join this channel" },
     .{ "Esse servidor não tem canais (é de uma versão mais velha do telinha).", "This server has no channels (it's an older telinha)." },
     .{ "Estatísticas do servidor (você entrou com o token de admin)", "Server statistics (you joined with the admin token)" },
-    .{ "Mensagem em #{s} ou /join canal", "Message #{s} or /join channel" },
+    .{ "Mensagem em #{s}", "Message #{s}" },
     .{ "nome do canal (Enter entra)", "channel name (Enter joins)" },
     .{ "Num servidor com canais (como no IRC), entra direto nesse; vazio = o padrão. Dá pra trocar depois no painel ou com /join no chat.", "On a server with channels (like IRC), joins this one directly; empty = the default. You can switch later in the panel or with /join in the chat." },
     .{ "opcional", "optional" },

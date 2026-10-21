@@ -358,6 +358,39 @@ def estatisticas_servidor():
 
 
 @test
+def chat_markdown():
+    """Chat com markdown: Shift+Enter quebra linha (Enter manda), bloco de código com o botão de copiar, `código`, **negrito** e link clicável; a caixa cresce com o texto e não perde o foco depois do Enter."""
+    with Session("markdown") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)])
+        a.wait(lambda st: st["status"] == "connected", 10, "a sala")
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}"])
+        b.wait(lambda st: st["status"] == "connected", 10, "a Bia entrar")
+        a.click("##chatin")
+        time.sleep(0.2)
+        a.type("olha isso:")
+        a.key("Return", shift=True)
+        a.type("```zig")
+        a.key("Return", shift=True)
+        a.type("const x = 1;")
+        a.key("Return", shift=True)
+        a.type("```")
+        a.key("Return", shift=True)
+        a.type("e **isso** com `x` aqui https://example.com/teste\n")
+        want = "olha isso:\n```zig\nconst x = 1;\n```\ne **isso** com `x` aqui https://example.com/teste"
+        st = b.wait(lambda st: any(l["text"] == want for l in st["chat"]), 5, "a mensagem com quebras de linha")
+        mid = next(l["id"] for l in st["chat"] if l["text"] == want)
+        # Enter mandou e a caixa continuou ativa: digitar logo depois funciona
+        a.type("de novo\n")
+        a.wait(lambda st: any(l["text"] == "de novo" for l in st["chat"]), 5, "a segunda mensagem (sem clicar na caixa de novo)")
+        # copiar o bloco
+        b.click(f"##cpcode{mid}_1")
+        b.wait(lambda st: st["clipboard"] == "const x = 1;", 3, "o código copiado")
+        # link: clicar abre (no teste só registra)
+        b.screenshot(os.path.join(s.base, "markdown.png"))
+
+
+@test
 def sala_controles():
     """Sala: convite, chat (Enter e botão), esconder/mostrar chat, surdo, configurações, compartilhar tela, assistir pelas pílulas do topo e pelo card, modo cinema, F11."""
     with Session("controles") as s:
