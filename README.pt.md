@@ -47,7 +47,7 @@ Pegue a versão mais recente na [página de Releases](../../releases/latest).
 | Plataforma | Arquivo |
 |---|---|
 | Windows 10/11 (x86-64) | `telinha-windows-x86_64.exe` |
-| Linux (x86-64) | `telinha-linux-x86_64.tar.gz` |
+| Linux (x86-64) | `telinha-linux-x86_64` (rode `chmod +x` antes) ou `telinha-linux-x86_64.tar.gz` |
 | Servidor dedicado | `telinha-server-linux-x86_64` / `telinha-server-linux-aarch64`, ou monte a imagem Docker (ver [DEPLOY.md](docs/DEPLOY.pt.md)) |
 | Símbolos pros relatórios de travamento | `telinha-simbolos.tar.gz` |
 

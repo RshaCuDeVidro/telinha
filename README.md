@@ -47,7 +47,7 @@ Grab the latest build from the [Releases page](../../releases/latest).
 | Platform | File |
 |---|---|
 | Windows 10/11 (x86-64) | `telinha-windows-x86_64.exe` |
-| Linux (x86-64) | `telinha-linux-x86_64.tar.gz` |
+| Linux (x86-64) | `telinha-linux-x86_64` (run `chmod +x` first) or `telinha-linux-x86_64.tar.gz` |
 | Dedicated server | `telinha-server-linux-x86_64` / `telinha-server-linux-aarch64`, or build the Docker image (see [DEPLOY.md](docs/DEPLOY.md)) |
 | Debug symbols for crash reports | `telinha-simbolos.tar.gz` |
 
