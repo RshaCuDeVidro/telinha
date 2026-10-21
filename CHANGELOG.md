@@ -6,6 +6,8 @@
 
 Talks to 3.0 (the new fields are optional).
 
+- **Linux binary runs on older distros**: built against glibc 2.31 (Ubuntu/Pop!_OS 20.04 and newer) with GLFW built in, so it no longer needs the distro's GLFW (3.3 on Ubuntu 22.04/24.04 was too old). X11 and Wayland are picked at runtime, as before.
+
 - **Video, sound and voice over UDP**: a lost packet no longer holds back
   everything behind it (over TCP, voice got stuck behind a video frame, and a
   loss at the end of a burst cost ~200 ms). The receiver asks back only for the

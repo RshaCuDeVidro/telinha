@@ -6,6 +6,7 @@
 
 Conversa com a 3.0 (os campos novos são opcionais).
 
+- **Binário Linux roda em distro mais antiga**: compilado contra a glibc 2.31 (Ubuntu/Pop!_OS 20.04 em diante) e com a GLFW embutida, sem depender da GLFW da distro (a 3.3 do Ubuntu 22.04/24.04 era velha demais). X11 ou Wayland continua sendo escolhido na hora de rodar.
 - **Vídeo, som e voz por UDP**: um pacote perdido não segura mais tudo que vem
   atrás (no TCP, a voz ficava presa atrás de um quadro de vídeo, e perda no
   fim de uma rajada custava ~200 ms). Quem recebe pede de volta só o pedaço

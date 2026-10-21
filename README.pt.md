@@ -58,11 +58,11 @@ No Linux, o binário roda em qualquer distro com glibc 2.31 ou mais nova, como U
 
 ```sh
 # Debian / Ubuntu / Pop!_OS / Mint
-sudo apt install libglfw3 libportal1 libpipewire-0.3-0
+sudo apt install libportal1 libpipewire-0.3-0
 # Arch
-sudo pacman -S glfw libportal pipewire
+sudo pacman -S libportal pipewire
 # Fedora
-sudo dnf install glfw libportal pipewire-libs
+sudo dnf install libportal pipewire-libs
 ```
 
 ## Começando
@@ -172,9 +172,10 @@ No Linux, instale as bibliotecas do sistema pra interface e pra captura:
 
 ```sh
 # Arch
-sudo pacman -S glfw libportal pipewire libx11 libxext libxfixes
+sudo pacman -S libportal pipewire libx11 libxext libxfixes wayland libxkbcommon libxrandr libxinerama libxcursor libxi
 # Debian / Ubuntu
-sudo apt install libglfw3-dev libgl-dev libportal-dev libpipewire-0.3-dev libx11-dev libxext-dev libxfixes-dev
+sudo apt install libgl-dev libportal-dev libpipewire-0.3-dev libx11-dev libxext-dev libxfixes-dev \
+  libwayland-dev libxkbcommon-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
 ```
 
 E compile:

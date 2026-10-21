@@ -440,6 +440,44 @@ fn addImgui(b: *std.Build, deps: Deps, mod: *std.Build.Module) void {
 // ---------------------------------------------------------------------------
 // GLFW (Windows: compilado aqui; Linux: biblioteca do sistema)
 
+/// GLFW no Linux, com X11 e Wayland (escolhe na hora de rodar, como o da
+/// distro). As bibliotecas do X11, do Wayland e do xkbcommon ele abre sozinho
+/// (dlopen): no link só entram os headers.
+fn glfwLinux(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
+    const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
+    const lib = b.addLibrary(.{ .name = "glfw", .root_module = mod, .linkage = .static });
+    // protocolos do Wayland: gerados pelo wayland-scanner (pacote wayland/libwayland-bin)
+    const gen = b.addWriteFiles();
+    for ([_][]const u8{
+        "wayland",                  "viewporter",                      "xdg-shell",
+        "idle-inhibit-unstable-v1", "pointer-constraints-unstable-v1", "relative-pointer-unstable-v1",
+        "fractional-scale-v1",      "xdg-activation-v1",               "xdg-decoration-unstable-v1",
+    }) |proto| {
+        const xml = deps.glfw.path(b.fmt("deps/wayland/{s}.xml", .{proto}));
+        for ([_][2][]const u8{ .{ "client-header", "-client-protocol.h" }, .{ "private-code", "-client-protocol-code.h" } }) |kind| {
+            const run = b.addSystemCommand(&.{ "wayland-scanner", kind[0] });
+            run.addFileArg(xml);
+            const name = b.fmt("{s}{s}", .{ proto, kind[1] });
+            _ = gen.addCopyFile(run.addOutputFileArg(name), name);
+        }
+    }
+    mod.addIncludePath(gen.getDirectory());
+    mod.addIncludePath(deps.glfw.path("include"));
+    hostSystemPaths(b, mod);
+    mod.addCSourceFiles(.{
+        .root = deps.glfw.path("src"),
+        .files = &.{
+            "context.c",       "init.c",        "input.c",          "monitor.c",      "platform.c",     "vulkan.c",
+            "window.c",        "egl_context.c", "osmesa_context.c", "null_init.c",    "null_monitor.c", "null_window.c",
+            "null_joystick.c", "posix_time.c",  "posix_thread.c",   "posix_module.c", "posix_poll.c",   "linux_joystick.c",
+            "x11_init.c",      "x11_monitor.c", "x11_window.c",     "xkb_unicode.c",  "glx_context.c",  "wl_init.c",
+            "wl_monitor.c",    "wl_window.c",
+        },
+        .flags = &.{ "-D_GLFW_X11", "-D_GLFW_WAYLAND", "-DHAVE_MEMFD_CREATE", "-D_DEFAULT_SOURCE", "-Wno-everything" },
+    });
+    return lib;
+}
+
 fn glfwWindows(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
     const mod = b.createModule(.{ .target = target, .optimize = optimize, .link_libc = true });
     const lib = b.addLibrary(.{ .name = "glfw", .root_module = mod, .linkage = .static });
@@ -536,7 +574,11 @@ fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: st
         mod.addCSourceFile(.{ .file = b.path("src/c/camera_linux.c"), .flags = &.{"-O2"} });
         mod.addCSourceFile(.{ .file = b.path("src/c/notify_linux.c"), .flags = &.{"-O2"} });
         hostSystemPaths(b, mod);
-        for ([_][]const u8{ "glfw3", "gl", "libportal", "libpipewire-0.3", "x11", "xext", "xfixes" }) |lib|
+        // GLFW embutido (o da distro pode ser velho: 3.3 no Ubuntu 22.04/24.04 não
+        // tem glfwGetPlatform); ele mesmo carrega X11/Wayland na hora de rodar
+        mod.addIncludePath(deps.glfw.path("include"));
+        mod.linkLibrary(glfwLinux(b, deps, target, optimize));
+        for ([_][]const u8{ "gl", "libportal", "libpipewire-0.3", "x11", "xext", "xfixes" }) |lib|
             mod.linkSystemLibrary(lib, .{});
     }
 
@@ -564,17 +606,23 @@ fn allowHostLibs(exe: *std.Build.Step.Compile, target: std.Build.ResolvedTarget)
 var host_headers: ?std.Build.LazyPath = null;
 
 /// Com a glibc fixada: as bibliotecas do sistema (/usr/lib...) e só os headers
-/// que ficam direto em /usr/include (X11, GL, GLFW...). /usr/include inteiro não:
+/// que ficam direto em /usr/include (X11, GL, Wayland...). /usr/include inteiro não:
 /// ele traz os headers da glibc daqui, que brigam com os da versão escolhida.
 /// Os outros (glib, pipewire, libportal) vêm do pkg-config, em pastas próprias.
 fn hostSystemPaths(b: *std.Build, mod: *std.Build.Module) void {
     if (!pinnedGlibc(mod.resolved_target.?)) return;
     if (host_headers == null) {
         const wf = b.addWriteFiles();
-        for ([_][]const u8{ "X11", "GL", "KHR", "EGL", "GLFW", "libportal" }) |d| {
+        for ([_][]const u8{ "X11", "GL", "KHR", "EGL", "libportal", "xkbcommon" }) |d| {
             const src = b.fmt("/usr/include/{s}", .{d});
             std.Io.Dir.accessAbsolute(b.graph.io, src, .{}) catch continue;
             _ = wf.addCopyDirectory(.{ .cwd_relative = src }, d, .{});
+        }
+        // os do Wayland ficam soltos em /usr/include
+        for ([_][]const u8{ "wayland-client-core.h", "wayland-client.h", "wayland-client-protocol.h", "wayland-util.h", "wayland-version.h", "wayland-cursor.h", "wayland-egl.h", "wayland-egl-core.h" }) |f| {
+            const src = b.fmt("/usr/include/{s}", .{f});
+            std.Io.Dir.accessAbsolute(b.graph.io, src, .{}) catch continue;
+            _ = wf.addCopyFile(.{ .cwd_relative = src }, f);
         }
         host_headers = wf.getDirectory();
     }

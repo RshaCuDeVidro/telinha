@@ -38,8 +38,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config nasm libglfw3-dev libgl-dev libportal-dev \
-            libpipewire-0.3-dev libx11-dev libxext-dev libxfixes-dev
+            pkg-config nasm libgl-dev libportal-dev libpipewire-0.3-dev \
+            libx11-dev libxext-dev libxfixes-dev \
+            libwayland-dev libxkbcommon-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
 
       - uses: mlugg/setup-zig@v2
         with:
