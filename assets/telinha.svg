@@ -60,27 +60,27 @@
 
     <!-- olhos amendoados: a íris fica dentro do olho (recortada), um delineado
          fino colado na borda e uma pontinha curta no canto de fora -->
-    <clipPath id="olhoE"><path d="M90 105 A10.5 9.4 -8 1 1 111 105 A10.5 9.4 -8 1 1 90 105 Z"/></clipPath>
-    <clipPath id="olhoD"><path d="M166 105 A10.5 9.4 8 1 1 145 105 A10.5 9.4 8 1 1 166 105 Z"/></clipPath>
-    <path d="M90 105 A10.5 9.4 -8 1 1 111 105 A10.5 9.4 -8 1 1 90 105 Z" fill="#120d19"/>
-    <path d="M166 105 A10.5 9.4 8 1 1 145 105 A10.5 9.4 8 1 1 166 105 Z" fill="#120d19"/>
+    <clipPath id="olhoE"><path d="M86.5 104.5 A13 11.6 -8 1 1 112.5 104.5 A13 11.6 -8 1 1 86.5 104.5 Z"/></clipPath>
+    <clipPath id="olhoD"><path d="M169.5 104.5 A13 11.6 8 1 1 143.5 104.5 A13 11.6 8 1 1 169.5 104.5 Z"/></clipPath>
+    <path d="M86.5 104.5 A13 11.6 -8 1 1 112.5 104.5 A13 11.6 -8 1 1 86.5 104.5 Z" fill="#120d19"/>
+    <path d="M169.5 104.5 A13 11.6 8 1 1 143.5 104.5 A13 11.6 8 1 1 169.5 104.5 Z" fill="#120d19"/>
     <g clip-path="url(#olhoE)">
-      <circle cx="100.5" cy="105" r="7.4" fill="url(#irisAzul)"/>
-      <circle cx="100.5" cy="105" r="3.5" fill="#050505"/>
-      <circle cx="98.4" cy="102.4" r="1.6" fill="#ffffff"/>
+      <circle cx="99.5" cy="104.5" r="9.2" fill="url(#irisAzul)"/>
+      <circle cx="99.5" cy="104.5" r="4.3" fill="#050505"/>
+      <circle cx="96.8" cy="101.4" r="2" fill="#ffffff"/>
     </g>
     <g clip-path="url(#olhoD)">
-      <circle cx="155.5" cy="105" r="7.4" fill="url(#irisMarrom)"/>
-      <circle cx="155.5" cy="105" r="3.5" fill="#050505"/>
-      <circle cx="153.4" cy="102.4" r="1.6" fill="#ffffff"/>
+      <circle cx="156.5" cy="104.5" r="9.2" fill="url(#irisMarrom)"/>
+      <circle cx="156.5" cy="104.5" r="4.3" fill="#050505"/>
+      <circle cx="153.8" cy="101.4" r="2" fill="#ffffff"/>
     </g>
     <g fill="#231b33">
-      <path d="M90.6 102.4 Q87.4 100.4 85 99 Q87.6 103.6 90.4 106 Z"/>
-      <path d="M165.4 102.4 Q168.6 100.4 171 99 Q168.4 103.6 165.6 106 Z"/>
+      <path d="M87.2 101.4 Q83.6 99.2 80.8 97.6 Q83.6 103 87 105.8 Z"/>
+      <path d="M168.8 101.4 Q172.4 99.2 175.2 97.6 Q172.4 103 169 105.8 Z"/>
     </g>
     <g fill="none" stroke="#231b33" stroke-width="1.8" stroke-linejoin="round">
-      <path d="M90 105 A10.5 9.4 -8 1 1 111 105 A10.5 9.4 -8 1 1 90 105 Z"/>
-      <path d="M166 105 A10.5 9.4 8 1 1 145 105 A10.5 9.4 8 1 1 166 105 Z"/>
+      <path d="M86.5 104.5 A13 11.6 -8 1 1 112.5 104.5 A13 11.6 -8 1 1 86.5 104.5 Z"/>
+      <path d="M169.5 104.5 A13 11.6 8 1 1 143.5 104.5 A13 11.6 8 1 1 169.5 104.5 Z"/>
     </g>
 
     <!-- focinho: o contorno do focinho comprido, o nariz grande e a boca -->
