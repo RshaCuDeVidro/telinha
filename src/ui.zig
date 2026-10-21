@@ -1105,9 +1105,12 @@ pub const App = struct {
     }
 
     /// Liga/desliga o microfone conforme o que a pessoa quer e avisa a sala.
-    fn applyVoice(a: *App) void {
+    fn applyVoice(a: *App, why: []const u8) void {
+        const before = a.mic != null;
         // silenciado pelo admin: o servidor descartaria a voz; nem abre o microfone
         if (a.mic_wanted and !a.deaf and !a.admin_muted) a.startMic() else a.stopMic();
+        // toda mudança do microfone vai pro log, com o porquê ("desmutou sozinho")
+        if (before != (a.mic != null)) debuglog.line("microfone {s} ({s})", .{ if (a.mic != null) "ligado" else "desligado", why });
         if (a.client) |cl| {
             var flags: u8 = 0;
             if (a.mic != null) flags |= proto.voice_mic;
@@ -1116,7 +1119,7 @@ pub const App = struct {
         }
     }
 
-    fn toggleMic(a: *App) void {
+    fn toggleMic(a: *App, why: []const u8) void {
         if (a.admin_muted) {
             a.toast("O admin da sala silenciou seu microfone.", .{}, true);
             return;
@@ -1126,7 +1129,7 @@ pub const App = struct {
             a.setDeaf(false);
             a.mic_wanted = true;
         } else a.mic_wanted = !a.mic_wanted;
-        a.applyVoice();
+        a.applyVoice(why);
         a.chime(if (a.mic != null) .mic_on else .mic_off);
         if (a.mic != null and !a.echo_hint_shown) {
             a.echo_hint_shown = true;
@@ -1137,7 +1140,7 @@ pub const App = struct {
         }
     }
 
-    fn toggleDeaf(a: *App) void {
+    fn toggleDeaf(a: *App, why: []const u8) void {
         if (a.deaf) {
             a.setDeaf(false);
             a.chime(.mic_on);
@@ -1145,7 +1148,7 @@ pub const App = struct {
             a.chime(.mic_off); // os avisos tocam mesmo surdo
             a.setDeaf(true); // surdo também desliga o microfone (mic_wanted fica guardado)
         }
-        a.applyVoice();
+        a.applyVoice(why);
     }
 
     /// Sala sem senha ganha uma (link público: qualquer um que achasse a
@@ -1342,7 +1345,7 @@ pub const App = struct {
         a.reconnect = .{};
         if (r.share) a.startSharing();
         if (r.camera) a.toggleCamera();
-        a.applyVoice();
+        a.applyVoice("reconectou");
         a.rewatch = r;
         a.rewatch_until = c.igGetTime() + 20;
         a.toast("Reconectado!", .{}, false);
@@ -1599,11 +1602,11 @@ pub const App = struct {
             switch (n.kind) {
                 proto.notice_muted => {
                     a.admin_muted = true;
-                    a.applyVoice();
+                    a.applyVoice("admin silenciou");
                 },
                 proto.notice_unmuted => {
                     a.admin_muted = false;
-                    a.applyVoice();
+                    a.applyVoice("admin liberou");
                 },
                 proto.notice_stream_stopped => if (n.extra == proto.kind_camera) a.stopCamera() else a.stopSharing(),
                 else => {},
@@ -1899,7 +1902,7 @@ pub const App = struct {
             }
             if (a.reconnect.attempt == 0) {
                 a.mic_wanted = a.cfg.mic_on_join;
-                a.applyVoice();
+                a.applyVoice("entrou na sala");
             }
             if (a.reconnect.attempt > 0) {
                 a.finishReconnect();
@@ -2082,8 +2085,8 @@ pub const App = struct {
             // se alguém pôs exatamente Ctrl+M (Ctrl+D) como atalho dessa mesma
             // ação, quem cuida é o atalho: os dois juntos ligariam e desligariam
             // no mesmo aperto
-            if (c.igIsKeyPressed_Bool(c.ImGuiKey_M, false) and !a.hotkeyIsCtrl(.mic, c.GLFW_KEY_M)) a.toggleMic();
-            if (c.igIsKeyPressed_Bool(c.ImGuiKey_D, false) and !a.hotkeyIsCtrl(.deaf, c.GLFW_KEY_D)) a.toggleDeaf();
+            if (c.igIsKeyPressed_Bool(c.ImGuiKey_M, false) and !a.hotkeyIsCtrl(.mic, c.GLFW_KEY_M)) a.toggleMic("Ctrl+M");
+            if (c.igIsKeyPressed_Bool(c.ImGuiKey_D, false) and !a.hotkeyIsCtrl(.deaf, c.GLFW_KEY_D)) a.toggleDeaf("Ctrl+D");
         }
         // Esc com uma janela aberta (configurações, recorte) é dela: não sai da tela cheia
         if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) and !a.share_modal and !a.settings_modal and a.crop_tile == null) {
@@ -3036,9 +3039,9 @@ pub const App = struct {
         c.igSetCursorScreenPos(v2(bx, by));
         const mic_on = a.mic != null;
         const mic_tip: [:0]const u8 = if (a.admin_muted) tr("O admin silenciou seu microfone") else if (mic_on) tr("Desligar o microfone") else tr("Ligar o microfone");
-        if (iconButton("##mic", if (mic_on) ic.mic else ic.mic_slash, bs, if (mic_on) col.text else col.red, col.hover, mic_tip)) a.toggleMic();
+        if (iconButton("##mic", if (mic_on) ic.mic else ic.mic_slash, bs, if (mic_on) col.text else col.red, col.hover, mic_tip)) a.toggleMic("botão");
         c.igSameLine(0, 0);
-        if (iconButton("##deaf", ic.headphones, bs, if (a.deaf) col.red else col.text, col.hover, if (a.deaf) tr("Voltar a ouvir a sala") else tr("Parar de ouvir a sala (surdo)"))) a.toggleDeaf();
+        if (iconButton("##deaf", ic.headphones, bs, if (a.deaf) col.red else col.text, col.hover, if (a.deaf) tr("Voltar a ouvir a sala") else tr("Parar de ouvir a sala (surdo)"))) a.toggleDeaf("botão");
         if (a.deaf) slash(d, v2(bx + bs, by), bs);
         c.igSameLine(0, 0);
         if (iconButton("##gear", ic.gear, bs, col.text, col.hover, tr("Configurações"))) a.openSettings();
@@ -5265,12 +5268,12 @@ pub const App = struct {
             .mic => {
                 if (now - a.hk_last[0] < 0.15) return;
                 a.hk_last[0] = now;
-                if (a.screen == .room) a.toggleMic();
+                if (a.screen == .room) a.toggleMic("atalho");
             },
             .deaf => {
                 if (now - a.hk_last[1] < 0.15) return;
                 a.hk_last[1] = now;
-                if (a.screen == .room) a.toggleDeaf();
+                if (a.screen == .room) a.toggleDeaf("atalho");
             },
             .share => {
                 if (now - a.hk_last[2] < 1.0) return;
@@ -5611,7 +5614,7 @@ pub const App = struct {
             c.igPopStyleColor(1);
             if (changed and a.mic != null) {
                 a.stopMic();
-                a.applyVoice();
+                a.applyVoice("trocou o microfone");
             }
         }
         c.igDummy(v2(0, S(8)));
@@ -5640,7 +5643,7 @@ pub const App = struct {
         c.igPopStyleColor(1);
         if (reopen and a.mic != null) {
             a.stopMic();
-            a.applyVoice();
+            a.applyVoice("configurações da voz");
         }
     }
 

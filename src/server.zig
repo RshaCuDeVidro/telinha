@@ -333,6 +333,9 @@ pub const Server = struct {
     next_id: u32 = 1,
     locked: bool = false,
     bans: std.ArrayList(Ban) = .empty,
+    /// Chaves (do app) de quem o admin silenciou: quem cai e volta continua
+    /// silenciado (antes voltava com o microfone liberado: "desmutou sozinho")
+    muted_keys: std.ArrayList(u64) = .empty,
     chat_log: [chat_history_len]ChatEntry = undefined,
     chat_len: usize = 0,
     chat_head: usize = 0,
@@ -385,6 +388,7 @@ pub const Server = struct {
         for (0..s.chat_len) |i| s.chat_log[(s.chat_head + i) % chat_history_len].free();
         s.conns.deinit(gpa);
         s.bans.deinit(gpa);
+        s.muted_keys.deinit(gpa);
         gpa.destroy(s);
         sync.hiresTimer(false);
     }
@@ -1046,6 +1050,13 @@ pub const Server = struct {
                 const mute = value != 0;
                 if (t.muted == mute) return;
                 t.muted = mute;
+                if (t.client_key != 0) {
+                    for (s.muted_keys.items, 0..) |k, i| if (k == t.client_key) {
+                        _ = s.muted_keys.swapRemove(i);
+                        break;
+                    };
+                    if (mute) s.muted_keys.append(gpa, t.client_key) catch {};
+                }
                 s.log("{s} {s} {s}", .{ cn.nameSlice(), if (mute) "silenciou" else "liberou o microfone de", t.nameSlice() });
                 const text = std.fmt.bufPrint(&tmp, "{s} {s}", .{ cn.nameSlice(), if (mute) "silenciou seu microfone." else "liberou seu microfone." }) catch "";
                 try pushNotice(t, if (mute) proto.notice_muted else proto.notice_unmuted, text, 0);
@@ -1204,6 +1215,13 @@ pub const Server = struct {
             const m = try chatMsg(e, proto.chat_history);
             cn.queue.pushOwned(m);
         }
+
+        // silenciado pelo admin antes de cair: continua silenciado
+        if (cn.client_key != 0 and !cn.owner) for (s.muted_keys.items) |k| if (k == cn.client_key) {
+            cn.muted = true;
+            pushNotice(cn, proto.notice_muted, "Você continua silenciado pelo admin.", 0) catch {};
+            break;
+        };
 
         var tmp: [96]u8 = undefined;
         try s.broadcastChat(0, "", std.fmt.bufPrint(&tmp, "{s} entrou na sala", .{name}) catch "");

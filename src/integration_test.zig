@@ -674,6 +674,55 @@ test "admin: expulsa, bane (não volta), silencia, para transmissão, dá admin 
     try testing.expectEqual(@as(usize, 3), srv.memberCount());
 }
 
+test "admin: quem foi silenciado continua silenciado se cair e voltar (pela chave do app)" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port, .admin_token = "token-do-dono" });
+    defer srv.stop();
+
+    var dono = try TestClient.connect(port, "Dono", "", "token-do-dono");
+    defer dono.close();
+    try dono.welcome();
+    var v = try TestClient.connectKey(port, "Visita", "", "", 0x777);
+    try v.welcome();
+    try dono.admin(proto.admin_mute, v.id, 1);
+    {
+        var r: proto.Reader = .{ .data = try v.expect(.notice) };
+        try testing.expectEqual(proto.notice_muted, try r.u8_());
+    }
+    // cai e volta (outra conexão, mesma chave): o aviso chega de novo e a lista mostra silenciado
+    v.close();
+    while (srv.memberCount() != 1) sync.sleepMs(20);
+    var v2 = try TestClient.connectKey(port, "Visita", "", "", 0x777);
+    try v2.welcome();
+    {
+        var r: proto.Reader = .{ .data = try v2.expect(.notice) };
+        try testing.expectEqual(proto.notice_muted, try r.u8_());
+    }
+    while (true) {
+        const l = try dono.members();
+        if (l.get(v2.id)) |m| if (m.flags & proto.member_muted != 0) break;
+    }
+    // liberou: quem cai e volta entra liberado
+    try dono.admin(proto.admin_mute, v2.id, 0);
+    {
+        var r: proto.Reader = .{ .data = try v2.expect(.notice) };
+        try testing.expectEqual(proto.notice_unmuted, try r.u8_());
+    }
+    v2.close();
+    while (srv.memberCount() != 1) sync.sleepMs(20);
+    var v3 = try TestClient.connectKey(port, "Visita", "", "", 0x777);
+    defer v3.close();
+    try v3.welcome();
+    while (true) {
+        const l = try dono.members();
+        if (l.get(v3.id)) |m| {
+            try testing.expect(m.flags & proto.member_muted == 0);
+            break;
+        }
+    }
+}
+
 test "ponteiro: chega em quem assiste e em quem transmite, não nos outros" {
     net.init();
     const port = freshPort();

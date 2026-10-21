@@ -183,6 +183,7 @@ const server_whole = [_]Suffix{
     .{ "O link público da sala foi desligado.", "The room's public link was turned off." },
     .{ "Você foi removido da sala.", "You were removed from the room." },
     .{ "Você foi banido dessa sala.", "You are banned from this room." },
+    .{ "Você continua silenciado pelo admin.", "The admin still has you muted." },
     .{ "A sala está trancada: ninguém novo entra agora.", "The room is locked: no one new can join right now." },
     .{ "A sala está cheia.", "The room is full." },
 };
