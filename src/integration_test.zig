@@ -44,7 +44,16 @@ const TestClient = struct {
         return connectFull(port, name, "", token, 0, proto.codecs_h264, chan);
     }
 
+    /// App novo: a call é separada do canal de texto (feat_calls).
+    fn connectCalls(port: u16, name: []const u8, token: []const u8, chan: []const u8, key: u64) !TestClient {
+        return connectFeats(port, name, "", token, key, proto.codecs_h264, chan, proto.feat_calls);
+    }
+
     fn connectFull(port: u16, name: []const u8, password: []const u8, token: []const u8, key: u64, codecs: u8, chan: ?[]const u8) !TestClient {
+        return connectFeats(port, name, password, token, key, codecs, chan, 0);
+    }
+
+    fn connectFeats(port: u16, name: []const u8, password: []const u8, token: []const u8, key: u64, codecs: u8, chan: ?[]const u8, feats: u8) !TestClient {
         const s = try net.connect("127.0.0.1", port);
         errdefer net.close(s);
         net.setRecvTimeout(s, 5000);
@@ -63,7 +72,7 @@ const TestClient = struct {
         try b.str(proto.app_version);
         try b.u8_(codecs);
         if (chan) |ch| {
-            try b.u8_(0); // recursos
+            try b.u8_(feats); // recursos
             try b.str(ch);
         }
         try c.send(try b.finish());
@@ -89,6 +98,17 @@ const TestClient = struct {
             l.flags[l.n] = flags;
             l.n += 1;
         }
+        // servidor com call separada: gente na call, tópicos, a minha call
+        for (0..n) |i| l.in_call[i] = r.u16_() catch break;
+        for (0..n) |i| {
+            const t = r.str() catch break;
+            @memcpy(l.topics[i][0..t.len], t);
+            l.topic_lens[i] = t.len;
+        }
+        if (r.str()) |cs| {
+            @memcpy(l.call[0..cs.len], cs);
+            l.call_len = cs.len;
+        } else |_| {}
         return l;
     }
 
@@ -239,6 +259,19 @@ const ChanList = struct {
     lens: [proto.max_channels]usize = undefined,
     people: [proto.max_channels]u16 = undefined,
     flags: [proto.max_channels]u8 = undefined,
+    in_call: [proto.max_channels]u16 = [_]u16{0} ** proto.max_channels,
+    topics: [proto.max_channels][proto.chan_topic_max]u8 = undefined,
+    topic_lens: [proto.max_channels]usize = [_]usize{0} ** proto.max_channels,
+    call: [proto.channel_name_max]u8 = undefined,
+    call_len: usize = 0,
+
+    fn callName(l: *const ChanList) []const u8 {
+        return l.call[0..l.call_len];
+    }
+    fn index(l: *const ChanList, name: []const u8) ?usize {
+        for (0..l.n) |i| if (std.mem.eql(u8, l.names[i][0..l.lens[i]], name)) return i;
+        return null;
+    }
 
     fn current(l: *const ChanList) []const u8 {
         return l.cur[0..l.cur_len];
@@ -253,7 +286,7 @@ const ChanList = struct {
     }
 };
 
-const MemberInfo = struct { id: u32, flags: u8, route: u8, owner: bool, cam_w: u16 };
+const MemberInfo = struct { id: u32, flags: u8, route: u8, owner: bool, cam_w: u16, in_chan: bool = true, in_call: bool = true };
 const MemberList = struct {
     room_flags: u8,
     n: usize,
@@ -275,8 +308,10 @@ fn parseMembers(payload: []const u8) !MemberList {
         _ = try r.str();
         m.flags = try r.u8_();
         const route = try r.u8_();
-        m.route = route & 0x7F;
+        m.route = route & 0x1F;
         m.owner = route & 0x80 != 0;
+        m.in_chan = route & proto.member_in_chan != 0;
+        m.in_call = route & proto.member_in_call != 0;
         _ = try r.take(2 + 2 + 1); // tela
         m.cam_w = try r.u16_();
         _ = try r.take(2 + 1);
@@ -1996,4 +2031,185 @@ test "identidade: o servidor prova quem é antes do hello (assinatura deste hand
     var c = try TestClient.connect(p2, "Ana", "", "");
     defer c.close();
     try testing.expectEqual(proto.Type.welcome, try proto.recvMsg(c.sock, &c.ch, &c.rb));
+}
+
+fn sendCall(c: *TestClient, name: []const u8, pw: []const u8) !void {
+    var b: proto.Builder = .{};
+    defer b.deinit();
+    try b.begin(.call);
+    try b.str(name);
+    try b.str(pw);
+    try c.send(try b.finish());
+}
+
+fn sendChannel(c: *TestClient, name: []const u8, pw: []const u8) !void {
+    var b: proto.Builder = .{};
+    defer b.deinit();
+    try b.begin(.channel);
+    try b.str(name);
+    try b.str(pw);
+    try c.send(try b.finish());
+}
+
+fn chanAdmin(c: *TestClient, action: u8, name: []const u8, value: []const u8, target: u32) !void {
+    var b: proto.Builder = .{};
+    defer b.deinit();
+    try b.begin(.chan_admin);
+    try b.u8_(action);
+    try b.str(name);
+    try b.str(value);
+    try b.u32_(target);
+    try c.send(try b.finish());
+}
+
+fn waitList(c: *TestClient, comptime cond: fn (*const ChanList) bool) !ChanList {
+    while (true) {
+        const l = try c.channels();
+        if (cond(&l)) return l;
+    }
+}
+
+test "call separada do canal: trocar o chat não tira da call; sair da call para voz e assistir; entrar na call de outro canal" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port, .channels = "geral,jogos" });
+    defer srv.stop();
+    var a = try TestClient.connectCalls(port, "Ana", "", "", 0);
+    defer a.close();
+    try a.welcome();
+    var l = try a.channels();
+    try testing.expectEqualStrings("geral", l.current());
+    try testing.expectEqualStrings("geral", l.callName()); // entrou na sala = na call do canal
+    var b = try TestClient.connectCalls(port, "Bia", "", "", 0);
+    defer b.close();
+    try b.welcome();
+    try b.streamStart(proto.kind_screen, 0);
+    // a Ana vai ler o #jogos: continua na call do #geral
+    try sendChannel(&a, "jogos", "");
+    l = try waitList(&a, struct {
+        fn f(x: *const ChanList) bool {
+            return std.mem.eql(u8, x.current(), "jogos");
+        }
+    }.f);
+    try testing.expectEqualStrings("geral", l.callName());
+    // a lista da Ana: a Bia está na call dela, mas não no chat
+    while (true) {
+        const ml = try a.members();
+        const bm = ml.get(b.id) orelse continue;
+        if (!bm.in_call or bm.in_chan) continue;
+        try testing.expect(ml.get(a.id).?.in_chan);
+        break;
+    }
+    // dá pra assistir a Bia (mesma call) mesmo lendo outro canal
+    try a.watch(b.id, 0);
+    _ = try b.expect(.keyreq);
+    try testing.expectEqual(@as(usize, 1), srv.watchingCount(a.id));
+    // sai da call: para de assistir, e assistir de novo não vale
+    sync.sleepMs(900);
+    try sendCall(&a, "", "");
+    l = try waitList(&a, struct {
+        fn f(x: *const ChanList) bool {
+            return x.call_len == 0;
+        }
+    }.f);
+    sync.sleepMs(100);
+    try testing.expectEqual(@as(usize, 0), srv.watchingCount(a.id));
+    try a.watch(b.id, 0);
+    sync.sleepMs(150);
+    try testing.expectEqual(@as(usize, 0), srv.watchingCount(a.id));
+    // entra na call do #jogos: a lista diz, e a Bia (no #geral) não está na call dela
+    sync.sleepMs(900);
+    try sendCall(&a, "jogos", "");
+    l = try waitList(&a, struct {
+        fn f(x: *const ChanList) bool {
+            return std.mem.eql(u8, x.callName(), "jogos");
+        }
+    }.f);
+    try testing.expectEqual(@as(u16, 1), l.in_call[l.index("jogos").?]);
+    try testing.expectEqual(@as(u16, 1), l.in_call[l.index("geral").?]);
+}
+
+test "canais: senha, trava, tópico, admin leva alguém; o que é fixo sobrevive ao servidor reiniciar (com os banidos)" {
+    net.init();
+    const port = freshPort();
+    var path_buf: [128]u8 = undefined;
+    const state = try std.fmt.bufPrint(&path_buf, "/tmp/telinha-teste-estado-{d}.txt", .{port});
+    defer {
+        var zb: [140]u8 = undefined;
+        if (std.fmt.bufPrintZ(&zb, "{s}", .{state})) |z| _ = std.c.unlink(z.ptr) else |_| {}
+    }
+    {
+        const srv = try Server.start(.{ .port = port, .admin_token = "tok", .state_path = state });
+        defer srv.stop();
+        var dono = try TestClient.connectCalls(port, "Dono", "tok", "", 1);
+        defer dono.close();
+        try dono.welcome();
+        var bia = try TestClient.connectCalls(port, "Bia", "", "", 2);
+        defer bia.close();
+        try bia.welcome();
+        // o dono cria o #secreto, põe senha, fixa e escreve o tópico
+        try sendChannel(&dono, "secreto", "");
+        _ = try waitList(&dono, struct {
+            fn f(x: *const ChanList) bool {
+                return std.mem.eql(u8, x.current(), "secreto");
+            }
+        }.f);
+        try chanAdmin(&dono, proto.chan_act_password, "secreto", "abc", 0);
+        try chanAdmin(&dono, proto.chan_act_fix, "secreto", "1", 0);
+        try chanAdmin(&dono, proto.chan_act_topic, "secreto", "só quem sabe a senha", 0);
+        var l = try waitList(&bia, struct {
+            fn f(x: *const ChanList) bool {
+                const i = x.index("secreto") orelse return false;
+                return x.flags[i] & proto.chan_password != 0 and x.flags[i] & proto.chan_fixed != 0 and x.topic_lens[i] > 0;
+            }
+        }.f);
+        const si = l.index("secreto").?;
+        try testing.expectEqualStrings("só quem sabe a senha", l.topics[si][0..l.topic_lens[si]]);
+        // sem senha: aviso de que pede senha; senha errada: aviso; certa: entra
+        try sendChannel(&bia, "secreto", "");
+        var r: proto.Reader = .{ .data = try bia.expect(.notice) };
+        try testing.expectEqual(proto.notice_channel, try r.u8_());
+        _ = try r.str();
+        try testing.expectEqual(proto.notice_channel_needs_password, try r.u8_());
+        sync.sleepMs(900);
+        try sendChannel(&bia, "secreto", "abc");
+        _ = try waitList(&bia, struct {
+            fn f(x: *const ChanList) bool {
+                return std.mem.eql(u8, x.current(), "secreto");
+            }
+        }.f);
+        // trancado: a Bia (sem admin) não entra no #geral trancado; o dono sim
+        try chanAdmin(&dono, proto.chan_act_lock, "geral", "1", 0);
+        sync.sleepMs(900);
+        try sendChannel(&bia, "geral", "");
+        r = .{ .data = try bia.expect(.notice) };
+        try testing.expectEqual(proto.notice_channel, try r.u8_());
+        // o dono leva a Bia pro #geral mesmo trancado (chat e call)
+        try chanAdmin(&dono, proto.chan_act_move, "geral", "", bia.id);
+        l = try waitList(&bia, struct {
+            fn f(x: *const ChanList) bool {
+                return std.mem.eql(u8, x.current(), "geral") and std.mem.eql(u8, x.callName(), "geral");
+            }
+        }.f);
+        r = .{ .data = try bia.expect(.notice) };
+        try testing.expectEqual(proto.notice_moved, try r.u8_());
+        try chanAdmin(&dono, proto.chan_act_lock, "geral", "0", 0);
+        // bane a Bia (pela chave)
+        try dono.admin(proto.admin_ban, bia.id, 0);
+        _ = try bia.denied();
+        sync.sleepMs(100);
+    }
+    // reiniciou: o #secreto continua fixo, com senha e tópico; a Bia continua banida
+    const srv2 = try Server.start(.{ .port = port + 1000, .admin_token = "tok", .state_path = state });
+    defer srv2.stop();
+    var c = try TestClient.connectCalls(port + 1000, "Caio", "", "", 3);
+    defer c.close();
+    try c.welcome();
+    const l = try c.channels();
+    const si = l.index("secreto") orelse return error.TestUnexpectedResult;
+    try testing.expect(l.flags[si] & proto.chan_password != 0 and l.flags[si] & proto.chan_fixed != 0);
+    try testing.expectEqualStrings("só quem sabe a senha", l.topics[si][0..l.topic_lens[si]]);
+    var bia2 = try TestClient.connectCalls(port + 1000, "Bia", "", "", 2);
+    defer bia2.close();
+    try testing.expectEqual(proto.deny_banned, try bia2.denied());
 }

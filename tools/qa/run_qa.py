@@ -283,47 +283,57 @@ def tela_inicial_parada():
 
 @test
 def canais():
-    """Canais (como no IRC): /join no chat e o + do painel criam/entram; cada canal com o seu chat e quem está nele; a transmissão vai junto quando quem transmite troca; quem assistia no canal velho para; o convite leva o canal; entrar direto num canal pela tela inicial; canal criado some vazio."""
+    """Canais (como no IRC) com a call separada: /join e o clique no nome trocam só o chat (a call continua); o fone do canal troca a call e a transmissão vai junto; quem assistia na call velha para; entrar pela tela inicial num canal já põe na call dele; o convite leva o canal; o + cria; canal vazio some."""
     with Session("canais") as s:
         p = port()
         a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--senha", "pw"])
         st = a.wait(lambda st: st["status"] == "connected" and st["channels_supported"], 10, "a sala com canais")
-        expect(st["channel"] == "geral", f"canal inicial: {st['channel']}")
+        expect(st["channel"] == "geral" and st["call"] == "geral", f"canal/call iniciais: {st['channel']} / {st['call']}")
         b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}#pw", "--transmitir", "--software"])
         b.wait(lambda st: st["status"] == "connected" and st["channels_supported"], 10, "o Bruno entrar")
         bid = b.state()["my_id"]
         a.wait(lambda st: any(m["id"] == bid and m["streaming"] for m in st["members"]), 15, "o Bruno ao vivo no geral")
-        # /join no chat: cria o jogos (nome normalizado) e a transmissão vai junto
+        # /join no chat: troca só o chat; o Bruno continua na call (e ao vivo) do geral
         b.click("##chatin")
         time.sleep(0.2)
         b.type("/join Jogos\n")
-        b.wait(lambda st: st["channel"] == "jogos" and not any(l["text"].startswith("/join") for l in st["chat"]), 5, "o Bruno no jogos (sem o comando ir pro chat)")
-        a.wait(lambda st: not any(m["id"] == bid for m in st["members"]) and any(c["name"] == "jogos" and c["people"] == 1 and c["live"] for c in st["channels"]), 10, "o jogos na lista, com o Bruno ao vivo")
+        b.wait(lambda st: st["channel"] == "jogos" and st["call"] == "geral" and not any(l["text"].startswith("/join") for l in st["chat"]), 5, "o Bruno lendo o jogos, ainda na call do geral")
+        st = a.wait(lambda st: bid not in st["chan_members"] and any(c["name"] == "jogos" and c["people"] == 1 for c in st["channels"]), 10, "o Bruno fora do chat do geral")
+        expect(any(m["id"] == bid and m["streaming"] for m in st["members"]), "o Bruno saiu da call do geral só por trocar o chat")
         # chat de um canal não vaza pro outro
         a.click("##chatin")
         time.sleep(0.2)
         a.type("so no geral\n")
         a.wait(lambda st: any(l["text"] == "so no geral" for l in st["chat"]), 5, "a mensagem no geral")
-        # Carol entra direto no jogos pela tela inicial e assiste o Bruno
+        # o fone do jogos: a call (e a transmissão) vão pro jogos
+        time.sleep(1.0)
+        b.click("##call1")
+        b.wait(lambda st: st["call"] == "jogos", 5, "o Bruno na call do jogos")
+        a.wait(lambda st: not any(m["id"] == bid for m in st["members"]) and any(c["name"] == "jogos" and c["in_call"] == 1 and c["live"] for c in st["channels"]), 10, "o Bruno ao vivo na call do jogos")
+        # Carol entra direto no jogos pela tela inicial (chat e call) e assiste o Bruno
         c = s.app("c", 93, [], config={"name": "Carol"})
         c.wait(lambda st: st["screen"] == "home", 10, "a tela inicial")
         c.fill("##addr", f"127.0.0.1:{p}")
         c.fill("##pass", "pw")
         c.fill("##chan", "#jogos")
         c.click("Entrar##go")
-        c.wait(lambda st: st["status"] == "connected" and st["channel"] == "jogos", 10, "a Carol no jogos")
+        c.wait(lambda st: st["status"] == "connected" and st["channel"] == "jogos" and st["call"] == "jogos", 10, "a Carol no jogos")
         c.wait(lambda st: any(m["id"] == bid and m["streaming"] for m in st["members"]), 10, "a Carol ver o Bruno ao vivo")
         c.click("live")
-        c.wait(lambda st: any(v["stream"] == bid and v["shown"] for v in st["views"]), 20, "a Carol assistindo o Bruno no jogos")
+        c.wait(lambda st: any(v["stream"] == bid and v["shown"] for v in st["views"]), 20, "a Carol assistindo o Bruno")
         expect(not any(l["text"] == "so no geral" for l in b.state()["chat"]), "o chat do geral apareceu no jogos")
         # o convite de quem está no jogos leva pro jogos
         c.click("##invite")
-        c.wait(lambda st: st["clipboard"].startswith("telinha://") and "/jogos#pw" in st["clipboard"], 3, "o convite com o canal")
-        # o Bruno volta pro geral clicando no canal: a Carol para de ver
+        c.wait(lambda st: st["clipboard"].startswith("telinha://") and "/jogos" in st["clipboard"] and st["clipboard"].endswith("#pw"), 3, "o convite com o canal")
+        # o Bruno vai ler o geral: a Carol continua assistindo (a call é a mesma)
         b.click("#geral")
-        b.wait(lambda st: st["channel"] == "geral", 5, "o Bruno no geral")
-        c.wait(lambda st: not st["views"], 10, "a Carol parar de assistir (o Bruno saiu do canal)")
-        a.wait(lambda st: any(m["id"] == bid and m["streaming"] for m in st["members"]), 15, "o Bruno ao vivo de novo no geral")
+        b.wait(lambda st: st["channel"] == "geral" and st["call"] == "jogos", 5, "o Bruno lendo o geral, na call do jogos")
+        time.sleep(1.0)
+        expect(c.state()["views"], "a Carol parou de assistir só porque o Bruno trocou o chat")
+        # sai da call (botão da cápsula): a Carol para de ver
+        b.click("##callbtn")
+        b.wait(lambda st: st["call"] == "", 5, "o Bruno fora da call")
+        c.wait(lambda st: not st["views"], 10, "a Carol parar de assistir (o Bruno saiu da call)")
         # + do painel: cria um canal; voltando, o canal vazio some
         c.click("##newchan")
         time.sleep(0.3)
@@ -334,8 +344,55 @@ def canais():
         time.sleep(1.0)  # limite de troca
         c.click("#geral")
         c.wait(lambda st: st["channel"] == "geral", 5, "a Carol no geral")
-        a.wait(lambda st: not any(ch["name"] in ("filmes", "jogos") for ch in st["channels"]), 5, "os canais vazios sumirem")
-        st = a.wait(lambda st: len(st["members"]) == 3, 5, "os três no geral")
+        a.wait(lambda st: not any(ch["name"] == "filmes" for ch in st["channels"]), 5, "o canal vazio sumir")
+
+
+@test
+def canais_admin():
+    """Canais pelo admin: senha (quem tenta entrar recebe o campo de senha), trancar, tópico (aparece no chat), levar alguém pro canal pelo menu da pessoa."""
+    with Session("canaisadm") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)])
+        a.wait(lambda st: st["status"] == "connected" and st["channels_supported"], 10, "a sala")
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}"])
+        b.wait(lambda st: st["status"] == "connected" and st["channels_supported"], 10, "a Bia entrar")
+        bid = b.state()["my_id"]
+        # a Ana cria o #vip e põe senha e tópico pelo menu do canal
+        a.click("##chatin")
+        time.sleep(0.2)
+        a.type("/join vip\n")
+        a.wait(lambda st: st["channel"] == "vip", 5, "a Ana no vip")
+        idx = next(i for i, ch in enumerate(a.state()["channels"]) if ch["name"] == "vip")
+        a.click(f"#vip###ch{idx}", button=3)
+        a.click(contains="###cpw")
+        a.click("##chanedit")
+        a.type("abc\n")
+        a.click(f"#vip###ch{idx}", button=3)
+        a.click(contains="###ctopic")
+        a.click("##chanedit")
+        a.type("bem-vindos\n")
+        b.wait(lambda st: any(ch["name"] == "vip" and ch["password"] and ch["topic"] == "bem-vindos" for ch in st["channels"]), 5, "a Bia ver a senha e o tópico")
+        # a Bia tenta entrar: o painel pergunta a senha
+        b.click("#vip")
+        b.wait(lambda st: st["chan_pw_for"] == "vip", 5, "o campo de senha aparecer")
+        b.click("##chanpw")
+        b.type("abc\n")
+        b.wait(lambda st: st["channel"] == "vip", 5, "a Bia entrar com a senha")
+        # trancar o geral: a Bia não volta; a Ana leva ela pelo menu
+        a.click("#geral###ch0", button=3)
+        a.click(contains="###clock")
+        a.wait(lambda st: any(ch["name"] == "geral" and ch["locked"] for ch in st["channels"]), 5, "o geral trancado")
+        time.sleep(1.0)
+        b.click("#geral")
+        b.wait(lambda st: any("trancado" in t for t in st["toasts"]), 5, "a Bia barrada no geral trancado")
+        a.click("#geral")
+        a.wait(lambda st: st["channel"] == "geral", 5, "a Ana (admin) entra no trancado")
+        a.wait(lambda st: any(m["id"] == bid for m in st["members"]), 5, "a Bia ainda na call do geral")
+        a.click_rect(a.member_row(bid), button=3)
+        a.click(contains="###amove")
+        time.sleep(0.4)
+        a.click(contains="###mv0")
+        b.wait(lambda st: st["channel"] == "geral" and st["call"] == "geral" and any("levou" in t for t in st["toasts"]), 5, "a Bia levada pro geral")
 
 
 @test

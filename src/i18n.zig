@@ -174,6 +174,14 @@ const server_suffixes = [_]Suffix{
     .{ " tirou seu admin.", "{s} removed your admin rights." },
     .{ " tirou seu pincel.", "{s} took away your pen." },
     .{ " devolveu seu pincel.", "{s} gave your pen back." },
+    .{ " fixou o canal", "{s} pinned the channel" },
+    .{ " soltou o canal", "{s} unpinned the channel" },
+    .{ " trancou o canal", "{s} locked the channel" },
+    .{ " destrancou o canal", "{s} unlocked the channel" },
+    .{ " trocou a senha do canal", "{s} changed the channel password" },
+    .{ " tirou a senha do canal", "{s} removed the channel password" },
+    .{ " mudou o tópico", "{s} changed the topic" },
+    .{ " tirou o tópico", "{s} removed the topic" },
 };
 /// "<quem> <verbo> <quem>".
 const server_infixes = [_]Suffix{
@@ -181,6 +189,7 @@ const server_infixes = [_]Suffix{
     .{ " expulsou ", "{s} kicked {s} out" },
     .{ " mandou um log: ", "{s} sent a log: {s}" },
     .{ " foi pro #", "{s} went to #{s}" },
+    .{ " te levou pro #", "{s} moved you to #{s}" },
     .{ " entrou no #", "{s} joined #{s}" },
 };
 const server_whole = [_]Suffix{
@@ -196,6 +205,9 @@ const server_whole = [_]Suffix{
     .{ "Calma: trocando de canal rápido demais.", "Easy: switching channels too fast." },
     .{ "Esse servidor não deixa criar canal novo.", "This server doesn't allow new channels." },
     .{ "O servidor já tem canais demais.", "The server already has too many channels." },
+    .{ "Esse canal tem senha.", "This channel has a password." },
+    .{ "Senha do canal errada.", "Wrong channel password." },
+    .{ "Esse canal está trancado: só admin entra.", "This channel is locked: admins only." },
 };
 
 /// Mensagem do servidor (chat do sistema, motivo de recusa, aviso do admin).
@@ -226,6 +238,32 @@ const table = [_][2][]const u8{
     .{ "{s}  Confiar na identidade nova ({s})", "{s}  Trust the new identity ({s})" },
     .{ "Conexão criptografada (X25519 + ChaCha20-Poly1305)\nIdentidade do servidor conferida: {s}", "Encrypted connection (X25519 + ChaCha20-Poly1305)\nServer identity verified: {s}" },
     .{ "Conexão criptografada (X25519 + ChaCha20-Poly1305)\nO servidor não tem identidade fixa (versão antiga): não dá pra conferir quem é", "Encrypted connection (X25519 + ChaCha20-Poly1305)\nThe server has no fixed identity (older version): it can't be verified" },
+    // call e canais (admin)
+    .{ "Enter salva, Esc desiste", "Enter saves, Esc cancels" },
+    .{ "senha (Enter entra, Esc desiste)", "password (Enter joins, Esc cancels)" },
+    .{ "Senha nova do #{s} (vazio = sem senha)", "New password for #{s} (empty = none)" },
+    .{ "{s}  Senha do #{s}", "{s}  Password for #{s}" },
+    .{ "Tópico do #{s} (vazio = sem tópico)", "Topic for #{s} (empty = none)" },
+    .{ "Entrar na call desse canal (a voz e as transmissões)", "Join this channel's call (voice and streams)" },
+    .{ "Ler o chat do #{s}\n{s}", "Read #{s}\n{s}" },
+    .{ "Ler o chat do #{s}", "Read #{s}" },
+    .{ "Sair da call", "Leave the call" },
+    .{ "{s}  Destrancar", "{s}  Unlock" },
+    .{ "{s}  Fixar (fica, mesmo vazio e reiniciando)", "{s}  Pin (stays, even empty and across restarts)" },
+    .{ "{s}  Levar pro canal", "{s}  Move to channel" },
+    .{ "{s}  NA CALL #{s} · {d}", "{s}  IN CALL #{s} · {d}" },
+    .{ "{s}  Senha do canal…", "{s}  Channel password…" },
+    .{ "{s}  Soltar (some quando esvaziar)", "{s}  Unpin (disappears when empty)" },
+    .{ "{s}  Tópico…", "{s}  Topic…" },
+    .{ "{s}  Trancar (só admin entra)", "{s}  Lock (admins only)" },
+    .{ "Entrar na call do #{s}", "Join the #{s} call" },
+    .{ "Fora da call", "Not in a call" },
+    .{ "Na call #{s}", "In call #{s}" },
+    .{ "Sair da call do #{s}", "Leave the #{s} call" },
+    .{ "Você está fora da call", "You're not in a call" },
+    .{ "Entre na call de um canal pra ouvir, falar e ver as transmissões. O chat continua aqui do lado.", "Join a channel's call to hear, talk and watch streams. The chat stays right here." },
+    .{ "{s}   Entrar na call do #{s}", "{s}   Join the #{s} call" },
+    .{ "{s}  NA CALL, LENDO OUTRO CANAL · {d}", "{s}  IN THE CALL, READING ANOTHER CHANNEL · {d}" },
     // pincel
     .{ "A minha cor (a do meu avatar)", "My color (my avatar's)" },
     .{ "Apagar os meus traços (ou botão direito)", "Erase my strokes (or right-click)" },

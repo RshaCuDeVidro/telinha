@@ -31,6 +31,9 @@ const usage =
     \\                         Quem entra num nome que não existe cria o canal
     \\                         (some quando esvazia)
     \\  --sem-canais-novos     ninguém cria canal: só os da lista
+    \\  -e, --estado ARQUIVO   onde guardar o que sobrevive a reiniciar: canais
+    \\                         fixos (senha, trava, tópico), banidos, silenciados
+    \\                         ($TELINHA_ESTADO; padrão: do lado da --chave)
     \\  -k, --chave ARQUIVO    a identidade do servidor ($TELINHA_CHAVE; criada na
     \\                         primeira vez). Padrão: /var/lib/telinha/servidor.key
     \\                         (root) ou ~/.config/telinha/servidor.key. A impressão
@@ -56,7 +59,18 @@ fn fpSuffix() []const u8 {
 }
 
 /// Lê (ou cria, só o dono lendo) a semente da identidade do servidor.
-fn loadKey(given: []const u8) ?[32]u8 {
+var key_used: [400]u8 = undefined;
+var key_used_len: usize = 0;
+var state_buf: [420]u8 = undefined;
+
+/// O arquivo de estado: o dado, ou "estado.txt" na pasta da chave.
+fn statePath(given: []const u8, key: []const u8) []const u8 {
+    if (given.len > 0) return given;
+    const dir = if (std.mem.lastIndexOfScalar(u8, key, '/')) |i| key[0..i] else ".";
+    return std.fmt.bufPrint(&state_buf, "{s}/estado.txt", .{dir}) catch "";
+}
+
+fn loadKey(given: []const u8, used: *[400]u8) ?[32]u8 {
     var pb: [400]u8 = undefined;
     const path: [:0]const u8 = if (given.len > 0)
         std.fmt.bufPrintZ(&pb, "{s}", .{given}) catch return null
@@ -71,6 +85,8 @@ fn loadKey(given: []const u8) ?[32]u8 {
         _ = mkdir(d2.ptr, 0o700);
         break :blk std.fmt.bufPrintZ(&pb, "{s}/.config/telinha/servidor.key", .{home}) catch return null;
     };
+    key_used_len = @min(path.len, used.len);
+    @memcpy(used[0..key_used_len], path[0..key_used_len]);
     if (std.c.fopen(path.ptr, "rb")) |f| {
         defer _ = std.c.fclose(f);
         var seed: [32]u8 = undefined;
@@ -168,6 +184,7 @@ pub fn main(init: std.process.Init) !void {
     var channels: []const u8 = env("TELINHA_CANAIS") orelse "";
     var new_channels = true;
     var key_path: []const u8 = env("TELINHA_CHAVE") orelse "";
+    var state_path: []const u8 = env("TELINHA_ESTADO") orelse "";
     var public_host: ?[]const u8 = null;
     var use_upnp = false;
     if (env("TELINHA_PORTA")) |p| port = std.fmt.parseInt(u16, p, 10) catch die("TELINHA_PORTA inválida: {s}", .{p});
@@ -208,6 +225,8 @@ pub fn main(init: std.process.Init) !void {
             admin = v;
         } else if (std.mem.eql(u8, a, "-l") or std.mem.eql(u8, a, "--logs")) {
             logs_dir = v;
+        } else if (std.mem.eql(u8, a, "-e") or std.mem.eql(u8, a, "--estado")) {
+            state_path = v;
         } else if (std.mem.eql(u8, a, "-k") or std.mem.eql(u8, a, "--chave")) {
             key_path = v;
         } else if (std.mem.eql(u8, a, "-c") or std.mem.eql(u8, a, "--canais")) {
@@ -232,7 +251,7 @@ pub fn main(init: std.process.Init) !void {
         const z = std.fmt.bufPrintZ(&lb, "{s}", .{logs_dir}) catch die("pasta de logs longa demais", .{});
         _ = mkdir(z.ptr, 0o750);
     }
-    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir, .channels = channels, .new_channels = new_channels, .identity_seed = loadKey(key_path) }) catch
+    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir, .channels = channels, .new_channels = new_channels, .identity_seed = loadKey(key_path, &key_used), .state_path = statePath(state_path, key_used[0..key_used_len]) }) catch
         die("não consegui abrir a porta {d} (já está em uso?)", .{port});
 
     var buf: [256]u8 = undefined;

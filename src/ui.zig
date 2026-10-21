@@ -128,6 +128,8 @@ const ic = struct {
     const mic = &iconArr(0xF130);
     const mic_slash = &iconArr(0xF131);
     const headphones = &iconArr(0xF025);
+    const phone = &iconArr(0xF095);
+    const phone_slash = &iconArr(0xF3DD);
     const power = &iconArr(0xF011);
     const rotate = &iconArr(0xF2F9);
     const shield = &iconArr(0xF3ED);
@@ -675,7 +677,25 @@ pub const App = struct {
     new_chan_open: bool = false, // campo "criar/entrar num canal" aberto no painel
     focus_new_chan: bool = false,
     new_chan_buf: [32]u8 = [_]u8{0} ** 32,
-    chan_gen_seen: u32 = 0, // última troca de canal já tratada (client.channel_gen)
+    chan_gen_seen: u32 = 0, // última troca de call já tratada (client.channel_gen)
+    // o último canal/call pedido (se voltar "tem senha", pergunta e pede de novo)
+    chan_req: [proto.channel_name_max]u8 = undefined,
+    chan_req_len: usize = 0,
+    chan_req_call: bool = false,
+    chan_pw_for: [proto.channel_name_max]u8 = undefined, // perguntando a senha desse canal (0 = não)
+    chan_pw_len: usize = 0,
+    chan_pw_call: bool = false,
+    chan_pw_buf: [64]u8 = [_]u8{0} ** 64,
+    focus_chan_pw: bool = false,
+    // admin: menu do canal (clique direito) e o campo de senha/tópico
+    chan_menu: [proto.channel_name_max]u8 = undefined,
+    chan_menu_len: usize = 0,
+    chan_menu_flags: u8 = 0,
+    chan_edit: enum { none, password, topic } = .none,
+    chan_edit_for: [proto.channel_name_max]u8 = undefined,
+    chan_edit_len: usize = 0,
+    chan_edit_buf: [proto.chan_topic_max + 1]u8 = [_]u8{0} ** (proto.chan_topic_max + 1),
+    focus_chan_edit: bool = false,
     // estatísticas do servidor (dono)
     stats_open: bool = false,
     stats_hist: [60]u16 = [_]u16{0} ** 60, // CPU (milésimos de núcleo) dos últimos 2 min
@@ -1847,6 +1867,14 @@ pub const App = struct {
                 },
                 proto.notice_stream_stopped => if (n.extra == proto.kind_camera) a.stopCamera() else a.stopSharing(),
                 proto.notice_log_received => debuglog.line("{s}", .{n.textSlice()}),
+                proto.notice_channel => if (n.extra == proto.notice_channel_needs_password and a.chan_req_len > 0) {
+                    // o canal pede senha: o painel pergunta (e manda o mesmo pedido de novo)
+                    @memcpy(a.chan_pw_for[0..a.chan_req_len], a.chan_req[0..a.chan_req_len]);
+                    a.chan_pw_len = a.chan_req_len;
+                    a.chan_pw_call = a.chan_req_call;
+                    a.focus_chan_pw = true;
+                    a.cfg.show_chat = true;
+                },
                 proto.notice_draw_off => {
                     a.draw_tile = null;
                     a.draw_active = false;
@@ -1866,6 +1894,7 @@ pub const App = struct {
             return;
         }
         const cl = a.client orelse return;
+        a.ensureInCall();
         a.camera = Sharer.start(cl, a.cameraSettings()) catch {
             a.toast("Não consegui ligar a câmera.", .{}, true);
             return;
@@ -3639,19 +3668,19 @@ pub const App = struct {
         cl.mutex.lock();
         const my_id = cl.my_id;
         const i_am_admin = cl.is_admin;
-        var members: [64]Member = undefined;
-        const n_members = @min(cl.members.items.len, members.len);
-        @memcpy(members[0..n_members], cl.members.items[0..n_members]);
-        cl.mutex.unlock();
-
-        // canais (servidor que tem): clique entra, "+" cria
-        c.igSetCursorScreenPos(v2(x1 - S(38), y0 + S(8)));
-        if (iconButton("##hidechat", ic.xmark, S(30), col.muted, col.hover, tr("Esconder o painel"))) {
-            a.cfg.show_chat = false;
-            config.save(&a.cfg);
+        // o chat (painel) e a call (palco, voz)
+        var chat_ppl: [64]Member = undefined;
+        const n_chat = @min(cl.chan_members.items.len, chat_ppl.len);
+        @memcpy(chat_ppl[0..n_chat], cl.chan_members.items[0..n_chat]);
+        var call_ppl: [64]Member = undefined;
+        var n_call: usize = 0;
+        for (cl.members.items) |m| {
+            if (n_call == call_ppl.len) break;
+            if (m.in_call) {
+                call_ppl[n_call] = m;
+                n_call += 1;
+            }
         }
-        var top = y0 + S(16);
-        cl.mutex.lock();
         const has_chans = cl.chans_supported;
         var chans: [proto.max_channels]client_mod.ChanInfo = undefined;
         const n_chans = cl.n_chans;
@@ -3659,8 +3688,20 @@ pub const App = struct {
         var cur_buf: [proto.channel_name_max]u8 = undefined;
         const cur_len = cl.chan_name_len;
         @memcpy(cur_buf[0..cur_len], cl.chan_name[0..cur_len]);
+        var call_buf: [proto.channel_name_max]u8 = undefined;
+        const call_len = cl.call_name_len;
+        @memcpy(call_buf[0..call_len], cl.call_name[0..call_len]);
+        const calls_known = cl.calls_known;
         cl.mutex.unlock();
         const cur = cur_buf[0..cur_len];
+        const my_call = call_buf[0..call_len];
+
+        c.igSetCursorScreenPos(v2(x1 - S(38), y0 + S(8)));
+        if (iconButton("##hidechat", ic.xmark, S(30), col.muted, col.hover, tr("Esconder o painel"))) {
+            a.cfg.show_chat = false;
+            config.save(&a.cfg);
+        }
+        var top = y0 + S(16);
         if (has_chans) {
             drawTextF(d, font_bold, 11, v2(inner_x + S(12), top), col.muted, fmtZ("CANAIS · {d}", .{n_chans}));
             c.igSetCursorScreenPos(v2(x1 - S(72), y0 + S(8)));
@@ -3670,63 +3711,142 @@ pub const App = struct {
             }
             top += S(24);
             const row_h = S(30);
-            const extra: f32 = if (a.new_chan_open) S(44) else 0;
-            const want_h = row_h * @as(f32, @floatFromInt(n_chans)) + extra + S(4);
-            const ch_h = std.math.clamp(want_h, row_h, (y1 - y0) * 0.3);
+            // campos que aparecem em cima da lista: canal novo, senha pedida, senha/tópico do admin
+            const n_fields: f32 = @floatFromInt(@as(u8, @intFromBool(a.new_chan_open)) + @as(u8, @intFromBool(a.chan_pw_len > 0)) + @as(u8, @intFromBool(a.chan_edit != .none)));
+            const want_h = row_h * @as(f32, @floatFromInt(n_chans)) + n_fields * S(48) + S(4);
+            const ch_h = std.math.clamp(want_h, row_h, (y1 - y0) * 0.32);
             c.igSetCursorScreenPos(v2(inner_x, top));
             c.igPushStyleColor_U32(c.ImGuiCol_ScrollbarBg, 0);
             _ = c.igBeginChild_Str("chanlist", v2(inner_w, ch_h), 0, 0);
             const ld = drawList();
+            const fw = inner_w - S(16);
             if (a.new_chan_open) {
                 c.igSetCursorPosX(S(8));
                 if (a.focus_new_chan) {
                     c.igSetKeyboardFocusHere(0);
                     a.focus_new_chan = false;
                 }
-                if (iconField(ld, "##chanin", ic.plus, "nome do canal (Enter entra)", &a.new_chan_buf, inner_w - S(16), false, col.blurple, 1)) {
+                if (iconField(ld, "##chanin", ic.plus, "nome do canal (Enter entra)", &a.new_chan_buf, fw, false, col.blurple, 1)) {
                     const nm = std.mem.trim(u8, std.mem.sliceTo(&a.new_chan_buf, 0), " ");
-                    if (nm.len > 0) cl.joinChannel(nm);
+                    if (nm.len > 0) a.askChannel(cl, nm, false);
                     @memset(&a.new_chan_buf, 0);
                     a.new_chan_open = false;
                 }
                 if (c.igIsItemActive() and c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) a.new_chan_open = false;
                 c.igDummy(v2(0, S(4)));
             }
+            // o canal pediu senha: pergunta aqui
+            if (a.chan_pw_len > 0) {
+                c.igSetCursorPosX(S(8));
+                pushFont(font_semibold, 12);
+                textColored(col.yellow, fmtZ("{s}  Senha do #{s}", .{ ic.lock, a.chan_pw_for[0..a.chan_pw_len] }));
+                popFont();
+                c.igSetCursorPosX(S(8));
+                if (a.focus_chan_pw) {
+                    c.igSetKeyboardFocusHere(0);
+                    a.focus_chan_pw = false;
+                }
+                if (iconField(ld, "##chanpw", ic.lock, "senha (Enter entra, Esc desiste)", &a.chan_pw_buf, fw, true, col.yellow, 1)) {
+                    const pw = std.mem.sliceTo(&a.chan_pw_buf, 0);
+                    const nm = a.chan_pw_for[0..a.chan_pw_len];
+                    if (a.chan_pw_call) cl.joinCall(nm, pw) else cl.joinChannel(nm, pw);
+                    @memset(&a.chan_pw_buf, 0);
+                    a.chan_pw_len = 0;
+                }
+                if (c.igIsItemActive() and c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) a.chan_pw_len = 0;
+                c.igDummy(v2(0, S(4)));
+            }
+            // admin editando a senha ou o tópico de um canal
+            if (a.chan_edit != .none) {
+                const pw_edit = a.chan_edit == .password;
+                c.igSetCursorPosX(S(8));
+                pushFont(font_semibold, 12);
+                textColored(col.muted, if (pw_edit) fmtZ("Senha nova do #{s} (vazio = sem senha)", .{a.chan_edit_for[0..a.chan_edit_len]}) else fmtZ("Tópico do #{s} (vazio = sem tópico)", .{a.chan_edit_for[0..a.chan_edit_len]}));
+                popFont();
+                c.igSetCursorPosX(S(8));
+                if (a.focus_chan_edit) {
+                    c.igSetKeyboardFocusHere(0);
+                    a.focus_chan_edit = false;
+                }
+                if (iconField(ld, "##chanedit", if (pw_edit) ic.lock else ic.pen, "Enter salva, Esc desiste", &a.chan_edit_buf, fw, pw_edit, col.blurple, 1)) {
+                    cl.chanAdmin(if (pw_edit) proto.chan_act_password else proto.chan_act_topic, a.chan_edit_for[0..a.chan_edit_len], std.mem.sliceTo(&a.chan_edit_buf, 0), 0);
+                    @memset(&a.chan_edit_buf, 0);
+                    a.chan_edit = .none;
+                }
+                if (c.igIsItemActive() and c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) a.chan_edit = .none;
+                c.igDummy(v2(0, S(4)));
+            }
             for (chans[0..n_chans], 0..) |*ch, i| {
                 const name = ch.nameSlice();
                 const here = std.mem.eql(u8, name, cur);
+                const call_here = calls_known and std.mem.eql(u8, name, my_call);
                 c.igSetCursorPosX(S(6));
                 const p = c.igGetCursorScreenPos();
                 const rw = inner_w - S(12);
+                const cb = S(30); // botão da call, na direita
                 var lb: [64]u8 = undefined;
                 const id = std.fmt.bufPrintZ(&lb, "#{s}###ch{d}", .{ name, i }) catch "###ch";
-                const clicked = c.igInvisibleButton(id.ptr, v2(rw, row_h - S(2)), 0);
+                const clicked = c.igInvisibleButton(id.ptr, v2(rw - (if (calls_known) cb else 0), row_h - S(2)), 0);
                 const hov = c.igIsItemHovered(0);
+                if (i_am_admin and c.igIsItemClicked(1)) {
+                    a.chan_menu_len = @min(name.len, a.chan_menu.len);
+                    @memcpy(a.chan_menu[0..a.chan_menu_len], name[0..a.chan_menu_len]);
+                    a.chan_menu_flags = ch.flags;
+                    _ = c.igOpenPopup_Str("##chanmenu", 0);
+                }
                 if (here) {
                     rectFill(ld, p.x, p.y, p.x + rw, p.y + row_h - S(2), withAlpha(col.blurple, 55), S(8));
                     rectFill(ld, p.x, p.y + S(6), p.x + S(3), p.y + row_h - S(8), col.blurple, S(2));
                 } else if (hov) rectFill(ld, p.x, p.y, p.x + rw, p.y + row_h - S(2), col.hover, S(8));
                 const ty = p.y + (row_h - S(2) - S(17)) / 2;
                 drawTextF(ld, font_bold, 14, v2(p.x + S(12), ty), if (here) col.blurple else col.faint, "#");
-                drawTextF(ld, if (here) font_bold else font_semibold, 14, v2(p.x + S(26), ty), if (here) col.header else if (hov) col.text else col.muted, name);
-                // quantos e se tem alguém ao vivo
-                var rx = p.x + rw - S(10);
+                var nx = p.x + S(26);
+                drawTextF(ld, if (here) font_bold else font_semibold, 14, v2(nx, ty), if (here) col.header else if (hov) col.text else col.muted, name);
+                nx += textSizeF(if (here) font_bold else font_semibold, 14, name).x + S(6);
+                if (ch.flags & proto.chan_locked != 0) {
+                    drawTextF(ld, font_regular, 10, v2(nx, ty + S(3)), col.yellow, ic.lock);
+                    nx += S(14);
+                } else if (ch.flags & proto.chan_password != 0) {
+                    drawTextF(ld, font_regular, 10, v2(nx, ty + S(3)), col.faint, ic.lock);
+                    nx += S(14);
+                }
+                // na direita: o botão da call (quantos nela), quem está no chat e se tem alguém ao vivo
+                var rx = p.x + rw - S(6);
+                if (calls_known) {
+                    rx -= cb;
+                    c.igSetCursorScreenPos(v2(rx, p.y - S(1)));
+                    const call_tip = if (call_here) tr("Sair da call") else tr("Entrar na call desse canal (a voz e as transmissões)");
+                    const tint = if (call_here) col.green else col.faint;
+                    if (iconButton(fmtZ("##call{d}", .{i}), ic.headphones, cb, tint, col.hover, call_tip)) {
+                        if (call_here) cl.joinCall("", "") else a.askChannel(cl, name, true);
+                    }
+                    if (ch.in_call > 0) {
+                        const cnt = fmtZ("{d}", .{ch.in_call});
+                        const cw = textSizeF(font_bold, 10, cnt).x;
+                        c.ImDrawList_AddCircleFilled(ld, v2(rx + cb - S(7), p.y + S(6)), S(7), if (call_here) col.green else col.input, 0);
+                        drawTextF(ld, font_bold, 10, v2(rx + cb - S(7) - cw / 2, p.y + S(6) - S(7)), if (call_here) col.white else col.text, cnt);
+                    }
+                    rx -= S(4);
+                }
                 if (ch.people > 0) {
                     const cnt = fmtZ("{d}", .{ch.people});
                     const cw = textSizeF(font_semibold, 12, cnt).x;
                     rx -= cw;
                     drawTextF(ld, font_semibold, 12, v2(rx, ty + S(1)), col.muted, cnt);
-                    const us = textSizeF(font_regular, 11, ic.users);
+                    const us = textSizeF(font_regular, 11, ic.comments);
                     rx -= us.x + S(5);
-                    drawTextF(ld, font_regular, 11, v2(rx, ty + S(2)), col.faint, ic.users);
+                    drawTextF(ld, font_regular, 11, v2(rx, ty + S(2)), col.faint, ic.comments);
                 }
                 if (ch.flags & proto.chan_live != 0) {
                     rx -= S(14);
                     c.ImDrawList_AddCircleFilled(ld, v2(rx + S(4), p.y + (row_h - S(2)) / 2), S(4), col.red, 0);
                 }
-                if (hov and !here) tooltipText(tr("Entrar nesse canal"));
-                if (clicked and !here) cl.joinChannel(name);
+                if (hov and !here) tooltipText(if (ch.topic_len > 0) fmtZ("Ler o chat do #{s}\n{s}", .{ name, ch.topicSlice() }) else fmtZ("Ler o chat do #{s}", .{name}));
+                if (clicked and !here) a.askChannel(cl, name, false);
+                c.igSetCursorScreenPos(v2(p.x, p.y + row_h));
+                c.igDummy(v2(rw, 0));
             }
+            a.chanMenu(cl);
             c.igEndChild();
             c.igPopStyleColor(1);
             top += ch_h + S(6);
@@ -3734,18 +3854,58 @@ pub const App = struct {
             top += S(12);
         }
 
-        // quem está na sala (ou no canal)
-        const hdr = if (has_chans) fmtZ("EM #{s} · {d}", .{ cur, n_members }) else fmtZ("NA SALA · {d}", .{n_members});
+        // quem está no canal de texto; embaixo, quem está na minha call e não
+        // está aqui no chat (a call é de outro canal, ou a pessoa foi ler outro)
+        var w_call: usize = 0;
+        for (call_ppl[0..n_call]) |m| {
+            const in_chat = for (chat_ppl[0..n_chat]) |x| {
+                if (x.id == m.id) break true;
+            } else false;
+            if (!in_chat) {
+                call_ppl[w_call] = m;
+                w_call += 1;
+            }
+        }
+        n_call = w_call;
+        const same_call = std.mem.eql(u8, my_call, cur);
+        const other_call = has_chans and calls_known and call_len > 0 and n_call > 0;
+        const hdr = if (has_chans) fmtZ("EM #{s} · {d}", .{ cur, n_chat }) else fmtZ("NA SALA · {d}", .{n_chat});
         drawTextF(d, font_bold, 11, v2(inner_x + S(12), top), col.muted, hdr);
         const row_h = S(42);
-        const want_h = row_h * @as(f32, @floatFromInt(n_members)) + S(8);
+        const rows: f32 = @floatFromInt(n_chat + (if (other_call) n_call + 1 else 0));
+        const want_h = row_h * rows + S(8);
         const list_top = top + S(22);
         const list_h = std.math.clamp(want_h, S(60), @max(S(60), (y1 - list_top) * 0.45));
         c.igSetCursorScreenPos(v2(inner_x, list_top));
         c.igPushStyleColor_U32(c.ImGuiCol_ScrollbarBg, 0);
         _ = c.igBeginChild_Str("lists", v2(inner_w, list_h), 0, 0);
-        for (members[0..n_members]) |*m| a.memberRow(m, my_id, inner_w, i_am_admin);
-        a.memberMenu(cl, members[0..n_members]);
+        for (chat_ppl[0..n_chat]) |*m| a.memberRow(m, my_id, inner_w, i_am_admin);
+        if (other_call) {
+            c.igDummy(v2(0, S(6)));
+            c.igSetCursorPosX(S(12));
+            pushFont(font_bold, 11);
+            textColored(col.green, if (same_call) fmtZ("{s}  NA CALL, LENDO OUTRO CANAL · {d}", .{ ic.headphones, n_call }) else fmtZ("{s}  NA CALL #{s} · {d}", .{ ic.headphones, my_call, n_call }));
+            popFont();
+            c.igDummy(v2(0, S(2)));
+            for (call_ppl[0..n_call]) |*m| a.memberRow(m, my_id, inner_w, i_am_admin);
+        }
+        // o menu de alguém (clique direito) vale pras duas listas
+        var all: [128]Member = undefined;
+        var n_all: usize = 0;
+        for (chat_ppl[0..n_chat]) |m| {
+            all[n_all] = m;
+            n_all += 1;
+        }
+        for (call_ppl[0..n_call]) |m| {
+            const dup = for (all[0..n_all]) |x| {
+                if (x.id == m.id) break true;
+            } else false;
+            if (!dup) {
+                all[n_all] = m;
+                n_all += 1;
+            }
+        }
+        a.memberMenu(cl, all[0..n_all]);
         c.igEndChild();
         c.igPopStyleColor(1);
         const div_y = list_top + list_h + S(6);
@@ -3762,17 +3922,27 @@ pub const App = struct {
         const d = drawList();
         cl.mutex.lock();
         const my_id = cl.my_id;
+        // call separada do canal: botão de entrar/sair da call do lado do surdo
+        const calls = cl.chans_supported and cl.calls_known;
+        const in_call = cl.call_name_len > 0;
+        var call_buf: [proto.channel_name_max]u8 = undefined;
+        const call_len = cl.call_name_len;
+        @memcpy(call_buf[0..call_len], cl.call_name[0..call_len]);
+        var text_buf: [proto.channel_name_max]u8 = undefined;
+        const text_len = cl.chan_name_len;
+        @memcpy(text_buf[0..text_len], cl.chan_name[0..text_len]);
         cl.mutex.unlock();
         const live = a.sharer != null;
         const h = S(58);
         const bs = S(42);
+        const extra: f32 = if (calls) bs + S(6) else 0;
         // janela estreita: primeiro some o perfil, depois o texto do compartilhar
-        const btns_w = bs * 2 + S(6) + S(16) + S(16) + bs * 2 + S(6) + S(20);
+        const btns_w = bs * 2 + S(6) + S(16) + S(16) + bs * 2 + S(6) + S(20) + extra;
         const full_share = if (live) S(232) else S(200);
         const show_prof = size.x - S(16) >= btns_w + full_share + S(176) + S(12);
         const prof_w: f32 = if (show_prof) S(176) else 0;
         const share_w = if (size.x - S(16) >= btns_w + full_share + prof_w) full_share else S(56);
-        const w = S(10) + (if (show_prof) prof_w + S(12) else 0) + bs * 2 + S(6) + S(16) + share_w + S(16) + bs * 2 + S(6) + S(10);
+        const w = S(10) + (if (show_prof) prof_w + S(12) else 0) + bs * 2 + S(6) + S(16) + share_w + S(16) + bs * 2 + S(6) + S(10) + extra;
         const x0 = o.x + @max(S(8), (size.x - w) / 2);
         const y0 = o.y + size.y - h - S(14);
         rectFill(d, x0, y0 + S(4), x0 + w, y0 + h + S(4), rgba(0x000000, 70), h / 2);
@@ -3798,6 +3968,10 @@ pub const App = struct {
                 status_text = if (st == .starting) tr("Iniciando...") else tr("Ao vivo");
                 status_col = if (st == .starting) col.yellow else col.red;
             }
+            if (a.sharer == null and calls) {
+                status_text = if (in_call) fmtZ("Na call #{s}", .{call_buf[0..call_len]}) else tr("Fora da call");
+                status_col = if (in_call) col.green else col.muted;
+            }
             if (a.admin_muted) {
                 status_text = tr("Silenciado pelo admin");
                 status_col = col.red;
@@ -3818,7 +3992,17 @@ pub const App = struct {
         c.igSetCursorScreenPos(v2(x, by));
         if (iconButton("##deaf", ic.headphones, bs, if (a.deaf) col.red else col.text, col.hover, if (a.deaf) tr("Voltar a ouvir a sala") else tr("Parar de ouvir a sala (surdo)"))) a.toggleDeaf(via_clique);
         if (a.deaf) slash(d, v2(x, by), bs);
-        x += bs + S(16);
+        x += bs;
+        if (calls) {
+            x += S(6);
+            c.igSetCursorScreenPos(v2(x, by));
+            const tip = if (in_call) fmtZ("Sair da call do #{s}", .{call_buf[0..call_len]}) else fmtZ("Entrar na call do #{s}", .{text_buf[0..text_len]});
+            if (iconButton("##callbtn", if (in_call) ic.phone_slash else ic.phone, bs, if (in_call) col.red else col.green, col.hover, tip)) {
+                if (in_call) cl.joinCall("", "") else a.askChannel(cl, text_buf[0..text_len], true);
+            }
+            x += bs;
+        }
+        x += S(16);
 
         // compartilhar
         const sh = S(40);
@@ -4036,6 +4220,22 @@ pub const App = struct {
         c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);
         if (c.igSelectable_Bool(if (target.noDraw()) fmtZ("{s}  Devolver o pincel###adraw", .{ic.pen}) else fmtZ("{s}  Tirar o pincel (apaga os desenhos)###adraw", .{ic.pen}), false, 0, v2(w, 0)))
             cl.admin(proto.admin_draw, target.id, @intFromBool(target.noDraw()));
+        // levar pra outro canal (o chat e a call)
+        if (cl.chans_supported and c.igBeginMenu(fmtZ("{s}  Levar pro canal###amove", .{ic.arrow_right}), true)) {
+            cl.mutex.lock();
+            var names: [proto.max_channels][proto.channel_name_max]u8 = undefined;
+            var lens: [proto.max_channels]usize = undefined;
+            const nch = cl.n_chans;
+            for (cl.chans[0..nch], 0..) |*ch, i| {
+                lens[i] = ch.name_len;
+                @memcpy(names[i][0..ch.name_len], ch.nameSlice());
+            }
+            cl.mutex.unlock();
+            for (0..nch) |i| {
+                if (c.igMenuItem_Bool(fmtZ("#{s}###mv{d}", .{ names[i][0..lens[i]], i }), null, false, true)) cl.chanAdmin(proto.chan_act_move, names[i][0..lens[i]], "", target.id);
+            }
+            c.igEndMenu();
+        }
         if (c.igSelectable_Bool(fmtZ("{s}  Expulsar da sala###akick", .{ic.ban}), false, 0, v2(w, 0))) cl.admin(proto.admin_kick, target.id, 0);
         if (c.igSelectable_Bool(fmtZ("{s}  Banir (não volta mais)###aban", .{ic.gavel}), false, 0, v2(w, 0))) cl.admin(proto.admin_ban, target.id, 0);
         c.igPopStyleColor(1);
@@ -4202,6 +4402,7 @@ pub const App = struct {
     }
 
     fn openShareModal(a: *App) void {
+        a.ensureInCall();
         a.n_sources = @intCast(c.cap_list_sources(&a.sources, a.sources.len));
         if (a.source_idx >= @as(i32, @intCast(a.n_sources))) a.source_idx = 0;
         a.n_audio_apps = audio.listApps(&a.audio_apps);
@@ -5438,6 +5639,40 @@ pub const App = struct {
         }
         const d = drawList();
         const wo = c.igGetCursorScreenPos(); // já descontada a rolagem
+        // fora de call: o palco é só o convite pra entrar numa
+        cl.mutex.lock();
+        const out_of_call = cl.chans_supported and cl.calls_known and cl.call_name_len == 0;
+        var tb: [proto.channel_name_max]u8 = undefined;
+        const tl = cl.chan_name_len;
+        @memcpy(tb[0..tl], cl.chan_name[0..tl]);
+        cl.mutex.unlock();
+        if (out_of_call) {
+            const cx0 = wo.x + size.x / 2;
+            var yy = wo.y + size.y * 0.3;
+            const isz0 = S(76);
+            c.ImDrawList_AddCircleFilled(d, v2(cx0, yy + isz0 / 2), isz0 / 2, col.bg_side, 0);
+            const ps = textSizeF(font_regular, 30, ic.phone_slash);
+            drawTextF(d, font_regular, 30, v2(cx0 - ps.x / 2, yy + (isz0 - ps.y) / 2), col.muted, ic.phone_slash);
+            yy += isz0 + S(18);
+            const t0 = tr("Você está fora da call");
+            const t0s = textSizeF(font_bold, 20, t0);
+            drawTextF(d, font_bold, 20, v2(cx0 - t0s.x / 2, yy), col.header, t0);
+            yy += t0s.y + S(6);
+            const sub0 = tr("Entre na call de um canal pra ouvir, falar e ver as transmissões. O chat continua aqui do lado.");
+            const cw0 = @min(S(520), size.x - S(40));
+            pushFont(font_regular, 14);
+            const sub0s = c.igCalcTextSize(sub0.ptr, sub0.ptr + sub0.len, false, cw0);
+            popFont();
+            drawTextWrapF(d, font_regular, 14, v2(cx0 - @min(cw0, sub0s.x) / 2, yy), col.muted, sub0, cw0);
+            yy += sub0s.y + S(22);
+            const bw0 = S(260);
+            c.igSetCursorScreenPos(v2(cx0 - bw0 / 2, yy));
+            c.igPushStyleVar_Float(c.ImGuiStyleVar_FrameRounding, S(12) * col.round);
+            if (primaryButton(fmtZ("{s}   Entrar na call do #{s}###joincall", .{ ic.phone, tb[0..tl] }), v2(bw0, S(42)), col.green, col.green_hover, col.green_active)) a.askChannel(cl, tb[0..tl], true);
+            c.igPopStyleVar(1);
+            c.igDummy(v2(1, S(20)));
+            return;
+        }
         const cw = @min(S(720), size.x - S(40));
         const cx = wo.x + size.x / 2;
         const host = a.server != null and n_live == 0;
@@ -5974,6 +6209,24 @@ pub const App = struct {
         const o = c.igGetCursorScreenPos();
         const hh = S(34);
         drawTextF(d, font_bold, 11, v2(o.x + S(16), o.y + S(12)), col.muted, tr("CHAT"));
+        // o tópico do canal, do lado (cortado; inteiro com o mouse em cima)
+        {
+            var tb: [proto.chan_topic_max]u8 = undefined;
+            var tl: usize = 0;
+            cl.mutex.lock();
+            for (cl.chans[0..cl.n_chans]) |*ch| if (std.mem.eql(u8, ch.nameSlice(), cl.chan_name[0..cl.chan_name_len])) {
+                tl = ch.topic_len;
+                @memcpy(tb[0..tl], ch.topicSlice());
+            };
+            cl.mutex.unlock();
+            if (tl > 0) {
+                const tx = o.x + S(16) + textSizeF(font_bold, 11, tr("CHAT")).x + S(10);
+                c.ImDrawList_PushClipRect(d, v2(tx, o.y), v2(o.x + size.x - S(12), o.y + S(32)), true);
+                drawTextF(d, font_regular, 12, v2(tx, o.y + S(11)), col.faint, fmtZ("{s}  {s}", .{ ic.pen, tb[0..tl] }));
+                c.ImDrawList_PopClipRect(d);
+                if (c.igIsMouseHoveringRect(v2(tx, o.y), v2(o.x + size.x, o.y + S(32)), true)) tooltipText(fmtZ("{s}", .{tb[0..tl]}));
+            }
+        }
         c.igSetCursorScreenPos(v2(o.x, o.y + hh));
 
         // a caixa cresce com o texto (Shift+Enter quebra linha), até umas 7 linhas
@@ -6382,6 +6635,55 @@ pub const App = struct {
         return y0 + h;
     }
 
+    /// Pede um canal de texto (ou a call dele) e lembra o pedido: se voltar
+    /// "esse canal tem senha", o painel pergunta e manda de novo.
+    fn askChannel(a: *App, cl: *Client, name: []const u8, call: bool) void {
+        a.chan_req_len = @min(name.len, a.chan_req.len);
+        @memcpy(a.chan_req[0..a.chan_req_len], name[0..a.chan_req_len]);
+        a.chan_req_call = call;
+        if (call) cl.joinCall(name, "") else cl.joinChannel(name, "");
+    }
+
+    /// Fora de call e indo transmitir: entra na call do canal em que está
+    /// (transmissão é sempre numa call).
+    fn ensureInCall(a: *App) void {
+        const cl = a.client orelse return;
+        cl.mutex.lock();
+        const need = cl.chans_supported and cl.calls_known and cl.call_name_len == 0;
+        var nb: [proto.channel_name_max]u8 = undefined;
+        const n = cl.chan_name_len;
+        @memcpy(nb[0..n], cl.chan_name[0..n]);
+        cl.mutex.unlock();
+        if (need) cl.joinCall(nb[0..n], "");
+    }
+
+    /// Menu do admin num canal (clique direito na lista).
+    fn chanMenu(a: *App, cl: *Client) void {
+        if (!c.igBeginPopup("##chanmenu", 0)) return;
+        defer c.igEndPopup();
+        const name = a.chan_menu[0..a.chan_menu_len];
+        const fl = a.chan_menu_flags;
+        const w = S(250);
+        pushFont(font_bold, 13);
+        textColored(col.header, fmtZ("#{s}", .{name}));
+        popFont();
+        c.igSeparator();
+        if (c.igSelectable_Bool(if (fl & proto.chan_fixed != 0) fmtZ("{s}  Soltar (some quando esvaziar)###cfix", .{ic.lock_open}) else fmtZ("{s}  Fixar (fica, mesmo vazio e reiniciando)###cfix", .{ic.lock}), false, 0, v2(w, 0)))
+            cl.chanAdmin(proto.chan_act_fix, name, if (fl & proto.chan_fixed != 0) "0" else "1", 0);
+        if (c.igSelectable_Bool(if (fl & proto.chan_locked != 0) fmtZ("{s}  Destrancar###clock", .{ic.lock_open}) else fmtZ("{s}  Trancar (só admin entra)###clock", .{ic.lock}), false, 0, v2(w, 0)))
+            cl.chanAdmin(proto.chan_act_lock, name, if (fl & proto.chan_locked != 0) "0" else "1", 0);
+        if (c.igSelectable_Bool(fmtZ("{s}  Senha do canal…###cpw", .{ic.shield}), false, 0, v2(w, 0))) a.startChanEdit(.password, name);
+        if (c.igSelectable_Bool(fmtZ("{s}  Tópico…###ctopic", .{ic.pen}), false, 0, v2(w, 0))) a.startChanEdit(.topic, name);
+    }
+
+    fn startChanEdit(a: *App, what: @TypeOf(a.chan_edit), name: []const u8) void {
+        a.chan_edit = what;
+        a.chan_edit_len = @min(name.len, a.chan_edit_for.len);
+        @memcpy(a.chan_edit_for[0..a.chan_edit_len], name[0..a.chan_edit_len]);
+        @memset(&a.chan_edit_buf, 0);
+        a.focus_chan_edit = true;
+    }
+
     /// O admin tirou o meu pincel? (a bandeira vem na lista de membros)
     fn myNoDraw(a: *App, cl: *Client) bool {
         _ = a;
@@ -6412,7 +6714,15 @@ pub const App = struct {
                 a.toast("Esse servidor não tem canais (é de uma versão mais velha do telinha).", .{}, true);
             } else if (arg.len == 0) {
                 a.toast("Use /join nome-do-canal (cria o canal se ele não existir).", .{}, false);
-            } else cl.joinChannel(arg);
+            } else a.askChannel(cl, arg, false);
+            return true;
+        }
+        if (is(cmd, &.{ "call", "voz", "voice" })) {
+            if (!supported) {
+                a.toast("Esse servidor não tem canais (é de uma versão mais velha do telinha).", .{}, true);
+            } else if (arg.len == 0) {
+                cl.joinCall("", ""); // sem nome: sai da call
+            } else a.askChannel(cl, arg, true);
             return true;
         }
         if (is(cmd, &.{ "canais", "channels", "list" })) {
@@ -8086,10 +8396,12 @@ pub const App = struct {
             try w.writeAll("]");
             // canais e estatísticas do servidor
             try w.print(",\"id_state\":{f},\"server_fp\":{f}", .{ s(@tagName(cl.id_state)), s(if (cl.id_state == .verified or cl.id_state == .mismatch) &cl.server_fp else "") });
-            try w.print(",\"channels_supported\":{},\"channel\":{f},\"channels\":[", .{ cl.chans_supported, s(cl.chan_name[0..cl.chan_name_len]) });
+            try w.print(",\"channels_supported\":{},\"channel\":{f},\"call\":{f},\"calls_known\":{},\"chan_pw_for\":{f},\"chan_members\":[", .{ cl.chans_supported, s(cl.chan_name[0..cl.chan_name_len]), s(cl.call_name[0..cl.call_name_len]), cl.calls_known, s(a.chan_pw_for[0..a.chan_pw_len]) });
+            for (cl.chan_members.items, 0..) |*m, i| try w.print("{s}{d}", .{ if (i > 0) "," else "", m.id });
+            try w.writeAll("],\"channels\":[");
             for (cl.chans[0..cl.n_chans], 0..) |*ch, i| {
                 if (i > 0) try w.writeByte(',');
-                try w.print("{{\"name\":{f},\"people\":{d},\"live\":{},\"fixed\":{}}}", .{ s(ch.nameSlice()), ch.people, ch.flags & proto.chan_live != 0, ch.flags & proto.chan_fixed != 0 });
+                try w.print("{{\"name\":{f},\"people\":{d},\"in_call\":{d},\"live\":{},\"fixed\":{},\"locked\":{},\"password\":{},\"topic\":{f}}}", .{ s(ch.nameSlice()), ch.people, ch.in_call, ch.flags & proto.chan_live != 0, ch.flags & proto.chan_fixed != 0, ch.flags & proto.chan_locked != 0, ch.flags & proto.chan_password != 0, s(ch.topicSlice()) });
             }
             const sst = &cl.stats;
             try w.print("],\"channel_gen\":{d},\"stats_open\":{},\"stats_gen\":{d},\"stats\":{{\"conns\":{d},\"channels\":{d},\"cpu\":{d},\"rss_kb\":{d},\"out_bps\":{d},\"in_bps\":{d},\"people\":{d},\"hosted\":{}}}", .{

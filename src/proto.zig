@@ -53,6 +53,8 @@ pub const Type = enum(u8) {
     log_ack = 28, // S→C u32 id, u8 resultado (log_ack_*), u8 quantos donos receberam
     channel = 29, // C→S str canal: entra (cria, se não existir) | S→C str canal_atual, u8 n, n × (str nome, u16 pessoas, u8 flags chan_*)
     stats = 30, // C→S u8 ligado (só quem entrou com o token de admin) | S→C estatísticas do servidor (ver docs/PROTOCOL.md)
+    chan_admin = 32, // C→S u8 ação (chan_*_act), str canal, str valor, u32 alvo: admin mexe num canal
+    call = 33, // C→S str canal (vazio = sai da call), str senha: entra na call de um canal (a voz e as transmissões; o chat é o do `channel`)
     identity = 31, // S→C [32] chave pública Ed25519 do servidor, [64] assinatura do handshake (crypto.transcript): a primeira mensagem, antes do hello
     _,
 };
@@ -68,6 +70,19 @@ pub const channel_name_max = 24;
 pub const max_channels = 32;
 pub const chan_live: u8 = 1; // alguém ao vivo nele
 pub const chan_fixed: u8 = 2; // não some quando esvazia (o padrão e os do --canais)
+pub const chan_password: u8 = 4; // pede senha pra entrar
+pub const chan_locked: u8 = 8; // só admin entra
+pub const chan_topic_max = 120;
+/// chan_admin: ações
+pub const chan_act_fix: u8 = 1; // valor "1" fixa (sobrevive vazio e ao servidor reiniciar), "0" solta
+pub const chan_act_lock: u8 = 2; // valor "1" tranca (só admin entra), "0" destranca
+pub const chan_act_password: u8 = 3; // valor = senha (vazio = tira)
+pub const chan_act_topic: u8 = 4; // valor = tópico (vazio = tira)
+pub const chan_act_move: u8 = 5; // leva `alvo` pro canal (o chat e a call)
+/// Bits altos do byte de rota de cada membro (lista personalizada): está no
+/// meu canal de texto / está na minha call. Servidor antigo: nenhum dos dois.
+pub const member_in_chan: u8 = 0x40;
+pub const member_in_call: u8 = 0x20;
 pub const default_channel = "geral";
 
 /// stats: no máximo tantas pessoas na lista (o resto só conta no total).
@@ -162,6 +177,9 @@ pub const notice_admin_off: u8 = 5;
 pub const notice_channel: u8 = 6; // não deu pra entrar no canal (o texto diz por quê)
 pub const notice_draw_off: u8 = 7; // o admin tirou seu pincel
 pub const notice_draw_on: u8 = 8; // devolveu
+pub const notice_moved: u8 = 9; // um admin te levou pra outro canal
+/// notice_channel com extra = 1: o canal pede senha (o app pergunta)
+pub const notice_channel_needs_password: u8 = 1;
 /// Só no app (não vem do servidor): chegou um log mandado pela sala (texto = nome + caminho).
 pub const notice_log_received: u8 = 100;
 
@@ -200,7 +218,10 @@ pub const coord_none: u16 = 0xFFFF;
 /// transmissão aparece (`view_size`); quem transmite manda no maior deles.
 pub const feat_cursor: u8 = 1;
 pub const feat_view_size: u8 = 2;
-pub const features_mine: u8 = feat_cursor | feat_view_size;
+/// feat_calls: a call (voz e transmissões) é separada do canal de texto:
+/// `channel` troca só o chat, `call` troca a call. App sem isso: os dois juntos.
+pub const feat_calls: u8 = 4;
+pub const features_mine: u8 = feat_cursor | feat_view_size | feat_calls;
 /// view_size: "quero a resolução toda" (tela cheia, gravando, ou app antigo).
 pub const view_full: u16 = 0xFFFF;
 

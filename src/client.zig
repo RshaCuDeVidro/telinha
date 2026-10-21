@@ -91,6 +91,8 @@ pub const Member = struct {
     audio: bool,
     flags: u8,
     route: u8, // por onde chegou (proto.route_*)
+    in_chan: bool = true, // está no meu canal de texto (servidor antigo: todo mundo)
+    in_call: bool = true, // está na minha call
     version: [16]u8 = undefined, // versão do app dela ("" = não contou)
     version_len: u8 = 0,
     w: u16,
@@ -196,9 +198,15 @@ pub const ChanInfo = struct {
     name_len: u8 = 0,
     people: u16 = 0,
     flags: u8 = 0, // proto.chan_*
+    in_call: u16 = 0,
+    topic: [proto.chan_topic_max]u8 = undefined,
+    topic_len: u8 = 0,
 
     pub fn nameSlice(ch: *const ChanInfo) []const u8 {
         return ch.name[0..ch.name_len];
+    }
+    pub fn topicSlice(ch: *const ChanInfo) []const u8 {
+        return ch.topic[0..ch.topic_len];
     }
 };
 
@@ -797,7 +805,8 @@ pub const Client = struct {
     room_locked: bool = false,
     room_name: [64]u8 = undefined,
     room_name_len: usize = 0,
-    members: std.ArrayList(Member) = .empty,
+    members: std.ArrayList(Member) = .empty, // quem está na minha call (e eu)
+    chan_members: std.ArrayList(Member) = .empty, // quem está no meu canal de texto
     chat: std.ArrayList(ChatLine) = .empty,
     chat_count: u64 = 0, // total de mensagens já recebidas (pra rolar o chat)
     chat_new: u64 = 0, // mensagens novas (não de histórico) — notificação
@@ -835,6 +844,9 @@ pub const Client = struct {
     /// Muda a cada troca de canal: a UI para de assistir o que era do canal
     /// velho e o transmissor anuncia de novo (a transmissão vai junto).
     channel_gen: std.atomic.Value(u32) = .init(0),
+    call_name: [proto.channel_name_max]u8 = undefined, // a call em que a gente está (vazio = fora)
+    call_name_len: usize = 0,
+    calls_known: bool = false, // o servidor diz a call (separada do canal)
     want_chan: [proto.channel_name_max]u8 = undefined, // o canal pedido ao entrar (hello)
     want_chan_len: usize = 0,
     stats: ServerStats = .{},
@@ -911,6 +923,7 @@ pub const Client = struct {
         if (cl.refs.fetchSub(1, .acq_rel) == 1) {
             cl.queue.deinit();
             cl.members.deinit(gpa);
+            cl.chan_members.deinit(gpa);
             for (cl.chat.items) |*l| l.free();
             cl.chat.deinit(gpa);
             cl.notices.deinit(gpa);
@@ -1305,7 +1318,9 @@ pub const Client = struct {
                     m.audio = flags & proto.member_audio != 0;
                     const route = try r.u8_();
                     m.owner = route & 0x80 != 0;
-                    m.route = route & 0x7F;
+                    m.route = route & 0x1F;
+                    m.in_chan = route & proto.member_in_chan != 0;
+                    m.in_call = route & proto.member_in_call != 0;
                     m.w = try r.u16_();
                     m.h = try r.u16_();
                     m.fps = try r.u8_();
@@ -1329,11 +1344,38 @@ pub const Client = struct {
                     m.version_len = @intCast(@min(v.len, m.version.len));
                     @memcpy(m.version[0..m.version_len], v[0..m.version_len]);
                 }
+                // servidor com call separada marca quem está no meu chat e na
+                // minha call: `members` fica com a call (palco, voz, assistir) e
+                // eu; `chan_members` com o chat (painel, menções). Antigo: os dois iguais.
+                const marked = for (list.items) |*m| {
+                    if (m.in_chan) break true;
+                } else false;
+                var chat_list: std.ArrayList(Member) = .empty;
+                errdefer chat_list.deinit(gpa);
                 cl.mutex.lock();
                 defer cl.mutex.unlock();
+                if (marked) {
+                    var w: usize = 0;
+                    for (list.items) |m| {
+                        if (m.in_chan) try chat_list.append(gpa, m);
+                        if (m.in_call or m.id == cl.my_id) {
+                            list.items[w] = m;
+                            w += 1;
+                        }
+                    }
+                    list.shrinkRetainingCapacity(w);
+                } else {
+                    for (list.items) |*m| {
+                        m.in_chan = true;
+                        m.in_call = true;
+                    }
+                    try chat_list.appendSlice(gpa, list.items);
+                }
                 cl.room_locked = room_flags & proto.room_locked != 0;
                 cl.members.deinit(gpa);
                 cl.members = list;
+                cl.chan_members.deinit(gpa);
+                cl.chan_members = chat_list;
                 // admin muda com a lista (alguém deu ou tirou)
                 for (list.items) |*m| {
                     if (m.id == cl.my_id) cl.is_admin = m.admin;
@@ -1673,25 +1715,57 @@ pub const Client = struct {
             list[k].name_len = @intCast(l);
             k += 1;
         }
+        // no fim (servidor com call separada): gente na call, tópico, a minha call
+        var call: ?[]const u8 = null;
+        ext: {
+            for (0..n) |i| {
+                const v = r.u16_() catch break :ext;
+                if (i < k) list[i].in_call = v;
+            }
+            for (0..n) |i| {
+                const t = r.str() catch break :ext;
+                if (i < k) {
+                    const tl = @min(t.len, proto.chan_topic_max);
+                    @memcpy(list[i].topic[0..tl], t[0..tl]);
+                    list[i].topic_len = @intCast(tl);
+                }
+            }
+            call = r.str() catch break :ext;
+        }
         cl.mutex.lock();
         defer cl.mutex.unlock();
-        const changed = cl.chans_supported and !std.mem.eql(u8, cur, cl.chan_name[0..cl.chan_name_len]);
+        const text_changed = cl.chans_supported and !std.mem.eql(u8, cur, cl.chan_name[0..cl.chan_name_len]);
+        // a call: sem o campo (servidor que não separa), ela é o canal
+        const new_call = call orelse cur;
+        const call_changed = cl.chans_supported and !std.mem.eql(u8, new_call, cl.call_name[0..cl.call_name_len]);
         cl.chans_supported = true;
+        cl.calls_known = call != null;
         copyInto(&cl.chan_name, &cl.chan_name_len, cur);
+        copyInto(&cl.call_name, &cl.call_name_len, new_call);
         copyInto(&cl.want_chan, &cl.want_chan_len, cur); // reconectando, volta pra cá
         @memcpy(cl.chans[0..k], list[0..k]);
         cl.n_chans = k;
-        if (!changed) return;
-        for (cl.chat.items) |*l| l.free();
-        cl.chat.clearRetainingCapacity();
-        cl.chat_last_id = 0;
-        cl.chat_count += 1;
-        cl.pointers.clearRetainingCapacity();
-        cl.strokes.clearRetainingCapacity();
-        _ = cl.channel_gen.fetchAdd(1, .acq_rel);
-        // a transmissão vai junto: o transmissor anuncia de novo e manda um IDR
-        cl.keyreq[0].store(true, .release);
-        cl.keyreq[1].store(true, .release);
+        if (text_changed) {
+            for (cl.chat.items) |*l| l.free();
+            cl.chat.clearRetainingCapacity();
+            cl.chat_last_id = 0;
+            cl.chat_count += 1;
+        }
+        if (call_changed) {
+            cl.pointers.clearRetainingCapacity();
+            cl.strokes.clearRetainingCapacity();
+            _ = cl.channel_gen.fetchAdd(1, .acq_rel);
+            // a transmissão vai junto: o transmissor anuncia de novo e manda um IDR
+            cl.keyreq[0].store(true, .release);
+            cl.keyreq[1].store(true, .release);
+        }
+    }
+
+    /// Estou numa call? (servidor sem canais: sempre)
+    pub fn inCall(cl: *Client) bool {
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        return !cl.chans_supported or cl.call_name_len > 0;
     }
 
     fn onStats(cl: *Client, r: *proto.Reader) !void {
@@ -1742,12 +1816,35 @@ pub const Client = struct {
         if (cl.stats_gen == 0) cl.stats_gen = 1;
     }
 
-    /// Entra num canal (cria se não existir, se o servidor deixar).
-    pub fn joinChannel(cl: *Client, name: []const u8) void {
+    /// Entra num canal de texto (cria se não existir, se o servidor deixar).
+    pub fn joinChannel(cl: *Client, name: []const u8, password: []const u8) void {
         var b: proto.Builder = .{};
         defer b.deinit();
         b.begin(.channel) catch return;
         b.str(name) catch return;
+        b.str(password) catch return;
+        cl.queue.pushOwned(b.finish() catch return);
+    }
+
+    /// Entra na call de um canal (nome vazio = sai da call).
+    pub fn joinCall(cl: *Client, name: []const u8, password: []const u8) void {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        b.begin(.call) catch return;
+        b.str(name) catch return;
+        b.str(password) catch return;
+        cl.queue.pushOwned(b.finish() catch return);
+    }
+
+    /// Admin mexe num canal (proto.chan_act_*).
+    pub fn chanAdmin(cl: *Client, action: u8, name: []const u8, value: []const u8, target: u32) void {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        b.begin(.chan_admin) catch return;
+        b.u8_(action) catch return;
+        b.str(name) catch return;
+        b.str(value) catch return;
+        b.u32_(target) catch return;
         cl.queue.pushOwned(b.finish() catch return);
     }
 
@@ -1808,6 +1905,8 @@ pub const Client = struct {
     /// Pacote de voz nosso (thread de áudio): fura a fila, conversa não espera vídeo.
     pub fn sendVoice(cl: *Client, seq: u32, packet: []const u8) void {
         if (!cl.welcomed.load(.acquire)) return;
+        // fora de call ninguém ouve: nem manda
+        if (cl.chans_supported and cl.calls_known and cl.call_name_len == 0) return;
         const m = proto.Msg.alloc(.voice, 4 + packet.len) catch return;
         std.mem.writeInt(u32, m.payload()[0..4], seq, .little);
         @memcpy(m.payload()[4..], packet);
