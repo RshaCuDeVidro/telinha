@@ -1272,6 +1272,10 @@ test "sala: áudio chega em quem assiste, com o remetente certo" {
         const l = try viewer.members();
         if (l.get(streamer.id)) |m| if (m.flags & proto.member_audio != 0) break;
     }
+    // o "assistir" vem por outra conexão (outra thread no servidor): a bandeira
+    // de áudio pode chegar antes dele valer, e o áudio mandado antes não vai pra ninguém
+    var waited: u32 = 0;
+    while (srv.watchingCount(viewer.id) == 0 and waited < 3000) : (waited += 10) sync.sleepMs(10);
 
     const opus_fake = [_]u8{ 0xfc, 1, 2, 3, 4, 5, 6, 7 };
     const m = try proto.Msg.alloc(.audio, proto.audio_header_len + opus_fake.len);
