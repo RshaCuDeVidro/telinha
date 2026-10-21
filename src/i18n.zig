@@ -744,6 +744,8 @@ const table = [_][2][]const u8{
     .{ "Supressão de ruído (tira ventilador, teclado, chiado)", "Noise suppression (removes fans, keyboard, hiss)" },
     .{ "Cancelamento de eco (pra quem usa caixa de som em vez de fone)", "Echo cancellation (for speakers instead of headphones)" },
     .{ "Entrar na sala com o microfone ligado", "Join rooms with the microphone on" },
+    .{ "VOLUME DO MICROFONE", "MICROPHONE VOLUME" },
+    .{ "Ganho automático: sua voz baixa sobe pra todo mundo ouvir", "Automatic gain: a quiet voice is raised so everyone hears it" },
     .{ "Sons de aviso (alguém entrou/saiu, ao vivo, microfone)", "Notification sounds (someone joined/left, live, microphone)" },
     .{ "{s}  Câmera", "{s}  Camera" },
     .{ "Nenhuma câmera encontrada", "No camera found" },

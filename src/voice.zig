@@ -33,6 +33,43 @@ pub const Options = struct {
     echo_cancellation: bool = true,
     /// 0..1: quanto menor, mais fácil o portão abrir.
     sensitivity: f32 = 0.5,
+    /// Ganho automático: voz baixa sobe (até +18 dB), alta desce; nunca estoura.
+    auto_gain: bool = true,
+    /// Volume do microfone (1 = como vem), multiplica o automático.
+    gain: f32 = 1,
+};
+
+/// Ganho automático da voz (AGC): mede o nível só enquanto é fala (o ruído
+/// de fundo não sobe junto), sobe devagar (~1 s) e desce rápido, e nunca deixa
+/// o bloco passar de 0,95 de pico.
+pub const Agc = struct {
+    /// Nível de fala desejado (RMS ~ -20 dBFS).
+    pub const target: f32 = 0.1;
+    pub const max_gain: f32 = 8; // +18 dB
+    pub const min_gain: f32 = 0.5;
+    level: f32 = 0, // RMS da fala, média lenta
+    gain: f32 = 1,
+
+    /// Aplica em `buf` (um bloco). `speech`: o RNNoise/portão acha que é voz.
+    /// `auto`: ganho automático ligado; `manual`: volume da configuração.
+    pub fn process(g: *Agc, buf: []f32, speech: bool, auto: bool, manual: f32) void {
+        if (auto) {
+            var sum: f32 = 0;
+            for (buf) |v| sum += v * v;
+            const rms = @sqrt(sum / @as(f32, @floatFromInt(buf.len)));
+            if (speech and rms > 1e-4) {
+                g.level = if (g.level == 0) rms else g.level * 0.95 + rms * 0.05;
+                const want = std.math.clamp(target / g.level, min_gain, max_gain);
+                g.gain += (want - g.gain) * @as(f32, if (want < g.gain) 0.3 else 0.03);
+            }
+        } else g.gain = 1;
+        var peak: f32 = 0;
+        for (buf) |v| peak = @max(peak, @abs(v));
+        var k = g.gain * manual;
+        if (peak > 0) k = @min(k, 0.95 / peak);
+        if (k == 1) return;
+        for (buf) |*v| v.* *= k;
+    }
 };
 
 /// Recebe cada pacote Opus pronto (na thread de áudio).
@@ -44,6 +81,9 @@ pub const Mic = struct {
     rnn: ?*rn.DenoiseState,
     echo: ?aec.Canceller = null,
     threshold_bits: std.atomic.Value(u32), // f32: a interface muda com o microfone aberto
+    agc: Agc = .{},
+    auto_gain: std.atomic.Value(bool) = .init(true),
+    gain_bits: std.atomic.Value(u32) = .init(@bitCast(@as(f32, 1))), // f32: volume do microfone
     on_packet: PacketFn,
     ctx: *anyopaque,
 
@@ -97,6 +137,8 @@ pub const Mic = struct {
             .threshold_bits = .init(@bitCast(clampSensitivity(opts.sensitivity))),
             .on_packet = on_packet,
             .ctx = ctx,
+            .auto_gain = .init(opts.auto_gain),
+            .gain_bits = .init(@bitCast(std.math.clamp(opts.gain, 0, 4))),
         };
         if (!with_device) return m;
         // o cancelador usa a referência do mixer, que só existe com dispositivo de verdade
@@ -122,6 +164,12 @@ pub const Mic = struct {
         if (m.rnn) |r| rn.rnnoise_destroy(r);
         c.opus_encoder_destroy(m.enc);
         gpa.destroy(m);
+    }
+
+    /// Ganho (automático e volume) novo na hora.
+    pub fn setGain(m: *Mic, auto: bool, gain: f32) void {
+        m.auto_gain.store(auto, .monotonic);
+        m.gain_bits.store(@bitCast(std.math.clamp(gain, 0, 4)), .monotonic);
     }
 
     /// Sensibilidade nova na hora (o medidor da configuração mostra o efeito).
@@ -217,6 +265,8 @@ pub const Mic = struct {
             // sem RNNoise: portão por volume (RMS acima de ~-40 dBFS)
             vad = if (@sqrt(sum / block) > 0.01) 1 else 0;
         }
+        // volume: automático (voz baixa sobe) e o da configuração
+        m.agc.process(&out, vad >= @as(f32, @bitCast(m.threshold_bits.load(.monotonic))) and !echo_only, m.auto_gain.load(.monotonic), @bitCast(m.gain_bits.load(.monotonic)));
         for (out) |v| peak = @max(peak, @abs(v));
         const old: f32 = @bitCast(m.level_bits.load(.monotonic));
         m.level_bits.store(@bitCast(@max(peak, old * 0.85)), .monotonic);
@@ -360,4 +410,34 @@ test "voz: o FEC do Opus recupera um pacote perdido" {
     var energy: f32 = 0;
     for (rec) |x| energy += x * x;
     try std.testing.expect(energy / @as(f32, @floatFromInt(rec.len)) > 0.001); // não é silêncio
+}
+
+test "ganho automático: voz baixa sobe até perto do alvo, alta não estoura, ruído não sobe" {
+    var g: Agc = .{};
+    var buf: [block]f32 = undefined;
+    // voz baixa (RMS ~0,014): em 3 s o ganho chega perto de 0,1/0,014 (~7x)
+    for (0..300) |i| {
+        for (&buf, 0..) |*v, k| v.* = 0.02 * @sin(@as(f32, @floatFromInt(i * block + k)) * 0.05);
+        g.process(&buf, true, true, 1);
+    }
+    var sum: f32 = 0;
+    for (buf) |v| sum += v * v;
+    const rms = @sqrt(sum / block);
+    try std.testing.expect(rms > 0.06 and rms < 0.13);
+    // grito: o bloco nunca passa de 0,95
+    for (&buf, 0..) |*v, k| v.* = 0.9 * @sin(@as(f32, @floatFromInt(k)) * 0.05);
+    g.process(&buf, true, true, 1);
+    for (buf) |v| try std.testing.expect(@abs(v) <= 0.951);
+    // ruído (não é fala): o ganho não muda
+    var h: Agc = .{};
+    for (0..300) |_| {
+        for (&buf, 0..) |*v, k| v.* = 0.002 * @sin(@as(f32, @floatFromInt(k)) * 0.3);
+        h.process(&buf, false, true, 1);
+    }
+    try std.testing.expectEqual(@as(f32, 1), h.gain);
+    // desligado + volume 2x: só o volume
+    var z: Agc = .{};
+    for (&buf) |*v| v.* = 0.1;
+    z.process(&buf, true, false, 2);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.2), buf[0], 1e-6);
 }

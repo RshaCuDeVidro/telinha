@@ -1088,6 +1088,8 @@ pub const App = struct {
             .noise_suppression = a.cfg.noise_suppression,
             .echo_cancellation = a.cfg.echo_cancellation,
             .sensitivity = micSensitivity(&a.cfg),
+            .auto_gain = a.cfg.mic_agc,
+            .gain = @as(f32, @floatFromInt(a.cfg.mic_gain)) / 100,
         };
         a.mic = voice.Mic.open(opts, cl.retain(), onMicPacket, &err) catch {
             cl.release();
@@ -5694,6 +5696,14 @@ pub const App = struct {
         const sens_before = a.cfg.voice_sensitivity;
         sliderStyled("##sens", &a.cfg.voice_sensitivity, 0, 100, "%d", w);
         if (sens_before != a.cfg.voice_sensitivity) if (a.mic) |m| m.setSensitivity(micSensitivity(&a.cfg));
+        // volume do microfone: automático (voz baixa sobe) e manual
+        c.igDummy(v2(0, S(8)));
+        fieldLabel("VOLUME DO MICROFONE");
+        const agc_before = a.cfg.mic_agc;
+        const gain_before = a.cfg.mic_gain;
+        _ = c.igCheckbox(tr("Ganho automático: sua voz baixa sobe pra todo mundo ouvir###micagc"), &a.cfg.mic_agc);
+        sliderStyled("##micgain", &a.cfg.mic_gain, 25, 300, "%d%%", w);
+        if (agc_before != a.cfg.mic_agc or gain_before != a.cfg.mic_gain) if (a.mic) |m| m.setGain(a.cfg.mic_agc, @as(f32, @floatFromInt(a.cfg.mic_gain)) / 100);
         if (a.mic) |m| {
             // medidor: a barra fica verde quando o portão abre (sua voz está indo)
             const d = c.igGetWindowDrawList();
