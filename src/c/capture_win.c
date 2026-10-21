@@ -56,6 +56,9 @@ struct cap_ctx {
     ID3D11Texture2D *staging;
     int staging_w, staging_h;
     int have_frame;
+    // perdeu o acesso à tela (alt-tab pra jogo em tela cheia, UAC, resolução
+    // mudando): tenta reabrir por um tempo em vez de derrubar a transmissão
+    ULONGLONG lost_since, lost_retry_at;
 
     // GDI
     HDC screen_dc, mem_dc;
@@ -582,6 +585,28 @@ static int next_dxgi(struct cap_ctx *c, cap_frame *out, int timeout_ms, char *er
             if (gpu_produce(c, out)) return 1;
         }
     }
+    // sem acesso à tela: tenta reabrir a cada 250 ms por até 30 s (quem
+    // assiste fica com a última imagem); só depois desiste
+    if (c->lost_since) {
+        ULONGLONG now = GetTickCount64();
+        if (now < c->lost_retry_at) {
+            Sleep((DWORD)(c->lost_retry_at - now < (ULONGLONG)timeout_ms ? c->lost_retry_at - now : (ULONGLONG)timeout_ms));
+            return 0;
+        }
+        HRESULT ohr = open_dxgi(c);
+        if (FAILED(ohr)) {
+            if (now - c->lost_since > 30000) {
+                set_err(err, errlen, "perdi o acesso à tela (DXGI) por 30 s", ohr);
+                return -1;
+            }
+            release_dxgi(c);
+            c->lost_retry_at = now + 250;
+            return 0;
+        }
+        fprintf(stderr, "[telinha] acesso à tela de volta depois de %llu ms\n", now - c->lost_since);
+        c->lost_since = 0;
+        c->redeliver = 1;
+    }
     if (c->have_frame) {
         IDXGIOutputDuplication_ReleaseFrame(c->dupl);
         c->have_frame = 0;
@@ -590,18 +615,13 @@ static int next_dxgi(struct cap_ctx *c, cap_frame *out, int timeout_ms, char *er
     IDXGIResource *res = NULL;
     HRESULT hr = IDXGIOutputDuplication_AcquireNextFrame(c->dupl, (UINT)timeout_ms, &fi, &res);
     if (hr == DXGI_ERROR_WAIT_TIMEOUT) return 0;
-    if (hr == DXGI_ERROR_ACCESS_LOST) {
-        // mudou resolução, UAC, tela de bloqueio... recria
+    if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_INVALID_CALL || hr == E_ACCESSDENIED) {
+        // alt-tab pra jogo em tela cheia, mudou resolução, UAC, tela de
+        // bloqueio...: recria (agora ou nas próximas chamadas)
+        fprintf(stderr, "[telinha] perdi o acesso à tela (DXGI 0x%08lx), tentando de novo\n", (unsigned long)hr);
         release_dxgi(c);
-        hr = open_dxgi(c);
-        if (FAILED(hr)) {
-            Sleep(200);
-            hr = open_dxgi(c);
-        }
-        if (FAILED(hr)) {
-            set_err(err, errlen, "perdi o acesso à tela (DXGI)", hr);
-            return -1;
-        }
+        c->lost_since = GetTickCount64();
+        c->lost_retry_at = 0;
         return 0;
     }
     if (FAILED(hr)) {

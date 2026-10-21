@@ -418,6 +418,8 @@ const table = [_][2][]const u8{
     .{ "A câmera parou: {s}", "The camera stopped: {s}" },
     .{ "Transmitindo sem áudio: {s}", "Streaming without audio: {s}" },
     .{ "A transmissão parou: {s}", "The stream stopped: {s}" },
+    .{ "A transmissão caiu; retomando…", "The stream dropped; resuming…" },
+    .{ "A transmissão caiu várias vezes seguidas; parei de tentar.", "The stream dropped several times in a row; stopped retrying." },
 
     // clipes, gravação e janela flutuante
     .{ "clipe", "clip" },

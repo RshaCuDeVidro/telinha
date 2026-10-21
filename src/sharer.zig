@@ -156,6 +156,7 @@ pub fn outputSize(sw: u32, sh: u32, max_height: u32) struct { w: u32, h: u32 } {
 }
 
 pub const State = enum { starting, live, failed, stopped };
+pub const StopReason = enum(u8) { none, ui, encoder_ended };
 
 /// Um quadro já convertido pra I420, esperando o encoder.
 const Slot = struct {
@@ -215,6 +216,8 @@ pub const Sharer = struct {
     client: *Client,
     kind: u8, // tela ou câmera (fixo)
     stop_flag: std.atomic.Value(bool) = .init(false),
+    /// Quem mandou parar (vai pro log; parar sem a UI pedir = cair e retomar).
+    stop_reason: std.atomic.Value(StopReason) = .init(.none),
 
     mutex: sync.Mutex = .{},
     settings: Settings,
@@ -283,6 +286,7 @@ pub const Sharer = struct {
     }
 
     pub fn stop(s: *Sharer) void {
+        _ = s.stop_reason.cmpxchgStrong(.none, .ui, .acq_rel, .acquire);
         s.stop_flag.store(true, .release);
         s.release();
     }
@@ -367,7 +371,9 @@ pub const Sharer = struct {
         } else |_| {}
         s.mutex.lock();
         if (s.state != .failed) s.state = .stopped;
+        const final = s.state;
         s.mutex.unlock();
+        if (debugEnabled()) std.debug.print("[telinha] transmissão ({s}) terminou: {s}, motivo {s}\n", .{ if (s.kind == proto.kind_camera) "câmera" else "tela", @tagName(final), @tagName(s.stop_reason.load(.acquire)) });
     }
 };
 
@@ -1135,13 +1141,23 @@ const Pipeline = struct {
     fn encodeLoop(p: *Pipeline) void {
         sync.nameThread("encoder");
         sync.lowerThreadPriority();
-        p.encodeLoopInner() catch |e| p.s.fail(Sharer.errorText(e));
+        p.encodeLoopInner() catch |e| {
+            if (debugEnabled()) std.debug.print("[telinha] o encoder parou com erro: {s}\n", .{@errorName(e)});
+            p.s.fail(Sharer.errorText(e));
+        };
         // se o encoder morreu, a captura também tem que parar
+        _ = p.s.stop_reason.cmpxchgStrong(.none, .encoder_ended, .acq_rel, .acquire);
         p.s.stop_flag.store(true, .release);
     }
 
     fn encodeLoopInner(p: *Pipeline) !void {
         const s = p.s;
+        // teste (TELINHA_TESTE_PARAR_SOZINHO=s): o encoder termina sozinho depois
+        // de s segundos, sem erro (a UI tem que perceber e retomar)
+        const teste_parar_us: ?u64 = if (std.c.getenv("TELINHA_TESTE_PARAR_SOZINHO")) |v|
+            sync.nowUs() + (std.fmt.parseInt(u64, std.mem.span(v), 10) catch 3) * 1_000_000
+        else
+            null;
         var enc: ?Encoder = null;
         defer if (enc) |*e| e.deinit();
         var enc_gen: u32 = std.math.maxInt(u32);
@@ -1168,7 +1184,7 @@ const Pipeline = struct {
             // espera um quadro novo (ou um pedido de IDR)
             p.mutex.lock();
             while (p.ready == null and !p.quit and !s.client.keyreq[kind].load(.acquire)) p.cond.timedWait(&p.mutex, 50);
-            if (p.quit) {
+            if (p.quit or (teste_parar_us != null and sync.nowUs() > teste_parar_us.?)) {
                 p.mutex.unlock();
                 return;
             }

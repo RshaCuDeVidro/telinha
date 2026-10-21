@@ -590,6 +590,9 @@ pub const App = struct {
     zoom_dirty: bool = false,
     save_at: f64 = 0, // salvar a configuração quando der essa hora (0 = nada pendente)
     auto_cap_seen: u32 = 0, // último teto da qualidade automática avisado
+    // transmissão que caiu sozinha (sem a UI pedir): retomadas no último minuto
+    share_restarts: u8 = 0,
+    share_restart_window: f64 = 0,
     pctest_logged: bool = true, // resultado do teste do PC já foi pro log
     crash_prompt: bool = false, // travou da última vez: pergunta se manda o relatório
     crash_sending: bool = false, // mandando o relatório pelo aviso (avisa quando acabar)
@@ -1991,6 +1994,21 @@ pub const App = struct {
                 var eb: [300]u8 = undefined;
                 a.toast("A transmissão parou: {s}", .{i18n.dynamic(s.errSlice(), &eb)}, true);
                 a.stopSharing();
+            } else if (sst == .stopped) {
+                // parou sem a UI pedir (quando a UI para, a.sharer já vira null):
+                // retoma sozinho, no máximo 3 vezes por minuto
+                debuglog.line("a transmissão parou sozinha (motivo {s}); retomando", .{@tagName(s.stop_reason.load(.acquire))});
+                a.stopSharing();
+                const now = c.igGetTime();
+                if (now - a.share_restart_window > 60) {
+                    a.share_restarts = 0;
+                    a.share_restart_window = now;
+                }
+                a.share_restarts += 1;
+                if (a.share_restarts <= 3) {
+                    a.toast("A transmissão caiu; retomando…", .{}, false);
+                    a.startSharing();
+                } else a.toast("A transmissão caiu várias vezes seguidas; parei de tentar.", .{}, true);
             }
         }
         // para de assistir quem parou de transmitir

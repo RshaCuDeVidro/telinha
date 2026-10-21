@@ -873,6 +873,23 @@ def atalhos_globais():
 
 
 @test
+def transmissao_retoma_sozinha():
+    """Transmissão que para sem a UI pedir (encoder morreu em silêncio, como no alt-tab do Windows): a UI percebe e retoma; 3 vezes por minuto, depois desiste com aviso."""
+    with Session("retoma") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"], extra_env={"TELINHA_TESTE_PARAR_SOZINHO": "3"})
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        aid = b.member_id("Ana")
+        b.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 15, "ver a Ana")
+        a.toasted("retomando", 10)
+        # depois da retomada a imagem volta pra quem assiste
+        a.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 10, "voltar ao vivo")
+        a.toasted("parei de tentar", 30)
+        st = a.wait(lambda st: st["sharer"] is None, 5, "desistir de retomar")
+        log("retomou 3 vezes e desistiu na quarta")
+
+
+@test
 def cursor_e_tamanho():
     """Cursor fora do vídeo (mexer o mouse com a tela parada não gera quadro; quem assiste recebe a posição) e transmissão no tamanho em que aparece (sobe na tela cheia, desce depois)."""
     with Session("cursortam") as s:
