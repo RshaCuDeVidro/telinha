@@ -37,7 +37,9 @@ const thin_max_ms = 60_000;
 /// Recém-afinado não conta como "com dificuldade" (pra pedir taxa menor pra
 /// sala toda) enquanto o atraso acumulado escoa.
 const thin_grace_ms = 3000;
-const keyreq_interval_ms = 500;
+// no máximo um IDR por segundo por transmissão (alguém entrando e saindo sem
+// parar fazia a transmissão virar só IDR: banda e encoder de todo mundo)
+const keyreq_interval_ms = 1000;
 const handshake_timeout_ms = 10_000;
 /// Alguém guardando os últimos segundos pra clipe: um IDR a cada tanto (um
 /// clipe só começa num IDR, e sem isso eles só saem quando alguém entra).
@@ -271,6 +273,15 @@ const Ban = struct {
     ip_len: usize = 0,
 };
 
+const RecentJoin = struct {
+    key: u64,
+    ip: [16]u8 = undefined,
+    ip_len: usize = 0,
+    t_ms: u64,
+};
+const join_flood_window_ms = 30_000;
+const join_flood_max = 6;
+
 const ChatEntry = struct {
     id: u32,
     from: u32,
@@ -336,6 +347,8 @@ pub const Server = struct {
     /// Chaves (do app) de quem o admin silenciou: quem cai e volta continua
     /// silenciado (antes voltava com o microfone liberado: "desmutou sozinho")
     muted_keys: std.ArrayList(u64) = .empty,
+    /// Entradas recentes (chave do app ou IP): quem entra e sai sem parar espera.
+    recent_joins: std.ArrayList(RecentJoin) = .empty,
     chat_log: [chat_history_len]ChatEntry = undefined,
     chat_len: usize = 0,
     chat_head: usize = 0,
@@ -389,6 +402,7 @@ pub const Server = struct {
         s.conns.deinit(gpa);
         s.bans.deinit(gpa);
         s.muted_keys.deinit(gpa);
+        s.recent_joins.deinit(gpa);
         gpa.destroy(s);
         sync.hiresTimer(false);
     }
@@ -910,7 +924,9 @@ pub const Server = struct {
                     _ = cn.queue.dropFrames(stream);
                     cn.dropFlow(stream);
                     if (cn.flow(stream)) |f| f.clips = opts & proto.watch_clips != 0;
-                    s.requestKey(stream, true);
+                    // IDR pra quem começou a assistir, respeitando o limite: quem
+                    // chegar logo depois de outro pega o próximo (o laço pede)
+                    s.requestKey(stream, false);
                     try s.broadcastMembers();
                 } else {
                     cn.forget(stream);
@@ -1147,6 +1163,36 @@ pub const Server = struct {
         return name;
     }
 
+    /// Mais de `join_flood_max` entradas em 30 s da mesma chave do app (ou do
+    /// mesmo IP, pra quem não manda chave e não vem por túnel)? Senão anota.
+    fn joinFlood(s: *Server, cn: *const Conn) bool {
+        const now = s.nowUs() / 1000;
+        var i: usize = 0;
+        while (i < s.recent_joins.items.len) {
+            if (now -| s.recent_joins.items[i].t_ms > join_flood_window_ms) {
+                _ = s.recent_joins.swapRemove(i);
+            } else i += 1;
+        }
+        // pelo IP só quem não manda chave, não vem por túnel e não é desta máquina
+        const by_ip = cn.client_key == 0 and !cn.via_tunnel and cn.ip_len > 0 and cn.route != proto.route_local;
+        if (cn.client_key == 0 and !by_ip) return false;
+        var n: usize = 0;
+        for (s.recent_joins.items) |j| {
+            if (cn.client_key != 0 and j.key == cn.client_key) n += 1;
+            if (by_ip and j.key == 0 and std.mem.eql(u8, j.ip[0..j.ip_len], cn.ip[0..cn.ip_len])) n += 1;
+        }
+        if (n >= join_flood_max) return true;
+        if (s.recent_joins.items.len < 512) {
+            var j: RecentJoin = .{ .key = cn.client_key, .t_ms = now };
+            if (by_ip) {
+                j.ip_len = cn.ip_len;
+                @memcpy(j.ip[0..cn.ip_len], cn.ip[0..cn.ip_len]);
+            }
+            s.recent_joins.append(gpa, j) catch {};
+        }
+        return false;
+    }
+
     fn banned(s: *Server, cn: *const Conn, name: []const u8) bool {
         for (s.bans.items) |*b| {
             if (b.key != 0 and b.key == cn.client_key) return true;
@@ -1177,6 +1223,11 @@ pub const Server = struct {
             if (s.conns.items.len >= s.max_members) {
                 refuse(cn, proto.deny_full, "A sala está cheia.");
                 return error.RoomFull;
+            }
+            if (s.joinFlood(cn)) {
+                s.log("{s} entrando e saindo rápido demais: recusado por uns segundos", .{base});
+                refuse(cn, proto.deny_generic, "Entrando e saindo rápido demais: espera uns segundos e tenta de novo.");
+                return error.JoinFlood;
             }
         }
         // nome repetido ganha um número
@@ -1380,21 +1431,31 @@ pub const Server = struct {
                 var feats: u8 = proto.features_mine;
                 var want: u16 = 0; // maior altura em que alguém mostra (view_full = sem limite)
                 var watchers: usize = 0;
+                var known: usize = 0; // quantos já disseram o tamanho
                 for (s.conns.items) |o| {
                     if (!contains(&o.watching, stream)) continue;
                     watchers += 1;
                     mask &= o.decode_codecs;
                     feats &= o.features;
-                    var h: u16 = proto.view_full; // app antigo ou ainda não disse: tudo
+                    var h: u16 = proto.view_full; // app antigo: tudo
                     if (o.features & proto.feat_view_size != 0) {
-                        for (o.view_sizes.items) |vs| if (vs.stream == stream) {
-                            h = vs.h;
-                        };
+                        const said = for (o.view_sizes.items) |vs| {
+                            if (vs.stream == stream) break vs.h;
+                        } else null;
+                        // começou a assistir e ainda não disse o tamanho: não mexe
+                        // (antes contava como tela cheia: cada um que entrava jogava
+                        // a transmissão pra resolução máxima e ela voltava logo depois)
+                        h = said orelse continue;
                     }
+                    known += 1;
                     want = @max(want, h);
                 }
                 mask |= proto.codecs_h264;
-                if (watchers == 0) want = proto.view_full;
+                if (watchers == 0) {
+                    want = proto.view_full;
+                } else if (known == 0) {
+                    want = if (ss.view_sent != 0) ss.view_sent else proto.view_full;
+                }
                 if (mask != ss.codecs_sent or feats != ss.features_sent) {
                     ss.codecs_sent = mask;
                     ss.features_sent = feats;

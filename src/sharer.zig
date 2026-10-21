@@ -342,6 +342,7 @@ pub const Sharer = struct {
     }
 
     fn run(s: *Sharer) void {
+        if (std.c.getenv("TELINHA_VIEW_DESCE_MS")) |v| view_down_ms = std.fmt.parseInt(u64, std.mem.span(v), 10) catch view_down_ms;
         defer s.release();
         defer s.client.wake();
         sync.hiresTimer(true); // cadência de captura/envio em ms
@@ -402,6 +403,10 @@ const Source = union(enum) {
     }
 };
 
+/// Quanto tempo pedindo uma altura menor antes de a transmissão descer
+/// (subir é na hora). TELINHA_VIEW_DESCE_MS muda (testes).
+var view_down_ms: u64 = 10_000;
+
 const Pipeline = struct {
     s: *Sharer,
     cap: ?Source = null,
@@ -424,6 +429,11 @@ const Pipeline = struct {
     /// Cursor fora do vídeo (cap_set_cursor_apart ligado) e o que já foi mandado.
     cursor_apart: bool = false,
     cursor_apart_unsupported: bool = false, // essa captura não sabe: nem tenta de novo
+    // tamanho de quem assiste (viewCap): o teto aplicado e desde quando pedem menos
+    view_cap_set: bool = false,
+    view_cap_fresh: bool = true,
+    view_cap_cur: u32 = 0,
+    view_cap_lower_since: u64 = 0,
     cursor_sent: [2]u16 = .{ proto.coord_none, proto.coord_none },
     cursor_sent_us: u64 = 0,
 
@@ -495,7 +505,31 @@ const Pipeline = struct {
         const s = p.s;
         if (!p.settings.view_size or ownRecording(s)) return 0;
         const w = s.client.view_want[s.kind].load(.acquire);
-        return if (w == proto.view_full) 0 else @max(w, 360);
+        const raw: u32 = if (w == proto.view_full) 0 else @max(w, 360);
+        // sobe na hora; desce só depois de 10 s pedindo menos: quem entra e sai,
+        // minimiza e volta, troca de layout... não fica recriando o encoder
+        // (cada troca é um IDR pra todo mundo)
+        const now = sync.nowMs();
+        // ninguém assistindo: o próximo tamanho pedido vale na hora (é o começo)
+        if (!s.client.anyoneWatching(proto.streamId(s.client.myId(), s.kind))) p.view_cap_fresh = true;
+        const higher = raw == 0 or (p.view_cap_cur != 0 and raw > p.view_cap_cur);
+        if (p.view_cap_fresh and raw != 0) {
+            p.view_cap_fresh = false;
+            p.view_cap_set = true;
+            p.view_cap_cur = raw;
+            p.view_cap_lower_since = 0;
+        } else if (!p.view_cap_set or higher or raw == p.view_cap_cur) {
+            p.view_cap_set = true;
+            p.view_cap_cur = raw;
+            p.view_cap_lower_since = 0;
+        } else {
+            if (p.view_cap_lower_since == 0) p.view_cap_lower_since = now;
+            if (now - p.view_cap_lower_since >= view_down_ms) {
+                p.view_cap_cur = raw;
+                p.view_cap_lower_since = 0;
+            }
+        }
+        return p.view_cap_cur;
     }
 
     /// Liga/desliga o cursor fora do vídeo conforme quem assiste entende.

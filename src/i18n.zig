@@ -184,6 +184,7 @@ const server_whole = [_]Suffix{
     .{ "Você foi removido da sala.", "You were removed from the room." },
     .{ "Você foi banido dessa sala.", "You are banned from this room." },
     .{ "Você continua silenciado pelo admin.", "The admin still has you muted." },
+    .{ "Entrando e saindo rápido demais: espera uns segundos e tenta de novo.", "Joining and leaving too fast: wait a few seconds and try again." },
     .{ "A sala está trancada: ninguém novo entra agora.", "The room is locked: no one new can join right now." },
     .{ "A sala está cheia.", "The room is full." },
 };

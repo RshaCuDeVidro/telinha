@@ -912,7 +912,7 @@ test "sala: espectador pede IDR (keyreq) quando perde a referência" {
 
     var b: proto.Builder = .{};
     defer b.deinit();
-    sync.sleepMs(600); // passa o limite de 1 pedido a cada 500 ms
+    sync.sleepMs(1100); // passa o limite de 1 pedido por segundo
     try b.begin(.keyreq);
     try b.u32_(streamer.id);
     try viewer.send(try b.finish());
@@ -1011,6 +1011,47 @@ test "sala: decoder que não dá conta passa a receber só os quadros de referê
         try testing.expectEqual(want, try r.u32_());
         try viewer.ackFrame(r.data);
     }
+}
+
+test "sala: quem entra e sai sem parar não derruba a sala (IDR no máximo 1/s, entrada recusada depois de 6 em 30 s)" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+
+    var streamer = try TestClient.connect(port, "T", "", "");
+    defer streamer.close();
+    try streamer.welcome();
+    var viewer = try TestClient.connect(port, "E", "", "");
+    defer viewer.close();
+    try viewer.welcome();
+    try liveRoom(&streamer, &viewer);
+
+    // alguém (mesma chave do app) entra, começa a assistir e sai, 8 vezes seguidas
+    const t0 = sync.nowMs();
+    var refused: usize = 0;
+    for (0..8) |i| {
+        var p = try TestClient.connectKey(port, "Pisca", "", "", 0xF1A9);
+        defer p.close();
+        if (i < 6) {
+            try p.welcome();
+            try p.watch(streamer.id, 0);
+            sync.sleepMs(120);
+        } else {
+            try testing.expectEqual(proto.deny_generic, try p.denied());
+            refused += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), refused);
+    // quem transmite recebeu no máximo um pedido de IDR por segundo
+    net.setRecvTimeout(streamer.sock, 300);
+    var keyreqs: usize = 0;
+    while (true) {
+        const t = proto.recvMsg(streamer.sock, &streamer.ch, &streamer.rb) catch break;
+        if (t == .keyreq) keyreqs += 1;
+    }
+    const secs = (sync.nowMs() - t0) / 1000;
+    try testing.expect(keyreqs <= secs + 1);
 }
 
 test "sala: watch só aceita quem existe" {

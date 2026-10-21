@@ -953,9 +953,10 @@ def cursor_e_tamanho():
         expect(st["sharer"]["h"] <= want, "a Ana mandou mais do que o Bruno mostra")
         # sai da tela cheia: desce de novo, mas só depois de uns segundos (sem ficar trocando)
         b.key("F11")
-        time.sleep(1.5)
-        expect(a.state()["sharer"]["h"] > h0, "desceu antes da folga de 3 s")
-        a.wait(lambda st: st["sharer"]["h"] <= h0, 8, "a Ana descer de novo depois que o Bruno saiu da tela cheia")
+        # quem assiste espera 3 s pra pedir menos; quem transmite, mais 10 s pra descer
+        time.sleep(6)
+        expect(a.state()["sharer"]["h"] > h0, "desceu antes da folga (3 s de quem assiste + 10 s de quem transmite)")
+        a.wait(lambda st: st["sharer"]["h"] <= h0, 14, "a Ana descer de novo depois que o Bruno saiu da tela cheia")
 
 
 @test
