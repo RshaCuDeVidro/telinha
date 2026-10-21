@@ -520,7 +520,8 @@ const table = [_][2][]const u8{
     // som: excluir programas
     .{ "Excluir programas do som (ex.: o Discord)", "Exclude programs from the audio (e.g. Discord)" },
     .{ "Fora do som: {s}", "Left out of the audio: {s}" },
-    .{ "Esse Windows não deixa excluir programas do som (precisa do Windows 10 versão 2004 ou mais novo).", "This Windows can't exclude programs from the audio (needs Windows 10 version 2004 or newer)." },
+    .{ "O Windows não deixou excluir programas do som: vai todo o som do computador (menos o telinha).", "Windows didn't let telinha exclude programs from the audio: all computer audio is going out (except telinha)." },
+    .{ "O Windows não deixou separar o som do telinha: enquanto você transmite com som, o que você ouve da sala fica mudo (senão quem assiste ouviria eco).", "Windows didn't let telinha keep its own sound out: while you stream with audio, what you hear from the room is muted (otherwise viewers would hear an echo)." },
     .{ "Quem fica de fora do som da transmissão", "Who stays out of the stream's audio" },
     .{ "Ex.: o Discord, pra quem assiste não ouvir a própria voz de volta.", "E.g. Discord, so viewers don't hear their own voice back." },
     .{ "{s} (não está tocando agora)", "{s} (not playing right now)" },

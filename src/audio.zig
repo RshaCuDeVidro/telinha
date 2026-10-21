@@ -333,12 +333,12 @@ pub const Sender = struct {
         if (sync.is_windows and everything and only.exclude.len > 0) {
             // o WASAPI só exclui um processo (o telinha): mistura um por programa
             if (c.audio_process_loopback_ok() != 0) {
-                s.mix = MixCapture.start(s, onCapture, only.exclude) catch {
-                    gpa.destroy(s);
-                    return error.AudioCapture;
-                };
-                return s;
+                if (MixCapture.start(s, onCapture, only.exclude)) |m| {
+                    s.mix = m;
+                    return s;
+                } else |_| {}
             }
+            // sem captura por programa: tudo menos o telinha, e a UI avisa
             s.exclude_ignored = true;
         }
         var app_z: [64]u8 = [_]u8{0} ** 64;
@@ -479,6 +479,19 @@ pub const MixCapture = struct {
         m.* = .{ .on_capture = on_capture, .user = user };
         m.exclude_len = @min(exclude.len, m.exclude.len);
         @memcpy(m.exclude[0..m.exclude_len], exclude[0..m.exclude_len]);
+        // a primeira lista já aqui: se tem programa tocando e o Windows não
+        // deixou capturar nenhum, avisa (antes a transmissão ia muda, calada)
+        const r = m.refresh();
+        if (r.wanted > 0 and r.opened == 0) {
+            if (sync.debugOn()) std.debug.print("[telinha] som por programa: nenhum dos {d} abriu, usando o jeito comum\n", .{r.wanted});
+            for (&m.sources) |*sl| if (sl.*) |s| {
+                if (s.dev) |d| c.audio_close(d);
+                gpa.destroy(s);
+                sl.* = null;
+            };
+            gpa.destroy(m);
+            return error.NoSourceOpened;
+        }
         m.thread = std.Thread.spawn(.{}, run, .{m}) catch |e| {
             gpa.destroy(m);
             return e;
@@ -517,7 +530,7 @@ pub const MixCapture = struct {
         while (!m.stop.load(.acquire)) {
             const now = sync.nowUs();
             if (now >= next_list) {
-                m.refresh();
+                _ = m.refresh();
                 next_list = now + 1_000_000;
             }
             if (m.tick(&out)) m.on_capture(m.user, &out, frame_len);
@@ -531,19 +544,21 @@ pub const MixCapture = struct {
 
     /// Abre a captura de quem começou a tocar (e não está excluído) e fecha a
     /// de quem sumiu da lista faz 3 s.
-    fn refresh(m: *MixCapture) void {
+    fn refresh(m: *MixCapture) struct { wanted: usize, opened: usize } {
         var excl_z: [513]u8 = undefined;
         @memcpy(excl_z[0..m.exclude_len], m.exclude[0..m.exclude_len]);
         excl_z[m.exclude_len] = 0;
         var pids: [32]u32 = undefined;
         const n: usize = @intCast(@max(0, c.audio_mix_pids(&excl_z, &pids, pids.len)));
         var seen = [_]bool{false} ** mix_max;
+        var opened: usize = 0;
         for (pids[0..n]) |pid| {
             const have = for (m.sources, 0..) |maybe, i| {
                 if (maybe) |s| if (s.pid == pid) break i;
             } else null;
             if (have) |i| {
                 seen[i] = true;
+                opened += 1;
                 continue;
             }
             const slot = for (m.sources, 0..) |maybe, i| {
@@ -560,6 +575,7 @@ pub const MixCapture = struct {
             }
             m.sources[slot] = s;
             seen[slot] = true;
+            opened += 1;
         }
         for (&m.sources, 0..) |*sl, i| if (sl.*) |s| {
             if (seen[i]) {
@@ -573,6 +589,7 @@ pub const MixCapture = struct {
                 }
             }
         };
+        return .{ .wanted = n, .opened = opened };
     }
 };
 

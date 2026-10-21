@@ -576,6 +576,7 @@ pub const App = struct {
     open_member_menu: bool = false,
 
     audio_err_shown: bool = false,
+    self_mute_shown: bool = false,
     // notificações do sistema
     notified_at: f64 = -100,
     notif_chat_seen: u64 = 0,
@@ -1480,7 +1481,7 @@ pub const App = struct {
         }
         if (a.sharer) |s| if (s.audio_exclude_ignored) {
             pushFont(font_regular, 12);
-            textColored(col.yellow, tr("Esse Windows não deixa excluir programas do som (precisa do Windows 10 versão 2004 ou mais novo)."));
+            textColored(col.yellow, tr("O Windows não deixou excluir programas do som: vai todo o som do computador (menos o telinha)."));
             popFont();
         };
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(14), S(12)));
@@ -1680,6 +1681,7 @@ pub const App = struct {
         if (a.sharer != null) debuglog.line("parou de transmitir", .{});
         audio.mixer.self_mute.store(false, .monotonic);
         a.audio_err_shown = false;
+        a.self_mute_shown = false;
         if (a.sharer) |s| {
             gl.delete(&s.preview_tex);
             s.stop();
@@ -2021,6 +2023,12 @@ pub const App = struct {
             // captura que escuta o próprio app (Linux sem PipeWire, Windows antigo):
             // silencia o que você assiste, senão quem assiste ouviria eco
             audio.mixer.self_mute.store(hears_self, .monotonic);
+            if (hears_self and !a.self_mute_shown) {
+                // antes o som da sala simplesmente parava ao começar a transmitir
+                a.self_mute_shown = true;
+                debuglog.line("a captura do som pega o próprio telinha: o som da sala fica mudo enquanto transmite", .{});
+                a.toast("O Windows não deixou separar o som do telinha: enquanto você transmite com som, o que você ouve da sala fica mudo (senão quem assiste ouviria eco).", .{}, true);
+            }
             // qualidade automática mudou a resolução: avisa quem transmite
             const cap = s.auto_cap.load(.acquire);
             if (cap != a.auto_cap_seen) {

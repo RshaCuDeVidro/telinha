@@ -22,6 +22,8 @@
 #endif
 
 struct audio_dev {
+    ma_log log; // avisos e erros da miniaudio vão pro log de depuração
+    int log_ok;
     ma_context ctx;
     ma_device dev;
     int ctx_ok, dev_ok;
@@ -38,6 +40,13 @@ static void set_err(char *err, int errlen, const char *msg, int code) {
     if (err && errlen > 0) snprintf(err, errlen, "%s (%d)", msg, code);
 }
 
+// Mensagens da própria miniaudio (ex.: "[WASAPI] Failed to initialize device."):
+// dizem em qual passo o Windows recusou. Só avisos e erros.
+static void on_ma_log(void *user, ma_uint32 level, const char *msg) {
+    (void)user;
+    if (level <= MA_LOG_LEVEL_WARNING) fprintf(stderr, "[telinha] miniaudio: %s%s", msg, (*msg && msg[strlen(msg) - 1] == '\n') ? "" : "\n");
+}
+
 static void on_data(ma_device *dev, void *out, const void *in, ma_uint32 frames) {
     struct audio_dev *d = dev->pUserData;
     if (d->capture && in) d->capture(d->user, (const float *)in, (int)frames);
@@ -51,6 +60,7 @@ void audio_close(audio_dev *d) {
 #endif
     if (d->dev_ok) ma_device_uninit(&d->dev);
     if (d->ctx_ok) ma_context_uninit(&d->ctx);
+    if (d->log_ok) ma_log_uninit(&d->log);
     free(d);
 }
 
@@ -69,6 +79,11 @@ static audio_dev *open_dev(ma_device_type type, const ma_backend *backends, int 
     if (!d) return NULL;
     ma_context_config cc = ma_context_config_init();
     cc.pulse.pApplicationName = "telinha";
+    if (ma_log_init(NULL, &d->log) == MA_SUCCESS) {
+        d->log_ok = 1;
+        ma_log_register_callback(&d->log, ma_log_callback_init(on_ma_log, NULL));
+        cc.pLog = &d->log;
+    }
     ma_result r = ma_context_init(backends, (ma_uint32)nbackends, &cc, &d->ctx);
     if (r != MA_SUCCESS) {
         set_err(err, errlen, "sistema de áudio indisponível", r);
@@ -85,9 +100,35 @@ static int start(struct audio_dev *d, ma_device_config *cfg, char *err, int errl
     cfg->dataCallback = on_data;
     cfg->pUserData = d;
     cfg->performanceProfile = ma_performance_profile_low_latency;
-    ma_result r = ma_device_init(&d->ctx, cfg, &d->dev);
+    // "hardware offloading" não faz sentido pra captura, e em alguns drivers o
+    // Windows recusa o Initialize com ele (E_INVALIDARG = -2: sem som nenhum)
+    cfg->wasapi.noHardwareOffloading = MA_TRUE;
+    ma_result r = MA_ERROR;
+    // se o Windows recusar: o resampler da própria miniaudio em vez do do
+    // WASAPI (AUTOCONVERTPCM), e depois latência conservadora
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (attempt == 1) {
+            cfg->wasapi.noAutoConvertSRC = MA_TRUE;
+            cfg->wasapi.noDefaultQualitySRC = MA_TRUE;
+        }
+        if (attempt == 2) cfg->performanceProfile = ma_performance_profile_conservative;
+        r = ma_device_init(&d->ctx, cfg, &d->dev);
+        if (r == MA_SUCCESS) {
+            if (attempt > 0) fprintf(stderr, "[telinha] áudio abriu na tentativa %d\n", attempt + 1);
+            break;
+        }
+        fprintf(stderr, "[telinha] áudio: tentativa %d (%s%s) falhou: %s (%d)\n", attempt + 1,
+                cfg->deviceType == ma_device_type_loopback ? "loopback" : "dispositivo",
+                cfg->wasapi.loopbackProcessID ? (cfg->wasapi.loopbackProcessExclude ? ", menos um processo" : ", um processo") : "",
+                ma_result_description(r), (int)r);
+#ifndef _WIN32
+        break; // as variações são do WASAPI
+#endif
+    }
     if (r != MA_SUCCESS) {
-        set_err(err, errlen, "não consegui abrir o dispositivo de áudio", r);
+        char msg[160];
+        snprintf(msg, sizeof msg, "não consegui abrir o dispositivo de áudio: %s", ma_result_description(r));
+        set_err(err, errlen, msg, r);
         return -1;
     }
     d->dev_ok = 1;
