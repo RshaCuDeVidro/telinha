@@ -75,6 +75,27 @@ def volume_da_transmissao():
 
 
 @test
+def tela_cheia():
+    """Botão de tela cheia no quadro (separado do destacar); com o mouse parado os controles e a seta somem, mexer traz de volta; Esc sai."""
+    with Session("telacheia") as s:
+        p = port()
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"])
+        bruno = s.app("bruno", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        aid = bruno.member_id("Ana")
+        bruno.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "ver a tela da Ana")
+        tile = bruno.tile(aid)
+        bruno.click("##fullscreen", within=tile, hover_first=center(tile))
+        bruno.wait(lambda st: st["fullscreen"] and st["theater"] and st["focused"] == aid, 3, "entrar em tela cheia")
+        bruno.wait(lambda st: st["controls_hidden"], 5, "esconder os controles com o mouse parado")
+        tile = bruno.tile(aid)
+        bruno.move(*center(tile))
+        bruno.move(center(tile)[0] + 20, center(tile)[1] + 10)
+        bruno.wait(lambda st: not st["controls_hidden"], 3, "mostrar de novo ao mexer o mouse")
+        bruno.key("Escape")
+        bruno.wait(lambda st: not st["fullscreen"] and not st["theater"], 3, "sair com Esc")
+
+
+@test
 def fechar_sala():
     """Dono fecha a sala (com confirmação): quem estava fica sabendo e não fica tentando reconectar."""
     with Session("fechar") as s:

@@ -91,6 +91,8 @@ const ic = struct {
     const eye = &iconArr(0xF06E);
     const eye_slash = &iconArr(0xF070);
     const expand = &iconArr(0xF065);
+    const spotlight = &iconArr(0xF424); // up-right-and-down-left-from-center
+    const unspotlight = &iconArr(0xF422); // down-left-and-up-right-to-center
     const compress = &iconArr(0xF066);
     const xmark = &iconArr(0xF00D);
     const send = &iconArr(0xF1D8);
@@ -518,6 +520,9 @@ pub const App = struct {
     focused: ?u32 = null, // stream em destaque (minhas prévias: proto.streamId(0, tipo))
     theater: bool = false,
     fullscreen: bool = false,
+    // tela cheia/cinema com o mouse parado: controles e seta somem
+    mouse_moved_at: f64 = 0,
+    controls_hidden: bool = false,
     saved_win: [4]c_int = .{ 0, 0, 1280, 760 },
 
     chat_input: [1024]u8 = [_]u8{0} ** 1024,
@@ -1717,11 +1722,33 @@ pub const App = struct {
         if (a.views.items.len == 0 and a.sharer == null) a.theater = false;
     }
 
+    /// O monitor onde está o meio da janela (tela cheia vai pra ele, não pro principal).
+    fn windowMonitor(a: *App) ?*c.GLFWmonitor {
+        var wx: c_int = 0;
+        var wy: c_int = 0;
+        var ww: c_int = 0;
+        var wh: c_int = 0;
+        c.glfwGetWindowPos(a.window, &wx, &wy);
+        c.glfwGetWindowSize(a.window, &ww, &wh);
+        const cx = wx + @divTrunc(ww, 2);
+        const cy = wy + @divTrunc(wh, 2);
+        var n: c_int = 0;
+        const mons = c.glfwGetMonitors(&n) orelse return c.glfwGetPrimaryMonitor();
+        for (mons[0..@intCast(n)]) |m| {
+            var mx: c_int = 0;
+            var my: c_int = 0;
+            c.glfwGetMonitorPos(m, &mx, &my);
+            const mode = c.glfwGetVideoMode(m) orelse continue;
+            if (cx >= mx and cy >= my and cx < mx + mode.*.width and cy < my + mode.*.height) return m;
+        }
+        return c.glfwGetPrimaryMonitor();
+    }
+
     fn toggleFullscreen(a: *App) void {
         if (!a.fullscreen) {
             c.glfwGetWindowPos(a.window, &a.saved_win[0], &a.saved_win[1]);
             c.glfwGetWindowSize(a.window, &a.saved_win[2], &a.saved_win[3]);
-            const mon = c.glfwGetPrimaryMonitor() orelse return;
+            const mon = a.windowMonitor() orelse return;
             const mode = c.glfwGetVideoMode(mon) orelse return;
             c.glfwSetWindowMonitor(a.window, mon, 0, 0, mode.*.width, mode.*.height, mode.*.refreshRate);
             a.fullscreen = true;
@@ -1732,6 +1759,22 @@ pub const App = struct {
     }
 
     // ------------------------------------------------------------- por frame
+
+    /// Tela cheia ou cinema: com o mouse parado 2,5 s, os controles dos quadros
+    /// e a seta somem; qualquer movimento ou clique traz de volta.
+    fn updateIdleControls(a: *App, io: *c.ImGuiIO) void {
+        const now = c.igGetTime();
+        if (io.MouseDelta.x != 0 or io.MouseDelta.y != 0 or c.igIsMouseDown_Nil(0) or c.igIsMouseDown_Nil(1) or io.MouseWheel != 0) a.mouse_moved_at = now;
+        const immersive = (a.theater or a.fullscreen) and a.screen == .room;
+        const busy = a.share_modal or a.settings_modal or a.crop_tile != null or a.draw_tile != null or a.pointer_tile != null;
+        const hide = immersive and !busy and now - a.mouse_moved_at > 2.5;
+        // acorda a interface na hora de esconder (ela dorme quando nada muda)
+        if (immersive and !hide) redrawIn(2.55 - (now - a.mouse_moved_at));
+        if (hide != a.controls_hidden) {
+            a.controls_hidden = hide;
+            c.glfwSetInputMode(a.window, c.GLFW_CURSOR, if (hide) c.GLFW_CURSOR_HIDDEN else c.GLFW_CURSOR_NORMAL);
+        }
+    }
 
     /// Libera as texturas de uma transmissão (thread da UI).
     fn freeViewGpu(v: *View) void {
@@ -2081,6 +2124,7 @@ pub const App = struct {
         if (c.igIsKeyPressed_Bool(c.ImGuiKey_F11, false)) a.toggleFullscreen();
         // atalhos de voz (fora de campo de texto): Ctrl+M microfone, Ctrl+D surdo
         const io = c.igGetIO_Nil();
+        a.updateIdleControls(io);
         if (a.screen == .room and io.*.KeyCtrl and !io.*.WantTextInput) {
             // se alguém pôs exatamente Ctrl+M (Ctrl+D) como atalho dessa mesma
             // ação, quem cuida é o atalho: os dois juntos ligariam e desligariam
@@ -3331,7 +3375,7 @@ pub const App = struct {
         if (a.tile_controls) |o| {
             if (o == t.stream and !c.igIsMouseDown_Nil(0)) a.tile_controls = null;
         }
-        const hovered = over or (a.tile_controls != null and a.tile_controls.? == t.stream);
+        const hovered = !a.controls_hidden and (over or (a.tile_controls != null and a.tile_controls.? == t.stream));
 
         c.ImDrawList_PushClipRect(d, v2(x, y), v2(x + w, y + h), true);
         defer c.ImDrawList_PopClipRect(d);
@@ -3482,8 +3526,22 @@ pub const App = struct {
             }
             c.igSetCursorScreenPos(v2(bx, by));
             rectFill(d, bx, by, bx + bs, by + bs, col.overlay, S(6));
+            // tela cheia (o botão de cantos; F11 e duplo clique também)
+            if (iconButton("##fullscreen", if (a.fullscreen) ic.compress else ic.expand, bs, col.white, withAlpha(col.blurple, 200), if (a.fullscreen) tr("Sair da tela cheia (Esc)") else tr("Tela cheia (F11 ou duplo clique)"))) {
+                if (a.fullscreen) {
+                    a.theater = false;
+                    a.toggleFullscreen();
+                } else {
+                    a.focused = t.stream;
+                    a.theater = true;
+                    a.toggleFullscreen();
+                }
+            }
+            bx -= bs + S(6);
+            c.igSetCursorScreenPos(v2(bx, by));
+            rectFill(d, bx, by, bx + bs, by + bs, col.overlay, S(6));
             const focused = a.focused != null and a.focused.? == t.stream;
-            if (iconButton("##focus", if (focused) ic.compress else ic.expand, bs, col.white, withAlpha(col.blurple, 200), if (focused) tr("Voltar pra grade") else tr("Destacar (duplo clique: tela cheia)"))) {
+            if (iconButton("##focus", if (focused) ic.unspotlight else ic.spotlight, bs, col.white, withAlpha(col.blurple, 200), if (focused) tr("Voltar pra grade") else tr("Destacar na sala"))) {
                 a.focused = if (focused) null else t.stream;
             } else if (dbl and !tool) {
                 a.focused = t.stream;
@@ -6201,7 +6259,7 @@ pub const App = struct {
     pub fn qaState(a: *App, w: *std.Io.Writer) !void {
         const s = qa.str;
         try w.print("{{\"screen\":{f},\"home_error\":{f}", .{ s(@tagName(a.screen)), s(a.home_error[0..a.home_error_len]) });
-        try w.print(",\"mic\":{},\"deaf\":{},\"share_modal\":{},\"settings_modal\":{},\"theater\":{},\"fullscreen\":{}", .{ a.mic != null, a.deaf, a.share_modal, a.settings_modal, a.theater, a.fullscreen });
+        try w.print(",\"mic\":{},\"deaf\":{},\"share_modal\":{},\"settings_modal\":{},\"theater\":{},\"fullscreen\":{},\"controls_hidden\":{}", .{ a.mic != null, a.deaf, a.share_modal, a.settings_modal, a.theater, a.fullscreen, a.controls_hidden });
         if (a.focused) |f| try w.print(",\"focused\":{d}", .{f}) else try w.writeAll(",\"focused\":null");
         try w.print(",\"reconnect\":{{\"attempt\":{d},\"waiting\":{}}}", .{ a.reconnect.attempt, a.reconnect.waiting });
         try w.print(",\"home_tab\":{d},\"show_advanced\":{},\"own_tunnel_open\":{},\"chat_visible\":{},\"side_visible\":{},\"chat_unread\":{d}", .{
