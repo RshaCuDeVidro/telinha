@@ -830,6 +830,9 @@ pub const App = struct {
         var fh: c_int = 0;
         c.glfwGetFramebufferSize(a.window, &fw, &fh);
         debuglog.line("janela: {d}x{d} pixels, interface em {d:.2}x", .{ fw, fh, scale });
+        var ab: [512]u8 = undefined;
+        _ = audio.c.audio_describe(&ab, ab.len);
+        debuglog.line("som: {s}", .{std.mem.sliceTo(&ab, 0)});
         const cf = &a.cfg;
         debuglog.line("config: fps={d} qualidade={d} modo={d} resolução={d} cursor={} som={} placa={} clipes={} notificações={} supressão_ruído={} eco={} idioma={s} câmera={s}/{d}", .{
             cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.clips, cf.notifications, cf.noise_suppression, cf.echo_cancellation, config.getStr(&cf.language), config.getStr(&cf.camera_device), cf.camera_res,
@@ -895,8 +898,10 @@ pub const App = struct {
             const sh = maybe orelse continue;
             sh.mutex.lock();
             defer sh.mutex.unlock();
-            debuglog.line("transmitindo ({s}): {s} {d}x{d} {d:.1} q/s {d:.0} kbit/s (alvo {d}) | captura {s}, encoder {s} {d:.1} ms | congestionado={} som={} ninguém_assistindo={}", .{
-                if (sh.kind == proto.kind_camera) "câmera" else "tela", @tagName(sh.state), sh.w, sh.h, sh.shownFps(), sh.shownKbps() * 8, sh.bitrate_kbps, sh.backendSlice(), sh.encoder_name, sh.encode_ms, sh.congested, sh.audio_on, sh.idle.load(.monotonic),
+            const idr_room = sh.idr_room.swap(0, .monotonic);
+            const idr_clip = sh.idr_clip.swap(0, .monotonic);
+            debuglog.line("transmitindo ({s}): {s} {d}x{d} {d:.1} q/s {d:.0} kbit/s (alvo {d}) | captura {s}, encoder {s} {d:.1} ms | IDR {d} (sala {d}, clipe {d}) | congestionado={} som={} ninguém_assistindo={}", .{
+                if (sh.kind == proto.kind_camera) "câmera" else "tela", @tagName(sh.state), sh.w, sh.h, sh.shownFps(), sh.shownKbps() * 8, sh.bitrate_kbps, sh.backendSlice(), sh.encoder_name, sh.encode_ms, idr_room + idr_clip, idr_room, idr_clip, sh.congested, sh.audio_on, sh.idle.load(.monotonic),
             });
         }
     }

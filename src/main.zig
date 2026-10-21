@@ -75,6 +75,8 @@ pub fn main(init: std.process.Init) !void {
     config.initDir();
     crash.install();
     teste_minimizado = std.c.getenv("TELINHA_TESTE_MINIMIZADO") != null;
+    // Windows: a thread da interface com nome no log (no Linux isso renomearia o processo)
+    if (sync.is_windows) sync.nameThread("interface");
     sync.tuneMalloc();
     net.init();
     sync.pool.start(@max(2, sync.cpuCount() - 1));

@@ -24,6 +24,13 @@ int dbg_restore_stderr(void);
 void dbg_set_env(int on);
 // Windows: CPU e memória do processo e do sistema. Linux: zerado (é /proc).
 int dbg_proc_stats(dbg_stats *s);
+// Windows: as threads do processo, com o tempo de CPU (ms) e o nome. Linux: -1 (é /proc).
+typedef struct dbg_thread {
+    unsigned tid;
+    unsigned long long cpu_ms;
+    char name[16];
+} dbg_thread;
+int dbg_threads(dbg_thread *out, int max);
 // Windows: sistema, processador, memória, placas de vídeo. Linux: vazio.
 int dbg_sysinfo(char *out, int cap);
 // POST multipart com o arquivo (gofile, webhook). Retorna o código HTTP ou -1;

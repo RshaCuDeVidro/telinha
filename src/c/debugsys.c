@@ -15,6 +15,7 @@
 #include <io.h>
 #include <winhttp.h>
 #include <psapi.h>
+#include <tlhelp32.h>
 #else
 #include <errno.h>
 #include <fcntl.h>
@@ -106,6 +107,44 @@ int dbg_proc_stats(dbg_stats *s) {
         s->ram_free_kb = ms.ullAvailPhys / 1024;
     }
     return 0;
+}
+
+typedef HRESULT(WINAPI *GetThreadDescription_fn)(HANDLE, PWSTR *);
+
+int dbg_threads(dbg_thread *out, int max) {
+    static GetThreadDescription_fn get_desc;
+    static int looked;
+    if (!looked) {
+        looked = 1;
+        get_desc = (GetThreadDescription_fn)(void *)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetThreadDescription");
+    }
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return -1;
+    const DWORD self = GetCurrentProcessId();
+    THREADENTRY32 te;
+    te.dwSize = sizeof te;
+    int n = 0;
+    for (BOOL ok = Thread32First(snap, &te); ok && n < max; ok = Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != self) continue;
+        HANDLE th = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID);
+        if (!th) continue;
+        FILETIME c, e, k, u;
+        dbg_thread *o = &out[n];
+        o->tid = te.th32ThreadID;
+        o->cpu_ms = GetThreadTimes(th, &c, &e, &k, &u) ? (ft(k) + ft(u)) / 10000 : 0;
+        o->name[0] = 0;
+        PWSTR d = NULL;
+        if (get_desc && SUCCEEDED(get_desc(th, &d)) && d) {
+            if (d[0]) WideCharToMultiByte(CP_UTF8, 0, d, -1, o->name, sizeof o->name, NULL, NULL);
+            LocalFree(d);
+        }
+        o->name[sizeof o->name - 1] = 0;
+        if (!o->name[0]) snprintf(o->name, sizeof o->name, "t%u", (unsigned)te.th32ThreadID);
+        CloseHandle(th);
+        n++;
+    }
+    CloseHandle(snap);
+    return n;
 }
 
 // Windows: versão, processador, memória e as placas (DXGI).
@@ -234,6 +273,12 @@ done:
 int dbg_proc_stats(dbg_stats *s) {
     memset(s, 0, sizeof *s);
     return 0; // Linux: lido em Zig (/proc)
+}
+
+int dbg_threads(dbg_thread *out, int max) {
+    (void)out;
+    (void)max;
+    return -1; // Linux: /proc/self/task, em Zig
 }
 
 int dbg_sysinfo(char *out, int cap) {

@@ -300,6 +300,35 @@ static void discard(void *user, const float *samples, int frames) {
 }
 #endif
 
+int audio_describe(char *out, int cap) {
+    if (cap <= 0) return -1;
+    out[0] = 0;
+    ma_context ctx;
+    if (ma_context_init(NULL, 0, NULL, &ctx) != MA_SUCCESS) {
+        snprintf(out, cap, "nenhum sistema de som");
+        return -1;
+    }
+    ma_device_info *pb = NULL, *cp = NULL;
+    ma_uint32 npb = 0, ncp = 0;
+    const char *out_name = "?", *in_name = "?";
+    if (ma_context_get_devices(&ctx, &pb, &npb, &cp, &ncp) == MA_SUCCESS) {
+        for (ma_uint32 i = 0; i < npb; i++)
+            if (pb[i].isDefault) out_name = pb[i].name;
+        for (ma_uint32 i = 0; i < ncp; i++)
+            if (cp[i].isDefault) in_name = cp[i].name;
+    }
+    snprintf(out, cap, "%s | saída padrão: %s (%u no total) | microfone padrão: %s (%u no total)%s",
+             ma_get_backend_name(ctx.backend), out_name, (unsigned)npb, in_name, (unsigned)ncp,
+#ifdef _WIN32
+             audio_process_loopback_ok() ? " | captura por programa: sim" : " | captura por programa: não (Windows antigo)"
+#else
+             ""
+#endif
+    );
+    ma_context_uninit(&ctx);
+    return 0;
+}
+
 int audio_process_loopback_ok(void) {
 #ifdef _WIN32
     static int cached = -1; // a resposta não muda enquanto o app roda

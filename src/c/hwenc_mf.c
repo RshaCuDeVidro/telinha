@@ -233,7 +233,9 @@ struct mfenc *mfenc_open(int codec, int width, int height, int fps, int bitrate,
         hr = IMFActivate_ActivateObject(acts[i], &G_IID_TRANSFORM, (void **)&t->mft);
         if (SUCCEEDED(hr) && t->mft && SUCCEEDED(hr = configure(t, bitrate, screen_mode))) {
             e = t;
+            fprintf(stderr, "[telinha] encoder Media Foundation: %s (%ux%u, %s, a imagem entra pela CPU em NV12)\n", t->name, (unsigned)t->w, (unsigned)t->h, t->events ? "assíncrono" : "síncrono");
         } else {
+            fprintf(stderr, "[telinha] encoder Media Foundation %s recusou (0x%08lx), tentando o próximo\n", t->name, (unsigned long)hr);
             set_err(err, errlen, "o encoder de hardware não aceitou a configuração", hr);
             mfenc_close(t);
         }

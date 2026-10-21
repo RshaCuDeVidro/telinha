@@ -45,6 +45,8 @@ int audio_mix_pids(const char *exclude, uint32_t *out, int max);
 
 // 1 se dá pra capturar o som de um processo só (Windows 10 2004+); Linux: 0.
 int audio_process_loopback_ok(void);
+// Pro log: backend do som, saída e microfone padrão. 0 = ok.
+int audio_describe(char *out, int cap);
 
 // Saída padrão (caixa/fone).
 audio_dev *audio_output_open(audio_play_fn fn, void *user, char *err, int errlen);

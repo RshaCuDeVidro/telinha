@@ -255,8 +255,25 @@ pub fn nameThread(comptime name: []const u8) void {
     if (!is_windows) {
         const short = comptime name[0..@min(name.len, 15)] ++ "";
         _ = pthread_setname_np(pthread_self(), short.ptr);
+    } else {
+        // SetThreadDescription (Windows 10 1607+): o log de depuração mostra a
+        // CPU de cada thread pelo nome
+        const S = struct {
+            var f: ?*const fn (?*anyopaque, [*:0]const u16) callconv(.winapi) c_long = null;
+            var looked = false;
+        };
+        if (!S.looked) {
+            S.looked = true;
+            if (GetModuleHandleW(std.unicode.utf8ToUtf16LeStringLiteral("kernel32.dll"))) |k|
+                if (GetProcAddress(k, "SetThreadDescription")) |p| {
+                    S.f = @ptrCast(p);
+                };
+        }
+        if (S.f) |f| _ = f(GetCurrentThread(), comptime std.unicode.utf8ToUtf16LeStringLiteral(name));
     }
 }
+extern "kernel32" fn GetModuleHandleW(name: ?[*:0]const u16) callconv(.winapi) ?*anyopaque;
+extern "kernel32" fn GetProcAddress(module: ?*anyopaque, name: [*:0]const u8) callconv(.winapi) ?*const anyopaque;
 
 /// Contador pra esperar um lote de tarefas terminar.
 pub const WaitGroup = struct {

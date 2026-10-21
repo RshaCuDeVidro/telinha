@@ -235,6 +235,10 @@ pub const Sharer = struct {
     stat_ms: u64 = 0,
     /// Quadros codificados e mandados, e posições de cursor mandadas (total; testes e log).
     frames_sent: std.atomic.Value(u64) = .init(0),
+    /// IDRs desde a última linha do log: pedidos pela sala (alguém entrou,
+    /// perdeu a referência...) e os do clipe da própria tela (a cada 20 s).
+    idr_room: std.atomic.Value(u32) = .init(0),
+    idr_clip: std.atomic.Value(u32) = .init(0),
     cursor_msgs: std.atomic.Value(u64) = .init(0),
     encode_ms: f32 = 0,
     bitrate_kbps: u32 = 0,
@@ -513,6 +517,8 @@ const Pipeline = struct {
         // ninguém assistindo: o próximo tamanho pedido vale na hora (é o começo)
         if (!s.client.anyoneWatching(proto.streamId(s.client.myId(), s.kind))) p.view_cap_fresh = true;
         const higher = raw == 0 or (p.view_cap_cur != 0 and raw > p.view_cap_cur);
+        const before = p.view_cap_cur;
+        defer if (p.view_cap_cur != before and debugEnabled()) std.debug.print("[telinha] tamanho de quem assiste: teto {d} -> {d} linhas (0 = sem teto; pedem {d})\n", .{ before, p.view_cap_cur, raw });
         if (p.view_cap_fresh and raw != 0) {
             p.view_cap_fresh = false;
             p.view_cap_set = true;
@@ -1204,6 +1210,7 @@ const Pipeline = struct {
         s.client.resetInflight(kind);
         var bw: RateControl = .{};
         var stat_since = sync.nowUs();
+        var report_since: u64 = sync.nowUs(); // tempos da captura no log: a cada 5 s (era todo segundo)
         var stat_frames: u32 = 0;
         var stat_bytes: u64 = 0;
         var last_key_us: u64 = 0;
@@ -1224,8 +1231,8 @@ const Pipeline = struct {
             }
             // clipe da própria transmissão: um IDR a cada 20 s (o clipe começa num)
             const clip_key_us = @min(20_000_000, @as(u64, clip.keep_secs.load(.monotonic)) * 500_000);
-            if (s.clip != null and !s.idle.load(.acquire) and last_key_us != 0 and sync.nowUs() - last_key_us > clip_key_us) s.client.keyreq[kind].store(true, .release);
-            const key = s.client.keyreq[kind].swap(false, .acq_rel);
+            const clip_key = s.clip != null and !s.idle.load(.acquire) and last_key_us != 0 and sync.nowUs() - last_key_us > clip_key_us;
+            const key = s.client.keyreq[kind].swap(false, .acq_rel) or clip_key;
             const idx: ?usize = if (p.ready) |r| r else if (key) p.last else null;
             p.ready_was_null = p.ready == null;
             if (p.ready != null) p.ready = null;
@@ -1353,7 +1360,9 @@ const Pipeline = struct {
                 p.doneWith(i, enc != null);
                 continue;
             };
-            if (key and debugEnabled()) std.debug.print("[telinha] IDR pedido: codificado como {s} ({d} bytes)\n", .{ if (is_key) "IDR" else "P (!)", out.items.len });
+            // cada IDR conta (o log mostra o resumo); só o estranho vira linha
+            if (key and is_key) _ = (if (clip_key) &s.idr_clip else &s.idr_room).fetchAdd(1, .monotonic);
+            if (key and !is_key and debugEnabled()) std.debug.print("[telinha] IDR pedido, mas o encoder fez um P ({d} bytes)\n", .{out.items.len});
             if (key and !is_key and enc.?.isHw()) {
                 // pode ser só atraso de um quadro (encoder assíncrono): pede de
                 // novo; na segunda vez seguida, desiste de pedir e recria
@@ -1408,7 +1417,10 @@ const Pipeline = struct {
                 s.stat_ms = sync.nowMs();
                 s.congested = tnow - bw.last_congestion_us < 2_000_000;
                 s.slow_viewer = bw.last_slow_us != 0 and tnow - bw.last_slow_us < 10_000_000;
-                if (debugEnabled()) p.timing.report(bw.bps, s.client.queue.queuedBytes(), secs);
+                if (debugEnabled() and tnow - report_since >= 5_000_000) {
+                    p.timing.report(bw.bps, s.client.queue.queuedBytes(), @as(f32, @floatFromInt(tnow - report_since)) / 1e6);
+                    report_since = tnow;
+                }
                 stat_frames = 0;
                 stat_bytes = 0;
                 stat_since = tnow;

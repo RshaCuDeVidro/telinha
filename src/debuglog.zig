@@ -197,6 +197,7 @@ pub fn usage() Usage {
         sys_idle = st.sys_idle_ms;
         u.rss_mb = st.rss_kb / 1024;
         u.ram_free_mb = st.ram_free_kb / 1024;
+        threadTopWindows(&u, dt_ms);
     } else {
         const tick_ms: u64 = 10; // USER_HZ = 100
         var b: [1024]u8 = undefined;
@@ -282,6 +283,44 @@ fn threadTop(u: *Usage, dt_ms: u64) void {
     }
     n_last_threads = n;
     for (now_list[0..n], 0..) |e, i| last_threads[i] = .{ .tid = e.tid, .ticks = e.ticks };
+}
+
+/// Windows: o mesmo, pelo Toolhelp + GetThreadTimes (os nomes vêm do
+/// SetThreadDescription de sync.nameThread).
+fn threadTopWindows(u: *Usage, dt_ms: u64) void {
+    var list: [256]c.dbg_thread = undefined;
+    const got = c.dbg_threads(&list, list.len);
+    if (got <= 0) return;
+    const n: usize = @intCast(got);
+    var deltas: [256]struct { i: usize, d: u64 } = undefined;
+    var nd: usize = 0;
+    for (list[0..n], 0..) |e, i| {
+        var prev: u64 = 0;
+        for (last_threads[0..n_last_threads]) |l| if (l.tid == e.tid) {
+            prev = l.ticks;
+        };
+        const d = e.cpu_ms -| prev;
+        if (d > 0 and n_last_threads > 0) {
+            deltas[nd] = .{ .i = i, .d = d };
+            nd += 1;
+        }
+    }
+    std.mem.sort(@TypeOf(deltas[0]), deltas[0..nd], {}, struct {
+        fn lt(_: void, x: @TypeOf(deltas[0]), y: @TypeOf(deltas[0])) bool {
+            return x.d > y.d;
+        }
+    }.lt);
+    for (deltas[0..@min(nd, u.top.len)]) |d| {
+        const e = list[d.i];
+        var t: Usage.Thread = .{ .name = undefined, .len = 0, .pct = @as(f32, @floatFromInt(d.d)) * 100 / @as(f32, @floatFromInt(dt_ms)) };
+        const nm = std.mem.sliceTo(&e.name, 0);
+        t.len = @min(nm.len, t.name.len);
+        @memcpy(t.name[0..t.len], nm[0..t.len]);
+        u.top[u.n_top] = t;
+        u.n_top += 1;
+    }
+    n_last_threads = n;
+    for (list[0..n], 0..) |e, i| last_threads[i] = .{ .tid = e.tid, .ticks = e.cpu_ms };
 }
 
 /// utime + stime (campos 14 e 15) de um /proc/.../stat.
