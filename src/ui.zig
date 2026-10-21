@@ -76,6 +76,9 @@ fn iconArr(comptime cp: u21) [3:0]u8 {
         0x80 | @as(u8, @intCast(cp & 0x3F)),
     };
 }
+/// Motivo das mudanças do microfone no log (clique nos botões da barra).
+const via_clique = "clique";
+
 const ic = struct {
     const desktop = &iconArr(0xF390);
     const bug = &iconArr(0xF188);
@@ -3091,9 +3094,9 @@ pub const App = struct {
         c.igSetCursorScreenPos(v2(bx, by));
         const mic_on = a.mic != null;
         const mic_tip: [:0]const u8 = if (a.admin_muted) tr("O admin silenciou seu microfone") else if (mic_on) tr("Desligar o microfone") else tr("Ligar o microfone");
-        if (iconButton("##mic", if (mic_on) ic.mic else ic.mic_slash, bs, if (mic_on) col.text else col.red, col.hover, mic_tip)) a.toggleMic("botão");
+        if (iconButton("##mic", if (mic_on) ic.mic else ic.mic_slash, bs, if (mic_on) col.text else col.red, col.hover, mic_tip)) a.toggleMic(via_clique);
         c.igSameLine(0, 0);
-        if (iconButton("##deaf", ic.headphones, bs, if (a.deaf) col.red else col.text, col.hover, if (a.deaf) tr("Voltar a ouvir a sala") else tr("Parar de ouvir a sala (surdo)"))) a.toggleDeaf("botão");
+        if (iconButton("##deaf", ic.headphones, bs, if (a.deaf) col.red else col.text, col.hover, if (a.deaf) tr("Voltar a ouvir a sala") else tr("Parar de ouvir a sala (surdo)"))) a.toggleDeaf(via_clique);
         if (a.deaf) slash(d, v2(bx + bs, by), bs);
         c.igSameLine(0, 0);
         if (iconButton("##gear", ic.gear, bs, col.text, col.hover, tr("Configurações"))) a.openSettings();
