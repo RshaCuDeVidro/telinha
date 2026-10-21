@@ -266,6 +266,9 @@ fn sourceName(src: *const c.cap_source, buf: []u8) [:0]const u8 {
     const main_sfx = " (principal)";
     if (i18n.english() and std.mem.endsWith(u8, name, main_sfx))
         return std.fmt.bufPrintZ(buf, "{s} (primary)", .{name[0 .. name.len - main_sfx.len]}) catch "?";
+    const min_sfx = " — minimizada";
+    if (i18n.english() and std.mem.endsWith(u8, name, min_sfx))
+        return std.fmt.bufPrintZ(buf, "{s} — minimized", .{name[0 .. name.len - min_sfx.len]}) catch "?";
     return std.fmt.bufPrintZ(buf, "{s}", .{name}) catch "?";
 }
 

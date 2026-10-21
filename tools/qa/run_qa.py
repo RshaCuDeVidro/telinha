@@ -1694,6 +1694,37 @@ def windows_exe():
 
 
 @test
+def windows_janela_minimizada():
+    """Janela minimizada aparece na lista de compartilhar (marcada) e dá pra transmitir (ela volta sem roubar o foco)."""
+    from telinha_qa import WINEPREFIX
+    with Session("winmin") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Linux", "--criar", str(p)])
+        a.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
+        tela = 96 + int(os.environ.get("QA_TELAS", "0"))
+        s.display(tela)
+        env = {k: v for k, v in os.environ.items() if k != "WAYLAND_DISPLAY"} | {"DISPLAY": f":{tela}", "WINEPREFIX": WINEPREFIX, "WINEDEBUG": "-all"}
+        s.spawn("notepad", ["wine", "cmd", "/c", "start", "/min", "notepad"], env)
+        w = s.wine_app("w", 96, ["--nome", "Windows", "--entrar", f"127.0.0.1:{p}", "--software"])
+        w.wait(lambda st: st["status"] == "connected", 30, "o .exe entrar")
+        time.sleep(2)
+        w.click(contains="Compartilhar tela##share")
+        st = w.wait(lambda st: st["share_modal"] and any(x["name"].endswith("minimizada") for x in st["sources"]), 30, "a janela minimizada na lista")
+        names = [x["name"] for x in st["sources"]]
+        log(f"fontes: {names}")
+        w.click("##src")
+        w.click(contains="minimizada", window="##Combo")
+        w.wait(lambda st: st["sources"][st["source_idx"]]["name"].endswith("minimizada"), 5, "escolher a janela minimizada")
+        w.click(contains="Ao vivo", window="Compartilhar")
+        try:
+            st = w.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live" and st["sharer"]["frames"] >= 1 and st["sharer"]["w"] > 200, 30, "transmitir a janela que estava minimizada (no tamanho dela, não no do ícone)")
+        except QAError:
+            log(f"sharer: {w.state()['sharer']}")
+            raise
+        log(f"transmitindo: {st['sharer']['backend']} {st['sharer']['w']}x{st['sharer']['h']}")
+
+
+@test
 def windows_log_depuracao():
     """O .exe (wine) com o log de depuração ligado: dados do Windows no cabeçalho, amostras, e o envio pelo WinHTTP (gofile de mentira)."""
     with Session("windebug") as s:

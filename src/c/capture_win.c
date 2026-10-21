@@ -114,8 +114,10 @@ typedef struct {
 
 // Janela que faz sentido compartilhar: visível, de "primeiro nível", com
 // título, não escondida pelo DWM (apps UWP em segundo plano) e não nossa.
+// Minimizada também entra (antes sumia da lista: quem minimiza tudo pra
+// jogar só via o jogo); ao escolher, ela volta sem roubar o foco.
 static int shareable(HWND h) {
-    if (!IsWindowVisible(h) || IsIconic(h) || GetWindow(h, GW_OWNER)) return 0;
+    if (!IsWindowVisible(h) || GetWindow(h, GW_OWNER)) return 0;
     if (GetWindowLongW(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) return 0;
     if (GetWindowTextLengthW(h) == 0) return 0;
     DWORD cloaked = 0;
@@ -125,6 +127,7 @@ static int shareable(HWND h) {
     if (pid == GetCurrentProcessId()) return 0;
     WCHAR cls[64];
     if (GetClassNameW(h, cls, 64) && (lstrcmpW(cls, L"Progman") == 0 || lstrcmpW(cls, L"Shell_TrayWnd") == 0)) return 0;
+    if (IsIconic(h)) return 1; // minimizada: o retângulo dela é o do ícone
     RECT r;
     if (!GetWindowRect(h, &r) || r.right - r.left < 64 || r.bottom - r.top < 48) return 0;
     return 1;
@@ -161,8 +164,9 @@ static BOOL CALLBACK enum_window(HWND h, LPARAM lp) {
     o->pid = pid;
     snprintf(o->app, sizeof o->app, "%s", exe);
     g_windows[g_n_windows++] = h;
-    if (exe[0]) snprintf(o->name, sizeof o->name, "Janela: %s (%s)", t8, exe);
-    else snprintf(o->name, sizeof o->name, "Janela: %s", t8);
+    const char *min = IsIconic(h) ? " — minimizada" : "";
+    if (exe[0]) snprintf(o->name, sizeof o->name, "Janela: %s (%s)%s", t8, exe, min);
+    else snprintf(o->name, sizeof o->name, "Janela: %s%s", t8, min);
     return TRUE;
 }
 
@@ -1174,6 +1178,8 @@ static cap_ctx *open_window(HWND hwnd, int show_cursor, char *err, int errlen) {
         set_err(err, errlen, "a janela não existe mais (abre a lista de novo)", 0);
         return NULL;
     }
+    // minimizada não desenha nada: volta pro tamanho de antes, sem tirar o foco do jogo
+    if (IsIconic(hwnd)) ShowWindowAsync(hwnd, SW_SHOWNOACTIVATE);
     struct cap_ctx *c = calloc(1, sizeof *c);
     if (!c) return NULL;
     c->show_cursor = show_cursor;
