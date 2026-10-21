@@ -339,6 +339,110 @@ fn slash(d: *c.ImDrawList, top_left: c.ImVec2_c, size: f32) void {
     c.ImDrawList_AddLine(d, a, b, col.red, S(2), 0);
 }
 
+// ---------------------------------------------------------------------------
+// Tela inicial: ajudantes de desenho e animação
+
+const demo_title = "hotkey.zig — telinha"; // o "editor" da vitrine
+
+fn easeOut(x: f32) f32 {
+    const k = 1 - x;
+    return 1 - k * k * k;
+}
+
+/// A mesma cor com o alfa multiplicado por k (0..1).
+fn fa(color: u32, k: f32) u32 {
+    const a8: f32 = @floatFromInt((color >> 24) & 0xFF);
+    const na: u32 = @intFromFloat(std.math.clamp(a8 * k, 0, 255));
+    return (color & 0x00FFFFFF) | (na << 24);
+}
+
+/// Mistura duas cores (t = 0: a, t = 1: b).
+fn mixCol(a: u32, b: u32, t: f32) u32 {
+    var out: u32 = 0;
+    inline for (0..4) |i| {
+        const sh: u5 = @intCast(i * 8);
+        const ca: f32 = @floatFromInt((a >> sh) & 0xFF);
+        const cb: f32 = @floatFromInt((b >> sh) & 0xFF);
+        const v: u32 = @intFromFloat(std.math.clamp(ca + (cb - ca) * t, 0, 255));
+        out |= v << sh;
+    }
+    return out;
+}
+
+/// Número "aleatório" fixo de 0 a 1 pra cada n (o código de mentira da vitrine).
+fn hash01(n: u32) f32 {
+    var x = n *% 0x9E3779B1;
+    x ^= x >> 15;
+    x *%= 0x85EBCA77;
+    x ^= x >> 13;
+    return @as(f32, @floatFromInt(x & 0xFFFF)) / 65535.0;
+}
+
+/// Brilho redondo e suave: um leque de triângulos com a cor no meio sumindo
+/// até a borda (degradê de verdade, sem os degraus de círculos empilhados).
+fn glow(d: *c.ImDrawList, center: c.ImVec2_c, radius: f32, color: u32, strength: u8) void {
+    const seg = 48;
+    const uv = c.igGetFontTexUvWhitePixel();
+    const inner = withAlpha(color, strength);
+    const outer = withAlpha(color, 0);
+    c.ImDrawList_PrimReserve(d, seg * 3, seg + 1);
+    const base = d._VtxCurrentIdx;
+    c.ImDrawList_PrimWriteVtx(d, center, uv, inner);
+    for (0..seg) |i| {
+        const ang = @as(f32, @floatFromInt(i)) / seg * std.math.tau;
+        c.ImDrawList_PrimWriteVtx(d, v2(center.x + @cos(ang) * radius, center.y + @sin(ang) * radius), uv, outer);
+    }
+    for (0..seg) |i| {
+        c.ImDrawList_PrimWriteIdx(d, @intCast(base));
+        c.ImDrawList_PrimWriteIdx(d, @intCast(base + 1 + i));
+        c.ImDrawList_PrimWriteIdx(d, @intCast(base + 1 + (i + 1) % seg));
+    }
+}
+
+/// Campo de texto com ícone na esquerda e borda na cor do destaque quando em foco.
+fn iconField(d: *c.ImDrawList, id: [:0]const u8, glyph: []const u8, comptime hint: [:0]const u8, buf: []u8, width: f32, password: bool, accent: u32, k: f32) bool {
+    c.igSetNextItemWidth(width);
+    c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(36), S(11)));
+    c.igPushStyleVar_Float(c.ImGuiStyleVar_FrameRounding, S(10) * col.round);
+    c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
+    c.igPushStyleColor_U32(c.ImGuiCol_FrameBgHovered, col.input);
+    c.igPushStyleColor_U32(c.ImGuiCol_FrameBgActive, col.input);
+    var flags: c.ImGuiInputTextFlags = c.ImGuiInputTextFlags_EnterReturnsTrue;
+    if (password) flags |= c.ImGuiInputTextFlags_Password;
+    const r = c.igInputTextWithHint(id.ptr, tr(hint).ptr, buf.ptr, buf.len, flags, null, null);
+    c.igPopStyleColor(3);
+    c.igPopStyleVar(2);
+    const mn = c.igGetItemRectMin();
+    const mx = c.igGetItemRectMax();
+    const active = c.igIsItemActive();
+    const hovered = c.igIsItemHovered(0);
+    if (active) {
+        c.ImDrawList_AddRect(d, v2(mn.x - S(2), mn.y - S(2)), v2(mx.x + S(2), mx.y + S(2)), fa(withAlpha(accent, 60), k), S(12) * col.round, S(3), 0);
+        c.ImDrawList_AddRect(d, mn, mx, fa(accent, k), S(10) * col.round, S(1.2), 0);
+    } else if (hovered) {
+        c.ImDrawList_AddRect(d, mn, mx, fa(withAlpha(col.text, 40), k), S(10) * col.round, S(1), 0);
+    }
+    const gs = textSizeF(font_regular, 13, glyph);
+    drawTextF(d, font_regular, 13, v2(mn.x + S(13), mn.y + (mx.y - mn.y - gs.y) / 2), fa(if (active) accent else col.muted, k), glyph);
+    return r;
+}
+
+/// Botão grande da tela inicial, com a setinha que anda quando o mouse passa.
+fn goButton(d: *c.ImDrawList, label: [:0]const u8, width: f32, color: u32, hover: u32, active: u32, k: f32) bool {
+    const h = S(46);
+    c.igPushStyleVar_Float(c.ImGuiStyleVar_FrameRounding, S(12) * col.round);
+    const r = primaryButton(label, v2(width, h), color, hover, active);
+    c.igPopStyleVar(1);
+    const mn = c.igGetItemRectMin();
+    const hovered = c.igIsItemHovered(0);
+    const text = label[0 .. std.mem.indexOf(u8, label, "##") orelse label.len];
+    const tw = textSizeF(font_semibold, 15, text).x;
+    const shift: f32 = if (hovered) S(5) else 0;
+    const as = textSizeF(font_regular, 13, ic.arrow_right);
+    drawTextF(d, font_regular, 13, v2(mn.x + (width + tw) / 2 + S(10) + shift, mn.y + (h - as.y) / 2), fa(theme.textOn(color), k), ic.arrow_right);
+    return r;
+}
+
 fn liveBadgeWidth() f32 {
     return textSizeF(font_bold, 10, tr("AO VIVO")).x + S(10);
 }
@@ -530,6 +634,11 @@ pub const App = struct {
     home_error_len: usize = 0,
     port_buf: [8]u8 = undefined,
     home_card_h: f32 = 460,
+    home_tab_anim: f32 = 0, // o destaque da aba, deslizando até home_tab
+    home_switch_at: f64 = -10, // quando trocou de aba (o conteúdo entra deslizando)
+    home_enter_at: f64 = -10, // quando a tela inicial apareceu (entrada animada)
+    home_last_frame: u64 = 0,
+    home_anim_t: f32 = 0, // relógio da animação da tela inicial (para quando ela para)
     // convite colado sozinho (área de transferência)
     pasted: [512]u8 = undefined,
     pasted_len: usize = 0,
@@ -542,6 +651,10 @@ pub const App = struct {
     tunnel: ?*Tunnel = null, // link público da sala que eu hospedo
     upnp: ?*upnp.Mapper = null, // porta aberta no roteador (conexão direta)
     own_tunnel_open: bool = false, // card: "prefere seu próprio túnel?" aberto
+    tips_card_h: f32 = 0, // cartões lado a lado do mesmo tamanho (o mais alto do quadro anterior)
+    tips_body_h: [2]f32 = .{ 0, 0 },
+    empty_h: f32 = 0, // altura do bloco da sala vazia (pra centralizar)
+    own_scroll: bool = false,
     sharer: ?*Sharer = null,
     camera: ?*Sharer = null, // câmera ao vivo (a transmissão de tipo câmera)
     leave_confirm: bool = false, // "fechar a sala?" aberto
@@ -2260,48 +2373,328 @@ pub const App = struct {
         a.paste_hint_until = c.igGetTime() + 8;
     }
 
+    /// Tela inicial: em janela larga, uma vitrine animada (uma "telinha" com
+    /// gente assistindo) na esquerda e o cartão de entrar/criar na direita;
+    /// em janela estreita, só o cartão. A animação só roda com o telinha em
+    /// foco e as animações ligadas (Aparência); sem isso a tela fica parada.
     fn drawHome(a: *App, size: c.ImVec2_c) void {
         a.pasteInvite();
         const d = drawList();
-        // fundo com um brilho sutil
+        const now = c.igGetTime();
+        // voltou pra tela inicial (abriu o app, saiu da sala): entrada animada
+        if (a.home_last_frame + 1 != a.frame_no) a.home_enter_at = now;
+        a.home_last_frame = a.frame_no;
+        // anima só com alguém mexendo (12 s depois do último movimento ou com
+        // um campo em uso), em foco; parada, a tela congela onde estava e o
+        // telinha volta a dormir até o próximo evento
+        const io = c.igGetIO_Nil();
+        const active = now - a.mouse_moved_at < 12 or c.igIsAnyItemActive() or io.*.InputQueueCharacters.Size > 0;
+        const animate = a.cfg.animations and !a.away() and active;
+        if (animate) a.home_anim_t += @min(io.*.DeltaTime, 0.1);
+        const t = a.home_anim_t;
+        const enter = if (a.cfg.animations) easeOut(@floatCast(std.math.clamp((now - a.home_enter_at) / 0.55, 0, 1))) else 1;
+        // indicador da aba deslizando
+        const tab_goal: f32 = @floatFromInt(a.home_tab);
+        if (!a.cfg.animations) a.home_tab_anim = tab_goal;
+        a.home_tab_anim += (tab_goal - a.home_tab_anim) * @min(1, io.*.DeltaTime * 14);
+        if (@abs(tab_goal - a.home_tab_anim) < 0.002) a.home_tab_anim = tab_goal;
+        const switching = a.home_tab_anim != tab_goal or (a.cfg.animations and now - a.home_switch_at < 0.3);
+        if (animate) redrawIn(1.0 / 30.0) else if (enter < 1 or switching) redrawIn(0.016);
+
+        // fundo: o degradê do tema e três brilhos que passeiam devagar
         c.ImDrawList_AddRectFilledMultiColor(d, v2(0, 0), size, col.home_grad[0], col.home_grad[1], col.home_grad[2], col.home_grad[3]);
+        glow(d, v2(size.x * (0.22 + 0.05 * @sin(t * 0.13)), size.y * (0.30 + 0.06 * @cos(t * 0.11))), S(360), col.blurple, 60);
+        glow(d, v2(size.x * (0.78 + 0.04 * @cos(t * 0.09)), size.y * (0.78 + 0.05 * @sin(t * 0.12))), S(300), col.green, 30);
+        glow(d, v2(size.x * (0.55 + 0.06 * @sin(t * 0.07 + 2)), size.y * (0.05 + 0.04 * @sin(t * 0.1))), S(240), col.red, 22);
 
-        const card_w = S(460);
-        const card_h = a.home_card_h + S(60);
-        const x0 = @max(S(16), (size.x - card_w) / 2);
-        const y0 = @max(S(16), (size.y - card_h) / 2);
-        rectFill(d, x0 + S(2), y0 + S(6), x0 + card_w + S(2), y0 + card_h + S(6), rgba(0x000000, 90), S(12));
-        rectFill(d, x0, y0, x0 + card_w, y0 + card_h, col.bg_main, S(10));
+        const wide = size.x >= S(1000) and size.y >= S(600);
+        const card_w = if (wide) S(420) else @min(S(440), size.x - S(32));
+        const card_area = if (wide) @max(S(500), size.x * 0.4) else size.x;
+        if (wide) a.drawShowcase(d, v2(0, 0), v2(size.x - card_area, size.y), t, enter);
+        const card_h = a.home_card_h + S(56);
+        // o cartão rola se a janela for baixa demais pra ele
+        c.igSetCursorPos(v2(0, 0));
+        c.igPushStyleColor_U32(c.ImGuiCol_ChildBg, 0);
+        c.igPushStyleColor_U32(c.ImGuiCol_ScrollbarBg, 0);
+        _ = c.igBeginChild_Str("homescroll", size, 0, 0);
+        const sy = c.igGetScrollY();
+        // em pixel inteiro: a altura medida depende de onde os itens caem
+        // (o ImGui arredonda), e ela decide a posição do próximo quadro; com
+        // fração, os dois ficavam se corrigindo e o cartão tremia
+        const x0 = @round((size.x - card_area) + @max(S(16), (card_area - card_w) / 2) - (if (wide) S(24) else 0));
+        const y0 = @round(@max(S(16), (size.y - card_h) / 2) + (1 - enter) * S(22) - sy);
+        a.drawHomeCard(drawList(), x0, y0, card_w, card_h, !wide, enter);
+        c.igSetCursorScreenPos(v2(x0, y0 + card_h));
+        c.igDummy(v2(card_w, S(28)));
+        c.igEndChild();
+        c.igPopStyleColor(2);
+    }
 
-        const pad = S(32);
+    /// A vitrine da esquerda: marca, uma tela "ao vivo" com código rolando,
+    /// seta passeando, gente assistindo, reações subindo e uma mensagem.
+    fn drawShowcase(a: *App, d: *c.ImDrawList, o: c.ImVec2_c, size: c.ImVec2_c, t: f32, enter: f32) void {
+        _ = a;
+        c.ImDrawList_PushClipRect(d, o, v2(o.x + size.x, o.y + size.y), true);
+        defer c.ImDrawList_PopClipRect(d);
+        const ak = enter;
+        const mw = @min(S(540), size.x - S(140));
+        const mh = mw * 0.6;
+        const brand_h = S(96);
+        const chips_h = S(34);
+        const total = brand_h + S(34) + mh + S(46) + chips_h;
+        const cx = o.x + size.x / 2;
+        var y = o.y + @max(S(24), (size.y - total) / 2);
+
+        // marca
+        {
+            const lz = S(64);
+            const bob = @sin(t * 1.6) * S(3);
+            const tw = textSizeF(font_bold, 38, "telinha").x;
+            const bx = cx - (lz + S(16) + tw) / 2;
+            if (logo_tex == 0) gl.upload(&logo_tex, logo_rgba, 128, 128, gl.RGBA);
+            c.ImDrawList_AddImageRounded(d, texRef(logo_tex), v2(bx, y + bob), v2(bx + lz, y + lz + bob), v2(0, 0), v2(1, 1), fa(col.white, ak), S(16), 0);
+            drawTextF(d, font_bold, 38, v2(bx + lz + S(16), y + S(2)), fa(col.header, ak), "telinha");
+            const tag = tr("compartilha a tela com a galera");
+            drawTextF(d, font_regular, 15, v2(bx + lz + S(18), y + S(46)), fa(col.muted, ak), tag);
+            y += brand_h + S(34);
+        }
+
+        // a telinha
+        const mx = cx - mw / 2;
+        const rise = (1 - enter) * S(30);
+        const my = y + rise;
+        rectFill(d, mx + S(4), my + S(10), mx + mw + S(4), my + mh + S(10), fa(rgba(0x000000, 90), ak), S(16));
+        rectFill(d, mx, my, mx + mw, my + mh, fa(col.bg_main, ak), S(16));
+        c.ImDrawList_AddRect(d, v2(mx, my), v2(mx + mw, my + mh), fa(withAlpha(col.text, 26), ak), S(16) * col.round, S(1), 0);
+        // barra de título
+        const bar = S(30);
+        for ([_]u32{ rgb(0xFF5F57), rgb(0xFEBC2E), rgb(0x28C840) }, 0..) |dc, i| {
+            c.ImDrawList_AddCircleFilled(d, v2(mx + S(18) + @as(f32, @floatFromInt(i)) * S(16), my + bar / 2), S(4.5), fa(dc, ak), 0);
+        }
+        drawTextF(d, font_semibold, 12, v2(mx + S(76), my + S(8)), fa(col.muted, ak), demo_title);
+        rectFill(d, mx, my + bar, mx + mw, my + bar + S(1), fa(withAlpha(col.text, 18), ak), 0);
+        // conteúdo: barra de arquivos e código rolando
+        const ix0 = mx + S(1);
+        const iy0 = my + bar + S(1);
+        const ix1 = mx + mw - S(1);
+        const iy1 = my + mh - S(8);
+        c.ImDrawList_PushClipRect(d, v2(ix0, iy0), v2(ix1, iy1), true);
+        const side = mw * 0.2;
+        rectFill(d, ix0, iy0, ix0 + side, iy1 + S(8), fa(withAlpha(col.text, 8), ak), 0);
+        for (0..7) |i| {
+            const fi: f32 = @floatFromInt(i);
+            const w = side * (0.35 + 0.4 * hash01(@intCast(i * 7 + 3)));
+            const ry = iy0 + S(16) + fi * S(20);
+            if (i == 3) rectFill(d, ix0, ry - S(6), ix0 + side, ry + S(12), fa(withAlpha(col.blurple, 50), ak), 0);
+            rectFill(d, ix0 + S(14) + (if (i % 3 == 0) 0 else S(10)), ry, ix0 + S(14) + w, ry + S(6), fa(withAlpha(col.text, 60), ak), S(3));
+        }
+        const lh = S(19);
+        const scroll = @mod(t * S(9), lh * 32);
+        const code_x = ix0 + side + S(18);
+        const palette = [_]u32{ col.blurple, col.green, col.yellow, col.red, col.text };
+        var li: usize = 0;
+        while (li < 40) : (li += 1) {
+            const ly = iy0 + S(14) + @as(f32, @floatFromInt(li)) * lh - scroll;
+            if (ly > iy1) break;
+            if (ly < iy0 - lh) continue;
+            const k: u32 = @intCast(li % 32);
+            if (hash01(k * 13 + 1) < 0.12) continue; // linha em branco
+            const indent = @as(f32, @floatFromInt(@as(u32, @intFromFloat(hash01(k * 5 + 2) * 3)))) * S(22);
+            var sx = code_x + indent;
+            const parts: u32 = 1 + @as(u32, @intFromFloat(hash01(k * 3 + 7) * 3));
+            for (0..parts) |pi| {
+                const seg_w = S(24) + hash01(k * 17 + @as(u32, @intCast(pi)) * 31) * S(90);
+                if (sx + seg_w > ix1 - S(16)) break;
+                const pc = palette[@as(usize, @intFromFloat(hash01(k * 11 + @as(u32, @intCast(pi)) * 7) * 4.99))];
+                rectFill(d, sx, ly, sx + seg_w, ly + S(7), fa(withAlpha(pc, 150), ak), S(3.5));
+                sx += seg_w + S(8);
+            }
+        }
+        // a seta de quem transmite passeando
+        {
+            const px = ix0 + side + (ix1 - ix0 - side) * (0.5 + 0.32 * @sin(t * 0.55));
+            const py = iy0 + (iy1 - iy0) * (0.5 + 0.3 * @sin(t * 0.83 + 1));
+            const pts = [_]c.ImVec2_c{ v2(px, py), v2(px, py + S(17)), v2(px + S(4.5), py + S(13)), v2(px + S(8), py + S(20)), v2(px + S(10.5), py + S(19)), v2(px + S(7), py + S(12)), v2(px + S(12), py + S(12)) };
+            c.ImDrawList_AddConcavePolyFilled(d, &pts, pts.len, fa(col.white, ak));
+            c.ImDrawList_AddPolyline(d, &pts, pts.len, fa(rgba(0x000000, 200), ak), S(1.2), c.ImDrawFlags_Closed);
+        }
+        c.ImDrawList_PopClipRect(d);
+        // AO VIVO piscando
+        const pulse = 0.5 + 0.5 * @sin(t * 3.2);
+        const lb = v2(mx + S(14), my + mh - S(30));
+        c.ImDrawList_AddCircleFilled(d, v2(lb.x + S(4), lb.y + S(8)), S(6) + S(4) * pulse, fa(withAlpha(col.red, @intFromFloat(70 * (1 - pulse))), ak), 0);
+        _ = liveBadge(d, v2(lb.x + S(14), lb.y));
+
+        // quem assiste, embaixo da tela (um falando)
+        const names = [_][]const u8{ "Ana", "Bruno", "Carol", "Davi" };
+        const r = S(17);
+        const ay = my + mh + S(2);
+        const ax0 = mx + mw - S(30) - @as(f32, @floatFromInt(names.len - 1)) * S(30);
+        for (names, 0..) |nm, i| {
+            const fi: f32 = @floatFromInt(i);
+            const p = v2(ax0 + fi * S(30), ay + @sin(t * 2 + fi * 1.3) * S(2.5));
+            c.ImDrawList_AddCircleFilled(d, p, r + S(3), fa(col.bg_dark, ak), 0);
+            if (i == 1) {
+                const ring = @mod(t * 0.9, 1);
+                c.ImDrawList_AddCircle(d, p, r + S(3) + ring * S(9), fa(withAlpha(col.green, @intFromFloat(200 * (1 - ring))), ak), 0, S(2), 0);
+            }
+            drawAvatarSpeaking(d, p, r, @intCast(i + 1), nm, false, i == 1);
+        }
+        // reações subindo
+        for (0..5) |k| {
+            const fk: f32 = @floatFromInt(k);
+            const ph = @mod(t * 0.32 + fk * 0.2, 1);
+            const alpha = @sin(ph * std.math.pi);
+            const rx = mx + mw - S(58) + @sin(ph * 7 + fk * 2) * S(12) + fk * S(6);
+            const ry = my + mh - S(20) - ph * S(170);
+            const e = (k * 2 + 1) % proto.reactions;
+            drawTextF(d, font_regular, 18 + 4 * alpha, v2(rx, ry), fa(withAlpha(reaction_colors[e], @intFromFloat(230 * alpha)), ak), reaction_icons[e]);
+        }
+        // uma mensagem do chat que aparece e some (troca a cada 4 s)
+        {
+            const msgs = [_][]const u8{ tr("olha esse refactor"), tr("boa, manda ver!"), tr("da um zoom na linha 84?") };
+            const cyc = @mod(t / 4.0, @as(f32, msgs.len));
+            const idx: usize = @intFromFloat(@floor(cyc));
+            const ph = cyc - @floor(cyc);
+            const vis = if (t == 0) 1 else std.math.clamp(@min(ph / 0.12, (1 - ph) / 0.12), 0, 1);
+            const msg = msgs[@min(idx, msgs.len - 1)];
+            const who = names[(idx + 2) % names.len];
+            const ts = textSizeF(font_regular, 13, msg);
+            const bw = ts.x + S(52);
+            const bh = S(40);
+            const bx = @max(o.x + S(12), mx - S(34));
+            const by = my + mh * 0.18 - (1 - vis) * S(8);
+            const k = ak * vis;
+            rectFill(d, bx + S(2), by + S(4), bx + bw + S(2), by + bh + S(4), fa(rgba(0x000000, 70), k), S(12));
+            rectFill(d, bx, by, bx + bw, by + bh, fa(col.bg_side, k), S(12));
+            c.ImDrawList_AddRect(d, v2(bx, by), v2(bx + bw, by + bh), fa(withAlpha(col.text, 24), k), S(12) * col.round, S(1), 0);
+            c.ImDrawList_AddCircleFilled(d, v2(bx + S(20), by + bh / 2), S(11), fa(avatarColor(@intCast((idx + 2) % names.len + 1)), k), 0);
+            var ib: [5]u8 = undefined;
+            const ini = initial(who, &ib);
+            const is = textSizeF(font_semibold, 11, ini);
+            drawTextF(d, font_semibold, 11, v2(bx + S(20) - is.x / 2, by + bh / 2 - is.y / 2), fa(col.white, k), ini);
+            drawTextF(d, font_regular, 13, v2(bx + S(38), by + (bh - ts.y) / 2), fa(col.text, k), msg);
+        }
+
+        // o que tem de bom
+        {
+            const chips = [_][2][]const u8{
+                .{ ic.gauge, tr("Direto pela placa de vídeo") },
+                .{ ic.lock, tr("Conexão criptografada") },
+                .{ ic.user_plus, tr("Sem conta: é só o convite") },
+            };
+            var widths: [chips.len]f32 = undefined;
+            var tw: f32 = 0;
+            for (chips, 0..) |ch, i| {
+                widths[i] = textSizeF(font_semibold, 12.5, ch[1]).x + S(44);
+                tw += widths[i] + (if (i > 0) S(10) else 0);
+            }
+            var chx = cx - tw / 2;
+            const chy = my + mh + S(46);
+            if (tw < size.x - S(24)) for (chips, 0..) |ch, i| {
+                const k = ak * easeOut(std.math.clamp(enter * 1.6 - 0.25 * @as(f32, @floatFromInt(i)), 0, 1));
+                rectFill(d, chx, chy, chx + widths[i], chy + chips_h, fa(withAlpha(col.text, 10), k), chips_h / 2);
+                c.ImDrawList_AddRect(d, v2(chx, chy), v2(chx + widths[i], chy + chips_h), fa(withAlpha(col.text, 22), k), chips_h / 2 * col.round, S(1), 0);
+                drawTextF(d, font_regular, 13, v2(chx + S(14), chy + (chips_h - S(16)) / 2), fa(col.blurple, k), ch[0]);
+                drawTextF(d, font_semibold, 12.5, v2(chx + S(34), chy + (chips_h - S(16)) / 2), fa(col.text, k), ch[1]);
+                chx += widths[i] + S(10);
+            };
+        }
+    }
+
+    /// O cartão de entrar/criar. `brand`: com a marca em cima (janela estreita,
+    /// sem a vitrine).
+    fn drawHomeCard(a: *App, d: *c.ImDrawList, x0: f32, y0: f32, card_w: f32, card_h: f32, brand: bool, enter: f32) void {
+        const ak = enter;
+        rectFill(d, x0 + S(3), y0 + S(10), x0 + card_w + S(3), y0 + card_h + S(10), fa(rgba(0x000000, 80), ak), S(20));
+        rectFill(d, x0, y0, x0 + card_w, y0 + card_h, fa(col.bg_main, ak), S(18));
+        c.ImDrawList_AddRect(d, v2(x0, y0), v2(x0 + card_w, y0 + card_h), fa(withAlpha(col.text, 20), ak), S(18) * col.round, S(1), 0);
+        // filete de cor no topo, na cor da aba (violeta entrar, verde criar)
+        const accent = mixCol(col.blurple, col.green, a.home_tab_anim);
+        rectFill(d, x0 + S(28), y0, x0 + card_w - S(28), y0 + S(2), fa(accent, ak), S(1));
+
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_Alpha, @max(0.01, ak));
+        defer c.igPopStyleVar(1);
+        const pad = S(30);
         const inner = card_w - pad * 2;
-        c.igSetCursorScreenPos(v2(x0 + pad, y0 + S(30)));
+        c.igSetCursorScreenPos(v2(x0 + pad, y0 + S(28)));
         c.igBeginGroup();
 
-        // logo
-        {
+        if (brand) {
             const p = c.igGetCursorScreenPos();
-            const isz = S(48);
-            // o husky (assets/telinha.svg em 128 px)
+            const isz = S(44);
             if (logo_tex == 0) gl.upload(&logo_tex, logo_rgba, 128, 128, gl.RGBA);
-            c.ImDrawList_AddImage(d, texRef(logo_tex), p, v2(p.x + isz, p.y + isz), v2(0, 0), v2(1, 1), col.white);
-            drawTextF(d, font_bold, 28, v2(p.x + isz + S(14), p.y - S(1)), col.header, "telinha");
-            drawTextF(d, font_regular, 14, v2(p.x + isz + S(15), p.y + S(28)), col.muted, tr("compartilha a tela com a galera"));
-            c.igDummy(v2(inner, isz + S(26)));
+            c.ImDrawList_AddImageRounded(d, texRef(logo_tex), p, v2(p.x + isz, p.y + isz), v2(0, 0), v2(1, 1), fa(col.white, ak), S(12), 0);
+            drawTextF(d, font_bold, 26, v2(p.x + isz + S(14), p.y - S(1)), fa(col.header, ak), "telinha");
+            drawTextF(d, font_regular, 13.5, v2(p.x + isz + S(15), p.y + S(27)), fa(col.muted, ak), tr("compartilha a tela com a galera"));
+            c.igDummy(v2(inner, isz + S(22)));
         }
         a.drawUpdateBanner(inner);
 
-        _ = segmented("tabs", &.{ "Entrar numa sala", "Criar sala" }, &a.home_tab, inner);
-        c.igDummy(v2(0, S(14)));
+        // saudação
+        {
+            const p = c.igGetCursorScreenPos();
+            const nm = std.mem.sliceTo(&a.cfg.name, 0);
+            const hello = if (nm.len > 0) fmtZ("Oi, {s}!", .{nm[0..@min(nm.len, 24)]}) else fmtZ("Bem-vindo ao telinha", .{});
+            drawTextF(d, font_bold, 22, p, fa(col.header, ak), hello);
+            const sub = if (a.home_tab == 0) tr("Cola o convite que te mandaram e entra.") else tr("Abre uma sala aqui e chama a galera.");
+            drawTextF(d, font_regular, 13.5, v2(p.x, p.y + S(32)), fa(col.muted, ak), sub);
+            c.igDummy(v2(inner, S(60)));
+        }
+
+        // escolha: entrar ou criar (o destaque desliza)
+        {
+            const p = c.igGetCursorScreenPos();
+            const h = S(46);
+            const half = (inner - S(8)) / 2;
+            rectFill(d, p.x, p.y, p.x + inner, p.y + h, fa(col.input, ak), S(12));
+            const hx = p.x + S(4) + a.home_tab_anim * (half + S(0));
+            rectFill(d, hx, p.y + S(4), hx + half, p.y + h - S(4), fa(accent, ak), S(9));
+            const opts = [_][2][]const u8{ .{ ic.arrow_right, tr("Entrar numa sala") }, .{ ic.plus, tr("Criar sala") } };
+            for (opts, 0..) |op, i| {
+                const fi: f32 = @floatFromInt(i);
+                const bx = p.x + S(4) + fi * half;
+                c.igSetCursorScreenPos(v2(bx, p.y + S(4)));
+                var lb: [96]u8 = undefined;
+                const id = std.fmt.bufPrintZ(&lb, "{s}###seg{d}", .{ op[1], i }) catch "###seg";
+                if (c.igInvisibleButton(id.ptr, v2(half, h - S(8)), 0) and a.home_tab != @as(i32, @intCast(i))) {
+                    a.home_tab = @intCast(i);
+                    a.home_error_len = 0;
+                    a.home_switch_at = c.igGetTime();
+                }
+                const sel_k = 1 - @abs(a.home_tab_anim - fi); // 1 = em cima do destaque
+                const hovered = c.igIsItemHovered(0);
+                const tc = mixCol(if (hovered) col.header else col.muted, theme.textOn(accent), sel_k);
+                const iw = textSizeF(font_regular, 13, op[0]).x;
+                const tw = textSizeF(font_semibold, 14, op[1]).x;
+                const tx = bx + (half - iw - S(9) - tw) / 2;
+                const ty = p.y + (h - S(18)) / 2;
+                drawTextF(d, font_regular, 13, v2(tx, ty + S(1)), fa(tc, ak), op[0]);
+                drawTextF(d, font_semibold, 14, v2(tx + iw + S(9), ty), fa(tc, ak), op[1]);
+            }
+            c.igSetCursorScreenPos(v2(p.x, p.y + h));
+            c.igDummy(v2(inner, S(18)));
+        }
+
+        // o conteúdo da aba entra deslizando de lado
+        const since: f32 = @floatCast(c.igGetTime() - a.home_switch_at);
+        const sw = if (a.cfg.animations) easeOut(std.math.clamp(since / 0.3, 0, 1)) else 1;
+        const dir: f32 = if (a.home_tab == 1) 1 else -1;
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_Alpha, @max(0.01, ak * sw));
+        defer c.igPopStyleVar(1);
+        const base_x = c.igGetCursorScreenPos().x;
+        c.igSetCursorScreenPos(v2(base_x + (1 - sw) * S(18) * dir, c.igGetCursorScreenPos().y));
+        c.igBeginGroup();
+        const ck = ak * sw;
 
         fieldLabel("SEU NOME");
-        _ = textField("##name", "como a galera vai te ver", a.cfg.name[0 .. a.cfg.name.len - 1], inner, false);
+        _ = iconField(d, "##name", ic.users, "como a galera vai te ver", a.cfg.name[0 .. a.cfg.name.len - 1], inner, false, accent, ck);
         c.igDummy(v2(0, S(8)));
 
         var go = false;
         if (a.home_tab == 0) {
             fieldLabel("ENDEREÇO DA SALA");
-            if (textField("##addr", "ex.: 0.tcp.sa.ngrok.io:12345 ou o convite telinha://...", &a.cfg.join_addr, inner, false)) go = true;
+            if (iconField(d, "##addr", ic.link, "ex.: 0.tcp.sa.ngrok.io:12345 ou o convite telinha://...", &a.cfg.join_addr, inner, false, accent, ck)) go = true;
             if (c.igGetTime() < a.paste_hint_until) {
                 pushFont(font_regular, 12.5);
                 textColored(col.green, tr("Convite colado da área de transferência. É só clicar em Entrar."));
@@ -2309,56 +2702,80 @@ pub const App = struct {
             }
             c.igDummy(v2(0, S(8)));
             fieldLabel("SENHA");
-            if (textField("##pass", "senha da sala", &a.cfg.join_pass, inner, true)) go = true;
+            if (iconField(d, "##pass", ic.lock, "senha da sala", &a.cfg.join_pass, inner, true, accent, ck)) go = true;
             c.igDummy(v2(0, S(6)));
             // opções avançadas (token de admin de servidor dedicado)
             {
-                const t = fmtZ("Opções avançadas  {s}", .{if (a.show_advanced) ic.chev_up else ic.chev_down});
+                const tx = fmtZ("Opções avançadas  {s}", .{if (a.show_advanced) ic.chev_up else ic.chev_down});
                 pushFont(font_semibold, 12.5);
-                const ts = textSize(t);
+                const ts = textSize(tx);
                 const p = c.igGetCursorScreenPos();
                 if (c.igInvisibleButton("##adv", v2(ts.x, ts.y + S(4)), 0)) a.show_advanced = !a.show_advanced;
-                drawText(drawList(), p, if (c.igIsItemHovered(0)) col.header else col.muted, t);
+                drawText(d, p, fa(if (c.igIsItemHovered(0)) col.header else col.muted, ck), tx);
                 popFont();
             }
             if (a.show_advanced) {
                 c.igDummy(v2(0, S(4)));
                 fieldLabel("TOKEN DE ADMIN (só em servidor dedicado)");
-                if (textField("##tok", "deixe vazio se não souber o que é", &a.cfg.admin_token, inner, true)) go = true;
+                if (iconField(d, "##tok", ic.shield, "deixe vazio se não souber o que é", &a.cfg.admin_token, inner, true, accent, ck)) go = true;
             }
-            c.igDummy(v2(0, S(14)));
-            if (primaryButton(tr("Entrar##go"), v2(inner, S(44)), col.blurple, col.blurple_hover, col.blurple_active)) go = true;
+            c.igDummy(v2(0, S(16)));
+            if (goButton(d, tr("Entrar##go"), inner, col.blurple, col.blurple_hover, col.blurple_active, ck)) go = true;
             if (go) a.joinRoom();
         } else {
             fieldLabel("NOME DA SALA");
-            _ = textField("##room", "ex.: Sala do Gabriel", &a.cfg.room_name, inner, false);
+            _ = iconField(d, "##room", ic.tv, "ex.: Sala do Gabriel", &a.cfg.room_name, inner, false, accent, ck);
             c.igDummy(v2(0, S(8)));
             const half = (inner - S(12)) / 2;
             const row = c.igGetCursorScreenPos();
             fieldLabel("PORTA");
-            _ = textField("##port", "7777", &a.port_buf, half, false);
+            _ = iconField(d, "##port", ic.tower, "7777", &a.port_buf, half, false, accent, ck);
             const after = c.igGetCursorScreenPos();
             c.igSetCursorScreenPos(v2(row.x + half + S(12), row.y));
             fieldLabel("SENHA");
             c.igSetCursorScreenPos(v2(row.x + half + S(12), c.igGetCursorScreenPos().y));
-            if (textField("##hpass", "vazio = sem senha", &a.cfg.host_pass, half, true)) go = true;
+            if (iconField(d, "##hpass", ic.lock, "vazio = sem senha", &a.cfg.host_pass, half, true, accent, ck)) go = true;
             c.igSetCursorScreenPos(after);
             c.igDummy(v2(0, S(18)));
-            if (primaryButton(tr("Criar sala##go"), v2(inner, S(44)), col.green, col.green_hover, col.green_active)) go = true;
-            c.igDummy(v2(0, S(10)));
+            if (goButton(d, tr("Criar sala##go"), inner, col.green, col.green_hover, col.green_active, ck)) go = true;
+            c.igDummy(v2(0, S(12)));
             c.igPushTextWrapPos(c.igGetCursorPosX() + inner);
-            pushFont(font_regular, 13);
-            textColored(col.muted, tr("Pra galera de fora entrar, abre um túnel TCP pra essa porta (ngrok tcp, bore, playit...) e manda o endereço que ele mostrar."));
+            pushFont(font_regular, 12.5);
+            textColored(col.muted, tr("Pra galera de fora entrar: na sala tem o botão de criar um link público (funciona em qualquer rede) ou de abrir a porta no roteador."));
             popFont();
             c.igPopTextWrapPos();
             if (go) a.createRoom();
         }
 
         if (a.home_error_len > 0) {
-            c.igDummy(v2(0, S(10)));
-            c.igPushTextWrapPos(c.igGetCursorPosX() + inner);
-            textColored(col.red, a.home_error[0..a.home_error_len]);
+            c.igDummy(v2(0, S(12)));
+            const p = c.igGetCursorScreenPos();
+            pushFont(font_regular, 13.5);
+            const ts = c.igCalcTextSize(a.home_error[0..].ptr, a.home_error[0..].ptr + a.home_error_len, false, inner - S(40));
+            popFont();
+            const eh = ts.y + S(20);
+            rectFill(d, p.x, p.y, p.x + inner, p.y + eh, fa(withAlpha(col.red, 30), ck), S(10));
+            c.ImDrawList_AddRect(d, v2(p.x, p.y), v2(p.x + inner, p.y + eh), fa(withAlpha(col.red, 90), ck), S(10) * col.round, S(1), 0);
+            drawTextF(d, font_regular, 14, v2(p.x + S(12), p.y + S(10)), fa(col.red, ck), ic.warn);
+            c.igSetCursorScreenPos(v2(p.x + S(34), p.y + S(10)));
+            c.igPushTextWrapPos(c.igGetCursorPosX() + inner - S(44));
+            pushFont(font_regular, 13.5);
+            textColored(col.text, a.home_error[0..a.home_error_len]);
+            popFont();
             c.igPopTextWrapPos();
+            c.igSetCursorScreenPos(v2(p.x, p.y + eh));
+            c.igDummy(v2(inner, 0));
+        }
+        c.igEndGroup();
+
+        // rodapé
+        c.igDummy(v2(0, S(16)));
+        {
+            const p = c.igGetCursorScreenPos();
+            const ft = fmtZ("telinha {s}  ·  {s} X25519 + ChaCha20", .{ version_string, ic.lock });
+            const fw = textSizeF(font_regular, 11.5, ft).x;
+            drawTextF(d, font_regular, 11.5, v2(p.x + (inner - fw) / 2, p.y), fa(col.faint, ak), ft);
+            c.igDummy(v2(inner, S(14)));
         }
         c.igEndGroup();
         a.home_card_h = c.igGetItemRectSize().y;
@@ -3132,38 +3549,37 @@ pub const App = struct {
         c.igPopStyleColor(1);
     }
 
-    fn drawUpnpState(a: *App, m: *upnp.Mapper, d: *c.ImDrawList, x: f32, yy: f32, w: f32, pad: f32) void {
+    fn drawUpnpState(a: *App, m: *upnp.Mapper, d: *c.ImDrawList, inner: f32) void {
         const st = m.status();
+        const bh = S(38);
         switch (st.state) {
             .working => {
-                drawTextF(d, font_semibold, 14, v2(x + pad, yy + S(4)), col.text, tr("Pedindo pro roteador abrir a porta…"));
-                drawTextF(d, font_regular, 13, v2(x + pad, yy + S(26)), col.muted, tr("Procurando o roteador na rede (UPnP). Leva uns segundos."));
-                c.igSetCursorScreenPos(v2(x + pad, yy + S(48)));
-                if (secondaryButton(tr("Cancelar##upnp"), v2(S(110), S(38)))) a.stopUpnp();
+                spinnerTitle(d, tr("Pedindo pro roteador abrir a porta…"));
+                wrapText(col.muted, 13, tr("Procurando o roteador na rede (UPnP). Leva uns segundos."), inner);
+                c.igDummy(v2(0, S(2)));
+                if (secondaryButton(tr("Cancelar##upnp"), v2(S(120), bh))) a.stopUpnp();
             },
             .ready => {
                 var abuf: [64]u8 = undefined;
-                const addr = m.address(&abuf);
-                drawTextF(d, font_regular, 13, v2(x + pad, yy), col.muted, tr("Porta aberta no roteador: conexão direta, sem túnel."));
-                rectFill(d, x + pad, yy + S(22), x + w - pad, yy + S(52), col.input, S(5));
-                drawTextF(d, font_regular, 13, v2(x + pad + S(10), yy + S(29)), col.green, ic.circle);
-                drawTextF(d, font_semibold, 14, v2(x + pad + S(30), yy + S(28)), col.header, fmtZ("{s}", .{addr}));
-                c.igSetCursorScreenPos(v2(x + pad, yy + S(62)));
-                if (primaryButton(fmtZ("{s}  Copiar convite##upnp", .{ic.user_plus}), v2(S(170), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.copyInvite();
+                cardTitle(d, ic.tower, col.green, tr("Porta aberta no roteador"));
+                wrapText(col.muted, 13, tr("Conexão direta, sem túnel. Manda o convite pra galera:"), inner);
+                addrBox(d, m.address(&abuf), inner);
+                const half = (inner - S(10)) / 2;
+                if (primaryButton(fmtZ("{s}  Copiar convite##upnp", .{ic.user_plus}), v2(half, bh), col.blurple, col.blurple_hover, col.blurple_active)) a.copyInvite();
                 c.igSameLine(0, S(10));
-                if (secondaryButton(fmtZ("{s}  Fechar porta###upnpclose", .{ic.power}), v2(S(140), S(38)))) a.stopUpnp();
+                if (secondaryButton(fmtZ("{s}  Fechar porta###upnpclose", .{ic.power}), v2(half, bh))) a.stopUpnp();
             },
             .failed => {
-                drawTextF(d, font_semibold, 14, v2(x + pad, yy - S(2)), col.red, fmtZ("{s}  Não deu pra abrir a porta", .{ic.warn}));
+                cardTitle(d, ic.warn, col.red, tr("Não deu pra abrir a porta"));
                 var eb: [300]u8 = undefined;
-                drawTextWrapF(d, font_regular, 12.5, v2(x + pad, yy + S(18)), col.muted, i18n.dynamic(st.err, &eb), w - 2 * pad);
-                c.igSetCursorScreenPos(v2(x + pad, yy + S(56)));
-                if (primaryButton(fmtZ("{s}  Criar link público##upnp", .{ic.globe}), v2(S(200), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) {
+                wrapText(col.muted, 12.5, i18n.dynamic(st.err, &eb), inner);
+                c.igDummy(v2(0, S(2)));
+                if (primaryButton(fmtZ("{s}  Criar link público##upnp", .{ic.globe}), v2(S(210), bh), col.blurple, col.blurple_hover, col.blurple_active)) {
                     a.stopUpnp();
                     a.startTunnel();
                 }
                 c.igSameLine(0, S(10));
-                if (secondaryButton(tr("Fechar##upnp"), v2(S(100), S(38)))) a.stopUpnp();
+                if (secondaryButton(tr("Fechar##upnp"), v2(S(110), bh))) a.stopUpnp();
             },
         }
     }
@@ -4381,7 +4797,6 @@ pub const App = struct {
     }
 
     fn drawEmpty(a: *App, cl: *Client, o: c.ImVec2_c, size: c.ImVec2_c) void {
-        const d = drawList();
         cl.mutex.lock();
         var live: [16]Member = undefined;
         var n_live: usize = 0;
@@ -4394,28 +4809,59 @@ pub const App = struct {
         }
         cl.mutex.unlock();
 
-        const cx = o.x + size.x / 2;
-        var y = o.y + size.y * 0.22;
-        const isz = S(84);
+        // tudo numa área que rola: janela baixa não esconde mais nada
+        c.igSetCursorScreenPos(o);
+        c.igPushStyleColor_U32(c.ImGuiCol_ChildBg, 0);
+        c.igPushStyleColor_U32(c.ImGuiCol_ScrollbarBg, 0);
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_ItemSpacing, v2(S(8), S(8)));
+        _ = c.igBeginChild_Str("emptyscroll", size, 0, 0);
+        defer {
+            c.igEndChild();
+            c.igPopStyleVar(1);
+            c.igPopStyleColor(2);
+        }
+        const d = drawList();
+        const wo = c.igGetCursorScreenPos(); // já descontada a rolagem
+        const cw = @min(S(720), size.x - S(40));
+        const cx = wo.x + size.x / 2;
+        const host = a.server != null and n_live == 0;
+        const short = size.y < S(560);
+        // no meio quando cabe (altura do quadro anterior); senão do topo, rolando
+        const top_pad: f32 = if (short) S(20) else S(28);
+        var y = @round(wo.y + if (host) @max(top_pad, (size.y - a.empty_h) / 2) else size.y * 0.22);
+        const y_start = y;
+
+        const isz = if (short) S(56) else S(76);
         c.ImDrawList_AddCircleFilled(d, v2(cx, y + isz / 2), isz / 2, col.bg_side, 0);
-        const its = textSizeF(font_regular, 34, ic.tv);
-        drawTextF(d, font_regular, 34, v2(cx - its.x / 2, y + (isz - its.y) / 2), col.muted, ic.tv);
-        y += isz + S(22);
+        c.ImDrawList_AddCircle(d, v2(cx, y + isz / 2), isz / 2, withAlpha(col.text, 18), 0, S(1), 0);
+        const ifs: f32 = if (short) 24 else 30;
+        const its = textSizeF(font_regular, ifs, ic.tv);
+        drawTextF(d, font_regular, ifs, v2(cx - its.x / 2, y + (isz - its.y) / 2), col.muted, ic.tv);
+        y += isz + S(18);
 
         const title = if (n_live > 0) tr("Tem gente ao vivo!") else tr("Ninguém está transmitindo");
         const ts = textSizeF(font_bold, 20, title);
         drawTextF(d, font_bold, 20, v2(cx - ts.x / 2, y), col.header, title);
-        y += ts.y + S(8);
+        y += ts.y + S(6);
         const sub = if (n_live > 0) tr("Escolhe quem assistir. Dá pra assistir várias telas ao mesmo tempo.") else tr("Clica em Compartilhar tela pra começar, ou espera alguém da sala.");
         const ss = textSizeF(font_regular, 14, sub);
-        drawTextF(d, font_regular, 14, v2(cx - ss.x / 2, y), col.muted, sub);
-        y += ss.y + S(24);
+        if (ss.x <= cw) {
+            drawTextF(d, font_regular, 14, v2(cx - ss.x / 2, y), col.muted, sub);
+            y += ss.y + S(20);
+        } else {
+            pushFont(font_regular, 14);
+            const wrapped = c.igCalcTextSize(sub.ptr, sub.ptr + sub.len, false, cw);
+            popFont();
+            drawTextWrapF(d, font_regular, 14, v2(cx - cw / 2, y), col.muted, sub, cw);
+            y += wrapped.y + S(20);
+        }
 
         if (n_live > 0) {
             const card_w = S(220);
             const card_h = S(150);
             const gap = S(14);
             const per_row = @max(1, @min(n_live, @as(usize, @intFromFloat((size.x - S(40) + gap) / (card_w + gap)))));
+            var bottom = y;
             for (live[0..n_live], 0..) |*m, i| {
                 const row = i / per_row;
                 const colx = i % per_row;
@@ -4427,7 +4873,8 @@ pub const App = struct {
                 c.igSetCursorScreenPos(v2(x, yy));
                 const clicked = c.igInvisibleButton("card", v2(card_w, card_h), 0);
                 const hov = c.igIsItemHovered(0);
-                rectFill(d, x, yy, x + card_w, yy + card_h, if (hov) col.selected else col.bg_side, S(10));
+                rectFill(d, x, yy, x + card_w, yy + card_h, if (hov) col.selected else col.bg_side, S(12));
+                c.ImDrawList_AddRect(d, v2(x, yy), v2(x + card_w, yy + card_h), withAlpha(col.text, if (hov) 40 else 18), S(12) * col.round, S(1), 0);
                 drawAvatar(d, v2(x + card_w / 2, yy + S(42)), S(26), m.id, m.nameSlice(), true);
                 const nts = textSizeF(font_semibold, 15, m.nameSlice());
                 drawTextF(d, font_semibold, 15, v2(x + (card_w - nts.x) / 2, yy + S(76)), col.header, m.nameSlice());
@@ -4435,111 +4882,242 @@ pub const App = struct {
                 const bts = textSizeF(font_semibold, 13.5, btn);
                 const bx0 = x + S(16);
                 const by0 = yy + card_h - S(44);
-                rectFill(d, bx0, by0, x + card_w - S(16), by0 + S(30), if (hov) col.blurple_hover else col.blurple, S(5));
+                rectFill(d, bx0, by0, x + card_w - S(16), by0 + S(30), if (hov) col.blurple_hover else col.blurple, S(8));
                 drawTextF(d, font_semibold, 13.5, v2(x + (card_w - bts.x) / 2, by0 + (S(30) - bts.y) / 2), col.white, btn);
                 if (clicked) a.watch(m.id);
                 c.igPopID();
+                bottom = yy + card_h;
             }
+            c.igSetCursorScreenPos(v2(wo.x, bottom));
+            c.igDummy(v2(1, S(20)));
         } else {
             c.igSetCursorScreenPos(v2(cx - S(100), y));
             const lbl = fmtZ("{s}   Compartilhar tela###shareempty", .{ic.desktop});
+            c.igPushStyleVar_Float(c.ImGuiStyleVar_FrameRounding, S(12) * col.round);
             if (primaryButton(lbl, v2(S(200), S(42)), col.blurple, col.blurple_hover, col.blurple_active)) a.openShareModal();
-            y += S(70);
-            if (a.server) |s| a.drawHostTips(s, v2(cx, y));
+            c.igPopStyleVar(1);
+            y += S(42) + (if (short) S(24) else S(36));
+            if (a.server) |s| {
+                c.igSetCursorScreenPos(v2(cx - cw / 2, y));
+                a.drawHostTips(s, cw);
+            }
+            a.empty_h = c.igGetCursorScreenPos().y - y_start;
+            c.igDummy(v2(1, S(20)));
         }
     }
 
-    fn drawHostTips(a: *App, s: *Server, top: c.ImVec2_c) void {
-        const d = drawList();
-        const w = S(500);
-        const x = top.x - w / 2;
-        const y = top.y;
-        const pad = S(18);
-        const own_h: f32 = if (a.own_tunnel_open) S(196) else 0;
-        const h = S(178) + own_h;
-        rectFill(d, x, y, x + w, y + h, col.bg_side, S(10));
-        drawTextF(d, font_bold, 14, v2(x + pad, y + S(16)), col.header, fmtZ("{s}  Chamando a galera de fora", .{ic.link}));
+    /// Um cartão com fundo atrás do conteúdo (o fundo é desenhado depois de
+    /// medir, num canal de baixo). `h_min`: altura mínima (cartões lado a lado
+    /// ficam do mesmo tamanho).
+    const Card = struct {
+        p0: c.ImVec2_c,
+        w: f32,
+        fn begin(d: *c.ImDrawList, w: f32) Card {
+            const p0 = c.igGetCursorScreenPos();
+            c.ImDrawList_ChannelsSplit(d, 2);
+            c.ImDrawList_ChannelsSetCurrent(d, 1);
+            c.igSetCursorScreenPos(v2(p0.x + S(18), p0.y + S(16)));
+            c.igBeginGroup();
+            return .{ .p0 = p0, .w = w };
+        }
+        /// Fecha o cartão; devolve a altura que ele precisou.
+        fn end(card: Card, d: *c.ImDrawList, h_min: f32, accent: ?u32) f32 {
+            c.igEndGroup();
+            const mx = c.igGetItemRectMax();
+            const h = @max(h_min, mx.y - card.p0.y + S(16));
+            c.ImDrawList_ChannelsSetCurrent(d, 0);
+            const p = card.p0;
+            rectFill(d, p.x, p.y, p.x + card.w, p.y + h, col.bg_side, S(14));
+            c.ImDrawList_AddRect(d, p, v2(p.x + card.w, p.y + h), if (accent) |ac| withAlpha(ac, 120) else withAlpha(col.text, 18), S(14) * col.round, S(1), 0);
+            c.ImDrawList_ChannelsMerge(d);
+            c.igSetCursorScreenPos(v2(p.x, p.y + h));
+            c.igDummy(v2(card.w, 0));
+            return h;
+        }
+    };
 
-        // link público embutido
-        var yy = y + S(44);
+    /// Ícone redondo + título de um cartão.
+    fn cardTitle(d: *c.ImDrawList, glyph: []const u8, tint: u32, title: []const u8) void {
+        const p = c.igGetCursorScreenPos();
+        const r = S(15);
+        c.ImDrawList_AddCircleFilled(d, v2(p.x + r, p.y + r), r, withAlpha(tint, 40), 0);
+        const gs = textSizeF(font_regular, 13, glyph);
+        drawTextF(d, font_regular, 13, v2(p.x + r - gs.x / 2, p.y + r - gs.y / 2), tint, glyph);
+        drawTextF(d, font_bold, 14.5, v2(p.x + r * 2 + S(10), p.y + r - S(9)), col.header, title);
+        c.igDummy(v2(r * 2, r * 2 + S(4)));
+    }
+
+    fn wrapText(color: u32, size: f32, text: []const u8, w: f32) void {
+        c.igPushTextWrapPos(c.igGetCursorPosX() + w);
+        pushFont(font_regular, size);
+        textColored(color, text);
+        popFont();
+        c.igPopTextWrapPos();
+    }
+
+    /// Caixa com o endereço que está no ar (bolinha verde).
+    fn addrBox(d: *c.ImDrawList, addr: []const u8, w: f32) void {
+        const p = c.igGetCursorScreenPos();
+        const h = S(34);
+        rectFill(d, p.x, p.y, p.x + w, p.y + h, col.input, S(8));
+        drawTextF(d, font_regular, 11, v2(p.x + S(12), p.y + (h - S(13)) / 2), col.green, ic.circle);
+        c.ImDrawList_PushClipRect(d, p, v2(p.x + w - S(8), p.y + h), true);
+        drawTextF(d, font_semibold, 14, v2(p.x + S(32), p.y + (h - S(18)) / 2), col.header, addr);
+        c.ImDrawList_PopClipRect(d);
+        c.igDummy(v2(w, h));
+    }
+
+    /// "Chamando a galera de fora": link público e porta no roteador (cartões
+    /// lado a lado, ou um embaixo do outro em janela estreita) e o túnel
+    /// próprio. Tudo em fluxo: a altura sai do conteúdo.
+    fn drawHostTips(a: *App, s: *Server, w: f32) void {
+        const d = drawList();
+        const x0 = c.igGetCursorScreenPos().x;
+        c.igBeginGroup();
+        defer c.igEndGroup();
+        pushFont(font_bold, 15);
+        textColored(col.header, fmtZ("{s}  Chamando a galera de fora", .{ic.link}));
+        popFont();
+        wrapText(col.muted, 13, tr("Na mesma rede (ou VPN) o convite já funciona. Pra quem está longe, escolhe um caminho; o convite leva todos que estiverem abertos, e tudo vai cifrado."), w);
+        c.igDummy(v2(0, S(4)));
+
         const st: ?tunnel_mod.Status = if (a.tunnel) |t| t.status() else null;
-        if (a.upnp) |m| {
-            a.drawUpnpState(m, d, x, yy, w, pad);
-        } else if (st == null) {
-            drawTextF(d, font_regular, 13, v2(x + pad, yy), col.muted, fmtZ("Link público: pelo {s}, funciona em qualquer rede.", .{config.getStr(&a.cfg.tunnel_host)}));
-            drawTextF(d, font_regular, 13, v2(x + pad, yy + S(18)), col.muted, tr("Porta no roteador (UPnP): direto, menos atraso. Tudo cifrado."));
-            c.igSetCursorScreenPos(v2(x + pad, yy + S(48)));
-            if (primaryButton(fmtZ("{s}  Criar link público###tunnelgo", .{ic.globe}), v2(S(200), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.startTunnel();
-            c.igSameLine(0, S(10));
-            if (secondaryButton(fmtZ("{s}  Abrir porta no roteador###upnpgo", .{ic.link}), v2(S(230), S(38)))) a.startUpnp();
-        } else switch (st.?.state) {
-            .connecting => {
-                drawTextF(d, font_semibold, 14, v2(x + pad, yy + S(4)), col.text, fmtZ("Abrindo o link público no {s}…", .{a.tunnel.?.hostSlice()}));
-                drawTextF(d, font_regular, 13, v2(x + pad, yy + S(26)), col.muted, tr("Leva só alguns segundos."));
-                c.igSetCursorScreenPos(v2(x + pad, yy + S(48)));
-                if (secondaryButton(tr("Cancelar##tunel"), v2(S(110), S(38)))) a.stopTunnel();
-            },
-            .ready => {
-                var abuf: [300]u8 = undefined;
-                const addr = a.tunnel.?.address(&abuf);
-                drawTextF(d, font_regular, 13, v2(x + pad, yy), col.muted, tr("Link público no ar. Manda o convite pra galera:"));
-                rectFill(d, x + pad, yy + S(22), x + w - pad, yy + S(52), col.input, S(5));
-                drawTextF(d, font_regular, 13, v2(x + pad + S(10), yy + S(29)), col.green, ic.circle);
-                drawTextF(d, font_semibold, 14, v2(x + pad + S(30), yy + S(28)), col.header, fmtZ("{s}", .{addr}));
-                c.igSetCursorScreenPos(v2(x + pad, yy + S(62)));
-                if (primaryButton(fmtZ("{s}  Copiar convite##tunel", .{ic.user_plus}), v2(S(170), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) a.copyInvite();
-                c.igSameLine(0, S(10));
-                if (secondaryButton(fmtZ("{s}  Desligar###tunneloff", .{ic.power}), v2(S(120), S(38)))) a.stopTunnel();
-            },
-            .failed => {
-                drawTextF(d, font_semibold, 14, v2(x + pad, yy + S(4)), col.red, fmtZ("{s}  Não deu pra abrir o link público", .{ic.warn}));
-                var eb: [300]u8 = undefined;
-                drawTextF(d, font_regular, 13, v2(x + pad, yy + S(26)), col.muted, fmtZ("{s}", .{i18n.dynamic(st.?.err, &eb)}));
-                c.igSetCursorScreenPos(v2(x + pad, yy + S(48)));
-                if (primaryButton(fmtZ("{s}  Tentar de novo###tunnelretry", .{ic.rotate}), v2(S(170), S(38)), col.blurple, col.blurple_hover, col.blurple_active)) {
-                    a.stopTunnel();
-                    a.startTunnel();
+        const bh = S(38);
+        if (a.upnp == null and st == null) {
+            const side = w >= S(560);
+            const cwid = if (side) (w - S(12)) / 2 else w;
+            const inner = cwid - S(36);
+            const row_y = c.igGetCursorScreenPos().y;
+            // link público
+            var card = Card.begin(d, cwid);
+            cardTitle(d, ic.globe, col.blurple, tr("Link público"));
+            wrapText(col.muted, 13, fmtZ("Funciona em qualquer rede, pelo {s}. Um tiquinho mais de atraso.", .{config.getStr(&a.cfg.tunnel_host)}), inner);
+            c.igDummy(v2(0, S(2)));
+            const extra = @max(0, a.tips_card_h - a.tips_body_h[0]);
+            if (side and extra > 0) c.igDummy(v2(0, extra));
+            if (primaryButton(fmtZ("{s}  Criar link público###tunnelgo", .{ic.globe}), v2(inner, bh), col.blurple, col.blurple_hover, col.blurple_active)) a.startTunnel();
+            const h1 = card.end(d, 0, null);
+            a.tips_body_h[0] = h1 - extra;
+            // porta no roteador
+            if (side) c.igSetCursorScreenPos(v2(x0 + cwid + S(12), row_y)) else c.igDummy(v2(0, S(4)));
+            card = Card.begin(d, cwid);
+            cardTitle(d, ic.tower, col.green, tr("Porta no roteador"));
+            wrapText(col.muted, 13, tr("Conexão direta (UPnP): menos atraso. Nem todo roteador ou operadora deixa."), inner);
+            c.igDummy(v2(0, S(2)));
+            const extra2 = @max(0, a.tips_card_h - a.tips_body_h[1]);
+            if (side and extra2 > 0) c.igDummy(v2(0, extra2));
+            if (secondaryButton(fmtZ("{s}  Abrir porta no roteador###upnpgo", .{ic.link}), v2(inner, bh))) a.startUpnp();
+            const h2 = card.end(d, 0, null);
+            a.tips_body_h[1] = h2 - extra2;
+            a.tips_card_h = @max(a.tips_body_h[0], a.tips_body_h[1]);
+            if (side) {
+                c.igSetCursorScreenPos(v2(x0, row_y + @max(h1, h2)));
+                c.igDummy(v2(w, 0));
+            }
+        } else {
+            const inner = w - S(36);
+            if (a.upnp) |m| {
+                const ust = m.status();
+                const card = Card.begin(d, w);
+                a.drawUpnpState(m, d, inner);
+                _ = card.end(d, 0, if (ust.state == .ready) col.green else if (ust.state == .failed) col.red else null);
+            } else {
+                const tst = st.?;
+                const card = Card.begin(d, w);
+                switch (tst.state) {
+                    .connecting => {
+                        spinnerTitle(d, fmtZ("Abrindo o link público no {s}…", .{a.tunnel.?.hostSlice()}));
+                        wrapText(col.muted, 13, tr("Leva só alguns segundos."), inner);
+                        c.igDummy(v2(0, S(2)));
+                        if (secondaryButton(tr("Cancelar##tunel"), v2(S(120), bh))) a.stopTunnel();
+                    },
+                    .ready => {
+                        cardTitle(d, ic.globe, col.green, tr("Link público no ar"));
+                        wrapText(col.muted, 13, tr("Manda o convite pra galera:"), inner);
+                        var abuf: [300]u8 = undefined;
+                        addrBox(d, a.tunnel.?.address(&abuf), inner);
+                        const half = (inner - S(10)) / 2;
+                        if (primaryButton(fmtZ("{s}  Copiar convite##tunel", .{ic.user_plus}), v2(half, bh), col.blurple, col.blurple_hover, col.blurple_active)) a.copyInvite();
+                        c.igSameLine(0, S(10));
+                        if (secondaryButton(fmtZ("{s}  Desligar###tunneloff", .{ic.power}), v2(half, bh))) a.stopTunnel();
+                    },
+                    .failed => {
+                        cardTitle(d, ic.warn, col.red, tr("Não deu pra abrir o link público"));
+                        var eb: [300]u8 = undefined;
+                        wrapText(col.muted, 13, i18n.dynamic(tst.err, &eb), inner);
+                        c.igDummy(v2(0, S(2)));
+                        if (primaryButton(fmtZ("{s}  Tentar de novo###tunnelretry", .{ic.rotate}), v2(S(180), bh), col.blurple, col.blurple_hover, col.blurple_active)) {
+                            a.stopTunnel();
+                            a.startTunnel();
+                        }
+                        c.igSameLine(0, S(10));
+                        if (secondaryButton(tr("Fechar##tunel"), v2(S(110), bh))) a.stopTunnel();
+                    },
                 }
-                c.igSameLine(0, S(10));
-                if (secondaryButton(tr("Fechar##tunel"), v2(S(100), S(38)))) a.stopTunnel();
-            },
+                _ = card.end(d, 0, if (tst.state == .ready) col.green else if (tst.state == .failed) col.red else null);
+            }
         }
 
         // alternativa: túnel próprio (ngrok, bore, ssh)
-        yy = y + S(150);
-        c.igSetCursorScreenPos(v2(x + pad, yy - S(4)));
-        const toggle = fmtZ("{s}  Prefere seu próprio túnel? (ngrok, bore, ssh)", .{if (a.own_tunnel_open) ic.chev_up else ic.chev_down});
-        const ts = textSizeF(font_regular, 13, toggle);
-        if (c.igInvisibleButton("##own", v2(ts.x, ts.y + S(8)), 0)) a.own_tunnel_open = !a.own_tunnel_open;
-        drawTextF(d, font_regular, 13, v2(x + pad, yy), if (c.igIsItemHovered(0)) col.text else col.muted, toggle);
+        c.igDummy(v2(0, S(6)));
+        {
+            const toggle = fmtZ("{s}  Prefere seu próprio túnel? (ngrok, bore, ssh)", .{if (a.own_tunnel_open) ic.chev_up else ic.chev_down});
+            const ts = textSizeF(font_semibold, 13, toggle);
+            const p = c.igGetCursorScreenPos();
+            if (c.igInvisibleButton("##own", v2(ts.x, ts.y + S(8)), 0)) {
+                a.own_tunnel_open = !a.own_tunnel_open;
+                a.own_scroll = a.own_tunnel_open; // abriu: rola até o cartão aparecer inteiro
+            }
+            drawTextF(d, font_semibold, 13, v2(p.x, p.y + S(4)), if (c.igIsItemHovered(0)) col.text else col.muted, toggle);
+        }
         if (!a.own_tunnel_open) return;
-
-        yy += S(28);
+        const card = Card.begin(d, w);
+        const inner = w - S(36);
         const cmds = [_][:0]const u8{
             fmtCmd(0, "ngrok tcp {d}", s.port),
             fmtCmd(1, "bore local {d} --to bore.pub", s.port),
             fmtCmd(2, "ssh -R 0:localhost:{d} serveo.net", s.port),
         };
         for (cmds, 0..) |cmd, i| {
-            const cy = yy + @as(f32, @floatFromInt(i)) * S(32);
-            rectFill(d, x + pad, cy, x + w - pad, cy + S(27), col.input, S(5));
-            drawTextF(d, font_regular, 13, v2(x + S(28), cy + S(5)), col.text, cmd);
-            c.igSetCursorScreenPos(v2(x + w - S(50), cy - S(1)));
+            const p = c.igGetCursorScreenPos();
+            const rh = S(30);
+            rectFill(d, p.x, p.y, p.x + inner, p.y + rh, col.input, S(8));
+            drawTextF(d, font_regular, 13, v2(p.x + S(12), p.y + (rh - S(16)) / 2), col.text, cmd);
+            c.igSetCursorScreenPos(v2(p.x + inner - rh, p.y));
             c.igPushID_Int(@intCast(i));
-            if (iconButton("##cp", ic.copy, S(29), col.muted, col.hover, tr("Copiar"))) c.igSetClipboardText(cmd.ptr);
+            if (iconButton("##cp", ic.copy, rh, col.muted, col.hover, tr("Copiar"))) c.igSetClipboardText(cmd.ptr);
             c.igPopID();
+            c.igSetCursorScreenPos(v2(p.x, p.y + rh + S(6)));
         }
-        yy += S(100);
-        drawTextF(d, font_regular, 13, v2(x + pad, yy), col.muted, tr("Cola aqui o endereço que o túnel mostrou e copia o convite:"));
-        c.igSetCursorScreenPos(v2(x + pad, yy + S(22)));
-        const fw = w - S(36) - S(150);
-        _ = textField("##pub", "ex.: 0.tcp.sa.ngrok.io:12345", &a.cfg.public_addr, fw, false);
+        c.igDummy(v2(0, S(2)));
+        wrapText(col.muted, 13, tr("Cola aqui o endereço que o túnel mostrou e copia o convite:"), inner);
+        const bw = S(150);
+        _ = textField("##pub", "ex.: 0.tcp.sa.ngrok.io:12345", &a.cfg.public_addr, inner - bw - S(10), false);
         c.igSameLine(0, S(10));
-        if (primaryButton(fmtZ("{s}  Copiar convite##proprio", .{ic.user_plus}), v2(S(140), S(37)), col.blurple, col.blurple_hover, col.blurple_active)) {
+        if (primaryButton(fmtZ("{s}  Copiar convite##proprio", .{ic.user_plus}), v2(bw, S(37)), col.blurple, col.blurple_hover, col.blurple_active)) {
             config.save(&a.cfg);
             a.stopTunnel(); // vale o endereço digitado
             a.copyInvite();
         }
+        _ = card.end(d, 0, null);
+        if (a.own_scroll) {
+            a.own_scroll = false;
+            c.igSetScrollHereY(1.0);
+        }
+    }
+
+    /// Título com uma bolinha girando (esperando o túnel/roteador).
+    fn spinnerTitle(d: *c.ImDrawList, title: []const u8) void {
+        const p = c.igGetCursorScreenPos();
+        const r = S(15);
+        const ctr = v2(p.x + r, p.y + r);
+        c.ImDrawList_AddCircleFilled(d, ctr, r, withAlpha(col.blurple, 40), 0);
+        const t: f32 = @floatCast(c.igGetTime());
+        c.ImDrawList_PathArcTo(d, ctr, r * 0.55, t * 6, t * 6 + 4.2, 16);
+        c.ImDrawList_PathStroke(d, col.blurple, S(2.2), 0);
+        drawTextF(d, font_bold, 14.5, v2(p.x + r * 2 + S(10), p.y + r - S(9)), col.header, title);
+        c.igDummy(v2(r * 2, r * 2 + S(4)));
+        redrawIn(0.05);
     }
 
     var cmd_bufs: [3][80]u8 = undefined;
@@ -5364,6 +5942,7 @@ pub const App = struct {
         c.igDummy(v2(0, S(14)));
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         if (c.igCheckbox(tr("Efeito CRT (linhas de tela antiga; o vídeo fica de fora)###crt"), &a.cfg.crt)) config.save(&a.cfg);
+        if (c.igCheckbox(tr("Animações na tela inicial (param sozinhas com o telinha fora de foco)###anim"), &a.cfg.animations)) config.save(&a.cfg);
         c.igPopStyleColor(1);
     }
 

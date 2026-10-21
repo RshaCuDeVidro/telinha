@@ -255,6 +255,30 @@ def tela_inicial():
 
 
 @test
+def tela_inicial_parada():
+    """Tela inicial com as animações desligadas: o cartão (aba criar sala) não treme entre quadros (a altura medida decidia a posição e vice-versa)."""
+    try:
+        from PIL import Image, ImageChops
+    except ImportError:
+        log("sem PIL: pulei")
+        return
+    with Session("parada") as s:
+        for w, h in ((1440, 860), (1000, 700), (1366, 768)):
+            a = s.app(f"a{w}", 91 if w == 1440 else (92 if w == 1000 else 93), [], size=(w, h), config={"name": "Ana", "animations": 0})
+            a.wait(lambda st: st["screen"] == "home", 10, "a tela inicial")
+            a.click("Criar sala")
+            a.wait(lambda st: st["home_tab"] == 1, 3, "a aba criar sala")
+            time.sleep(1.0)
+            frames = []
+            for i in range(8):
+                frames.append(Image.open(a.screenshot(os.path.join(s.base, f"parada_{w}_{i}.png"))).convert("RGB").crop((0, 0, w, h)))
+                time.sleep(0.08)
+            moved = [i for i, f in enumerate(frames[1:], 1) if ImageChops.difference(frames[0], f).getbbox()]
+            expect(not moved, f"{w}x{h}: a tela mudou parada nos quadros {moved}")
+            a.stop()
+
+
+@test
 def sala_controles():
     """Sala: convite, chat (Enter e botão), esconder/mostrar chat, surdo, configurações, compartilhar tela, assistir pelas pílulas do topo e pelo card, modo cinema, F11."""
     with Session("controles") as s:

@@ -210,6 +210,18 @@ pub fn server(text: []const u8, buf: []u8) []const u8 {
 // vários lugares aparece uma vez só.
 
 const table = [_][2][]const u8{
+    // chamando a galera de fora (sala vazia do anfitrião)
+    .{ "Conexão direta, sem túnel. Manda o convite pra galera:", "Direct connection, no tunnel. Send the invite to your friends:" },
+    .{ "Conexão direta (UPnP): menos atraso. Nem todo roteador ou operadora deixa.", "Direct connection (UPnP): less delay. Not every router or ISP allows it." },
+    .{ "Funciona em qualquer rede, pelo {s}. Um tiquinho mais de atraso.", "Works on any network, through {s}. A tiny bit more delay." },
+    .{ "Link público", "Public link" },
+    .{ "Link público no ar", "Public link is up" },
+    .{ "Manda o convite pra galera:", "Send the invite to your friends:" },
+    .{ "Na mesma rede (ou VPN) o convite já funciona. Pra quem está longe, escolhe um caminho; o convite leva todos que estiverem abertos, e tudo vai cifrado.", "On the same network (or VPN) the invite already works. For people far away, pick a way in; the invite carries every one that's open, and everything is encrypted." },
+    .{ "Não deu pra abrir a porta", "Couldn't open the port" },
+    .{ "Não deu pra abrir o link público", "Couldn't open the public link" },
+    .{ "Porta aberta no roteador", "Port open on the router" },
+    .{ "Porta no roteador", "Router port" },
     // tela inicial
     .{ "compartilha a tela com a galera", "share your screen with friends" },
     .{ "Entrar numa sala", "Join a room" },
@@ -490,6 +502,20 @@ const table = [_][2][]const u8{
     .{ "Microfone ligado (Ctrl+M liga/desliga). Cancelamento de eco desligado: sem fone de ouvido, a sala pode ouvir eco da sua caixa de som.", "Microphone on (Ctrl+M toggles it). Echo cancellation is off: without headphones, the room may hear an echo from your speakers." },
 
     // compartilhar tela
+    // tela inicial
+    .{ "Oi, {s}!", "Hi, {s}!" },
+    .{ "Bem-vindo ao telinha", "Welcome to telinha" },
+    .{ "Cola o convite que te mandaram e entra.", "Paste the invite you got and jump in." },
+    .{ "Abre uma sala aqui e chama a galera.", "Open a room here and call your friends." },
+    .{ "olha esse refactor", "check this refactor" },
+    .{ "boa, manda ver!", "nice, ship it!" },
+    .{ "da um zoom na linha 84?", "zoom in on line 84?" },
+    .{ "Direto pela placa de vídeo", "Straight through the GPU" },
+    .{ "Conexão criptografada", "Encrypted connection" },
+    .{ "Sem conta: é só o convite", "No account: just the invite" },
+    .{ "Pra galera de fora entrar: na sala tem o botão de criar um link público (funciona em qualquer rede) ou de abrir a porta no roteador.", "For friends outside your network: the room has buttons to create a public link (works on any network) or open the port on your router." },
+    .{ "telinha {s}  ·  {s} X25519 + ChaCha20", "telinha {s}  ·  {s} X25519 + ChaCha20" },
+    .{ "Animações na tela inicial (param sozinhas com o telinha fora de foco)", "Home screen animations (they pause when telinha isn't focused)" },
     .{ "Compartilhar tela", "Share screen" },
     .{ "Todo mundo na sala vai poder assistir.", "Everyone in the room will be able to watch." },
     .{ "O QUE MOSTRAR", "WHAT TO SHOW" },
