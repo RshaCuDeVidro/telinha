@@ -143,6 +143,7 @@ pub fn build(b: *std.Build) void {
         for ([_][]const u8{ "libportal", "libpipewire-0.3", "x11", "xext", "xfixes" }) |lib|
             cap_mod.linkSystemLibrary(lib, .{});
         const cap_exe = b.addExecutable(.{ .name = "captest", .root_module = cap_mod });
+        allowHostLibs(cap_exe, host);
         const run_cap = b.addRunArtifact(cap_exe);
         if (b.args) |args| run_cap.addArgs(args);
         b.step("captest", "diagnóstico da captura de tela").dependOn(&run_cap.step);
@@ -534,7 +535,17 @@ fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: st
 
     const exe = b.addExecutable(.{ .name = "telinha", .root_module = mod });
     if (is_windows) exe.subsystem = .windows;
+    allowHostLibs(exe, target);
     return exe;
+}
+
+/// Linux com uma glibc mais velha que a da máquina (-Dtarget=x86_64-linux-gnu.2.34,
+/// pra rodar em distro mais antiga): as bibliotecas do sistema usadas no link
+/// (GLFW, GLib...) foram feitas pra glibc daqui e citam funções mais novas. Isso
+/// não importa: quem roda carrega as bibliotecas da própria máquina. O que o
+/// telinha mesmo usa continua conferido contra a glibc escolhida.
+fn allowHostLibs(exe: *std.Build.Step.Compile, target: std.Build.ResolvedTarget) void {
+    if (target.result.os.tag == .linux and !target.query.isNative()) exe.linker_allow_shlib_undefined = true;
 }
 
 fn serverExe(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
