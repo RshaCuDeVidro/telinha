@@ -101,6 +101,7 @@ const Conn = struct {
     ip: [16]u8 = undefined,
     ip_len: usize = 0,
     muted: bool = false, // microfone silenciado pelo admin
+    no_draw: bool = false, // o admin tirou o pincel
     // log de depuração mandado pela sala (log_chunk): um por minuto
     log_id: u32 = 0,
     log_total: u32 = 0,
@@ -448,6 +449,8 @@ pub const Server = struct {
     /// Chaves (do app) de quem o admin silenciou: quem cai e volta continua
     /// silenciado (antes voltava com o microfone liberado: "desmutou sozinho")
     muted_keys: std.ArrayList(u64) = .empty,
+    /// O mesmo pro pincel tirado pelo admin.
+    no_draw_keys: std.ArrayList(u64) = .empty,
     /// Entradas recentes (chave do app ou IP): quem entra e sai sem parar espera.
     recent_joins: std.ArrayList(RecentJoin) = .empty,
     chans: std.ArrayList(*Chan) = .empty, // o primeiro é o padrão
@@ -526,6 +529,7 @@ pub const Server = struct {
         s.conns.deinit(gpa);
         s.bans.deinit(gpa);
         s.muted_keys.deinit(gpa);
+        s.no_draw_keys.deinit(gpa);
         s.recent_joins.deinit(gpa);
         gpa.destroy(s);
         sync.hiresTimer(false);
@@ -1237,6 +1241,22 @@ pub const Server = struct {
                 try pushNotice(t, proto.notice_stream_stopped, text, kind);
                 try s.stopStream(t, kind);
             },
+            proto.admin_draw => {
+                const allow = value != 0;
+                if (t.no_draw == !allow) return;
+                t.no_draw = !allow;
+                if (t.client_key != 0) {
+                    for (s.no_draw_keys.items, 0..) |k, i| if (k == t.client_key) {
+                        _ = s.no_draw_keys.swapRemove(i);
+                        break;
+                    };
+                    if (!allow) s.no_draw_keys.append(gpa, t.client_key) catch {};
+                }
+                s.log("{s} {s} {s}", .{ cn.nameSlice(), if (allow) "devolveu o pincel de" else "tirou o pincel de", t.nameSlice() });
+                const text = std.fmt.bufPrint(&tmp, "{s} {s}", .{ cn.nameSlice(), if (allow) "devolveu seu pincel." else "tirou seu pincel." }) catch "";
+                try pushNotice(t, if (allow) proto.notice_draw_on else proto.notice_draw_off, text, 0);
+                try s.broadcastMembers(); // quem vê a bandeira apaga os traços dela
+            },
             proto.admin_set_admin => {
                 if (!cn.owner) return; // só o dono promove/rebaixa
                 const on = value != 0;
@@ -1512,10 +1532,14 @@ pub const Server = struct {
         s.pushChannels(cn);
         try s.pushHistory(cn);
 
-        // silenciado pelo admin antes de cair: continua silenciado
+        // silenciado pelo admin antes de cair: continua silenciado (e sem pincel)
         if (cn.client_key != 0 and !cn.owner) for (s.muted_keys.items) |k| if (k == cn.client_key) {
             cn.muted = true;
             pushNotice(cn, proto.notice_muted, "Você continua silenciado pelo admin.", 0) catch {};
+            break;
+        };
+        if (cn.client_key != 0 and !cn.owner) for (s.no_draw_keys.items) |k| if (k == cn.client_key) {
+            cn.no_draw = true;
             break;
         };
 
@@ -1766,6 +1790,7 @@ pub const Server = struct {
             if (o.deaf) flags |= proto.member_deaf;
             if (o.muted) flags |= proto.member_muted;
             if (cam.on) flags |= proto.member_camera;
+            if (o.no_draw) flags |= proto.member_no_draw;
             try b.u8_(flags);
             try b.u8_(@as(u8, if (o.owner) 0x80 else 0) | o.route);
             try b.u16_(scr.w);
@@ -2147,6 +2172,7 @@ pub const Server = struct {
         }
         cn.draw_count += 1;
         if (cn.draw_count > draw_rate) return;
+        if (cn.no_draw) return; // o admin tirou o pincel
         const owner = proto.memberOf(stream);
         if (owner != cn.id and !contains(&cn.watching, stream)) return;
         const m = try proto.Msg.alloc(.draw, 4 + payload.len);

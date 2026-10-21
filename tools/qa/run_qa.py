@@ -734,6 +734,58 @@ def recorte_e_desenho():
 
 
 @test
+def pincel():
+    """Pincel: cor e espessura escolhidas na paleta chegam em quem vê; esconder os desenhos dos outros (só do meu lado); o admin tira o pincel (os traços somem, o botão para de funcionar, volta silenciado se reconectar) e devolve."""
+    with Session("pincel") as s:
+        p = port()
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"])
+        ana.wait(lambda st: st["status"] == "connected" and st["sharer"] and st["sharer"]["state"] == "live", 15, "a Ana ao vivo")
+        aid = ana.state()["my_id"]
+        bia = s.app("bia", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        bia.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "a Bia ver a Ana")
+        bid = ana.member_id("Bia")
+        time.sleep(1.5)  # o quadro assentar (o tamanho muda logo depois de começar a assistir)
+        t = bia.tile(aid)
+        bia.click("##draw", within=t, hover_first=center(t))
+        bia.wait(lambda st: st["drawing"], 3, "o pincel ligar")
+        bia.click("##dcol3")
+        bia.click("##dsize2")
+        bia.wait(lambda st: st["draw_color"] == 3 and st["draw_size"] == 2, 3, "a cor e a espessura")
+        t = bia.tile(aid)
+        w, h = t[2] - t[0], t[3] - t[1]
+        drag_abs(bia, t[0] + w * 0.3, t[1] + h * 0.3, t[0] + w * 0.6, t[1] + h * 0.4, steps=16)
+        st = ana.wait(lambda st: any(x["from"] == bid and x["n"] >= 3 for x in st["strokes"]), 5, "a Ana ver o traço da Bia")
+        x = next(x for x in st["strokes"] if x["from"] == bid)
+        expect(x["color"] == 3 and x["size"] == 2, f"estilo errado: {x}")
+        # a Ana esconde os desenhos dos outros: o traço continua guardado, mas não aparece
+        ana.wait(lambda st: st["strokes_drawn"] > 0, 3, "o traço desenhado na Ana")
+        t = ana.tile(0)
+        ana.click("##draw", within=t, hover_first=center(t))
+        ana.click("##dothers")
+        ana.wait(lambda st: not st["show_drawings"] and st["strokes_drawn"] == 0 and st["strokes"], 3, "esconder os desenhos dos outros")
+        ana.click("##dothers")
+        ana.wait(lambda st: st["show_drawings"], 3, "mostrar de novo")
+        ana.click("##draw", within=ana.tile(0), hover_first=center(ana.tile(0)))
+        # o admin (a Ana) tira o pincel da Bia: o traço some na hora pra todo mundo
+        drag_abs(bia, t[0] + w * 0.3, t[1] + h * 0.5, t[0] + w * 0.6, t[1] + h * 0.6, steps=8)
+        ana.click_rect(ana.member_row(bid), button=3)
+        ana.click(contains="###adraw")
+        bia.wait(lambda st: not st["drawing"] and any("pincel" in x for x in st["toasts"]), 5, "a Bia perder o pincel")
+        ana.wait(lambda st: not any(x["from"] == bid for x in st["strokes"]), 5, "os traços da Bia sumirem")
+        # e não consegue mais desenhar
+        t = bia.tile(aid)
+        bia.click("##draw", within=t, hover_first=center(t))
+        time.sleep(0.5)
+        expect(not bia.state()["drawing"], "a Bia ligou o pincel sem permissão")
+        # devolve
+        ana.click_rect(ana.member_row(bid), button=3)
+        ana.click(contains="###adraw")
+        bia.wait(lambda st: any("devolveu" in x for x in st["toasts"]), 5, "a Bia ganhar o pincel de volta")
+        bia.click("##draw", within=bia.tile(aid), hover_first=center(bia.tile(aid)))
+        bia.wait(lambda st: st["drawing"], 3, "o pincel ligar de novo")
+
+
+@test
 def convite_colado():
     """Convite copiado (em outro app) já aparece preenchido em 'Entrar numa sala' ao abrir o telinha."""
     with Session("colar") as s:

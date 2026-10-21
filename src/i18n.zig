@@ -172,6 +172,8 @@ const server_suffixes = [_]Suffix{
     .{ " parou sua transmissão.", "{s} stopped your stream." },
     .{ " te deu admin na sala.", "{s} made you a room admin." },
     .{ " tirou seu admin.", "{s} removed your admin rights." },
+    .{ " tirou seu pincel.", "{s} took away your pen." },
+    .{ " devolveu seu pincel.", "{s} gave your pen back." },
 };
 /// "<quem> <verbo> <quem>".
 const server_infixes = [_]Suffix{
@@ -216,6 +218,20 @@ pub fn server(text: []const u8, buf: []u8) []const u8 {
 // vários lugares aparece uma vez só.
 
 const table = [_][2][]const u8{
+    // pincel
+    .{ "A minha cor (a do meu avatar)", "My color (my avatar's)" },
+    .{ "Apagar os meus traços (ou botão direito)", "Erase my strokes (or right-click)" },
+    .{ "Esconder os desenhos dos outros (só pra você)", "Hide other people's drawings (just for you)" },
+    .{ "Marca-texto", "Highlighter" },
+    .{ "Mostrar os desenhos dos outros", "Show other people's drawings" },
+    .{ "O admin tirou o seu pincel", "The admin took away your pen" },
+    .{ "O admin tirou o seu pincel.", "The admin took away your pen." },
+    .{ "{s}  Devolver o pincel", "{s}  Give the pen back" },
+    .{ "{s}  Tirar o pincel (apaga os desenhos)", "{s}  Take away the pen (erases their drawings)" },
+    .{ "Traço fino", "Thin stroke" },
+    .{ "Traço grosso", "Thick stroke" },
+    .{ "Traço normal", "Normal stroke" },
+    .{ "Mostrar os desenhos dos outros por cima das transmissões", "Show other people's drawings over the streams" },
     // canais
     .{ "Copiar o código", "Copy the code" },
     .{ "CANAIS · {d}", "CHANNELS · {d}" },

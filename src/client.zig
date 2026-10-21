@@ -118,6 +118,9 @@ pub const Member = struct {
     pub fn camera(self: *const Member) bool {
         return self.flags & proto.member_camera != 0;
     }
+    pub fn noDraw(self: *const Member) bool {
+        return self.flags & proto.member_no_draw != 0;
+    }
     /// Essa transmissão (tela ou câmera) dela está no ar?
     pub fn live(self: *const Member, kind: u8) bool {
         return if (kind == proto.kind_camera) self.camera() else self.streaming;
@@ -285,6 +288,7 @@ pub const Stroke = struct {
     n: u16 = 0,
     pts: [max_points][2]u16 = undefined,
     last_us: u64 = 0, // último ponto (o traço some uns segundos depois)
+    style: u8 = 0, // cor e espessura (os bits altos das flags, proto.draw_*_shift)
 };
 
 pub const Status = enum { connecting, connected, failed };
@@ -1285,6 +1289,16 @@ pub const Client = struct {
                 for (list.items) |*m| {
                     if (m.id == cl.my_id) cl.is_admin = m.admin;
                 }
+                // o admin tirou o pincel de alguém: os traços dessa pessoa somem
+                var si: usize = cl.strokes.items.len;
+                while (si > 0) {
+                    si -= 1;
+                    const from = cl.strokes.items[si].from;
+                    for (list.items) |*m| if (m.id == from and m.noDraw()) {
+                        _ = cl.strokes.orderedRemove(si);
+                        break;
+                    };
+                }
                 // voz de quem saiu da sala
                 var i: usize = cl.voice_peers.items.len;
                 while (i > 0) {
@@ -1766,6 +1780,7 @@ pub const Client = struct {
             cur = &cl.strokes.items[cl.strokes.items.len - 1];
         }
         const st = cur.?;
+        st.style = flags & 0xFC;
         for (pts) |p| {
             if (st.n == Stroke.max_points) break;
             st.pts[st.n] = p;

@@ -103,6 +103,7 @@ pub const member_mic: u8 = 8; // microfone ligado
 pub const member_deaf: u8 = 16; // não está ouvindo a sala
 pub const member_muted: u8 = 32; // microfone silenciado pelo admin
 pub const member_camera: u8 = 64; // câmera ligada
+pub const member_no_draw: u8 = 128; // o admin tirou o pincel
 
 /// members: estado da sala
 pub const room_locked: u8 = 1; // ninguém novo entra
@@ -149,6 +150,7 @@ pub const admin_mute: u8 = 3; // valor 1 = silencia o microfone, 0 = libera
 pub const admin_stop_stream: u8 = 4; // valor = tipo da transmissão
 pub const admin_set_admin: u8 = 5; // valor 1 = vira admin, 0 = deixa de ser
 pub const admin_lock: u8 = 6; // valor 1 = tranca a sala (alvo ignorado)
+pub const admin_draw: u8 = 7; // valor 1 = devolve o pincel, 0 = tira (os desenhos dela somem)
 
 /// notice
 pub const notice_muted: u8 = 1;
@@ -157,6 +159,8 @@ pub const notice_stream_stopped: u8 = 3; // texto + o tipo vai no primeiro byte 
 pub const notice_admin_on: u8 = 4;
 pub const notice_admin_off: u8 = 5;
 pub const notice_channel: u8 = 6; // não deu pra entrar no canal (o texto diz por quê)
+pub const notice_draw_off: u8 = 7; // o admin tirou seu pincel
+pub const notice_draw_on: u8 = 8; // devolveu
 /// Só no app (não vem do servidor): chegou um log mandado pela sala (texto = nome + caminho).
 pub const notice_log_received: u8 = 100;
 
@@ -176,6 +180,12 @@ pub const pointer_ping: u8 = 2; // clique: chama atenção pro ponto
 /// draw: começo de um traço novo / apagar os traços de quem mandou nessa transmissão
 pub const draw_new: u8 = 1;
 pub const draw_clear: u8 = 2;
+/// bits 2-3: espessura (0 = normal, 1 = fina, 2 = grossa, 3 = marca-texto);
+/// bits 4-7: cor da paleta (0 = a cor da pessoa; ver draw_colors). App antigo
+/// ignora os dois e desenha na cor da pessoa.
+pub const draw_size_shift: u3 = 2;
+pub const draw_color_shift: u3 = 4;
+pub const draw_colors = [16]u24{ 0, 0xFFFFFF, 0x111111, 0xF23F43, 0xF57731, 0xF0B232, 0x23A55A, 0x00C4CC, 0x3B82F6, 0x7B5CFF, 0xEC4899, 0xA16207, 0x84CC16, 0x94A3B8, 0xFDE047, 0xFF00FF };
 pub const draw_max_points = 64; // por mensagem
 /// Coordenada de ponteiro/cursor: 0..65534 = posição relativa no quadro, 0xFFFF = nenhum.
 pub const coord_none: u16 = 0xFFFF;

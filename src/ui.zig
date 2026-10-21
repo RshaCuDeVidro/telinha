@@ -84,6 +84,7 @@ const via_clique = "clique";
 
 const ic = struct {
     const desktop = &iconArr(0xF390);
+    const eraser = &iconArr(0xF12D);
     const bug = &iconArr(0xF188);
     const gauge = &iconArr(0xF625);
     const palette = &iconArr(0xF53F);
@@ -444,6 +445,14 @@ fn goButton(d: *c.ImDrawList, label: [:0]const u8, width: f32, color: u32, hover
     return r;
 }
 
+/// Cor 0xRRGGBB que só se sabe em tempo de execução (theme.rgb é de compilação).
+fn rgbRuntime(hex: u24) u32 {
+    const r: u32 = (hex >> 16) & 0xFF;
+    const g: u32 = (hex >> 8) & 0xFF;
+    const b: u32 = hex & 0xFF;
+    return 0xFF000000 | (b << 16) | (g << 8) | r;
+}
+
 fn liveBadgeWidth() f32 {
     return textSizeF(font_bold, 10, tr("AO VIVO")).x + S(10);
 }
@@ -775,6 +784,7 @@ pub const App = struct {
     pointer_tile: ?u32 = null,
     // desenhar por cima de uma transmissão
     draw_tile: ?u32 = null,
+    strokes_drawn: u32 = 0, // traços desenhados nesse quadro (testes)
     draw_pts: [proto.draw_max_points][2]u16 = undefined,
     draw_n: usize = 0,
     draw_new: bool = false, // o próximo envio começa um traço
@@ -1809,9 +1819,13 @@ pub const App = struct {
                 },
                 proto.notice_stream_stopped => if (n.extra == proto.kind_camera) a.stopCamera() else a.stopSharing(),
                 proto.notice_log_received => debuglog.line("{s}", .{n.textSlice()}),
+                proto.notice_draw_off => {
+                    a.draw_tile = null;
+                    a.draw_active = false;
+                },
                 else => {},
             }
-            const bad = n.kind == proto.notice_muted or n.kind == proto.notice_stream_stopped or n.kind == proto.notice_admin_off or n.kind == proto.notice_channel;
+            const bad = n.kind == proto.notice_muted or n.kind == proto.notice_stream_stopped or n.kind == proto.notice_admin_off or n.kind == proto.notice_channel or n.kind == proto.notice_draw_off;
             var nb: [200]u8 = undefined;
             a.toast("{s}", .{i18n.server(n.textSlice(), &nb)}, bad);
         }
@@ -2333,6 +2347,7 @@ pub const App = struct {
         a.n_tile_rects = 0;
         a.n_member_rects = 0;
         a.n_live_rects = 0;
+        a.strokes_drawn = 0;
         a.checkState();
         a.uploadTextures();
 
@@ -3971,6 +3986,8 @@ pub const App = struct {
         if (i_am_owner and c.igSelectable_Bool(if (target.admin) fmtZ("{s}  Tirar o admin###aadmin", .{ic.shield}) else fmtZ("{s}  Dar admin###aadmin", .{ic.shield}), false, 0, v2(w, 0)))
             cl.admin(proto.admin_set_admin, target.id, @intFromBool(!target.admin));
         c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);
+        if (c.igSelectable_Bool(if (target.noDraw()) fmtZ("{s}  Devolver o pincel###adraw", .{ic.pen}) else fmtZ("{s}  Tirar o pincel (apaga os desenhos)###adraw", .{ic.pen}), false, 0, v2(w, 0)))
+            cl.admin(proto.admin_draw, target.id, @intFromBool(target.noDraw()));
         if (c.igSelectable_Bool(fmtZ("{s}  Expulsar da sala###akick", .{ic.ban}), false, 0, v2(w, 0))) cl.admin(proto.admin_kick, target.id, 0);
         if (c.igSelectable_Bool(fmtZ("{s}  Banir (não volta mais)###aban", .{ic.gavel}), false, 0, v2(w, 0))) cl.admin(proto.admin_ban, target.id, 0);
         c.igPopStyleColor(1);
@@ -4458,7 +4475,13 @@ pub const App = struct {
         // traços desenhados por cima (de todo mundo) e o meu, se estiver desenhando aqui
         a.drawStrokes(t, ix, iy, iw, ih, uv0, uv1);
         const drawing = a.draw_tile != null and a.draw_tile.? == t.stream;
-        if (drawing) a.updateDraw(t, over and in_img and on_tile, ix, iy, iw, ih, uv0, uv1, mouse);
+        if (drawing) {
+            // a paleta fica por cima: clicar nela não risca
+            const pr = paletteRect(w, x, y, h);
+            const on_palette = mouse.x >= pr[0] and mouse.x < pr[2] and mouse.y >= pr[1] and mouse.y < pr[3];
+            a.updateDraw(t, over and in_img and on_tile and !on_palette, ix, iy, iw, ih, uv0, uv1, mouse);
+            if (a.client) |dcl| if (a.draw_tile != null) a.drawPalette(dcl, t, pr, w);
+        }
         const cropping = a.crop_tile != null and a.crop_tile.? == t.stream;
         if (cropping) a.updateCrop(over and in_img and on_tile, ix, iy, iw, ih, uv0, uv1, mouse);
         const tool = pointing or drawing or cropping; // o clique é da ferramenta, não do quadro
@@ -4559,8 +4582,11 @@ pub const App = struct {
                 // desenhar por cima (todo mundo vê; some sozinho)
                 c.igSetCursorScreenPos(v2(bx, by));
                 rectFill(d, bx, by, bx + bs, by + bs, if (drawing) col.blurple else col.overlay, S(6));
-                if (iconButton("##draw", ic.pen, bs, col.white, withAlpha(col.blurple, 200), if (drawing) tr("Parar de desenhar (botão direito apaga os seus traços)") else tr("Desenhar por cima: quem assiste e quem transmite veem; some sozinho em alguns segundos"))) {
-                    if (drawing) a.draw_tile = null else {
+                const no_draw = if (a.client) |dcl| a.myNoDraw(dcl) else false;
+                if (iconButton("##draw", ic.pen, bs, if (no_draw) col.faint else col.white, withAlpha(col.blurple, 200), if (no_draw) tr("O admin tirou o seu pincel") else if (drawing) tr("Parar de desenhar (botão direito apaga os seus traços)") else tr("Desenhar por cima: quem assiste e quem transmite veem; some sozinho em alguns segundos"))) {
+                    if (no_draw) {
+                        a.toast("O admin tirou o seu pincel.", .{}, true);
+                    } else if (drawing) a.draw_tile = null else {
                         a.stopTools();
                         a.draw_tile = t.stream;
                     }
@@ -5096,6 +5122,90 @@ pub const App = struct {
     // -------------------------------------------- desenho por cima
 
     const stroke_life_us: u64 = 6_000_000; // o traço some 6 s depois do último ponto
+    const stroke_widths = [4]f32{ 3, 1.8, 6, 16 }; // normal, fina, grossa, marca-texto
+
+    /// Estilo do meu pincel nas flags do desenho (proto.draw_*_shift).
+    fn drawStyle(a: *App) u8 {
+        return (a.cfg.draw_color << proto.draw_color_shift) | (a.cfg.draw_size << proto.draw_size_shift);
+    }
+
+    /// Onde fica a paleta do pincel num quadro (embaixo, no meio).
+    fn paletteRect(w: f32, x: f32, y: f32, h: f32) [4]f32 {
+        const cols: f32 = if (w >= S(700)) 16 else 8;
+        const rows: f32 = if (w >= S(700)) 1 else 2;
+        const sw = S(26);
+        const pw = cols * sw + S(12) + 4 * S(26) + S(12) + 2 * S(30) + S(16);
+        const ph = rows * sw + S(12);
+        const px = x + @max(S(8), (w - pw) / 2);
+        const py = y + h - ph - S(52);
+        return .{ px, py, px + @min(pw, w - S(16)), py + ph };
+    }
+
+    /// A paleta: cores (a primeira = a minha cor), espessuras, mostrar/esconder
+    /// os desenhos dos outros e apagar os meus.
+    fn drawPalette(a: *App, cl: *Client, t: *const Tile, r: [4]f32, w: f32) void {
+        const d = drawList();
+        rectFill(d, r[0], r[1], r[2], r[3], withAlpha(col.bg_dark, 225), S(12));
+        c.ImDrawList_AddRect(d, v2(r[0], r[1]), v2(r[2], r[3]), withAlpha(col.text, 30), S(12) * col.round, S(1), 0);
+        const cols: usize = if (w >= S(700)) 16 else 8;
+        const sw = S(26);
+        const back = c.igGetCursorScreenPos();
+        defer c.igSetCursorScreenPos(back);
+        var x = r[0] + S(6);
+        const y = r[1] + S(6);
+        for (0..16) |i| {
+            const cx = x + @as(f32, @floatFromInt(i % cols)) * sw;
+            const cy = y + @as(f32, @floatFromInt(i / cols)) * sw;
+            c.igSetCursorScreenPos(v2(cx, cy));
+            if (c.igInvisibleButton(fmtZ("##dcol{d}", .{i}).ptr, v2(sw, sw), 0)) {
+                a.cfg.draw_color = @intCast(i);
+                config.save(&a.cfg);
+            }
+            const hov = c.igIsItemHovered(0);
+            const ctr = v2(cx + sw / 2, cy + sw / 2);
+            const colr = if (i == 0) avatarColor(cl.my_id) else rgbRuntime(proto.draw_colors[i]);
+            if (a.cfg.draw_color == i) c.ImDrawList_AddCircle(d, ctr, S(10.5), col.white, 0, S(2), 0);
+            c.ImDrawList_AddCircleFilled(d, ctr, if (hov) S(8.5) else S(7.5), colr, 0);
+            c.ImDrawList_AddCircle(d, ctr, S(7.5), withAlpha(col.black, 90), 0, S(1), 0);
+            if (i == 0) {
+                const ts = textSizeF(font_bold, 9, "A");
+                drawTextF(d, font_bold, 9, v2(ctr.x - ts.x / 2, ctr.y - ts.y / 2), col.white, "A");
+                if (hov) tooltipText(tr("A minha cor (a do meu avatar)"));
+            }
+        }
+        x += @as(f32, @floatFromInt(cols)) * sw + S(6);
+        rectFill(d, x, r[1] + S(8), x + S(1), r[3] - S(8), withAlpha(col.text, 30), 0);
+        x += S(6);
+        const my_col = if (a.cfg.draw_color == 0) avatarColor(cl.my_id) else rgbRuntime(proto.draw_colors[a.cfg.draw_color]);
+        const size_tips = [4][:0]const u8{ tr("Traço normal"), tr("Traço fino"), tr("Traço grosso"), tr("Marca-texto") };
+        const ym = (r[1] + r[3]) / 2;
+        for (0..4) |i| {
+            const sx = x + @as(f32, @floatFromInt(i)) * S(26);
+            c.igSetCursorScreenPos(v2(sx, ym - S(13)));
+            if (c.igInvisibleButton(fmtZ("##dsize{d}", .{i}).ptr, v2(S(26), S(26)), 0)) {
+                a.cfg.draw_size = @intCast(i);
+                config.save(&a.cfg);
+            }
+            if (c.igIsItemHovered(0)) tooltipText(size_tips[i]);
+            if (a.cfg.draw_size == i) rectFill(d, sx + S(2), ym - S(11), sx + S(24), ym + S(11), withAlpha(col.text, 30), S(6));
+            const rad = @min(S(9), S(stroke_widths[i]) / 2 + S(1));
+            c.ImDrawList_AddCircleFilled(d, v2(sx + S(13), ym), rad, if (i == 3) withAlpha(my_col, 110) else my_col, 0);
+        }
+        x += 4 * S(26) + S(6);
+        rectFill(d, x, r[1] + S(8), x + S(1), r[3] - S(8), withAlpha(col.text, 30), 0);
+        x += S(6);
+        c.igSetCursorScreenPos(v2(x, ym - S(15)));
+        if (iconButton("##dothers", if (a.cfg.show_drawings) ic.eye else ic.eye_slash, S(30), if (a.cfg.show_drawings) col.white else col.yellow, col.hover, if (a.cfg.show_drawings) tr("Esconder os desenhos dos outros (só pra você)") else tr("Mostrar os desenhos dos outros"))) {
+            a.cfg.show_drawings = !a.cfg.show_drawings;
+            config.save(&a.cfg);
+        }
+        x += S(32);
+        c.igSetCursorScreenPos(v2(x, ym - S(15)));
+        if (iconButton("##dclear", ic.eraser, S(30), col.white, col.hover, tr("Apagar os meus traços (ou botão direito)"))) {
+            cl.addDraw(cl.my_id, t.ptr_stream, proto.draw_clear, &.{});
+            cl.sendDraw(t.ptr_stream, proto.draw_clear, &.{});
+        }
+    }
 
     fn strokePoint(p: [2]u16, ix: f32, iy: f32, iw: f32, ih: f32, uv0: c.ImVec2_c, uv1: c.ImVec2_c) c.ImVec2_c {
         const u = @as(f32, @floatFromInt(p[0])) / 65535.0;
@@ -5119,11 +5229,19 @@ pub const App = struct {
             const alpha: u8 = if (age < fade_from) 230 else @intCast(230 * (stroke_life_us - age) / 1_000_000);
             // redesenha quando começar a sumir (e durante o sumiço)
             next = @min(next, if (age < fade_from) @as(f64, @floatFromInt(fade_from - age)) / 1e6 else 0.04);
+            // desenhos dos outros escondidos (só do meu lado)
+            if (!a.cfg.show_drawings and st.from != cl.my_id) continue;
             for (st.pts[0..st.n], 0..) |p, i| pts[i] = strokePoint(p, ix, iy, iw, ih, uv0, uv1);
-            const color = withAlpha(avatarColor(st.from), alpha);
+            const ci = st.style >> proto.draw_color_shift;
+            const size = (st.style >> proto.draw_size_shift) & 3;
+            const base = if (ci == 0) avatarColor(st.from) else rgbRuntime(proto.draw_colors[ci]);
+            // marca-texto: grosso e meio transparente
+            const color = withAlpha(base, if (size == 3) alpha / 3 else alpha);
+            const thick = S(stroke_widths[size]);
+            a.strokes_drawn += 1;
             if (st.n == 1) {
-                c.ImDrawList_AddCircleFilled(d, pts[0], S(2.5), color, 0);
-            } else c.ImDrawList_AddPolyline(d, &pts, st.n, color, S(3), 0);
+                c.ImDrawList_AddCircleFilled(d, pts[0], thick * 0.8, color, 0);
+            } else c.ImDrawList_AddPolyline(d, &pts, st.n, color, thick, 0);
         }
         if (next != std.math.inf(f64)) redrawIn(next);
     }
@@ -5131,6 +5249,12 @@ pub const App = struct {
     fn updateDraw(a: *App, t: *const Tile, inside: bool, ix: f32, iy: f32, iw: f32, ih: f32, uv0: c.ImVec2_c, uv1: c.ImVec2_c, mouse: c.ImVec2_c) void {
         const cl = a.client orelse return;
         const now = sync.nowUs();
+        // o admin tirou o pincel: nada de desenhar
+        if (a.myNoDraw(cl)) {
+            a.draw_tile = null;
+            a.draw_active = false;
+            return;
+        }
         // botão direito: apaga os meus traços nessa transmissão
         if (inside and c.igIsMouseClicked_Bool(1, false)) {
             cl.addDraw(cl.my_id, t.ptr_stream, proto.draw_clear, &.{});
@@ -5154,7 +5278,7 @@ pub const App = struct {
         }
         // manda em pedacinhos (quem assiste vê o traço nascendo)
         if (a.draw_n > 0 and (a.draw_n == a.draw_pts.len or now - a.draw_sent_us > 33_000 or !down)) {
-            const flags: u8 = if (a.draw_new) proto.draw_new else 0;
+            const flags: u8 = (if (a.draw_new) proto.draw_new else 0) | a.drawStyle();
             cl.addDraw(cl.my_id, t.ptr_stream, flags, a.draw_pts[0..a.draw_n]);
             cl.sendDraw(t.ptr_stream, flags, a.draw_pts[0..a.draw_n]);
             // o próximo pedaço continua do último ponto (sem buraco no traço)
@@ -6202,6 +6326,15 @@ pub const App = struct {
         return y0 + h;
     }
 
+    /// O admin tirou o meu pincel? (a bandeira vem na lista de membros)
+    fn myNoDraw(a: *App, cl: *Client) bool {
+        _ = a;
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        for (cl.members.items) |*m| if (m.id == cl.my_id) return m.noDraw();
+        return false;
+    }
+
     /// Comandos do chat (como no IRC): /join canal (ou /j, /canal, /entrar)
     /// e /canais. true = era comando (não vai pro chat).
     fn chatCommand(a: *App, cl: *Client, msg: []const u8) bool {
@@ -6635,6 +6768,7 @@ pub const App = struct {
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         if (c.igCheckbox(tr("Efeito CRT (linhas de tela antiga; o vídeo fica de fora)###crt"), &a.cfg.crt)) config.save(&a.cfg);
         if (c.igCheckbox(tr("Animações na tela inicial (param sozinhas com o telinha fora de foco)###anim"), &a.cfg.animations)) config.save(&a.cfg);
+        if (c.igCheckbox(tr("Mostrar os desenhos dos outros por cima das transmissões###showdraw"), &a.cfg.show_drawings)) config.save(&a.cfg);
         c.igPopStyleColor(1);
     }
 
@@ -7766,10 +7900,10 @@ pub const App = struct {
         try w.print(",\"crop\":[{d:.3},{d:.3},{d:.3},{d:.3}],\"strokes\":[", .{ a.crop[0], a.crop[1], a.crop[2], a.crop[3] });
         if (a.client) |cl| {
             cl.mutex.lock();
-            for (cl.strokes.items, 0..) |st, i| try w.print("{s}{{\"from\":{d},\"stream\":{d},\"n\":{d}}}", .{ if (i > 0) "," else "", st.from, st.stream, st.n });
+            for (cl.strokes.items, 0..) |st, i| try w.print("{s}{{\"from\":{d},\"stream\":{d},\"n\":{d},\"color\":{d},\"size\":{d}}}", .{ if (i > 0) "," else "", st.from, st.stream, st.n, st.style >> proto.draw_color_shift, (st.style >> proto.draw_size_shift) & 3 });
             cl.mutex.unlock();
         }
-        try w.writeAll("]");
+        try w.print("],\"strokes_drawn\":{d},\"show_drawings\":{},\"draw_color\":{d},\"draw_size\":{d},\"drawing\":{}", .{ a.strokes_drawn, a.cfg.show_drawings, a.cfg.draw_color, a.cfg.draw_size, a.draw_tile != null });
         try w.print(",\"pctest\":{f},\"crash_pending\":{},\"crash_prompt\":{}", .{ s(@tagName(pctest.getState())), crash.pending(), a.crash_prompt });
         var dlb: [512]u8 = undefined;
         try w.print(",\"debug_on\":{},\"debug_size\":{d},\"debug_send\":{f},\"debug_result\":{f}", .{ debuglog.on(), debuglog.fileSize(), s(@tagName(debuglog.sendState())), s(debuglog.sendResult(&dlb)) });
