@@ -103,6 +103,7 @@ voltam depois de reiniciar.
 ## Identidade do servidor
 
 O servidor guarda uma chave fixa (`--chave ARQUIVO` / `TELINHA_CHAVE`; por padrão
+`servidor.key` no `StateDirectory=` do systemd,
 `/var/lib/telinha/servidor.key` rodando como root, senão
 `~/.config/telinha/servidor.key`), criada na primeira vez com permissão 0600. A
 impressão aparece no log ao subir e vai no convite

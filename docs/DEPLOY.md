@@ -104,6 +104,7 @@ by default `estado.txt` next to the key) and come back after a restart.
 ## Server identity
 
 The server keeps a fixed key (`--chave FILE` / `TELINHA_CHAVE`; by default
+`servidor.key` in systemd's `StateDirectory=`,
 `/var/lib/telinha/servidor.key` when running as root, otherwise
 `~/.config/telinha/servidor.key`), created on the first run with mode 0600. Its
 fingerprint is printed at startup and goes in invites

@@ -74,7 +74,12 @@ fn loadKey(given: []const u8, used: *[400]u8) ?[32]u8 {
     var pb: [400]u8 = undefined;
     const path: [:0]const u8 = if (given.len > 0)
         std.fmt.bufPrintZ(&pb, "{s}", .{given}) catch return null
-    else if (getuid() == 0) blk: {
+    else if (getenv("STATE_DIRECTORY")) |sd| blk: {
+        // systemd com StateDirectory= (o DynamicUser não tem casa nem é root)
+        const dirs = std.mem.span(sd);
+        const dir = dirs[0 .. std.mem.indexOfScalar(u8, dirs, ':') orelse dirs.len];
+        break :blk std.fmt.bufPrintZ(&pb, "{s}/servidor.key", .{dir}) catch return null;
+    } else if (getuid() == 0) blk: {
         _ = mkdir("/var/lib/telinha", 0o750);
         break :blk "/var/lib/telinha/servidor.key";
     } else blk: {
