@@ -122,6 +122,18 @@ fn slowEncodeUs(w: u32, h: u32) ?u64 {
     const ms = S.ms orelse return null;
     return ms * 1000 * w * h / (1920 * 1080);
 }
+/// Teste (TELINHA_TESTE_CONGESTIONADO=1): a rede até o servidor sempre congestionada.
+fn testCongested() bool {
+    const S = struct {
+        var on = false;
+        var read = false;
+    };
+    if (!S.read) {
+        S.read = true;
+        S.on = std.c.getenv("TELINHA_TESTE_CONGESTIONADO") != null;
+    }
+    return S.on;
+}
 pub const effectiveHeight = autoq.effectiveHeight;
 pub const AutoQuality = autoq.AutoQuality;
 
@@ -659,14 +671,18 @@ const Pipeline = struct {
         }
         const dev = c.cap_d3d_device(src.screen);
         // o encoder aceita a textura? (senão segue tudo pela CPU, como antes)
-        var e2: [256]u8 = undefined;
+        var e2: [256]u8 = [_]u8{0} ** 256;
+        var why: []const u8 = "abriu, mas só pela CPU";
         const ok = if (codec.HwEncoder.init(.{ .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000, .d3d_device = dev }, &e2)) |probe| blk: {
             var pr = probe;
             defer pr.deinit();
             break :blk pr.acceptsD3d();
-        } else |_| false;
+        } else |_| blk: {
+            why = std.mem.sliceTo(&e2, 0);
+            break :blk false;
+        };
         if (!ok) {
-            if (debugEnabled()) std.debug.print("[telinha] o encoder do Media Foundation não aceitou a textura: tudo pela CPU\n", .{});
+            if (debugEnabled()) std.debug.print("[telinha] o encoder do Media Foundation não aceitou a textura ({s}): tudo pela CPU\n", .{why});
             c.cap_gpu_disable(src.screen);
             return;
         }
@@ -1257,11 +1273,16 @@ const Pipeline = struct {
         var key_misses: u8 = 0;
         var hw_ignores_idr = false;
         var watched_until_ms: u64 = sync.nowMs() + 3000; // começo: anuncia e manda o primeiro IDR
+        // IDR adiado pela rede congestionada: tenta de novo no próximo quadro
+        // ou daqui a pouco (devolver o pedido pra fila fazia o laço girar sem
+        // parar, um núcleo inteiro, até a rede folgar)
+        var key_later = false;
+        var key_retry_us: u64 = 0;
 
         while (true) {
             // espera um quadro novo (ou um pedido de IDR)
             p.mutex.lock();
-            while (p.ready == null and !p.quit and !s.client.keyreq[kind].load(.acquire)) p.cond.timedWait(&p.mutex, 50);
+            while (p.ready == null and !p.quit and !s.client.keyreq[kind].load(.acquire) and !(key_later and sync.nowUs() >= key_retry_us)) p.cond.timedWait(&p.mutex, 50);
             if (p.quit or (teste_parar_us != null and sync.nowUs() > teste_parar_us.?)) {
                 p.mutex.unlock();
                 return;
@@ -1269,7 +1290,8 @@ const Pipeline = struct {
             // clipe da própria transmissão: um IDR a cada 20 s (o clipe começa num)
             const clip_key_us = @min(20_000_000, @as(u64, clip.keep_secs.load(.monotonic)) * 500_000);
             const clip_key = s.clip != null and !s.idle.load(.acquire) and last_key_us != 0 and sync.nowUs() - last_key_us > clip_key_us;
-            const key = s.client.keyreq[kind].swap(false, .acq_rel) or clip_key;
+            const key = s.client.keyreq[kind].swap(false, .acq_rel) or clip_key or key_later;
+            key_later = false;
             const idx: ?usize = if (p.ready) |r| r else if (key) p.last else null;
             p.ready_was_null = p.ready == null;
             if (p.ready != null) p.ready = null;
@@ -1295,7 +1317,7 @@ const Pipeline = struct {
             // controle de banda: atraso de ponta a ponta crescendo = o
             // caminho até o servidor não está dando conta
             const up = s.client.uplink(kind);
-            if (enc != null and bw.congested(.{
+            if (enc != null and testCongested() or enc != null and bw.congested(.{
                 .now_us = sync.nowUs(),
                 .excess_us = up.excess_us,
                 .key_allowance_us = up.key_allowance_us,
@@ -1304,7 +1326,10 @@ const Pipeline = struct {
             })) {
                 if (bw.takeChange()) |b| enc.?.setBitrate(b);
                 _ = p.timing.skipped.fetchAdd(1, .monotonic);
-                if (key) s.client.keyreq[kind].store(true, .release);
+                if (key) {
+                    key_later = true;
+                    key_retry_us = sync.nowUs() + 100_000;
+                }
                 p.doneWith(i, false);
                 continue;
             }

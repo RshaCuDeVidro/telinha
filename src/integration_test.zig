@@ -2213,3 +2213,11 @@ test "canais: senha, trava, tópico, admin leva alguém; o que é fixo sobrevive
     defer bia2.close();
     try testing.expectEqual(proto.deny_banned, try bia2.denied());
 }
+
+test "nome: convite colado no campo do nome não vira o nome (a senha ia aparecer)" {
+    try std.testing.expectEqualStrings("anônimo", Server.safeName("telinha://168.75.82.0:7777#4byx"));
+    try std.testing.expectEqualStrings("anônimo", Server.safeName("  TELINHA://x:1!abc#pw "));
+    try std.testing.expectEqualStrings("anônimo", Server.safeName("   "));
+    try std.testing.expectEqualStrings("Ana", Server.safeName(" Ana "));
+    try std.testing.expectEqualStrings("a" ** 32, Server.safeName("a" ** 40));
+}

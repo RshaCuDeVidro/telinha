@@ -923,7 +923,7 @@ def pincel():
 
 @test
 def convite_colado():
-    """Convite copiado (em outro app) já aparece preenchido em 'Entrar numa sala' ao abrir o telinha."""
+    """Convite copiado (em outro app) já aparece preenchido em 'Entrar numa sala' ao abrir o telinha, com a impressão do servidor guardada; convite colado no campo do nome vai pro endereço (a senha não vira o nome)."""
     with Session("colar") as s:
         p = port()
         srv = s.app("srv", 91, ["--nome", "Dono", "--criar", str(p), "--senha", "abc123"])
@@ -933,8 +933,23 @@ def convite_colado():
         a.click("##invite")
         a.wait(lambda st: invite_addrs(st["clipboard"], "abc123") == [f"127.0.0.1:{p}"], 3, "o convite copiado")
         # outro telinha abre na mesma tela (mesma área de transferência)
+        inv = a.state()["clipboard"]
+        fp = inv.split("!")[1].split("#")[0]
         b = s.app("b", 92, [])
-        b.wait(lambda st: st["cfg"]["join_addr"] == f"127.0.0.1:{p}" and st["cfg"]["join_pass"] == "abc123", 5, "o convite aparecer preenchido")
+        b.wait(lambda st: st["cfg"]["join_addr"] == f"127.0.0.1:{p}" and st["cfg"]["join_pass"] == "abc123" and st["cfg"]["join_fp"] == fp, 5, "o convite aparecer preenchido (com a impressão)")
+        b.click("Entrar##go")
+        b.wait(lambda st: st["status"] == "connected" and st["id_state"] == "verified", 10, "entrar conferindo a impressão")
+        # convite colado no campo do nome: sai do nome e vai pro endereço
+        c = s.app("c", 93, [])
+        c.wait(lambda st: st["screen"] == "home", 10, "a tela inicial")
+        c.fill("##name", f"telinha://127.0.0.1:{p}#x")
+        c.key("Tab")
+        c.wait(lambda st: st["cfg"]["name"] == "" and st["cfg"]["join_addr"] == f"127.0.0.1:{p}" and st["cfg"]["join_pass"] == "x", 5, "o convite sair do nome e ir pro endereço")
+        # não coube inteiro (o campo é curto): a senha cortada não é usada
+        c.fill("##addr", "")
+        c.fill("##name", f"telinha://127.0.0.1:{p}#abcdefgh")
+        c.key("Tab")
+        c.wait(lambda st: st["cfg"]["name"] == "" and st["cfg"]["join_addr"] == "" and st["cfg"]["join_pass"] == "x", 5, "o nome limpo sem usar o convite cortado")
 
 
 @test
@@ -1904,6 +1919,24 @@ def qualidade_automatica():
         ana.wait(lambda st: not st["cfg"]["auto_quality"], 3, "desligar a qualidade automática")
         settings_click(ana, "Fechar")
         ana.wait(lambda st: st["sharer"]["auto_cap"] == 0 and st["sharer"]["h"] > 540, 15, "voltar pra resolução original")
+
+
+@test
+def congestionado_sem_girar():
+    """Rede congestionada com alguém pedindo IDR: o encoder espera o próximo quadro em vez de girar sem parar (antes: centenas de milhares de quadros 'pulados' e um núcleo a 100%)."""
+    with Session("congest") as s:
+        p = port()
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"], extra_env={"TELINHA_TESTE_CONGESTIONADO": "1"}, config={"debug_log": 1})
+        bia = s.app("bia", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        bia.member_id("Ana")
+        time.sleep(12)
+        logf = os.path.join(ana.cfg, "telinha", "telinha-debug.log")
+        # a linha de CPU lista só as threads que gastam: fora dela = quase nada
+        lines = [l for l in open(logf, encoding="utf-8", errors="replace").read().splitlines() if "] cpu app=" in l]
+        enc = [int(m.group(1)) if (m := re.search(r"\bencoder=(\d+)%", l)) else 0 for l in lines]
+        log(f"CPU da thread do encoder (a cada 2 s): {enc}")
+        expect(len(enc) >= 3, f"poucas linhas de CPU no log: {enc}")
+        expect(max(enc[1:]) < 40, f"o encoder girou sem parar: {enc}")
 
 
 @test

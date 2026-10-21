@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <audiopolicy.h>
+#include <audioclient.h>
 #include <tlhelp32.h>
 #include <stdio.h>
 #include <string.h>
@@ -15,6 +16,7 @@ static const GUID G_CLSID_MMDeviceEnumerator = {0xbcde0395, 0xe52f, 0x467c, {0x8
 static const GUID G_IID_IMMDeviceEnumerator = {0xa95664d2, 0x9614, 0x4f35, {0xa7, 0x46, 0xde, 0x8d, 0xb6, 0x36, 0x17, 0xe6}};
 static const GUID G_IID_IAudioSessionManager2 = {0x77aa99a0, 0x1bd6, 0x484f, {0x8b, 0xc7, 0x2c, 0x65, 0x4c, 0x9a, 0x9b, 0x6f}};
 static const GUID G_IID_IAudioSessionControl2 = {0xbfb7ff88, 0x7239, 0x4fc9, {0x8f, 0xa2, 0x07, 0xc9, 0x50, 0xbe, 0x9c, 0x6d}};
+static const GUID G_IID_IAudioClient = {0x1cb9ad4c, 0xdbfa, 0x4c32, {0xb1, 0x78, 0xc2, 0xf5, 0x68, 0xa7, 0x03, 0xb2}};
 
 // Nome do executável sem pasta e sem ".exe" ("chrome", "Spotify").
 static int process_name(DWORD pid, char *out, int cap) {
@@ -177,4 +179,64 @@ uint32_t audio_app_pid_by_name(const char *name) {
     for (int i = 0; i < n; i++)
         if (_stricmp(apps[i].name, name) == 0) return apps[i].pid;
     return 0;
+}
+
+// A captura do som não abriu: testa o loopback direto no WASAPI, passo a
+// passo, e escreve no log o formato da saída e o código de cada tentativa (o
+// miniaudio só diz "Invalid argument"). Só roda quando dá errado, uma vez.
+void audio_loopback_probe(void) {
+    static int done = 0;
+    if (done) return;
+    done = 1;
+    HRESULT co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    IMMDeviceEnumerator *en = NULL;
+    IMMDevice *dev = NULL;
+    HRESULT hr = CoCreateInstance(&G_CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &G_IID_IMMDeviceEnumerator, (void **)&en);
+    if (SUCCEEDED(hr)) hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(en, eRender, eConsole, &dev);
+    if (FAILED(hr)) {
+        fprintf(stderr, "[telinha] teste do som: sem saída padrão (0x%08lx)\n", (unsigned long)hr);
+        goto out;
+    }
+    DWORD state = 0;
+    IMMDevice_GetState(dev, &state);
+    static const struct {
+        DWORD flags;
+        const char *name;
+    } tries[] = {
+        {AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, "loopback+evento"},
+        {AUDCLNT_STREAMFLAGS_LOOPBACK, "loopback"},
+        {AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, "loopback+evento+48k"},
+    };
+    for (int i = 0; i < 3; i++) {
+        IAudioClient *ac = NULL;
+        WAVEFORMATEX *mix = NULL;
+        hr = IMMDevice_Activate(dev, &G_IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&ac);
+        if (SUCCEEDED(hr)) hr = IAudioClient_GetMixFormat(ac, &mix);
+        if (FAILED(hr)) {
+            fprintf(stderr, "[telinha] teste do som: a saída não abre (estado %lu, 0x%08lx)\n", (unsigned long)state, (unsigned long)hr);
+            if (ac) IAudioClient_Release(ac);
+            break;
+        }
+        if (i == 0)
+            fprintf(stderr, "[telinha] teste do som: saída padrão estado %lu, formato 0x%04x %u canais %lu Hz %u bits\n", (unsigned long)state,
+                    mix->wFormatTag, mix->nChannels, (unsigned long)mix->nSamplesPerSec, mix->wBitsPerSample);
+        WAVEFORMATEX want = *mix;
+        if (tries[i].flags & AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM) {
+            want.wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
+            want.nChannels = 2;
+            want.nSamplesPerSec = 48000;
+            want.wBitsPerSample = 32;
+            want.nBlockAlign = 8;
+            want.nAvgBytesPerSec = 48000 * 8;
+            want.cbSize = 0;
+        }
+        hr = IAudioClient_Initialize(ac, AUDCLNT_SHAREMODE_SHARED, tries[i].flags, 2000000, 0, (tries[i].flags & AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM) ? &want : mix, NULL);
+        fprintf(stderr, "[telinha] teste do som: %s -> 0x%08lx%s\n", tries[i].name, (unsigned long)hr, SUCCEEDED(hr) ? " (abriu)" : "");
+        CoTaskMemFree(mix);
+        IAudioClient_Release(ac);
+    }
+out:
+    if (dev) IMMDevice_Release(dev);
+    if (en) IMMDeviceEnumerator_Release(en);
+    if (SUCCEEDED(co)) CoUninitialize();
 }

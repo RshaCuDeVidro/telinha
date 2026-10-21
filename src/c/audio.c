@@ -143,6 +143,7 @@ static int start(struct audio_dev *d, ma_device_config *cfg, char *err, int errl
 #ifdef _WIN32
 // audio_apps_win.c
 uint32_t audio_app_pid_by_name(const char *name);
+void audio_loopback_probe(void);
 #endif
 
 audio_dev *audio_capture_open(audio_capture_fn fn, void *user, const char *app, uint32_t pid, const char *exclude, char *err, int errlen) {
@@ -183,6 +184,7 @@ audio_dev *audio_capture_open(audio_capture_fn fn, void *user, const char *app, 
         d->hears_self = 1;
         if (start(d, &cfg, err, errlen) < 0) {
             audio_close(d);
+            audio_loopback_probe();
             return NULL;
         }
     }
@@ -300,6 +302,16 @@ static void discard(void *user, const float *samples, int frames) {
 }
 #endif
 
+#ifdef _WIN32
+// Número do build do Windows (o loopback por processo existe a partir do 20348).
+static unsigned long win_build(void) {
+    typedef LONG(WINAPI * rtl_get_version)(OSVERSIONINFOW *);
+    rtl_get_version f = (rtl_get_version)(void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion");
+    OSVERSIONINFOW v = {sizeof v};
+    return f && f(&v) == 0 ? v.dwBuildNumber : 0;
+}
+#endif
+
 int audio_describe(char *out, int cap) {
     if (cap <= 0) return -1;
     out[0] = 0;
@@ -320,7 +332,9 @@ int audio_describe(char *out, int cap) {
     snprintf(out, cap, "%s | saída padrão: %s (%u no total) | microfone padrão: %s (%u no total)%s",
              ma_get_backend_name(ctx.backend), out_name, (unsigned)npb, in_name, (unsigned)ncp,
 #ifdef _WIN32
-             audio_process_loopback_ok() ? " | captura por programa: sim" : " | captura por programa: não (Windows antigo)"
+             audio_process_loopback_ok() ? " | captura por programa: sim"
+             : win_build() >= 20348      ? " | captura por programa: não (o Windows recusou)"
+                                         : " | captura por programa: não (Windows antigo)"
 #else
              ""
 #endif

@@ -1535,14 +1535,22 @@ pub const Server = struct {
         return false;
     }
 
+    /// O nome que vai pra sala: sem espaço nas pontas, até 32 bytes. Vazio, ou
+    /// um convite colado no campo do nome (a senha ia aparecer pra todo mundo),
+    /// vira "anônimo".
+    pub fn safeName(raw_name: []const u8) []const u8 {
+        const trimmed = std.mem.trim(u8, raw_name, " \t\r\n");
+        if (trimmed.len == 0 or std.ascii.startsWithIgnoreCase(trimmed, "telinha://")) return "anônimo";
+        return trimmed[0..@min(trimmed.len, 32)];
+    }
+
     fn join(s: *Server, cn: *Conn, raw_name: []const u8, token: []const u8, want_chan: []const u8) !void {
         s.mutex.lock();
         defer s.mutex.unlock();
         // a sala fechou enquanto essa conexão fazia o handshake
         if (s.stopped.load(.acquire)) return error.Stopped;
         const is_owner = s.admin_token_len > 0 and std.mem.eql(u8, token, s.admin_token[0..s.admin_token_len]);
-        const trimmed = std.mem.trim(u8, raw_name, " \t\r\n");
-        const base = if (trimmed.len == 0) "anônimo" else trimmed[0..@min(trimmed.len, 32)];
+        const base = safeName(raw_name);
         if (!is_owner) {
             if (s.banned(cn, base)) {
                 s.log("{s} tentou entrar, mas foi banido", .{base});

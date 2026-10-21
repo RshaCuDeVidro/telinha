@@ -984,16 +984,21 @@ pub const App = struct {
     }
 
     fn toast(a: *App, comptime f: []const u8, args: anytype, err: bool) void {
+        var t: Toast = .{ .text = undefined, .len = 0, .until = c.igGetTime() + 5.0, .err = err };
+        const s = i18n.bufPrint(&t.text, f, args) catch t.text[0..0];
+        t.len = s.len;
+        debuglog.line("aviso{s}: {s}", .{ if (err) " (erro)" else "", s });
+        // o mesmo aviso de novo (clicou várias vezes): renova o que já está na tela
+        for (a.toasts[0..a.n_toasts]) |*o| if (std.mem.eql(u8, o.text[0..o.len], s)) {
+            o.until = t.until;
+            return;
+        };
         if (a.n_toasts == a.toasts.len) {
             std.mem.copyForwards(Toast, a.toasts[0 .. a.toasts.len - 1], a.toasts[1..]);
             a.n_toasts -= 1;
         }
-        var t: Toast = .{ .text = undefined, .len = 0, .until = c.igGetTime() + 5.0, .err = err };
-        const s = i18n.bufPrint(&t.text, f, args) catch t.text[0..0];
-        t.len = s.len;
         a.toasts[a.n_toasts] = t;
         a.n_toasts += 1;
-        debuglog.line("aviso{s}: {s}", .{ if (err) " (erro)" else "", s });
     }
 
     // ------------------------------------------------------- log de depuração
@@ -1121,7 +1126,7 @@ pub const App = struct {
 
     fn myName(a: *App) []const u8 {
         const n = std.mem.trim(u8, config.getStr(&a.cfg.name), " ");
-        return if (n.len == 0) tr("anônimo") else n;
+        return if (n.len == 0 or std.ascii.startsWithIgnoreCase(n, "telinha://")) tr("anônimo") else n;
     }
 
     fn joinRoom(a: *App) void {
@@ -2341,7 +2346,10 @@ pub const App = struct {
             const cap = s.auto_cap.load(.acquire);
             if (cap != a.auto_cap_seen) {
                 const from = s.auto_from.load(.acquire);
-                if (cap != 0) {
+                if (cap != 0 and cap > from) {
+                    // subindo de volta aos poucos (antes dizia "não estava dando conta")
+                    a.toast("Folgou: a transmissão subiu pra {d}p.", .{cap}, false);
+                } else if (cap != 0) {
                     a.toast("O PC não estava dando conta de {d}p no fps escolhido: transmitindo em {d}p (volta sozinho quando folgar).", .{ from, cap }, false);
                 } else a.toast("Folgou: a transmissão voltou pra resolução escolhida.", .{}, false);
                 debuglog.line("qualidade automática: {d}p -> {d}p (0 = a escolhida)", .{ from, cap });
@@ -2497,13 +2505,41 @@ pub const App = struct {
         if (std.mem.eql(u8, txt, a.pasted[0..a.pasted_len])) return; // esse já foi colado
         @memcpy(a.pasted[0..txt.len], txt);
         a.pasted_len = txt.len;
+        a.takeInvite(txt);
+        a.home_error_len = 0;
+        a.paste_hint_until = c.igGetTime() + 8;
+    }
+
+    /// Põe um convite nos campos de entrar (o endereço à vista; senha, canal e
+    /// impressão do servidor guardados).
+    fn takeInvite(a: *App, txt: []const u8) void {
         const inv = connect_mod.splitInvite(txt);
         config.setStr(&a.cfg.join_addr, inv.addrs);
         config.setStr(&a.cfg.join_pass, inv.password orelse "");
         config.setStr(&a.cfg.join_channel, inv.channel orelse "");
+        config.setStr(&a.cfg.join_fp, inv.fingerprint orelse "");
+        config.setStr(&a.cfg.join_fp_for, if (inv.fingerprint != null) inv.addrs else "");
         a.home_tab = 0;
-        a.home_error_len = 0;
-        a.paste_hint_until = c.igGetTime() + 8;
+    }
+
+    /// Convite colado no campo do nome (a senha ia virar o nome, à vista de
+    /// todo mundo): vai pro endereço e o nome fica vazio.
+    fn nameIsInvite(a: *App) void {
+        if (c.igIsItemActive()) return; // ainda digitando: confere quando sair do campo
+        const name = std.mem.trim(u8, std.mem.sliceTo(&a.cfg.name, 0), " \t\r\n");
+        if (!std.ascii.startsWithIgnoreCase(name, "telinha://")) return;
+        // o campo do nome é curto: se o convite não coube inteiro, não dá pra usar
+        // (o campo usa name.len - 1 bytes com o zero: cheio = pode ter cortado;
+        // aí vale o da área de transferência, se for o mesmo convite inteiro)
+        const len = std.mem.indexOfScalar(u8, &a.cfg.name, 0) orelse a.cfg.name.len;
+        var full: []const u8 = if (len < a.cfg.name.len - 2) name else "";
+        if (full.len == 0) if (@as(?[*:0]const u8, c.glfwGetClipboardString(a.window))) |cb| {
+            const t = std.mem.trim(u8, std.mem.span(cb), " \t\r\n");
+            if (std.mem.startsWith(u8, t, name)) full = t;
+        };
+        if (full.len > 0) a.takeInvite(full);
+        config.setStr(&a.cfg.name, "");
+        a.toast("Isso é o convite: ele vai no endereço da sala. Escolha um nome.", .{}, true);
     }
 
     /// Tela inicial: em janela larga, uma vitrine animada (uma "telinha" com
@@ -2822,6 +2858,7 @@ pub const App = struct {
 
         fieldLabel("SEU NOME");
         _ = iconField(d, "##name", ic.users, "como a galera vai te ver", a.cfg.name[0 .. a.cfg.name.len - 1], inner, false, accent, ck);
+        a.nameIsInvite();
         c.igDummy(v2(0, S(8)));
 
         var go = false;
@@ -8302,9 +8339,9 @@ pub const App = struct {
             a.home_tab, a.show_advanced, a.own_tunnel_open, a.chat_visible, a.side_visible, a.chat_unread,
         });
         const cf = &a.cfg;
-        try w.print(",\"cfg\":{{\"name\":{f},\"join_addr\":{f},\"join_pass\":{f},\"room_name\":{f},\"host_pass\":{f},\"port\":{f},\"public_addr\":{f}", .{
+        try w.print(",\"cfg\":{{\"name\":{f},\"join_addr\":{f},\"join_pass\":{f},\"room_name\":{f},\"host_pass\":{f},\"port\":{f},\"public_addr\":{f},\"join_fp\":{f}", .{
             s(config.getStr(&cf.name)),      s(config.getStr(&cf.join_addr)),    s(config.getStr(&cf.join_pass)),   s(config.getStr(&cf.room_name)),
-            s(config.getStr(&cf.host_pass)), s(std.mem.sliceTo(&a.port_buf, 0)), s(config.getStr(&cf.public_addr)),
+            s(config.getStr(&cf.host_pass)), s(std.mem.sliceTo(&a.port_buf, 0)), s(config.getStr(&cf.public_addr)), s(config.getStr(&cf.join_fp)),
         });
         try w.print(",\"fps\":{d},\"quality\":{d},\"mode\":{d},\"resolution\":{d},\"cursor\":{},\"audio\":{},\"hardware\":{},\"stats_always\":{},\"show_chat\":{}", .{
             cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.stats_always, cf.show_chat,

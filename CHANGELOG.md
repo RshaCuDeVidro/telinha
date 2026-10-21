@@ -146,6 +146,25 @@ Talks to 3.1 (the new messages are ignored by older apps and servers).
   every 5 s, the sound setup at start (backend, output, default mic, whether a
   single program can be captured), which Media Foundation encoder opened (and
   which refused), why the mic turned on/off and why a stream stopped.
+- **Debug log on Windows**: no longer writes over the start of the previous
+  runs' log (the file ended up with pieces of two sessions), and messages from
+  the C code and libraries (miniaudio, encoder, capture) finally make it in: in
+  a windowed program they were lost. When sound capture fails, the log gets a
+  step-by-step WASAPI test (output format and each attempt's code); why the
+  encoder refused the texture is logged too.
+- **An invite pasted in the name field** goes to the room address (the password
+  used to become your name, visible to everyone); the server also turns such a
+  name into "anonymous", even from older apps. The invite picked up from the
+  clipboard keeps the server fingerprint (it used to keep only address and
+  password).
+- **Congested network with someone asking for a key frame**: the encoder kept
+  spinning (a whole core) until the network cleared; now it waits for the next
+  frame.
+- **Auto quality going up** said "your PC couldn't keep up"; now it says there's
+  headroom. The same notice again (clicking a busy camera several times)
+  refreshes the one on screen instead of stacking.
+- **Server under systemd**: the identity key goes in `StateDirectory=` (with
+  `DynamicUser` the identity changed on every restart).
 
 ## 3.1.0
 

@@ -151,6 +151,25 @@ Conversa com a 3.1 (as mensagens novas são ignoradas por app e servidor antigos
   saída, microfone padrão, se dá pra capturar um programa só), qual encoder do
   Media Foundation abriu (e quais recusaram), por que o microfone ligou/desligou
   e por que a transmissão parou.
+- **Log de depuração no Windows**: não escreve mais por cima do começo do log
+  das execuções anteriores (o arquivo ficava com pedaços de duas sessões), e as
+  mensagens do código em C e das bibliotecas (miniaudio, encoder, captura)
+  finalmente entram nele: num programa de janela elas se perdiam. Quando a
+  captura do som falha, o log ganha um teste passo a passo do WASAPI (formato da
+  saída e o código de cada tentativa); o motivo de o encoder recusar a textura
+  também vai junto.
+- **Convite colado no campo do nome** vai pro endereço da sala (antes a senha
+  virava o nome, à vista de todo mundo); o servidor também troca um nome assim
+  por "anônimo", mesmo de app antigo. O convite pego da área de transferência
+  guarda a impressão do servidor (antes ficava só endereço e senha).
+- **Rede congestionada com alguém pedindo quadro-chave**: o encoder ficava
+  girando sem parar (um núcleo inteiro) até a rede folgar; agora espera o
+  próximo quadro.
+- **Qualidade automática subindo** dizia "o PC não estava dando conta"; agora
+  diz que folgou. O mesmo aviso repetido (clicar várias vezes na câmera ocupada)
+  renova o que já está na tela em vez de empilhar.
+- **Servidor no systemd**: a chave da identidade vai pro `StateDirectory=` (com
+  `DynamicUser` a identidade mudava a cada reinício).
 
 ## 3.1.0
 

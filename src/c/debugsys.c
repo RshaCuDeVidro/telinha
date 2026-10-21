@@ -27,13 +27,31 @@ extern char **environ;
 
 static int saved_fd = -1; // a saída de erro de antes (devolvida ao desligar)
 
+#ifdef _WIN32
+// Programa de janela (sem console): o FILE stderr do C nasce sem arquivo
+// (_fileno = -2) e o fprintf não vai pra lugar nenhum mesmo depois do _dup2 no
+// 2. Dá um arquivo de verdade pra ele e põe o nosso por cima.
+static void win_point_stderr(int fd) {
+    fflush(stderr);
+    if (_fileno(stderr) < 0) _wfreopen(L"NUL", L"wb", stderr);
+    const int sf = _fileno(stderr);
+    if (sf >= 0 && sf != 2) _dup2(fd, sf);
+    _dup2(fd, 2);
+    // o que não passa pelo C (std.debug.print do Zig, Win32) usa o handle do processo
+    SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(2));
+    setvbuf(stderr, NULL, _IONBF, 0);
+}
+#endif
+
 int dbg_restore_stderr(void) {
-    if (saved_fd < 0) return 0;
     fflush(stderr);
 #ifdef _WIN32
-    _dup2(saved_fd, 2);
-    SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(2));
+    // não tinha saída de erro (programa de janela): solta o arquivo no NUL
+    int fd = saved_fd >= 0 ? saved_fd : _wopen(L"NUL", _O_WRONLY | _O_BINARY);
+    if (fd >= 0) win_point_stderr(fd);
+    if (fd >= 0 && fd != saved_fd) _close(fd);
 #else
+    if (saved_fd < 0) return 0;
     dup2(saved_fd, 2);
 #endif
     return 0;
@@ -44,17 +62,19 @@ int dbg_redirect_stderr(const char *path) {
     if (saved_fd < 0) saved_fd = _dup(2);
     WCHAR w[1024];
     if (!MultiByteToWideChar(CP_UTF8, 0, path ? path : "NUL", -1, w, 1024)) return -1;
-    int fd = _wopen(w, _O_WRONLY | _O_CREAT | _O_APPEND | _O_BINARY, 0600);
-    if (fd < 0) return -1;
-    fflush(stderr);
-    if (_dup2(fd, 2) != 0) {
-        _close(fd);
+    // só acrescentar (FILE_APPEND_DATA): o _O_APPEND do C só vale pro _write, e
+    // o Zig escreve direto no handle; aberto do jeito normal ele começava do
+    // byte 0, por cima do log das execuções anteriores
+    HANDLE h = CreateFileW(w, FILE_APPEND_DATA | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    int fd = _open_osfhandle((intptr_t)h, _O_WRONLY | _O_APPEND | _O_BINARY);
+    if (fd < 0) {
+        CloseHandle(h);
         return -1;
     }
+    win_point_stderr(fd);
     _close(fd);
-    // o que não passa pelo C (std.debug.print do Zig, Win32) usa o handle do processo
-    SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(2));
-    setvbuf(stderr, NULL, _IONBF, 0);
     return 0;
 #else
     if (saved_fd < 0) saved_fd = fcntl(2, F_DUPFD_CLOEXEC, 3);

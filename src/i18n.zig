@@ -372,6 +372,7 @@ const table = [_][2][]const u8{
     .{ "ENDEREÇO DA SALA", "ROOM ADDRESS" },
     .{ "ex.: 0.tcp.sa.ngrok.io:12345 ou o convite telinha://...", "e.g. 0.tcp.sa.ngrok.io:12345 or the telinha://... invite" },
     .{ "Convite colado da área de transferência. É só clicar em Entrar.", "Invite pasted from the clipboard. Just click Join." },
+    .{ "Isso é o convite: ele vai no endereço da sala. Escolha um nome.", "That's the invite: it goes in the room address. Pick a name." },
     .{ "SENHA", "PASSWORD" },
     .{ "senha da sala", "room password" },
     .{ "Opções avançadas  {s}", "Advanced options  {s}" },
@@ -712,6 +713,7 @@ const table = [_][2][]const u8{
     // qualidade automática e teste do PC
     .{ "O PC não estava dando conta de {d}p no fps escolhido: transmitindo em {d}p (volta sozinho quando folgar).", "Your PC couldn't keep up with {d}p at the chosen fps: streaming at {d}p (goes back up on its own when there's headroom)." },
     .{ "Folgou: a transmissão voltou pra resolução escolhida.", "Headroom is back: the stream returned to the chosen resolution." },
+    .{ "Folgou: a transmissão subiu pra {d}p.", "Headroom is back: the stream went up to {d}p." },
 
     .{ "Desempenho", "Performance" },
     .{ "Qualidade automática: baixa a resolução sozinho se o PC não der conta do fps", "Automatic quality: lowers the resolution by itself if the PC can't keep up with the fps" },
