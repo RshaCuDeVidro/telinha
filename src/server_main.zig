@@ -22,6 +22,9 @@ const usage =
     \\  -a, --admin TXT        token de admin: quem entrar com ele pode expulsar
     \\                         ($TELINHA_ADMIN; no app: campo "token de admin")
     \\  -m, --max N            máximo de pessoas (padrão 32)
+    \\  -l, --logs PASTA       guarda os logs de depuração que mandarem pela sala
+    \\                         ($TELINHA_LOGS; sem isso eles vão só pra quem
+    \\                         estiver na sala com o token de admin)
     \\  --publico [SERVIDOR]   abre um link público pelo túnel (padrão bore.pub);
     \\                         sem --senha, cria uma senha aleatória
     \\  --upnp                 pede pro roteador abrir a porta (UPnP): conexão
@@ -29,6 +32,8 @@ const usage =
     \\  -h, --help             mostra isso
     \\
 ;
+
+extern "c" fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
 
 fn log(msg: []const u8) void {
     const t = sync.localTime();
@@ -99,6 +104,7 @@ pub fn main(init: std.process.Init) !void {
     var password: []const u8 = env("TELINHA_SENHA") orelse "";
     var room: []const u8 = env("TELINHA_NOME") orelse "telinha";
     var admin: []const u8 = env("TELINHA_ADMIN") orelse "";
+    var logs_dir: []const u8 = env("TELINHA_LOGS") orelse "";
     var max: u32 = 32;
     var public_host: ?[]const u8 = null;
     var use_upnp = false;
@@ -134,6 +140,8 @@ pub fn main(init: std.process.Init) !void {
             room = v;
         } else if (std.mem.eql(u8, a, "-a") or std.mem.eql(u8, a, "--admin")) {
             admin = v;
+        } else if (std.mem.eql(u8, a, "-l") or std.mem.eql(u8, a, "--logs")) {
+            logs_dir = v;
         } else if (std.mem.eql(u8, a, "-m") or std.mem.eql(u8, a, "--max")) {
             max = std.fmt.parseInt(u32, v, 10) catch die("número inválido: {s}", .{v});
         } else die("opção desconhecida: {s} (veja --help)", .{a});
@@ -149,7 +157,12 @@ pub fn main(init: std.process.Init) !void {
         for (&pw_buf, rnd) |*ch, r| ch.* = alphabet[r % alphabet.len];
         password = &pw_buf;
     }
-    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log }) catch
+    if (logs_dir.len > 0) {
+        var lb: [300]u8 = undefined;
+        const z = std.fmt.bufPrintZ(&lb, "{s}", .{logs_dir}) catch die("pasta de logs longa demais", .{});
+        _ = mkdir(z.ptr, 0o750);
+    }
+    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir }) catch
         die("não consegui abrir a porta {d} (já está em uso?)", .{port});
 
     var buf: [256]u8 = undefined;

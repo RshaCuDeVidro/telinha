@@ -76,6 +76,8 @@ fn iconArr(comptime cp: u21) [3:0]u8 {
         0x80 | @as(u8, @intCast(cp & 0x3F)),
     };
 }
+/// Resultado do envio do log pela sala quando só o servidor guardou (debuglog.sendRoom).
+const room_log_saved = "saved";
 /// Motivo das mudanças do microfone no log (clique nos botões da barra).
 const via_clique = "clique";
 
@@ -226,6 +228,28 @@ fn reactionName(e: usize) [:0]const u8 {
 }
 
 /// Arquivos soltos em cima da janela (callback do GLFW; tratados no quadro).
+/// Envio do log pela sala: a conexão atual (com uma referência própria, pro
+/// envio numa thread não pegar um cliente já liberado).
+var room_log_mutex: sync.Mutex = .{};
+var room_log_client: ?*Client = null;
+
+fn setRoomLogClient(cl: ?*Client) void {
+    room_log_mutex.lock();
+    defer room_log_mutex.unlock();
+    if (room_log_client == cl) return;
+    if (room_log_client) |old| old.release();
+    room_log_client = if (cl) |x| x.retain() else null;
+}
+
+fn roomLogSend(data: []const u8, what: debuglog.What) bool {
+    room_log_mutex.lock();
+    const cl = if (room_log_client) |x| x.retain() else null;
+    room_log_mutex.unlock();
+    const c2 = cl orelse return false;
+    defer c2.release();
+    return c2.sendLogFile(data, if (what == .crash) proto.log_what_crash else proto.log_what_log);
+}
+
 var drop_paths: [4][1024]u8 = undefined;
 var drop_lens: [4]usize = undefined;
 var n_drops: usize = 0;
@@ -1623,6 +1647,7 @@ pub const App = struct {
                     a.applyVoice("admin liberou");
                 },
                 proto.notice_stream_stopped => if (n.extra == proto.kind_camera) a.stopCamera() else a.stopSharing(),
+                proto.notice_log_received => debuglog.line("{s}", .{n.textSlice()}),
                 else => {},
             }
             const bad = n.kind == proto.notice_muted or n.kind == proto.notice_stream_stopped or n.kind == proto.notice_admin_off;
@@ -2095,6 +2120,9 @@ pub const App = struct {
 
     pub fn frame(a: *App) void {
         a.frame_no += 1;
+        // log pela sala: vale a conexão de agora (se conectado)
+        debuglog.room_send = roomLogSend;
+        setRoomLogClient(if (a.client) |cl| (if (cl.isConnected()) cl else null) else null);
         // escolhendo o recorte mas o quadro sumiu (outra transmissão em destaque, foi pra outra tela): cancela
         if (a.crop_tile != null and a.frame_no > a.crop_seen_frame + 2) a.cancelCrop();
         // algo grande parou (transmissão, câmera, sala, transmissão assistida):
@@ -2407,7 +2435,9 @@ pub const App = struct {
 
     fn sendCrashReport(a: *App) void {
         const hook = config.getStr(&a.cfg.debug_webhook);
-        const method: debuglog.Method = if (a.cfg.debug_send == 1 and debuglog.validUrl(hook)) .webhook else .gofile;
+        const in_room = if (a.client) |cl| cl.isConnected() else false;
+        // pela sala só dá conectado (o aviso costuma aparecer ao abrir o app): senão gofile
+        const method: debuglog.Method = if (a.cfg.debug_send == 1 and debuglog.validUrl(hook)) .webhook else if (a.cfg.debug_send == 2 and in_room and a.server == null) .room else .gofile;
         a.debug_sent_via = method;
         debuglog.sendWhat(method, .crash, hook, config.getStr(&a.cfg.name)) catch {
             a.toast("Já tem um envio em andamento; tenta de novo daqui a pouco.", .{}, true);
@@ -2431,7 +2461,9 @@ pub const App = struct {
                 a.crash_sending = false;
                 var rb: [520]u8 = undefined;
                 const link = debuglog.sendResult(rb[0..512]);
-                if (link.len == 0) {
+                if (a.debug_sent_via == .room) {
+                    a.toast("Relatório entregue pro dono da sala. Valeu!", .{}, false);
+                } else if (link.len == 0) {
                     a.toast("Relatório mandado pro webhook. Valeu!", .{}, false);
                 } else {
                     rb[link.len] = 0;
@@ -5983,11 +6015,29 @@ pub const App = struct {
         fieldLabel("MANDAR O LOG");
         c.igDummy(v2(0, S(2)));
         var via = a.cfg.debug_send;
-        if (segmented("dbgvia", &.{ "gofile.io (gera um link)", "Webhook (Discord etc.)" }, &via, w)) {
+        if (segmented("dbgvia", &.{ "gofile.io (gera um link)", "Webhook (Discord etc.)", "Pro dono da sala" }, &via, w)) {
             a.cfg.debug_send = via;
             config.save(&a.cfg);
         }
-        const method: debuglog.Method = if (a.cfg.debug_send == 1) .webhook else .gofile;
+        const method: debuglog.Method = switch (a.cfg.debug_send) {
+            1 => .webhook,
+            2 => .room,
+            else => .gofile,
+        };
+        const in_room = if (a.client) |cl| cl.isConnected() else false;
+        if (method == .room) {
+            c.igDummy(v2(0, S(4)));
+            pushFont(font_regular, 12.5);
+            c.igPushTextWrapPos(c.igGetCursorPosX() + w);
+            if (!in_room)
+                textColored(col.yellow, tr("Entre numa sala pra mandar o log pro dono dela (quem tem a coroa)."))
+            else if (a.server != null)
+                textColored(col.muted, tr("Você é o dono desta sala: quem mandar o log por aqui, ele chega no seu PC (pasta logs-recebidos)."))
+            else
+                textColored(col.muted, tr("O log vai pela própria sala, direto pra quem tem a coroa. Servidor dedicado com --logs também guarda uma cópia."));
+            c.igPopTextWrapPos();
+            popFont();
+        }
         c.igDummy(v2(0, S(4)));
         if (method == .webhook) {
             // escondido: a URL é a chave do canal (e a tela pode estar sendo transmitida)
@@ -5997,7 +6047,11 @@ pub const App = struct {
         }
         const st = debuglog.sendState();
         const hook = config.getStr(&a.cfg.debug_webhook);
-        const can = a.debug_size > 0 and st != .sending and (method == .gofile or debuglog.validUrl(hook));
+        const can = a.debug_size > 0 and st != .sending and switch (method) {
+            .gofile => true,
+            .webhook => debuglog.validUrl(hook),
+            .room => in_room and a.server == null,
+        };
         if (!can) c.igBeginDisabled(true);
         if (primaryButton(fmtZ("{s}  Enviar log###dbgsend", .{ic.send}), v2(w, S(38)), col.blurple, col.blurple_hover, col.blurple_active)) {
             a.debug_sent_via = method;
@@ -6030,6 +6084,9 @@ pub const App = struct {
             },
             .done => if (a.debug_sent_via == .webhook) {
                 textColored(col.green, tr("Log enviado pro webhook."));
+            } else if (a.debug_sent_via == .room) {
+                const saved_only = std.mem.eql(u8, res, room_log_saved);
+                textColored(col.green, if (saved_only) tr("O servidor da sala guardou o log (ninguém com a coroa estava na sala agora).") else tr("Log entregue pro dono da sala."));
             } else {
                 textColored(col.green, tr("Pronto! Manda esse link pra quem vai olhar o log:"));
                 var lz: [520]u8 = undefined;

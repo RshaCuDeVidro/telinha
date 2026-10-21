@@ -1054,6 +1054,91 @@ test "sala: quem entra e sai sem parar não derruba a sala (IDR no máximo 1/s, 
     try testing.expect(keyreqs <= secs + 1);
 }
 
+extern "c" fn system(cmd: [*:0]const u8) c_int;
+const c_system = system;
+
+fn sendLog(c: *TestClient, id: u32, data: []const u8, chunk: usize) !void {
+    var off: usize = 0;
+    while (off < data.len) {
+        const n = @min(chunk, data.len - off);
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.log_chunk);
+        try b.u32_(id);
+        try b.u8_(proto.log_what_log);
+        try b.u32_(@intCast(data.len));
+        try b.u32_(@intCast(off));
+        try b.bytes(data[off..][0..n]);
+        try c.send(try b.finish());
+        off += n;
+    }
+}
+
+test "log pela sala: chega em pedaços em quem tem a coroa, quem mandou fica sabendo, um por minuto; servidor com pasta guarda" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port, .admin_token = "coroa" });
+    defer srv.stop();
+    var dono = try TestClient.connect(port, "Dono", "", "coroa");
+    defer dono.close();
+    try dono.welcome();
+    var v = try TestClient.connect(port, "Visita", "", "");
+    defer v.close();
+    try v.welcome();
+
+    var data: [150_000]u8 = undefined;
+    for (&data, 0..) |*x, i| x.* = @intCast(i % 251);
+    try sendLog(&v, 7, &data, proto.log_chunk_max);
+    // o dono recebe os pedaços, com quem mandou
+    var got: usize = 0;
+    while (got < data.len) {
+        var r: proto.Reader = .{ .data = try dono.expect(.log_chunk) };
+        try testing.expectEqual(v.id, try r.u32_());
+        try testing.expectEqualStrings("Visita", try r.str());
+        try testing.expectEqual(@as(u32, 7), try r.u32_());
+        _ = try r.u8_();
+        try testing.expectEqual(@as(u32, data.len), try r.u32_());
+        try testing.expectEqual(@as(u32, @intCast(got)), try r.u32_());
+        const part = r.rest();
+        try testing.expectEqualSlices(u8, data[got..][0..part.len], part);
+        got += part.len;
+    }
+    {
+        var r: proto.Reader = .{ .data = try v.expect(.log_ack) };
+        try testing.expectEqual(@as(u32, 7), try r.u32_());
+        try testing.expectEqual(proto.log_ack_delivered, try r.u8_());
+        try testing.expectEqual(@as(u8, 1), try r.u8_());
+    }
+    // outro logo em seguida: recusado (um por minuto)
+    try sendLog(&v, 8, data[0..1000], proto.log_chunk_max);
+    {
+        var r: proto.Reader = .{ .data = try v.expect(.log_ack) };
+        try testing.expectEqual(@as(u32, 8), try r.u32_());
+        try testing.expectEqual(proto.log_ack_refused, try r.u8_());
+    }
+
+    // servidor dedicado com pasta e ninguém com a coroa: guarda em disco
+    const port2 = freshPort();
+    var dir_buf: [128]u8 = undefined;
+    const dir = try std.fmt.bufPrintZ(&dir_buf, "/tmp/telinha-teste-logs-{d}", .{port2});
+    _ = std.c.mkdir(dir.ptr, 0o700);
+    const srv2 = try Server.start(.{ .port = port2, .logs_dir = dir });
+    defer srv2.stop();
+    var w = try TestClient.connect(port2, "Sozinho", "", "");
+    defer w.close();
+    try w.welcome();
+    try sendLog(&w, 1, data[0..5000], 4096);
+    {
+        var r: proto.Reader = .{ .data = try w.expect(.log_ack) };
+        _ = try r.u32_();
+        try testing.expectEqual(proto.log_ack_saved, try r.u8_());
+    }
+    // o arquivo está lá, com o conteúdo inteiro
+    var cmd_buf: [256]u8 = undefined;
+    const cmd = try std.fmt.bufPrintZ(&cmd_buf, "test $(cat {s}/*_Sozinho_log.txt | wc -c) = 5000 && rm -rf {s}", .{ dir, dir });
+    try testing.expectEqual(@as(c_int, 0), c_system(cmd.ptr));
+}
+
 test "sala: watch só aceita quem existe" {
     net.init();
     const port = freshPort();

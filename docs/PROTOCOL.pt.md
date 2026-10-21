@@ -118,6 +118,9 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 25 | cursor | S→C | `u32 stream`, `u16 x`, `u16 y` |
 | 26 | view_size | C→S | `u32 stream`, `u16 altura` em que essa transmissão aparece (`0xFFFF` = quer tudo: tela cheia, gravando) |
 | 26 | view_size | S→C | `u8 tipo`, `u16 altura`: a maior entre quem assiste (`0xFFFF` = sem limite) |
+| 27 | log_chunk | C→S | `u32 id`, `u8 o_que` (0 = log de depuração, 1 = relatório de travamento), `u32 total`, `u32 posição`, bytes: log pro dono da sala, em pedaços de até 64 KB (no máximo 8 MB, um por minuto) |
+| 27 | log_chunk | S→C | `u32 de`, `str nome` + os mesmos campos: repassado pra todo mundo que entrou com o token de admin |
+| 28 | log_ack | S→C | `u32 id`, `u8 resultado` (0 = entregue, 1 = só o servidor guardou, 2 = ninguém pra receber, 3 = recusado), `u8 quantos donos receberam` |
 
 `versão_do_app` ("3.0.0") serve só pra avisar quem está desatualizado (a
 interface mostra "fulano está no telinha X: tem versão nova"); vazia = não

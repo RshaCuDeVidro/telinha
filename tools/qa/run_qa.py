@@ -1384,6 +1384,31 @@ def multipart_has_log(path):
 
 
 @test
+def log_pela_sala():
+    """Log pela sala: a Bia manda o log de depuração 'pro dono da sala' e ele chega na Ana (que criou a sala): aviso e arquivo em logs-recebidos."""
+    import glob
+    with Session("logsala") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)])
+        a.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}"], config={"debug_log": 1, "debug_send": 2})
+        b.wait(lambda st: st["status"] == "connected", 10, "a Bia entrar")
+        b.wait(lambda st: st["debug_on"] and st["debug_size"] > 0, 10, "o log da Bia ter alguma coisa")
+        b.click("##gear")
+        b.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        b.click("##cfg-depuracao")
+        settings_click(b, "##dbgsend")
+        st = b.wait(lambda st: st["debug_send"] in ("done", "failed"), 30, "o envio pela sala")
+        expect(st["debug_send"] == "done", f"envio pela sala: {st['debug_send']} {st['debug_result']}")
+        a.toasted("mandou um log", 10)
+        files = glob.glob(os.path.join(a.cfg, "telinha", "logs-recebidos", "*_Bia_log.txt"))
+        expect(len(files) == 1, f"o arquivo não apareceu: {files}")
+        txt = open(files[0], errors="replace").read()
+        expect("telinha" in txt and "config:" in txt, "o arquivo não parece o log da Bia")
+        log(f"log da Bia chegou na Ana: {os.path.basename(files[0])} ({len(txt)} bytes)")
+
+
+@test
 def log_depuracao():
     """Log de depuração: liga nas configurações, grava o sistema e as amostras, manda pro gofile (de mentira: devolve o link) e pro webhook (de mentira)."""
     with Session("debuglog") as s:

@@ -177,6 +177,7 @@ const server_suffixes = [_]Suffix{
 const server_infixes = [_]Suffix{
     .{ " baniu ", "{s} banned {s}" },
     .{ " expulsou ", "{s} kicked {s} out" },
+    .{ " mandou um log: ", "{s} sent a log: {s}" },
 };
 const server_whole = [_]Suffix{
     .{ "O dono fechou a sala.", "The owner closed the room." },
@@ -745,6 +746,17 @@ const table = [_][2][]const u8{
     .{ "Cancelamento de eco (pra quem usa caixa de som em vez de fone)", "Echo cancellation (for speakers instead of headphones)" },
     .{ "Entrar na sala com o microfone ligado", "Join rooms with the microphone on" },
     .{ "VOLUME DO MICROFONE", "MICROPHONE VOLUME" },
+    .{ "Pro dono da sala", "To the room owner" },
+    .{ "Entre numa sala pra mandar o log pro dono dela (quem tem a coroa).", "Join a room to send the log to its owner (whoever has the crown)." },
+    .{ "Você é o dono desta sala: quem mandar o log por aqui, ele chega no seu PC (pasta logs-recebidos).", "You own this room: logs sent this way arrive on your PC (logs-recebidos folder)." },
+    .{ "O log vai pela própria sala, direto pra quem tem a coroa. Servidor dedicado com --logs também guarda uma cópia.", "The log goes through the room itself, straight to whoever has the crown. A dedicated server with --logs also keeps a copy." },
+    .{ "O servidor da sala guardou o log (ninguém com a coroa estava na sala agora).", "The room server kept the log (nobody with the crown was in the room)." },
+    .{ "Log entregue pro dono da sala.", "Log delivered to the room owner." },
+    .{ "Relatório entregue pro dono da sala. Valeu!", "Report delivered to the room owner. Thanks!" },
+    .{ "entre numa sala pra mandar pro dono dela", "join a room to send it to its owner" },
+    .{ "ninguém com a coroa está na sala agora (e o servidor não guarda logs)", "nobody with the crown is in the room right now (and the server doesn't keep logs)" },
+    .{ "o servidor recusou (um log por minuto, até 8 MB)", "the server refused it (one log per minute, up to 8 MB)" },
+    .{ "o servidor da sala não respondeu (versão antiga?)", "the room server didn't answer (old version?)" },
     .{ "Ganho automático: sua voz baixa sobe pra todo mundo ouvir", "Automatic gain: a quiet voice is raised so everyone hears it" },
     .{ "Sons de aviso (alguém entrou/saiu, ao vivo, microfone)", "Notification sounds (someone joined/left, live, microphone)" },
     .{ "{s}  Câmera", "{s}  Camera" },

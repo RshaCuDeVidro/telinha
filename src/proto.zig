@@ -49,6 +49,8 @@ pub const Type = enum(u8) {
     draw = 24, // C→S u32 stream, u8 flags (draw_*), u16 n, n × (u16 x, u16 y) | S→C u32 de + o mesmo (desenho por cima da transmissão)
     cursor = 25, // C→S u8 tipo, u16 x, u16 y (coord_none = escondido) | S→C u32 stream, u16 x, u16 y: o cursor de quem transmite, fora do vídeo (feat_cursor)
     view_size = 26, // C→S u32 stream, u16 altura (pixels em que aparece; view_full = quer tudo) | S→C u8 tipo, u16 altura (a maior entre quem assiste; view_full = sem limite)
+    log_chunk = 27, // C→S u32 id, u8 o_que (log_what_*), u32 total, u32 posição, bytes | S→C u32 de, str nome + o mesmo: log de depuração pro dono da sala, em pedaços
+    log_ack = 28, // S→C u32 id, u8 resultado (log_ack_*), u8 quantos donos receberam
     _,
 };
 
@@ -56,6 +58,17 @@ pub const Type = enum(u8) {
 /// (u8 chat_img_*, e se tiver: u16 w, u16 h, u32 tamanho, bytes). Quem recebe
 /// decodifica com o mesmo decoder do vídeo: nenhum leitor de PNG/JPEG exposto
 /// à rede.
+/// log_chunk: o que é e limites (o servidor recusa acima disso).
+pub const log_what_log: u8 = 0;
+pub const log_what_crash: u8 = 1;
+pub const log_max = 8 * 1024 * 1024;
+pub const log_chunk_max = 64 * 1024;
+/// log_ack: o que aconteceu com o log.
+pub const log_ack_delivered: u8 = 0; // chegou em quem tem a coroa
+pub const log_ack_saved: u8 = 1; // ninguém com a coroa na sala, mas o servidor guardou
+pub const log_ack_nobody: u8 = 2; // ninguém pra receber
+pub const log_ack_refused: u8 = 3; // grande demais ou cedo demais (um por minuto)
+
 pub const chat_img_none: u8 = 0;
 pub const chat_img_h264: u8 = 1;
 pub const chat_img_expired: u8 = 2; // era uma imagem, mas saiu do histórico (memória)
@@ -124,6 +137,8 @@ pub const notice_unmuted: u8 = 2;
 pub const notice_stream_stopped: u8 = 3; // texto + o tipo vai no primeiro byte depois do texto
 pub const notice_admin_on: u8 = 4;
 pub const notice_admin_off: u8 = 5;
+/// Só no app (não vem do servidor): chegou um log mandado pela sala (texto = nome + caminho).
+pub const notice_log_received: u8 = 100;
 
 /// chat
 pub const chat_history: u8 = 1; // mensagem antiga (quem acabou de entrar): sem som nem notificação

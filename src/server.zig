@@ -19,6 +19,7 @@ const proto = @import("proto.zig");
 const udp = @import("udp.zig");
 const crypto = @import("crypto.zig");
 const gpa = proto.gpa;
+const cio = @cImport(@cInclude("stdio.h"));
 
 /// Mais que isso na fila de um espectador = ele está lento demais.
 pub const max_viewer_backlog = 3 * 1024 * 1024;
@@ -99,6 +100,14 @@ const Conn = struct {
     ip: [16]u8 = undefined,
     ip_len: usize = 0,
     muted: bool = false, // microfone silenciado pelo admin
+    // log de depuração mandado pela sala (log_chunk): um por minuto
+    log_id: u32 = 0,
+    log_total: u32 = 0,
+    log_got: u32 = 0,
+    log_what: u8 = 0,
+    log_last_ms: u64 = 0,
+    log_refused: bool = false,
+    log_buf: std.ArrayList(u8) = .empty, // só com --logs (servidor guarda em disco)
     mic: bool = false, // microfone ligado
     deaf: bool = false, // não quer ouvir a sala (não recebe voz)
     streams: [2]StreamState = .{ .{}, .{} },
@@ -154,6 +163,7 @@ const Conn = struct {
             self.watching.deinit(gpa);
             self.view_sizes.deinit(gpa);
             self.waiting_key.deinit(gpa);
+            self.log_buf.deinit(gpa);
             self.flows.deinit(gpa);
             if (self.udp.load(.acquire)) |l| l.destroy();
             net.close(self.sock);
@@ -320,6 +330,9 @@ pub const Options = struct {
     log: ?*const fn ([]const u8) void = null,
     /// Intervalo do IDR pra quem guarda clipes (testes encurtam).
     clip_key_interval_ms: u64 = clip_key_interval_ms,
+    /// Pasta onde guardar os logs que mandarem pela sala (vazio = não guarda;
+    /// eles vão só pra quem tem a coroa).
+    logs_dir: []const u8 = "",
 };
 
 pub const Server = struct {
@@ -330,6 +343,8 @@ pub const Server = struct {
     password_len: usize = 0,
     room_name: [64]u8 = undefined,
     room_name_len: usize = 0,
+    logs_dir: [256]u8 = undefined,
+    logs_dir_len: usize = 0,
     admin_token: [64]u8 = undefined,
     admin_token_len: usize = 0,
     max_members: u32,
@@ -369,6 +384,7 @@ pub const Server = struct {
         s.instance = std.mem.readInt(u64, &rnd, .little);
         copyInto(&s.password, &s.password_len, opts.password);
         copyInto(&s.room_name, &s.room_name_len, opts.room_name);
+        copyInto(&s.logs_dir, &s.logs_dir_len, opts.logs_dir);
         copyInto(&s.admin_token, &s.admin_token_len, opts.admin_token);
         sync.hiresTimer(true); // o repasse por UDP cadencia em ms (solto no release)
         s.retain();
@@ -820,6 +836,7 @@ pub const Server = struct {
     fn handle(s: *Server, cn: *Conn, typ: proto.Type, payload: []const u8) !void {
         var r: proto.Reader = .{ .data = payload };
         switch (typ) {
+            .log_chunk => try s.onLogChunk(cn, &r),
             .chat => {
                 const text = std.mem.trim(u8, try r.str(), " \t\r\n");
                 var img: ?Image = null;
@@ -1161,6 +1178,92 @@ pub const Server = struct {
             }
         }
         return name;
+    }
+
+    /// Pedaço de log de depuração (log_chunk): repassa pra quem tem a coroa e,
+    /// com `logs_dir`, guarda em disco. No fim responde a quem mandou (log_ack).
+    fn onLogChunk(s: *Server, cn: *Conn, r: *proto.Reader) !void {
+        const id = try r.u32_();
+        const what = try r.u8_();
+        const total = try r.u32_();
+        const off = try r.u32_();
+        const bytes = r.rest();
+        if (total == 0 or total > proto.log_max or bytes.len > proto.log_chunk_max or @as(u64, off) + bytes.len > total) return;
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        const now = s.nowUs() / 1000;
+        if (off == 0) {
+            // log novo: no máximo um por minuto por pessoa
+            cn.log_refused = cn.log_last_ms != 0 and now -| cn.log_last_ms < 60_000;
+            cn.log_id = id;
+            cn.log_total = total;
+            cn.log_got = 0;
+            cn.log_what = what;
+            cn.log_buf.clearRetainingCapacity();
+            if (cn.log_refused) {
+                sendLogAck(cn, id, proto.log_ack_refused, 0);
+                return;
+            }
+            cn.log_last_ms = now;
+        }
+        if (id != cn.log_id or cn.log_refused or off != cn.log_got) return;
+        // repassa pra quem tem a coroa (menos quem mandou)
+        var owners: u8 = 0;
+        for (s.conns.items) |o| {
+            if (!o.owner or o == cn) continue;
+            owners += 1;
+            var b: proto.Builder = .{};
+            defer b.deinit();
+            b.begin(.log_chunk) catch continue;
+            b.u32_(cn.id) catch continue;
+            b.str(cn.nameSlice()) catch continue;
+            b.u32_(id) catch continue;
+            b.u8_(what) catch continue;
+            b.u32_(total) catch continue;
+            b.u32_(off) catch continue;
+            b.bytes(bytes) catch continue;
+            o.queue.pushOwned(b.finish() catch continue);
+        }
+        if (s.logs_dir_len > 0) cn.log_buf.appendSlice(gpa, bytes) catch {};
+        cn.log_got += @intCast(bytes.len);
+        if (cn.log_got < total) return;
+        // completo
+        var saved = false;
+        if (s.logs_dir_len > 0 and cn.log_buf.items.len == total) saved = s.saveLog(cn);
+        cn.log_buf.clearAndFree(gpa);
+        s.log("{s} mandou um {s} ({d} KB): {d} com a coroa receberam{s}", .{ cn.nameSlice(), if (what == proto.log_what_crash) "relatório de travamento" else "log", total / 1024, owners, if (saved) ", guardado em disco" else "" });
+        const result: u8 = if (owners > 0) proto.log_ack_delivered else if (saved) proto.log_ack_saved else proto.log_ack_nobody;
+        sendLogAck(cn, id, result, owners);
+    }
+
+    fn sendLogAck(cn: *Conn, id: u32, result: u8, owners: u8) void {
+        const m = proto.Msg.alloc(.log_ack, 6) catch return;
+        std.mem.writeInt(u32, m.payload()[0..4], id, .little);
+        m.payload()[4] = result;
+        m.payload()[5] = owners;
+        cn.queue.pushOwned(m);
+    }
+
+    /// Guarda o log de `cn` em logs_dir/AAAA-MM-DD_HH-MM-SS_nome_log.txt.
+    fn saveLog(s: *Server, cn: *Conn) bool {
+        var clean: [48]u8 = undefined;
+        var n: usize = 0;
+        for (cn.nameSlice()) |ch| {
+            if (n == clean.len) break;
+            clean[n] = if (std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_' or ch >= 0x80) ch else '_';
+            n += 1;
+        }
+        const t = sync.dateTime();
+        var pb: [512]u8 = undefined;
+        const fp = std.fmt.bufPrintZ(&pb, "{s}/{d:0>4}-{d:0>2}-{d:0>2}_{d:0>2}-{d:0>2}-{d:0>2}_{s}_{s}.txt", .{
+            s.logs_dir[0..s.logs_dir_len], t.year, t.month, t.day, t.h, t.m, t.s, clean[0..n], if (cn.log_what == proto.log_what_crash) "travou" else "log",
+        }) catch return false;
+        const f = cio.fopen(fp.ptr, "wb") orelse {
+            s.log("não consegui criar {s}", .{fp});
+            return false;
+        };
+        defer _ = cio.fclose(f);
+        return cio.fwrite(cn.log_buf.items.ptr, 1, cn.log_buf.items.len, f) == cn.log_buf.items.len;
     }
 
     /// Mais de `join_flood_max` entradas em 30 s da mesma chave do app (ou do

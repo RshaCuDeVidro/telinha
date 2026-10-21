@@ -320,7 +320,7 @@ extern "c" fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
 extern "kernel32" fn CreateDirectoryW(path: [*:0]const u16, attrs: ?*anyopaque) callconv(.winapi) c_int;
 extern "kernel32" fn GetEnvironmentVariableW(name: [*:0]const u16, buf: [*]u16, size: u32) callconv(.winapi) u32;
 
-fn makeDir(path: [:0]const u8) void {
+pub fn makeDir(path: [:0]const u8) void {
     if (sync.is_windows) {
         var w: [1024:0]u16 = undefined;
         const n = std.unicode.utf8ToUtf16Le(&w, path) catch return;

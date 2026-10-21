@@ -47,6 +47,9 @@ Wants=network-online.target
 ExecStart=/usr/local/bin/telinha-server --porta 7777 --nome "Sala da galera"
 Environment=TELINHA_SENHA=uma-senha-boa
 Environment=TELINHA_ADMIN=token-secreto
+# os logs de depuração que mandarem "pro dono da sala" também ficam aqui
+Environment=TELINHA_LOGS=/var/lib/telinha/logs
+StateDirectory=telinha
 DynamicUser=yes
 Restart=on-failure
 NoNewPrivileges=yes
@@ -62,6 +65,14 @@ sudo install -m755 zig-out/bin/telinha-server-x86_64 /usr/local/bin/telinha-serv
 sudo systemctl enable --now telinha
 journalctl -u telinha -f
 ```
+
+## Logs de depuração da galera
+
+No app, *Configurações → Depuração → Pro dono da sala* manda o log pela própria
+sala. Ele chega em todo mundo que entrou com o token de admin (vai pra pasta
+`logs-recebidos`, do lado da configuração). Com `--logs PASTA` (ou
+`TELINHA_LOGS`), o servidor dedicado também guarda uma cópia: um log mandado com
+nenhum admin na sala não se perde. Cada pessoa manda um log por minuto, até 8 MB.
 
 ## Firewall e banda
 

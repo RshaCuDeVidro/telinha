@@ -11,6 +11,7 @@ const gl = @import("gl.zig");
 const audio = @import("audio.zig");
 const voice = @import("voice.zig");
 const clip = @import("clip.zig");
+const debuglog = @import("debuglog.zig");
 const connect_mod = @import("connect.zig");
 const i18n = @import("i18n.zig");
 const tr = i18n.tr;
@@ -183,10 +184,20 @@ pub const ChatLine = struct {
 };
 
 /// Algo que o admin fez com a gente (a UI mostra e reage).
+const IncomingLog = struct {
+    from: u32,
+    id: u32,
+    what: u8,
+    total: u32,
+    name: [48]u8 = undefined,
+    name_len: usize = 0,
+    data: std.ArrayList(u8) = .empty,
+};
+
 pub const Notice = struct {
     kind: u8,
     extra: u8,
-    text: [160]u8,
+    text: [400]u8,
     len: usize,
 
     pub fn textSlice(n: *const Notice) []const u8 {
@@ -729,6 +740,9 @@ pub const Client = struct {
     server_version: [16]u8 = undefined, // versão do app/servidor que hospeda
     server_version_len: usize = 0,
     notices: std.ArrayList(Notice) = .empty,
+    /// Logs chegando pela sala (somos o dono): remontados aqui até completar.
+    incoming_logs: [4]?*IncomingLog = .{ null, null, null, null },
+    log_seq: std.atomic.Value(u32) = .init(1),
     pointers: std.ArrayList(Pointer) = .empty,
     /// Traços desenhados por cima das transmissões (somem sozinhos; ver ui.zig).
     strokes: std.ArrayList(Stroke) = .empty,
@@ -785,6 +799,12 @@ pub const Client = struct {
         cl.wake_fn();
     }
 
+    pub fn isConnected(cl: *Client) bool {
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        return cl.status == .connected;
+    }
+
     pub fn retain(cl: *Client) *Client {
         _ = cl.refs.fetchAdd(1, .monotonic);
         return cl;
@@ -797,6 +817,11 @@ pub const Client = struct {
             for (cl.chat.items) |*l| l.free();
             cl.chat.deinit(gpa);
             cl.notices.deinit(gpa);
+            for (&cl.incoming_logs) |*sl| if (sl.*) |l| {
+                l.data.deinit(gpa);
+                gpa.destroy(l);
+                sl.* = null;
+            };
             cl.pointers.deinit(gpa);
             cl.strokes.deinit(gpa);
             cl.views.deinit(gpa);
@@ -1401,6 +1426,13 @@ pub const Client = struct {
                 const server_us = try r.u64_();
                 cl.onPong(t, server_us);
             },
+            .log_chunk => try cl.onLogChunk(&r),
+            .log_ack => {
+                _ = try r.u32_(); // id
+                const result = try r.u8_();
+                const count = r.u8_() catch 0;
+                debuglog.roomAck(result, count);
+            },
             .notice => {
                 var n: Notice = .{ .kind = try r.u8_(), .extra = 0, .text = undefined, .len = 0 };
                 copyInto(&n.text, &n.len, try r.str());
@@ -1645,6 +1677,80 @@ pub const Client = struct {
     }
 
     /// keyreq com motivo (proto.keyreq_*): gravação começando só pede o IDR.
+    /// Log de depuração pro dono da sala, em pedaços (o servidor repassa).
+    pub fn sendLogFile(cl: *Client, data: []const u8, what: u8) bool {
+        if (data.len == 0 or data.len > proto.log_max) return false;
+        const id = cl.log_seq.fetchAdd(1, .monotonic);
+        var off: usize = 0;
+        while (off < data.len) {
+            const n = @min(proto.log_chunk_max, data.len - off);
+            const m = proto.Msg.alloc(.log_chunk, 13 + n) catch return false;
+            const p = m.payload();
+            std.mem.writeInt(u32, p[0..4], id, .little);
+            p[4] = what;
+            std.mem.writeInt(u32, p[5..9], @intCast(data.len), .little);
+            std.mem.writeInt(u32, p[9..13], @intCast(off), .little);
+            @memcpy(p[13..][0..n], data[off..][0..n]);
+            cl.queue.pushOwned(m);
+            off += n;
+        }
+        return true;
+    }
+
+    /// Um pedaço de log de alguém (somos o dono): junta e, completo, salva e avisa a UI.
+    fn onLogChunk(cl: *Client, r: *proto.Reader) !void {
+        const from = try r.u32_();
+        const name = try r.str();
+        const id = try r.u32_();
+        const what = try r.u8_();
+        const total = try r.u32_();
+        const off = try r.u32_();
+        const bytes = r.rest();
+        if (total == 0 or total > proto.log_max or bytes.len > proto.log_chunk_max or @as(u64, off) + bytes.len > total) return;
+        var slot: ?*IncomingLog = null;
+        for (cl.incoming_logs) |maybe| if (maybe) |l| {
+            if (l.from == from and l.id == id) slot = l;
+        };
+        if (slot == null) {
+            if (off != 0) return; // começo perdido (entrou depois)
+            const free = for (&cl.incoming_logs) |*sl| {
+                if (sl.* == null) break sl;
+            } else blk: {
+                // cheio: descarta o mais velho
+                const old = cl.incoming_logs[0].?;
+                old.data.deinit(gpa);
+                gpa.destroy(old);
+                cl.incoming_logs[0] = null;
+                break :blk &cl.incoming_logs[0];
+            };
+            const l = try gpa.create(IncomingLog);
+            l.* = .{ .from = from, .id = id, .what = what, .total = total };
+            l.name_len = @min(name.len, l.name.len);
+            @memcpy(l.name[0..l.name_len], name[0..l.name_len]);
+            free.* = l;
+            slot = l;
+        }
+        const l = slot.?;
+        if (off != l.data.items.len) return; // fora de ordem (não acontece no TCP)
+        try l.data.appendSlice(gpa, bytes);
+        if (l.data.items.len < l.total) return;
+        // completo: salva e avisa
+        var pb: [700]u8 = undefined;
+        const saved = debuglog.saveReceived(l.name[0..l.name_len], l.what, l.data.items, &pb);
+        var n: Notice = .{ .kind = proto.notice_log_received, .extra = l.what, .text = undefined, .len = 0 };
+        var tb: [800]u8 = undefined;
+        const text = std.fmt.bufPrint(&tb, "{s} mandou um log: {s}", .{ l.name[0..l.name_len], saved orelse "(não consegui salvar)" }) catch "";
+        copyInto(&n.text, &n.len, text);
+        for (&cl.incoming_logs) |*sl| if (sl.* == l) {
+            sl.* = null;
+        };
+        l.data.deinit(gpa);
+        gpa.destroy(l);
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        if (cl.notices.items.len < 32) try cl.notices.append(gpa, n);
+    }
+
     pub fn sendKeyreqReason(cl: *Client, stream: u32, reason: u8) void {
         const m = proto.Msg.alloc(.keyreq, 5) catch return;
         std.mem.writeInt(u32, m.payload()[0..4], stream, .little);

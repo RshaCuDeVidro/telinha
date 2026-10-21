@@ -122,6 +122,9 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | 25 | cursor | S→C | `u32 stream`, `u16 x`, `u16 y` |
 | 26 | view_size | C→S | `u32 stream`, `u16 altura` at which that stream appears (`0xFFFF` = wants everything: fullscreen, recording) |
 | 26 | view_size | S→C | `u8 tipo`, `u16 altura`: the largest among those watching (`0xFFFF` = no limit) |
+| 27 | log_chunk | C→S | `u32 id`, `u8 what` (0 = debug log, 1 = crash report), `u32 total`, `u32 offset`, bytes: a debug log for the room owner, in pieces of up to 64 KB (8 MB max, one per minute) |
+| 27 | log_chunk | S→C | `u32 from`, `str name` + the same fields: relayed to everyone who joined with the admin token |
+| 28 | log_ack | S→C | `u32 id`, `u8 result` (0 = delivered, 1 = only saved on the server, 2 = nobody to receive it, 3 = refused), `u8 how many owners got it` |
 
 `versão_do_app` ("3.0.0") only serves to warn whoever is out of date (the
 interface shows "so-and-so is on telinha X: there is a new version"); empty = not
@@ -217,8 +220,11 @@ doesn't send it and it counts as 0, everything as before):
   (`view_size`, in steps: 360, 480, 540, 720, 900, 1080, 1440, 2160; it goes up
   instantly, and only down after 3 s smaller). The server sends the streamer the
   largest among those watching (whoever doesn't understand counts as
-  "everything"), and it uses that as the maximum height — together with the
-  chosen one and automatic quality, the smallest wins.
+  "everything"; whoever started watching but hasn't said a size yet doesn't
+  count), and it uses that as the maximum height — together with the chosen one
+  and automatic quality, the smallest wins. The streamer goes up immediately
+  and only goes down after 10 s of a smaller request (the first size after
+  nobody was watching applies immediately).
 
 **Audio:** `u32 seq`, `u64 hora_da_captura`, Opus packet until the end (48 kHz,
 stereo, 10 ms per packet, ~96 kbit/s). Only the screen has audio.

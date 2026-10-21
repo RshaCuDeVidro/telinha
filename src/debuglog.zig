@@ -12,6 +12,7 @@ const c = @cImport(@cInclude("debugsys.h"));
 const sync = @import("sync.zig");
 const config = @import("config.zig");
 const mp4 = @import("mp4.zig");
+const clip = @import("clip.zig");
 const proto = @import("proto.zig");
 const crash = @import("crash.zig");
 const gpa = std.heap.c_allocator;
@@ -312,7 +313,18 @@ fn readFile(p: [:0]const u8, buf: []u8) ?[]const u8 {
 // ---------------------------------------------------------------------------
 // Mandar o log
 
-pub const Method = enum(u8) { gofile, webhook };
+pub const Method = enum(u8) { gofile, webhook, room };
+
+/// Envio pela sala (pro dono): a UI registra quando está conectada. Põe o log
+/// na fila de envio, em pedaços; a resposta chega por `roomAck`.
+pub var room_send: ?*const fn (data: []const u8, what: What) bool = null;
+var room_ack: std.atomic.Value(u16) = .init(0); // 0 = esperando; senão 1 + resultado (proto.log_ack_*) | quantos << 8
+const max_room = 8 * 1024 * 1024;
+
+/// O servidor respondeu sobre o log mandado pela sala.
+pub fn roomAck(result: u8, n: u8) void {
+    room_ack.store(@as(u16, result + 1) | @as(u16, n) << 8, .release);
+}
 pub const SendState = enum(u8) { idle, sending, done, failed };
 
 var send_state: std.atomic.Value(SendState) = .init(.idle);
@@ -383,7 +395,11 @@ fn sendJob(j: *Job) void {
     var sb: [600]u8 = undefined;
     const dir_end = std.mem.lastIndexOfAny(u8, p, "/\\") orelse return setResult(.failed, "caminho estranho");
     const sp = std.fmt.bufPrintZ(&sb, "{s}{s}", .{ p[0 .. dir_end + 1], send_name }) catch return setResult(.failed, "caminho longo demais");
-    const max: usize = if (j.method == .webhook) max_webhook else max_gofile;
+    const max: usize = switch (j.method) {
+        .webhook => max_webhook,
+        .gofile => max_gofile,
+        .room => max_room,
+    };
     if (j.what == .crash) {
         // relatório: o que deu errado + o fim do log (se tiver)
         var cb2: [600]u8 = undefined;
@@ -394,6 +410,7 @@ fn sendJob(j: *Job) void {
         // só o log da execução que travou (o arquivo tem várias)
         appendRunLog(w, cp, p, max - 1024 * 1024);
     } else snapshot(p, sp, max) catch return setResult(.failed, "não consegui ler o log (está vazio?)");
+    if (j.method == .room) return sendRoom(j, sp);
     var out: [8192]u8 = undefined;
     const url_z = blk: {
         var ub: [600]u8 = undefined;
@@ -429,6 +446,68 @@ fn sendJob(j: *Job) void {
     line("{s} enviado: {s}", .{ if (j.what == .crash) "relatório de travamento" else "log", link });
     if (j.what == .crash) crash.dismiss();
     setResult(.done, link);
+}
+
+/// Log que chegou pela sala (somos o dono): salva em <config>/logs-recebidos.
+/// Devolve o caminho (em `out`).
+pub fn saveReceived(name: []const u8, what: u8, data: []const u8, out: []u8) ?[:0]const u8 {
+    var pb: [600]u8 = undefined;
+    const p = path(&pb) orelse return null;
+    const dir_end = std.mem.lastIndexOfAny(u8, p, "/\\") orelse return null;
+    var db: [640]u8 = undefined;
+    const dir = std.fmt.bufPrintZ(&db, "{s}logs-recebidos", .{p[0 .. dir_end + 1]}) catch return null;
+    clip.makeDir(dir);
+    var clean: [48]u8 = undefined;
+    var n: usize = 0;
+    for (name) |ch| {
+        if (n == clean.len) break;
+        clean[n] = if (std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_' or ch >= 0x80) ch else '_';
+        n += 1;
+    }
+    const t = sync.dateTime();
+    const fp = std.fmt.bufPrintZ(out, "{s}{s}{d:0>4}-{d:0>2}-{d:0>2}_{d:0>2}-{d:0>2}-{d:0>2}_{s}_{s}.txt", .{
+        dir, if (sync.is_windows) "\\" else "/", t.year, t.month, t.day, t.h, t.m, t.s, clean[0..n], if (what == proto.log_what_crash) "travou" else "log",
+    }) catch return null;
+    const f = mp4.openFile(fp, "wb") orelse return null;
+    defer _ = cio.fclose(f);
+    if (cio.fwrite(data.ptr, 1, data.len, f) != data.len) return null;
+    return fp;
+}
+
+/// Pela sala: lê a cópia, põe na fila e espera o servidor dizer onde foi parar.
+fn sendRoom(j: *Job, sp: [:0]const u8) void {
+    const send_fn = room_send orelse return setResult(.failed, "entre numa sala pra mandar pro dono dela");
+    const f = cio.fopen(sp.ptr, "rb") orelse return setResult(.failed, "não consegui ler o log (está vazio?)");
+    const buf = gpa.alloc(u8, max_room) catch {
+        _ = cio.fclose(f);
+        return setResult(.failed, "sem memória");
+    };
+    defer gpa.free(buf);
+    const n = cio.fread(buf.ptr, 1, buf.len, f);
+    _ = cio.fclose(f);
+    if (n == 0) return setResult(.failed, "não consegui ler o log (está vazio?)");
+    room_ack.store(0, .release);
+    if (!send_fn(buf[0..n], j.what)) return setResult(.failed, "entre numa sala pra mandar pro dono dela");
+    // um log grande numa conexão lenta demora: até 2 min pela resposta
+    var waited: u32 = 0;
+    while (waited < 120_000) : (waited += 100) {
+        const ack = room_ack.load(.acquire);
+        if (ack != 0) {
+            const result: u8 = @intCast((ack & 0xFF) - 1);
+            const count: u8 = @intCast(ack >> 8);
+            line("{s} pela sala: resultado {d} ({d} com a coroa)", .{ if (j.what == .crash) "relatório de travamento" else "log", result, count });
+            switch (result) {
+                proto.log_ack_delivered, proto.log_ack_saved => {
+                    if (j.what == .crash) crash.dismiss();
+                    return setResult(.done, if (result == proto.log_ack_saved) "saved" else "delivered");
+                },
+                proto.log_ack_nobody => return setResult(.failed, "ninguém com a coroa está na sala agora (e o servidor não guarda logs)"),
+                else => return setResult(.failed, "o servidor recusou (um log por minuto, até 8 MB)"),
+            }
+        }
+        sync.sleepMs(100);
+    }
+    setResult(.failed, "o servidor da sala não respondeu (versão antiga?)");
 }
 
 pub fn gofileLink(body: []const u8) ?[]const u8 {

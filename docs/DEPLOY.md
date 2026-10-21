@@ -48,6 +48,9 @@ Wants=network-online.target
 ExecStart=/usr/local/bin/telinha-server --porta 7777 --nome "The gang's room"
 Environment=TELINHA_SENHA=a-good-password
 Environment=TELINHA_ADMIN=secret-token
+# debug logs that people send "to the room owner" are also kept here
+Environment=TELINHA_LOGS=/var/lib/telinha/logs
+StateDirectory=telinha
 DynamicUser=yes
 Restart=on-failure
 NoNewPrivileges=yes
@@ -63,6 +66,14 @@ sudo install -m755 zig-out/bin/telinha-server-x86_64 /usr/local/bin/telinha-serv
 sudo systemctl enable --now telinha
 journalctl -u telinha -f
 ```
+
+## Debug logs from players
+
+In the app, *Settings → Debugging → To the room owner* sends the log through the
+room itself. It reaches everyone who joined with the admin token (it lands in
+their `logs-recebidos` folder, next to the config). With `--logs DIR` (or
+`TELINHA_LOGS`), the dedicated server also keeps a copy, so a log sent while no
+admin is around isn't lost. Each person can send one log per minute, up to 8 MB.
 
 ## Firewall and bandwidth
 

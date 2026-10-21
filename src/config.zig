@@ -50,7 +50,7 @@ pub const Config = struct {
     audio_app: [64]u8 = zstr("", 64), // som de um programa só ("" = tudo; "*janela" = o da janela)
     audio_exclude: [512]u8 = zstr("", 512), // "tudo" menos esses programas (separados por "|" no arquivo)
     debug_log: bool = false, // grava o log de depuração (tudo) num arquivo
-    debug_send: i32 = 0, // como mandar o log: 0 = gofile.io (link), 1 = webhook
+    debug_send: i32 = 0, // como mandar o log: 0 = gofile.io (link), 1 = webhook, 2 = pela sala, pro dono
     debug_webhook: [512]u8 = zstr("", 512), // URL do webhook (Discord etc.)
     clips: bool = true, // guardar os últimos 30 s do que assiste (pra clipe)
     camera_device: [160]u8 = zstr("", 160), // vazio = a primeira câmera
@@ -265,7 +265,7 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
     } else if (std.mem.eql(u8, k, "debug_log")) {
         cfg.debug_log = int != 0;
     } else if (std.mem.eql(u8, k, "debug_send")) {
-        cfg.debug_send = std.math.clamp(int, 0, 1);
+        cfg.debug_send = std.math.clamp(int, 0, 2);
     } else if (std.mem.eql(u8, k, "debug_webhook")) {
         setStr(&cfg.debug_webhook, v);
     } else if (std.mem.eql(u8, k, "check_updates")) {
