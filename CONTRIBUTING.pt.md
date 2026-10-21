@@ -101,6 +101,8 @@ Windows); é só rodar de novo.
 ## Soltando uma versão
 
 1. Suba a versão em `build.zig.zon` (`.version`) e escreva a seção nos dois changelogs (`CHANGELOG.md` em inglês e `CHANGELOG.pt.md`).
+   As notas do release saem dessa seção do `CHANGELOG.md` (`tools/release_notes.sh`): o que vem
+   antes de `<!-- detalhes -->` aparece aberto (os destaques), o resto fica num "Full changelog" que abre com um clique.
 2. Commit, depois a tag com o mesmo número:
 
    ```sh

@@ -729,6 +729,10 @@ pub const App = struct {
                 a.cfg.hardware = false;
             } else if (std.mem.eql(u8, arg, "--estatisticas")) {
                 a.cfg.stats_always = true;
+            } else if (std.mem.startsWith(u8, arg, "telinha://")) {
+                // convite aberto pelo sistema (link clicado: x-scheme-handler/telinha)
+                action = .join;
+                config.setStr(&a.cfg.join_addr, arg);
             }
         }
         switch (action) {

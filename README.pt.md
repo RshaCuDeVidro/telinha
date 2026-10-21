@@ -54,6 +54,16 @@ Pegue a versão mais recente na [página de Releases](../../releases/latest).
 > [!NOTE]
 > O `.exe` não é assinado, então o SmartScreen avisa na primeira vez. Clique em **Mais informações → Executar assim mesmo**.
 
+### Instalar no Linux
+
+Um comando, sem `sudo`. Ele baixa a última versão, confere o SHA256, coloca o `telinha` em `~/.local/bin`, cria o atalho no menu de aplicativos com o ícone e faz os convites `telinha://` abrirem no telinha:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/RshaCuDeVidro/telinha/main/install.sh | sh
+```
+
+Rode de novo pra atualizar. Pra remover, use `sh install.sh --remove`. Se faltar alguma biblioteca do sistema, o instalador mostra o comando pra sua distro.
+
 No Linux, o binário roda em qualquer distro com glibc 2.31 ou mais nova, como Ubuntu e Pop!_OS 20.04 em diante, Debian 11+, Fedora e Arch. Ele usa algumas bibliotecas do sistema que nem toda distro instala por padrão:
 
 ```sh

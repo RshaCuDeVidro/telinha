@@ -54,6 +54,16 @@ Grab the latest build from the [Releases page](../../releases/latest).
 > [!NOTE]
 > The Windows executable is not code-signed, so SmartScreen will warn on first launch. Choose **More info → Run anyway**.
 
+### Install on Linux
+
+One command, no `sudo`. It downloads the latest release, checks its SHA256, puts `telinha` in `~/.local/bin`, adds it to your app menu with its icon and makes `telinha://` invite links open in telinha:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/RshaCuDeVidro/telinha/main/install.sh | sh
+```
+
+Run it again to update. To uninstall, use `sh install.sh --remove`. If a system library is missing, the installer tells you the command for your distro.
+
 On Linux, the binary runs on any distro with glibc 2.31 or newer, such as Ubuntu or Pop!_OS 20.04+, Debian 11+, Fedora and Arch. It uses a few system libraries that some distros don't install by default:
 
 ```sh

@@ -6,8 +6,27 @@
 
 Talks to 3.0 (the new fields are optional).
 
-- **Linux binary runs on older distros**: built against glibc 2.31 (Ubuntu/Pop!_OS 20.04 and newer) with GLFW built in, so it no longer needs the distro's GLFW (3.3 on Ubuntu 22.04/24.04 was too old). X11 and Wayland are picked at runtime, as before.
+### Highlights
 
+- 🚀 **Straight through the GPU**: streaming and watching skip the CPU on NVIDIA (Linux and Windows) and on Intel/AMD on Linux. A 1080p60 stream costs the streamer about 20% of one core.
+- 📡 **Video, sound and voice over UDP**: a lost packet no longer holds up everything behind it, and voice never waits for video.
+- 🎞️ **HEVC** on NVIDIA when everyone watching can decode it: less bandwidth for the same quality.
+- 🖱️ **Cursor outside the video** and **streams sized to what viewers see**: less GPU and less network for everyone.
+- ⌨️ **Global shortcuts**, **push-to-talk**, **clips from 5 s to 10 min**, screenshots and drawing over the stream.
+- 🌐 **English interface**, new themes and your own CSS.
+- 🐧 **Runs on older Linux distros**, with a one-line installer.
+
+<!-- detalhes -->
+
+### All changes
+
+- **Linux binary runs on older distros**: built against glibc 2.31 (Ubuntu/Pop!_OS 20.04 and newer) with GLFW built in, so it no longer needs the distro's GLFW (3.3 on Ubuntu 22.04/24.04 was too old). X11 and Wayland are picked at runtime, as before.
+- **One-line Linux installer** (`install.sh`): downloads the latest release,
+  checks the SHA256, adds telinha to the app menu and opens `telinha://` invite
+  links.
+- Stats drop to zero when the image stops ("no new frame for N s"), instead of
+  showing the last value. Crash reports carry the commit and run ID, attach only
+  that run's log, and each release ships the matching debug symbols.
 - **Video, sound and voice over UDP**: a lost packet no longer holds back
   everything behind it (over TCP, voice got stuck behind a video frame, and a
   loss at the end of a burst cost ~200 ms). The receiver asks back only for the
@@ -108,6 +127,19 @@ Talks to 3.0 (the new fields are optional).
 
 **Performance and memory** (measured before/after in the same scenarios):
 
+- **Stream without going through the CPU on Windows** (NVIDIA): the DXGI
+  texture is cropped and scaled by a CUDA kernel and goes straight to NVENC. Any
+  failure falls back to the CPU path.
+- **Stream without going through the CPU on Linux with Intel/AMD** (VA-API): the
+  compositor's DMA-BUF is imported as a surface, the GPU crops, scales and
+  converts it to NV12, and the encoder reads it directly. A color self-test runs
+  when it opens; any failure falls back to the CPU.
+- **Cursor outside the video**: viewers draw the arrow themselves, so moving the
+  mouse over a still screen sends no frames at all (needs everyone watching on
+  3.1).
+- **Stream at the size viewers see**: if everyone watches you in a small grid
+  tile, no 1080p is sent. It goes back up the moment someone enlarges it, and
+  goes down 3 s later. Recordings survive resolution changes.
 - **Stream without going through the CPU** (Linux + NVIDIA): the frame the
   compositor hands over on the GPU (DMA-BUF) is cropped, scaled and gets the
   cursor right there, and goes to NVENC through CUDA — nothing is read back to

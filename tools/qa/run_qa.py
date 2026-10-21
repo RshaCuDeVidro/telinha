@@ -791,10 +791,19 @@ def atalho_de_clipe():
         b.click("##gear")
         b.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
         b.click("##cfg-atalhos")
-        settings_click(b, "##clipkey")
-        time.sleep(0.3)
-        b.key("k")
-        b.wait(lambda st: st["cfg"]["clip_key"] == 75, 3, "escolher a tecla K")
+        # com a máquina ocupada o clique às vezes chega depois da tecla: tenta de novo
+        for tentativa in range(2):
+            settings_click(b, "##clipkey")
+            time.sleep(0.4)
+            b.key("k")
+            try:
+                b.wait(lambda st: st["cfg"]["clip_key"] == 75, 3, "escolher a tecla K")
+                break
+            except QAError:
+                if tentativa == 1:
+                    raise
+                b.key("Escape")
+                time.sleep(0.3)
         settings_click(b, "Fechar")
         b.wait(lambda st: not st["settings_modal"], 3, "fechar as configurações")
         b.d.set_input_focus(XX.NONE, XX.RevertToNone, XX.CurrentTime)

@@ -81,6 +81,10 @@ pub fn main(init: std.process.Init) !void {
     c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MAJOR, 3);
     c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MINOR, 0);
     c.glfwWindowHint(c.GLFW_SCALE_TO_MONITOR, c.GLFW_TRUE);
+    // o nome da janela casa com o telinha.desktop (ícone certo na barra/dock)
+    c.glfwWindowHintString(c.GLFW_WAYLAND_APP_ID, "telinha");
+    c.glfwWindowHintString(c.GLFW_X11_CLASS_NAME, "telinha");
+    c.glfwWindowHintString(c.GLFW_X11_INSTANCE_NAME, "telinha");
     const win = c.glfwCreateWindow(1280, 760, "telinha", null, null) orelse return error.Window;
     defer c.glfwDestroyWindow(win);
     c.glfwSetWindowSizeLimits(win, 900, 560, c.GLFW_DONT_CARE, c.GLFW_DONT_CARE);

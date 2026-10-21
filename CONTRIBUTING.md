@@ -103,6 +103,8 @@ on Windows); just run it again.
 ## Cutting a release
 
 1. Bump the version in `build.zig.zon` (`.version`) and write the section in both changelogs (`CHANGELOG.md` and the Portuguese `CHANGELOG.pt.md`).
+   The release notes come from that `CHANGELOG.md` section (`tools/release_notes.sh`): whatever is
+   before `<!-- detalhes -->` is shown open (the highlights), the rest goes into a collapsible "Full changelog".
 2. Commit, then tag with the same number:
 
    ```sh

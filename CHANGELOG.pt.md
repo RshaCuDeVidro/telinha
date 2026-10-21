@@ -6,7 +6,28 @@
 
 Conversa com a 3.0 (os campos novos são opcionais).
 
+### Destaques
+
+- 🚀 **Direto pela placa de vídeo**: transmitir e assistir sem passar pela CPU na NVIDIA (Linux e Windows) e na Intel/AMD no Linux. Uma transmissão 1080p60 custa uns 20% de um núcleo pra quem transmite.
+- 📡 **Vídeo, som e voz por UDP**: um pacote perdido não segura mais tudo que vem atrás, e a voz nunca espera o vídeo.
+- 🎞️ **HEVC** na NVIDIA quando todo mundo que assiste consegue decodificar: menos banda pela mesma qualidade.
+- 🖱️ **Cursor fora do vídeo** e **transmissão no tamanho de quem assiste**: menos placa de vídeo e menos rede pra todo mundo.
+- ⌨️ **Atalhos globais**, **apertar pra falar**, **clipes de 5 s a 10 min**, print e desenho por cima da transmissão.
+- 🌐 **Interface em inglês**, temas novos e o seu próprio CSS.
+- 🐧 **Roda em distro Linux mais antiga**, com instalador de uma linha.
+
+<!-- detalhes -->
+
+### Todas as mudanças
+
 - **Binário Linux roda em distro mais antiga**: compilado contra a glibc 2.31 (Ubuntu/Pop!_OS 20.04 em diante) e com a GLFW embutida, sem depender da GLFW da distro (a 3.3 do Ubuntu 22.04/24.04 era velha demais). X11 ou Wayland continua sendo escolhido na hora de rodar.
+- **Instalador de uma linha no Linux** (`install.sh`): baixa a última versão,
+  confere o SHA256, põe o telinha no menu de aplicativos e abre os convites
+  `telinha://`.
+- As estatísticas caem pra zero quando a imagem para ("sem imagem nova há N s"),
+  em vez de mostrar o último valor. O relatório de travamento leva o commit e o ID
+  da execução, anexa só o log daquela execução, e cada versão publica os símbolos
+  certos.
 - **Vídeo, som e voz por UDP**: um pacote perdido não segura mais tudo que vem
   atrás (no TCP, a voz ficava presa atrás de um quadro de vídeo, e perda no
   fim de uma rajada custava ~200 ms). Quem recebe pede de volta só o pedaço
@@ -104,6 +125,18 @@ Conversa com a 3.0 (os campos novos são opcionais).
 
 **Desempenho e memória** (medido antes/depois nos mesmos cenários):
 
+- **Transmitir sem passar pela CPU no Windows** (NVIDIA): a textura do DXGI é
+  recortada e escalada num kernel CUDA e vai direto pro NVENC. Qualquer falha
+  volta pro caminho da CPU.
+- **Transmitir sem passar pela CPU no Linux com Intel/AMD** (VA-API): o DMA-BUF
+  do compositor vira uma superfície, a placa recorta, escala e converte pra NV12,
+  e o encoder lê direto. Um autoteste de cor roda ao abrir; qualquer falha volta
+  pra CPU.
+- **Cursor fora do vídeo**: quem assiste desenha a seta. Mexer o mouse com a tela
+  parada não manda nenhum quadro (precisa de todo mundo que assiste na 3.1).
+- **Transmissão no tamanho de quem assiste**: se todo mundo vê você num
+  quadradinho da grade, não vai 1080p. Sobe na hora em que alguém aumenta e desce
+  3 s depois. A gravação sobrevive à mudança de resolução.
 - **Transmitir sem passar pela CPU** (Linux + NVIDIA): o quadro que o
   compositor entrega na placa (DMA-BUF) é recortado, escalado e ganha o
   cursor ali mesmo, e vai pro NVENC por CUDA — nada é lido de volta pra
