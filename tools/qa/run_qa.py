@@ -256,7 +256,7 @@ def tela_inicial():
 
 @test
 def sala_controles():
-    """Sala: convite, chat (Enter e botão), esconder/mostrar chat, surdo, configurações, compartilhar tela, assistir pela barra lateral e pelo card, modo cinema, F11."""
+    """Sala: convite, chat (Enter e botão), esconder/mostrar chat, surdo, configurações, compartilhar tela, assistir pelas pílulas do topo e pelo card, modo cinema, F11."""
     with Session("controles") as s:
         p = port()
         a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--senha", "pw1"])

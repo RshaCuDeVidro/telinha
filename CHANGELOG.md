@@ -2,6 +2,71 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## Unreleased
+
+Talks to 3.1 (the new messages are ignored by older apps and servers).
+
+### Highlights
+
+- 🎨 **New room layout**: a top bar with who's live, the stage in the middle, a floating control dock and a single side card with the members and the chat. Nothing overlaps, even in a small window.
+- 🖥️ **Fullscreen button** on each stream; controls and cursor hide when the mouse stops.
+- 🪟 **Windows**: Intel/AMD streams straight from the GPU (D3D11 video processor → Media Foundation), alt-tab no longer stops the stream, minimized windows show up in the list, and sound capture is sturdier.
+- 🎙️ **Quiet microphones get louder** (automatic gain) and there's a mic volume slider.
+- 🛡️ **Rooms hold up** against someone joining and leaving over and over.
+- 📜 **Debug log straight to the room owner**, and much more detail in it.
+
+<!-- detalhes -->
+
+### All changes
+
+- **New room layout**: the old sidebar, room strip and user panel became a top
+  bar (room, connection, live pills you click to watch, lock/invite/chat/settings
+  on the right), the stage with the streams, a floating dock (you, mic, deafen,
+  share, camera, leave) and a right card with who's in the room and the chat.
+  In a narrow window the card hides (a button brings it back), the live pills
+  that don't fit become "+N live", and the dock drops your name and then the
+  share label. New default theme (ink blue with a violet accent). Chat reactions
+  sit under the message and wrap; their counts were wrong ("#") and are fixed.
+- **Fullscreen** button on the stream (besides double click / F11); with the
+  mouse still for a moment, the stream's controls and the cursor hide.
+- **Windows, Intel/AMD without the CPU**: the DXGI capture crops, scales and
+  converts the screen to NV12 on the D3D11 video processor and Media Foundation
+  encodes that texture directly; preview through the GPU too. A color self-test
+  against the CPU runs on start; any failure (no video processor, self-test,
+  encoder that won't take textures, lost screen) falls back to the CPU path.
+  `TELINHA_SEM_D3DVP=1` turns it off.
+- **Alt-tab / fullscreen games on Windows**: losing DXGI access (another app
+  going exclusive fullscreen, UAC, lock screen) is retried for 30 s instead of
+  ending the stream, and if a stream stops by itself the app restarts it (up to
+  3 times a minute).
+- **Window list on Windows** includes minimized windows ("— minimized"); picking
+  one restores it without stealing focus.
+- **Windows sound**: WASAPI opens without hardware offloading and retries with
+  other settings (the "-2" error); if capturing a single program fails it falls
+  back to all the sound with a warning; a warning when you exclude telinha's own
+  sound by mistake. The audio library's own messages go to the debug log.
+- **Microphone unmuting by itself**: an admin mute is remembered by the person's
+  key, so leaving and coming back no longer clears it.
+- **Quiet microphones**: automatic gain (up to +18 dB, measured only while
+  speaking so it doesn't raise the noise, drops fast, never clips) and a mic
+  volume (25–300%) in Voice settings.
+- **Rooms survive join/leave storms**: a viewer that hasn't reported its size
+  no longer shrinks the stream for everyone; the streamer only downscales after
+  10 s; key frame requests limited to one per second; at most 6 joins per 30 s
+  per person (by key, or by IP without one; not for the public link or local).
+- **Memory while minimized**: the preview of your own screen is no longer
+  requested nor uploaded to the GPU while the window is minimized (the AMD
+  driver piled up those uploads without a buffer swap: 200 MB → 900 MB in 90 s).
+- **Debug log to the room owner**: a third option (besides gofile and a
+  webhook) sends the log in pieces over the room connection; the owner gets it
+  in `logs-recebidos`, and a dedicated server started with `--logs DIR` (or
+  `TELINHA_LOGS`) keeps it on disk. One log per minute, up to 8 MB.
+- **Debug log**: per-thread CPU on Windows too (named threads), key frames
+  counted by reason in the stream line, viewer size cap changes, capture timing
+  every 5 s, the sound setup at start (backend, output, default mic, whether a
+  single program can be captured), which Media Foundation encoder opened (and
+  which refused), why the mic turned on/off and why a stream stopped.
+
 ## 3.1.0
 
 Talks to 3.0 (the new fields are optional).

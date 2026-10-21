@@ -2,6 +2,75 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## Ainda não lançada
+
+Conversa com a 3.1 (as mensagens novas são ignoradas por app e servidor antigos).
+
+### Destaques
+
+- 🎨 **Layout novo da sala**: barra no topo com quem está ao vivo, o palco no meio, uma cápsula de controles flutuante e um cartão só do lado com quem está na sala e o chat. Nada se sobrepõe, nem em janela pequena.
+- 🖥️ **Botão de tela cheia** em cada transmissão; controles e cursor somem com o mouse parado.
+- 🪟 **Windows**: Intel/AMD transmitem direto pela placa (processador de vídeo do D3D11 → Media Foundation), alt-tab não para mais a transmissão, janelas minimizadas aparecem na lista e a captura de som ficou mais firme.
+- 🎙️ **Microfone baixo sobe sozinho** (ganho automático) e tem volume do microfone.
+- 🛡️ **A sala aguenta** alguém entrando e saindo sem parar.
+- 📜 **Log de depuração direto pro dono da sala**, e bem mais detalhe nele.
+
+<!-- detalhes -->
+
+### Todas as mudanças
+
+- **Layout novo da sala**: a barra lateral, a faixa da sala e o painel do
+  usuário viraram uma barra no topo (sala, conexão, pílulas de quem está ao vivo
+  — clique pra assistir — e cadeado/convite/chat/configurações na direita), o
+  palco com as transmissões, uma cápsula flutuante (você, microfone, surdo,
+  compartilhar, câmera, sair) e um cartão na direita com quem está na sala e o
+  chat. Em janela estreita o cartão some (um botão traz de volta), as pílulas
+  que não cabem viram "+N ao vivo" e a cápsula tira o seu nome e depois o texto
+  do compartilhar. Tema padrão novo (azul tinta com destaque violeta). As
+  reações do chat ficam embaixo da mensagem e quebram linha; as contagens
+  apareciam erradas ("#") e foram consertadas.
+- **Tela cheia** com botão na transmissão (além do clique duplo / F11); com o
+  mouse parado um instante, os controles da transmissão e o cursor somem.
+- **Windows, Intel/AMD sem passar pela CPU**: a captura DXGI recorta, escala e
+  converte a tela pra NV12 no processador de vídeo do D3D11 e o Media
+  Foundation codifica essa textura direto; a prévia também vai pela placa.
+  Autoteste de cor contra a CPU ao abrir; qualquer falha (sem processador de
+  vídeo, autoteste, encoder que não aceita textura, perdeu a tela) volta pro
+  caminho da CPU. `TELINHA_SEM_D3DVP=1` desliga.
+- **Alt-tab / jogo em tela cheia no Windows**: perder o acesso do DXGI (outro
+  programa em tela cheia exclusiva, UAC, tela de bloqueio) é tentado de novo por
+  30 s em vez de encerrar a transmissão, e se a transmissão parar sozinha o app
+  recomeça (até 3 vezes por minuto).
+- **Lista de janelas no Windows** mostra as minimizadas ("— minimizada");
+  escolher uma restaura sem roubar o foco.
+- **Som no Windows**: o WASAPI abre sem "hardware offloading" e tenta de novo
+  com outras configurações (o erro "-2"); se capturar um programa só falhar,
+  volta pra todo o som com aviso; aviso quando você exclui o som do próprio
+  telinha sem querer. As mensagens da biblioteca de áudio vão pro log.
+- **Microfone desmutando sozinho**: o silenciar do admin fica guardado pela
+  chave da pessoa, então sair e voltar não tira mais.
+- **Microfone baixo**: ganho automático (até +18 dB, medido só na fala pra não
+  subir o ruído, desce rápido, nunca estoura) e volume do microfone (25–300%)
+  nas configurações de voz.
+- **A sala aguenta entra-e-sai**: quem ainda não disse o tamanho em que assiste
+  não encolhe mais a transmissão de todo mundo; quem transmite só reduz depois
+  de 10 s; pedidos de quadro-chave limitados a um por segundo; no máximo 6
+  entradas a cada 30 s por pessoa (pela chave, ou pelo IP sem chave; não vale
+  pro link público nem pra mesma máquina).
+- **Memória minimizado**: a miniatura da própria tela não é mais pedida nem
+  sobe pra placa com a janela minimizada (o driver da AMD juntava esses uploads
+  sem trocar a tela: 200 MB → 900 MB em 90 s).
+- **Log de depuração pro dono da sala**: terceira opção (além de gofile e
+  webhook) que manda o log em pedaços pela própria conexão; o dono recebe em
+  `logs-recebidos`, e o servidor dedicado com `--logs PASTA` (ou
+  `TELINHA_LOGS`) guarda em disco. Um log por minuto, até 8 MB.
+- **Log de depuração**: CPU por thread também no Windows (threads com nome),
+  quadros-chave contados por motivo na linha da transmissão, teto de tamanho de
+  quem assiste mudando, tempos da captura a cada 5 s, o som no começo (backend,
+  saída, microfone padrão, se dá pra capturar um programa só), qual encoder do
+  Media Foundation abriu (e quais recusaram), por que o microfone ligou/desligou
+  e por que a transmissão parou.
+
 ## 3.1.0
 
 Conversa com a 3.0 (os campos novos são opcionais).

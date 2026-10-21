@@ -339,6 +339,10 @@ fn slash(d: *c.ImDrawList, top_left: c.ImVec2_c, size: f32) void {
     c.ImDrawList_AddLine(d, a, b, col.red, S(2), 0);
 }
 
+fn liveBadgeWidth() f32 {
+    return textSizeF(font_bold, 10, tr("AO VIVO")).x + S(10);
+}
+
 fn liveBadge(d: *c.ImDrawList, pos: c.ImVec2_c) f32 {
     const t = tr("AO VIVO");
     const ts = textSizeF(font_bold, 10, t);
@@ -901,7 +905,22 @@ pub const App = struct {
             const idr_room = sh.idr_room.swap(0, .monotonic);
             const idr_clip = sh.idr_clip.swap(0, .monotonic);
             debuglog.line("transmitindo ({s}): {s} {d}x{d} {d:.1} q/s {d:.0} kbit/s (alvo {d}) | captura {s}, encoder {s} {d:.1} ms | IDR {d} (sala {d}, clipe {d}) | congestionado={} som={} ninguém_assistindo={}", .{
-                if (sh.kind == proto.kind_camera) "câmera" else "tela", @tagName(sh.state), sh.w, sh.h, sh.shownFps(), sh.shownKbps() * 8, sh.bitrate_kbps, sh.backendSlice(), sh.encoder_name, sh.encode_ms, idr_room + idr_clip, idr_room, idr_clip, sh.congested, sh.audio_on, sh.idle.load(.monotonic),
+                if (sh.kind == proto.kind_camera) "câmera" else "tela",
+                @tagName(sh.state),
+                sh.w,
+                sh.h,
+                sh.shownFps(),
+                sh.shownKbps() * 8,
+                sh.bitrate_kbps,
+                sh.backendSlice(),
+                sh.encoder_name,
+                sh.encode_ms,
+                idr_room + idr_clip,
+                idr_room,
+                idr_clip,
+                sh.congested,
+                sh.audio_on,
+                sh.idle.load(.monotonic),
             });
         }
     }
@@ -2357,25 +2376,25 @@ pub const App = struct {
         const status = cl.status;
         cl.mutex.unlock();
 
-        // janela estreita: se o chat estiver aberto, a barra lateral recolhe; se nem
-        // assim couber, o chat fica escondido (o botão no topo continua mostrando os não lidos)
-        const want_chat = !a.theater and a.cfg.show_chat;
-        var side_w = if (a.theater) 0 else S(260);
-        if (want_chat and size.x - side_w - S(320) < S(480)) side_w = 0;
-        const chat_w = if (want_chat and size.x - side_w - S(320) >= S(400)) S(320) else 0;
-        a.chat_visible = chat_w > 0;
-        a.side_visible = side_w > 0;
-        const main_w = size.x - side_w - chat_w;
-
-        if (side_w > 0) {
+        // barra do topo (sala, quem está ao vivo, ações), o palco com as
+        // transmissões e a cápsula de controles, e o painel da direita (quem
+        // está na sala + chat). Cinema/tela cheia: só o palco.
+        const header_h = if (a.theater) 0 else S(58);
+        const want_panel = !a.theater and a.cfg.show_chat;
+        // janela estreita: o painel some (o botão do topo traz de volta)
+        const panel_w = if (want_panel and size.x - S(350) >= S(560)) S(350) else 0;
+        a.chat_visible = panel_w > 0;
+        a.side_visible = panel_w > 0;
+        const main_w = size.x - panel_w;
+        if (header_h > 0) {
             c.igSetCursorPos(v2(0, 0));
-            a.drawSidebar(cl, v2(side_w, size.y));
+            a.drawHeader(cl, v2(size.x, header_h));
         }
-        c.igSetCursorPos(v2(side_w, 0));
-        a.drawMain(cl, v2(main_w, size.y));
-        if (chat_w > 0) {
-            c.igSetCursorPos(v2(side_w + main_w, 0));
-            a.drawChat(cl, v2(chat_w, size.y));
+        c.igSetCursorPos(v2(0, header_h));
+        a.drawMain(cl, v2(main_w, size.y - header_h));
+        if (panel_w > 0) {
+            c.igSetCursorPos(v2(main_w, header_h));
+            a.drawPanel(cl, v2(panel_w, size.y - header_h));
         }
 
         const overlay = status == .connecting or (status == .failed and (a.was_connected or a.reconnect.attempt > 0));
@@ -2612,15 +2631,15 @@ pub const App = struct {
         c.igDummy(v2(0, S(2)));
     }
 
-    fn drawSidebar(a: *App, cl: *Client, size: c.ImVec2_c) void {
-        c.igPushStyleColor_U32(c.ImGuiCol_ChildBg, col.bg_side);
-        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(0, 0));
-        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_ItemSpacing, v2(0, 0));
-        _ = c.igBeginChild_Str("sidebar", size, 0, c.ImGuiWindowFlags_NoScrollbar);
+    /// Barra do topo: a sala (logo, nome, conexão), quem está ao vivo (pílulas:
+    /// clique pra assistir) e, na direita, cadeado, convite, painel e
+    /// configurações.
+    fn drawHeader(a: *App, cl: *Client, size: c.ImVec2_c) void {
         const d = drawList();
-        const origin = c.igGetCursorScreenPos();
+        const o = c.igGetCursorScreenPos();
+        rectFill(d, o.x, o.y, o.x + size.x, o.y + size.y, col.bg_dark, 0);
+        rectFill(d, o.x, o.y + size.y - 1, o.x + size.x, o.y + size.y, withAlpha(col.text, 16), 0);
 
-        // cabeçalho da sala
         cl.mutex.lock();
         var room_buf: [64]u8 = undefined;
         const room_name = blk: {
@@ -2638,165 +2657,294 @@ pub const App = struct {
         @memcpy(members[0..n_members], cl.members.items[0..n_members]);
         cl.mutex.unlock();
 
-        const hh = S(56);
-        rectFill(d, origin.x, origin.y + hh - 1, origin.x + size.x, origin.y + hh, rgba(0x000000, 60), 0);
-        drawTextF(d, font_bold, 16, v2(origin.x + S(16), origin.y + S(10)), col.header, if (room_name.len > 0) room_name else "telinha");
-        // quem hospeda vê a porta; quem entrou vê por onde chegou (o link público passa mesmo pelo túnel)
-        const sub = if (a.server) |s|
-            fmtZ("{s} anfitrião · porta {d}", .{ ic.crown, s.port })
+        // onde começam os botões da direita (o resto não passa disso)
+        const bs = S(36);
+        const n_btns: f32 = @floatFromInt(2 + @as(u8, @intFromBool(!a.chat_visible)) + @as(u8, @intFromBool(i_am_admin or locked)));
+        const right_start = o.x + size.x - S(12) - n_btns * bs - (n_btns - 1) * S(4) - S(16);
+
+        // logo + nome da sala + linha da conexão
+        c.ImDrawList_PushClipRect(d, o, v2(@max(o.x, right_start - S(4)), o.y + size.y), true);
+        const lz = S(34);
+        const lx = o.x + S(14);
+        const ly = o.y + (size.y - lz) / 2;
+        if (logo_tex == 0) gl.upload(&logo_tex, logo_rgba, 128, 128, gl.RGBA);
+        c.ImDrawList_AddImageRounded(d, texRef(logo_tex), v2(lx, ly), v2(lx + lz, ly + lz), v2(0, 0), v2(1, 1), col.white, S(9), 0);
+        const tx = lx + lz + S(12);
+        const title = if (room_name.len > 0) room_name else "telinha";
+        drawTextF(d, font_bold, 15.5, v2(tx, o.y + S(10)), col.header, title);
+        const pc = if (ping < 80) col.green else if (ping < 200) col.yellow else col.red;
+        const where = if (a.server) |sv|
+            fmtZ("{s} anfitrião · porta {d}", .{ ic.crown, sv.port })
         else if (my_route == proto.route_tunnel)
-            fmtZ("{s} via link público · {s}", .{ ic.globe, a.connect_label[0..a.connect_label_len] })
+            fmtZ("{s} via link público", .{ic.globe})
         else
             fmtZ("{s}", .{a.connect_label[0..a.connect_label_len]});
-        drawTextF(d, font_regular, 12.5, v2(origin.x + S(16), origin.y + S(32)), col.muted, sub);
-        // convite e cadeado da sala (admin tranca: ninguém novo entra)
-        {
-            c.igSetCursorScreenPos(v2(origin.x + size.x - S(116), origin.y + S(8)));
-            if (i_am_admin) {
-                if (iconButton("##lockroom", if (locked) ic.lock else ic.lock_open, S(28), if (locked) col.yellow else col.muted, col.hover, if (locked) tr("Sala trancada: ninguém novo entra. Clique pra destrancar.") else tr("Trancar a sala (ninguém novo entra)")))
-                    cl.admin(proto.admin_lock, 0, @intFromBool(!locked));
-            } else if (locked) {
-                const ls = textSizeF(font_regular, 15, ic.lock);
-                drawTextF(d, font_regular, 15, v2(origin.x + size.x - S(102) - ls.x / 2, origin.y + S(14)), col.yellow, ic.lock);
-                if (c.igIsMouseHoveringRect(v2(origin.x + size.x - S(116), origin.y + S(8)), v2(origin.x + size.x - S(88), origin.y + S(36)), true))
-                    tooltipText(tr("Sala trancada: ninguém novo entra"));
-            }
-            c.igSetCursorScreenPos(v2(origin.x + size.x - S(84), origin.y + S(8)));
-            if (iconButton("##invite", ic.user_plus, S(28), col.muted, col.hover, tr("Copiar convite da sala"))) a.copyInvite();
-            c.igSetCursorScreenPos(origin);
-        }
-        // ping + cadeado
-        {
-            const pc = if (ping < 80) col.green else if (ping < 200) col.yellow else col.red;
-            const ts = textSizeF(font_regular, 14, ic.signal);
-            const px = origin.x + size.x - S(16) - ts.x;
-            drawTextF(d, font_regular, 14, v2(px, origin.y + S(12)), pc, ic.signal);
-            const pt = fmtZ("{d} ms", .{ping});
-            const pts = textSizeF(font_regular, 11, pt);
-            drawTextF(d, font_regular, 11, v2(origin.x + size.x - S(16) - pts.x, origin.y + S(32)), col.muted, pt);
-            const ls = textSizeF(font_regular, 11, ic.lock);
-            const lx = origin.x + size.x - S(20) - pts.x - ls.x;
-            drawTextF(d, font_regular, 11, v2(lx, origin.y + S(32)), col.green, ic.lock);
-            if (c.igIsMouseHoveringRect(v2(lx - S(4), origin.y + S(6)), v2(origin.x + size.x, origin.y + S(48)), true))
-                tooltipText(tr("Conexão criptografada (X25519 + ChaCha20-Poly1305)"));
-        }
-        c.igDummy(v2(size.x, hh));
+        var wb: [96]u8 = undefined;
+        const where_s = std.fmt.bufPrint(&wb, "{s}", .{where}) catch "";
+        const sy = o.y + S(32);
+        var sx = tx;
+        drawTextF(d, font_regular, 11.5, v2(sx, sy), pc, ic.signal);
+        sx += S(16);
+        const pt = fmtZ("{d} ms", .{ping});
+        drawTextF(d, font_regular, 11.5, v2(sx, sy), col.muted, pt);
+        sx += textSizeF(font_regular, 11.5, pt).x + S(10);
+        drawTextF(d, font_regular, 11, v2(sx, sy + S(1)), col.green, ic.lock);
+        if (c.igIsMouseHoveringRect(v2(sx - S(4), sy - S(2)), v2(sx + S(14), sy + S(16)), true))
+            tooltipText(tr("Conexão criptografada (X25519 + ChaCha20-Poly1305)"));
+        sx += S(18);
+        drawTextF(d, font_regular, 11.5, v2(sx, sy), col.faint, where_s);
+        sx += textSizeF(font_regular, 11.5, where_s).x;
+        const left_end = @max(tx + textSizeF(font_bold, 15.5, title).x, sx) + S(28);
+        c.ImDrawList_PopClipRect(d);
 
-        // listas
-        const list_h = size.y - hh - S(56) - S(50);
-        _ = c.igBeginChild_Str("lists", v2(size.x, list_h), 0, 0);
-        var n_live: usize = 0;
-        for (members[0..n_members]) |*m| {
-            if (m.streaming) n_live += 1;
-            if (m.camera()) n_live += 1;
-        }
-        if (n_live > 0) {
-            sectionHeader(fmtZ("AO VIVO — {d}", .{n_live}));
-            for (members[0..n_members]) |*m| {
-                if (m.streaming) a.liveRow(m, proto.kind_screen, my_id, size.x, members[0..n_members]);
-                if (m.camera()) a.liveRow(m, proto.kind_camera, my_id, size.x, members[0..n_members]);
+        // direita: configurações, painel, convite, cadeado
+        const by = o.y + (size.y - bs) / 2;
+        var rx = o.x + size.x - S(12) - bs;
+        c.igSetCursorScreenPos(v2(rx, by));
+        if (iconButton("##gear", ic.gear, bs, col.muted, col.hover, tr("Configurações"))) a.openSettings();
+        if (!a.chat_visible) {
+            rx -= bs + S(4);
+            c.igSetCursorScreenPos(v2(rx, by));
+            if (iconButton("##showchat", ic.comments, bs, if (a.chat_unread > 0) col.header else col.muted, col.hover, tr("Mostrar chat e quem está na sala"))) {
+                a.cfg.show_chat = true;
+                config.save(&a.cfg);
+            }
+            if (a.chat_unread > 0) {
+                const bp = v2(rx + bs - S(6), by + S(6));
+                c.ImDrawList_AddCircleFilled(d, bp, S(8), col.red, 0);
+                const t = fmtZ("{d}", .{@min(a.chat_unread, 9)});
+                const ts = textSizeF(font_bold, 10, t);
+                drawTextF(d, font_bold, 10, v2(bp.x - ts.x / 2, bp.y - ts.y / 2), col.white, t);
             }
         }
-        sectionHeader(fmtZ("MEMBROS — {d}", .{n_members}));
-        for (members[0..n_members]) |*m| a.memberRow(m, my_id, size.x, i_am_admin);
+        rx -= bs + S(4);
+        c.igSetCursorScreenPos(v2(rx, by));
+        if (iconButton("##invite", ic.user_plus, bs, col.muted, col.hover, tr("Copiar convite da sala"))) a.copyInvite();
+        if (i_am_admin) {
+            rx -= bs + S(4);
+            c.igSetCursorScreenPos(v2(rx, by));
+            if (iconButton("##lockroom", if (locked) ic.lock else ic.lock_open, bs, if (locked) col.yellow else col.muted, col.hover, if (locked) tr("Sala trancada: ninguém novo entra. Clique pra destrancar.") else tr("Trancar a sala (ninguém novo entra)")))
+                cl.admin(proto.admin_lock, 0, @intFromBool(!locked));
+        } else if (locked) {
+            rx -= bs + S(4);
+            const ls = textSizeF(font_regular, 15, ic.lock);
+            drawTextF(d, font_regular, 15, v2(rx + (bs - ls.x) / 2, by + (bs - ls.y) / 2), col.yellow, ic.lock);
+            if (c.igIsMouseHoveringRect(v2(rx, by), v2(rx + bs, by + bs), true)) tooltipText(tr("Sala trancada: ninguém novo entra"));
+        }
+
+        // meio: quem está ao vivo (pílulas). Clique assiste / para de assistir.
+        const ph = S(32);
+        const py = o.y + (size.y - ph) / 2;
+        var px = left_end;
+        var hidden: usize = 0;
+        for (members[0..n_members]) |*m| {
+            for ([_]u8{ proto.kind_screen, proto.kind_camera }) |kind| {
+                const on = if (kind == proto.kind_screen) m.streaming else m.camera();
+                if (!on) continue;
+                const stream = proto.streamId(m.id, kind);
+                const camera = kind == proto.kind_camera;
+                var nb: [64]u8 = undefined;
+                const label = std.fmt.bufPrintZ(&nb, "{s}{s}", .{ m.nameSlice()[0..@min(m.name_len, 24)], if (camera) "  " ++ ic.video else "" }) catch "?";
+                const lw = textSizeF(font_semibold, 13, label).x;
+                const pw = ph + S(8) + lw + S(36); // avatar + nome + olho
+                if (px + pw > right_start - S(44)) {
+                    hidden += 1;
+                    continue;
+                }
+                c.igPushID_Int(@intCast(m.id + 100000 + @as(u32, kind) * 100000));
+                c.igSetCursorScreenPos(v2(px, py));
+                const clicked = c.igInvisibleButton("live", v2(pw, ph), 0);
+                const hovered = c.igIsItemHovered(0);
+                c.igPopID();
+                if (a.n_live_rects < a.live_rects.len) {
+                    a.live_rects[a.n_live_rects] = .{ .stream = stream, .x0 = px, .y0 = py, .x1 = px + pw, .y1 = py + ph };
+                    a.n_live_rects += 1;
+                }
+                const is_me = m.id == my_id;
+                const watching = a.findView(stream) != null;
+                const fill = if (watching) withAlpha(col.blurple, 70) else if (hovered) col.hover else withAlpha(col.text, 12);
+                rectFill(d, px, py, px + pw, py + ph, fill, ph / 2);
+                c.ImDrawList_AddRect(d, v2(px, py), v2(px + pw, py + ph), if (watching) col.blurple else withAlpha(col.red, 150), ph / 2, S(1.2), 0);
+                drawAvatar(d, v2(px + ph / 2, py + ph / 2), S(11), m.id, m.nameSlice(), false);
+                c.ImDrawList_AddCircleFilled(d, v2(px + ph / 2 + S(8), py + ph / 2 + S(8)), S(4), col.red, 0);
+                drawTextF(d, font_semibold, 13, v2(px + ph + S(6), py + (ph - S(16)) / 2), col.header, label);
+                if (!is_me) {
+                    const glyph = if (watching) ic.eye_slash else ic.eye;
+                    const gs = textSizeF(font_regular, 13, glyph);
+                    drawTextF(d, font_regular, 13, v2(px + pw - gs.x - S(12), py + (ph - gs.y) / 2), if (hovered) col.header else col.muted, glyph);
+                }
+                if (hovered) {
+                    var viewers: usize = 0;
+                    for (members[0..n_members]) |*w| {
+                        if (w.isWatching(stream)) viewers += 1;
+                    }
+                    const action: []const u8 = if (is_me) tr("É você!") else if (watching) tr("Parar de assistir") else tr("Assistir");
+                    var tb: [200]u8 = undefined;
+                    const tip = if (camera)
+                        std.fmt.bufPrintZ(&tb, "{s}\n{d}x{d} · {s} {d}", .{ action, m.cam_w, m.cam_h, ic.eye, viewers }) catch ""
+                    else
+                        std.fmt.bufPrintZ(&tb, "{s}\n{d}x{d} · {d} fps · {s} {d}", .{ action, m.w, m.h, m.fps, ic.eye, viewers }) catch "";
+                    tooltipText(tip);
+                }
+                if (clicked and !is_me) {
+                    if (watching) a.unwatch(stream) else a.watch(stream);
+                }
+                px += pw + S(8);
+            }
+        }
+        if (hidden > 0) {
+            // sem espaço nem pra isso: o painel e os quadros mostram quem está ao vivo
+            const t = fmtZ("+{d} ao vivo", .{hidden});
+            if (px + S(2) + textSizeF(font_semibold, 12.5, t).x < right_start)
+                drawTextF(d, font_semibold, 12.5, v2(px + S(2), py + (ph - S(16)) / 2), col.muted, t);
+        }
+        c.igSetCursorScreenPos(o);
+        c.igDummy(size);
+    }
+
+    /// Painel da direita: um cartão com quem está na sala em cima e o chat
+    /// embaixo.
+    fn drawPanel(a: *App, cl: *Client, size: c.ImVec2_c) void {
+        c.igPushStyleColor_U32(c.ImGuiCol_ChildBg, 0);
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(0, 0));
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_ItemSpacing, v2(0, 0));
+        _ = c.igBeginChild_Str("panel", size, 0, c.ImGuiWindowFlags_NoScrollbar | c.ImGuiWindowFlags_NoScrollWithMouse);
+        defer {
+            c.igEndChild();
+            c.igPopStyleVar(2);
+            c.igPopStyleColor(1);
+        }
+        const d = drawList();
+        const o = c.igGetCursorScreenPos();
+        // o cartão
+        const x0 = o.x + S(2);
+        const y0 = o.y + S(12);
+        const x1 = o.x + size.x - S(12);
+        const y1 = o.y + size.y - S(12);
+        rectFill(d, x0, y0 + S(2), x1, y1 + S(2), rgba(0x000000, 50), S(16));
+        rectFill(d, x0, y0, x1, y1, col.bg_side, S(16));
+        c.ImDrawList_AddRect(d, v2(x0, y0), v2(x1, y1), withAlpha(col.text, 16), S(16) * col.round, S(1), 0);
+        const inner_x = x0 + S(4);
+        const inner_w = x1 - x0 - S(8);
+
+        cl.mutex.lock();
+        const my_id = cl.my_id;
+        const i_am_admin = cl.is_admin;
+        var members: [64]Member = undefined;
+        const n_members = @min(cl.members.items.len, members.len);
+        @memcpy(members[0..n_members], cl.members.items[0..n_members]);
+        cl.mutex.unlock();
+
+        // quem está na sala
+        const hdr = fmtZ("NA SALA · {d}", .{n_members});
+        drawTextF(d, font_bold, 11, v2(inner_x + S(12), y0 + S(16)), col.muted, hdr);
+        c.igSetCursorScreenPos(v2(x1 - S(38), y0 + S(8)));
+        if (iconButton("##hidechat", ic.xmark, S(30), col.muted, col.hover, tr("Esconder o painel"))) {
+            a.cfg.show_chat = false;
+            config.save(&a.cfg);
+        }
+        const row_h = S(42);
+        const want_h = row_h * @as(f32, @floatFromInt(n_members)) + S(8);
+        const list_h = std.math.clamp(want_h, S(60), (y1 - y0) * 0.38);
+        c.igSetCursorScreenPos(v2(inner_x, y0 + S(40)));
+        c.igPushStyleColor_U32(c.ImGuiCol_ScrollbarBg, 0);
+        _ = c.igBeginChild_Str("lists", v2(inner_w, list_h), 0, 0);
+        for (members[0..n_members]) |*m| a.memberRow(m, my_id, inner_w, i_am_admin);
         a.memberMenu(cl, members[0..n_members]);
         c.igEndChild();
-
-        a.drawRoomStrip(v2(size.x, S(50)));
-        a.drawUserPanel(cl, v2(size.x, S(56)));
-        c.igEndChild();
-        c.igPopStyleVar(2);
         c.igPopStyleColor(1);
+        const div_y = y0 + S(40) + list_h + S(6);
+        rectFill(d, inner_x + S(10), div_y, inner_x + inner_w - S(10), div_y + S(1), withAlpha(col.text, 18), 0);
+
+        // chat
+        c.igSetCursorScreenPos(v2(inner_x, div_y + S(2)));
+        a.drawChat(cl, v2(inner_w, y1 - div_y - S(6)));
     }
 
-    /// Faixa acima do painel do usuário (como a de voz do Discord):
-    /// compartilhar tela, câmera e sair.
-    fn drawRoomStrip(a: *App, size: c.ImVec2_c) void {
+    /// Cápsula de controles embaixo do palco: você, microfone, surdo,
+    /// compartilhar, câmera e sair. Fica num espaço só dela (não cobre vídeo).
+    fn drawDock(a: *App, cl: *Client, o: c.ImVec2_c, size: c.ImVec2_c) void {
         const d = drawList();
-        const p = c.igGetCursorScreenPos();
-        rectFill(d, p.x, p.y, p.x + size.x, p.y + size.y, col.bg_user, 0);
-        rectFill(d, p.x + S(8), p.y + size.y - 1, p.x + size.x - S(8), p.y + size.y, rgba(0x000000, 60), 0);
+        cl.mutex.lock();
+        const my_id = cl.my_id;
+        cl.mutex.unlock();
         const live = a.sharer != null;
-        const bh = S(34);
-        const leave_w = S(40);
-        const cam_w = S(40);
-        const share_w = size.x - S(16) - leave_w - cam_w - S(16);
-        c.igSetCursorScreenPos(v2(p.x + S(8), p.y + (size.y - bh) / 2));
-        const lbl = if (live) fmtZ("{s}  Ao vivo (configurar)##share", .{ic.desktop}) else fmtZ("{s}  Compartilhar tela##share", .{ic.desktop});
-        if (if (live)
-            primaryButton(lbl, v2(share_w, bh), col.red, col.red_hover, col.red_active)
-        else
-            secondaryButton(lbl, v2(share_w, bh))) a.openShareModal();
-        c.igSameLine(0, S(8));
-        const cam_on = a.camera != null;
-        if (if (cam_on)
-            primaryButton(fmtZ("{s}##camera", .{ic.video}), v2(cam_w, bh), col.red, col.red_hover, col.red_active)
-        else
-            secondaryButton(fmtZ("{s}##camera", .{ic.video}), v2(cam_w, bh))) a.toggleCamera();
-        if (c.igIsItemHovered(0)) tooltipText(if (cam_on) tr("Desligar a câmera") else tr("Ligar a câmera"));
-        c.igSameLine(0, S(8));
-        if (primaryButton(fmtZ("{s}##leave", .{ic.leave}), v2(leave_w, bh), col.leave, col.red, col.red_active)) a.askLeave();
-        if (c.igIsItemHovered(0)) tooltipText(if (a.server != null) tr("Fechar a sala") else tr("Sair da sala"));
-        c.igSetCursorScreenPos(v2(p.x, p.y + size.y));
-    }
+        const h = S(58);
+        const bs = S(42);
+        // janela estreita: primeiro some o perfil, depois o texto do compartilhar
+        const btns_w = bs * 2 + S(6) + S(16) + S(16) + bs * 2 + S(6) + S(20);
+        const full_share = if (live) S(232) else S(200);
+        const show_prof = size.x - S(16) >= btns_w + full_share + S(176) + S(12);
+        const prof_w: f32 = if (show_prof) S(176) else 0;
+        const share_w = if (size.x - S(16) >= btns_w + full_share + prof_w) full_share else S(56);
+        const w = S(10) + (if (show_prof) prof_w + S(12) else 0) + bs * 2 + S(6) + S(16) + share_w + S(16) + bs * 2 + S(6) + S(10);
+        const x0 = o.x + @max(S(8), (size.x - w) / 2);
+        const y0 = o.y + size.y - h - S(14);
+        rectFill(d, x0, y0 + S(4), x0 + w, y0 + h + S(4), rgba(0x000000, 70), h / 2);
+        rectFill(d, x0, y0, x0 + w, y0 + h, col.bg_user, h / 2);
+        c.ImDrawList_AddRect(d, v2(x0, y0), v2(x0 + w, y0 + h), withAlpha(col.text, 22), h / 2 * col.round, S(1), 0);
 
-    fn liveRow(a: *App, m: *const Member, kind: u8, my_id: u32, width: f32, all: []const Member) void {
-        const d = drawList();
-        const h = S(48);
-        const stream = proto.streamId(m.id, kind);
-        c.igPushID_Int(@intCast(m.id + 100000 + @as(u32, kind) * 100000));
-        defer c.igPopID();
-        c.igSetCursorPosX(S(8));
-        const p = c.igGetCursorScreenPos();
-        const row_w = width - S(16);
-        const clicked = c.igInvisibleButton("live", v2(row_w, h), 0);
-        const hovered = c.igIsItemHovered(0);
-        if (a.n_live_rects < a.live_rects.len) {
-            a.live_rects[a.n_live_rects] = .{ .stream = stream, .x0 = p.x, .y0 = p.y, .x1 = p.x + row_w, .y1 = p.y + h };
-            a.n_live_rects += 1;
-        }
-        const is_me = m.id == my_id;
-        const watching = a.findView(stream) != null;
-        if (hovered or watching) rectFill(d, p.x, p.y, p.x + row_w, p.y + h, if (watching) col.selected else col.hover, S(6));
-        drawAvatar(d, v2(p.x + S(22), p.y + h / 2), S(15), m.id, m.nameSlice(), true);
-        const camera = kind == proto.kind_camera;
-        drawTextF(d, font_semibold, 14.5, v2(p.x + S(46), p.y + S(7)), col.text, if (camera) fmtZ("{s}  {s}", .{ m.nameSlice(), ic.video }) else fmtZ("{s}", .{m.nameSlice()}));
-        var viewers: usize = 0;
-        for (all) |*o| {
-            if (o.isWatching(stream)) viewers += 1;
-        }
-        const info = if (camera)
-            fmtZ("câmera · {d}x{d} · {s} {d}", .{ m.cam_w, m.cam_h, ic.eye, viewers })
-        else if (m.audio)
-            fmtZ("{d}x{d} · {d} fps · {s} · {s} {d}", .{ m.w, m.h, m.fps, ic.volume, ic.eye, viewers })
-        else
-            fmtZ("{d}x{d} · {d} fps · {s} {d}", .{ m.w, m.h, m.fps, ic.eye, viewers });
-        drawTextF(d, font_regular, 11.5, v2(p.x + S(46), p.y + S(27)), col.muted, info);
-        // tooltip: ação + quem está assistindo
-        var tip_buf: [320]u8 = undefined;
-        var tip_len: usize = 0;
-        const action: []const u8 = if (is_me) tr("É você!") else if (watching) tr("Parar de assistir") else tr("Assistir");
-        @memcpy(tip_buf[0..action.len], action);
-        tip_len = action.len;
-        var first = true;
-        for (all) |*o| {
-            if (!o.isWatching(stream)) continue;
-            const sep: []const u8 = if (first) tr("\nAssistindo: ") else ", ";
-            first = false;
-            const part = std.fmt.bufPrint(tip_buf[tip_len .. tip_buf.len - 1], "{s}{s}", .{ sep, o.nameSlice() }) catch break;
-            tip_len += part.len;
-        }
-        tip_buf[tip_len] = 0;
-        if (hovered) tooltipText(tip_buf[0..tip_len :0]);
-        if (!is_me) {
-            const glyph = if (watching) ic.eye_slash else ic.eye;
-            const gs = textSizeF(font_regular, 15, glyph);
-            drawTextF(d, font_regular, 15, v2(p.x + row_w - gs.x - S(10), p.y + (h - gs.y) / 2), if (hovered) col.header else col.muted, glyph);
-            if (clicked) {
-                if (watching) a.unwatch(stream) else a.watch(stream);
+        // você
+        var x = x0 + S(10);
+        if (show_prof) {
+            const me_speaking = if (a.mic) |m| m.speaking.load(.monotonic) else false;
+            drawAvatarSpeaking(d, v2(x + S(20), y0 + h / 2), S(17), my_id, a.myName(), live, me_speaking);
+            if (me_speaking) redrawIn(0.15);
+            var name_buf: [32]u8 = undefined;
+            const nm = a.myName();
+            const shown = if (nm.len > 13) std.fmt.bufPrint(&name_buf, "{s}…", .{nm[0..11]}) catch nm else nm;
+            drawTextF(d, font_semibold, 14, v2(x + S(46), y0 + S(11)), col.header, shown);
+            var status_text: []const u8 = tr("Online");
+            var status_col = col.muted;
+            if (a.sharer) |s| {
+                s.mutex.lock();
+                const st = s.state;
+                s.mutex.unlock();
+                status_text = if (st == .starting) tr("Iniciando...") else tr("Ao vivo");
+                status_col = if (st == .starting) col.yellow else col.red;
             }
+            if (a.admin_muted) {
+                status_text = tr("Silenciado pelo admin");
+                status_col = col.red;
+            }
+            drawTextF(d, font_regular, 12, v2(x + S(46), y0 + S(31)), status_col, status_text);
+            x += prof_w;
+            rectFill(d, x + S(4), y0 + S(14), x + S(5), y0 + h - S(14), withAlpha(col.text, 22), 0);
+            x += S(12);
         }
-        c.igDummy(v2(0, S(2)));
+
+        // microfone e surdo
+        const by = y0 + (h - bs) / 2;
+        c.igSetCursorScreenPos(v2(x, by));
+        const mic_on = a.mic != null;
+        const mic_tip: [:0]const u8 = if (a.admin_muted) tr("O admin silenciou seu microfone") else if (mic_on) tr("Desligar o microfone") else tr("Ligar o microfone");
+        if (iconButton("##mic", if (mic_on) ic.mic else ic.mic_slash, bs, if (mic_on) col.text else col.red, col.hover, mic_tip)) a.toggleMic(via_clique);
+        x += bs + S(6);
+        c.igSetCursorScreenPos(v2(x, by));
+        if (iconButton("##deaf", ic.headphones, bs, if (a.deaf) col.red else col.text, col.hover, if (a.deaf) tr("Voltar a ouvir a sala") else tr("Parar de ouvir a sala (surdo)"))) a.toggleDeaf(via_clique);
+        if (a.deaf) slash(d, v2(x, by), bs);
+        x += bs + S(16);
+
+        // compartilhar
+        const sh = S(40);
+        c.igSetCursorScreenPos(v2(x, y0 + (h - sh) / 2));
+        const lbl = if (share_w < full_share) fmtZ("{s}##share", .{ic.desktop}) else if (live) fmtZ("{s}  Ao vivo (configurar)##share", .{ic.desktop}) else fmtZ("{s}  Compartilhar tela##share", .{ic.desktop});
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_FrameRounding, sh / 2 * col.round);
+        if (if (live)
+            primaryButton(lbl, v2(share_w, sh), col.red, col.red_hover, col.red_active)
+        else
+            primaryButton(lbl, v2(share_w, sh), col.blurple, col.blurple_hover, col.blurple_active)) a.openShareModal();
+        c.igPopStyleVar(1);
+        if (share_w < full_share and c.igIsItemHovered(0)) tooltipText(if (live) tr("Ao vivo (configurar)") else tr("Compartilhar tela"));
+        x += share_w + S(16);
+
+        // câmera e sair
+        c.igSetCursorScreenPos(v2(x, by));
+        const cam_on = a.camera != null;
+        if (iconButton("##camera", if (cam_on) ic.video else ic.video_slash, bs, if (cam_on) col.green else col.text, col.hover, if (cam_on) tr("Desligar a câmera") else tr("Ligar a câmera"))) a.toggleCamera();
+        x += bs + S(6);
+        c.igSetCursorScreenPos(v2(x, by));
+        if (iconButton("##leave", ic.leave, bs, col.red, withAlpha(col.red, 40), if (a.server != null) tr("Fechar a sala") else tr("Sair da sala"))) a.askLeave();
     }
 
     fn routeText(route: u8) [:0]const u8 {
@@ -2866,7 +3014,7 @@ pub const App = struct {
         }
         if (m.id == my_id) drawTextF(d, font_regular, 12, v2(tx, p.y + (h - S(15)) / 2), col.faint, tr("(você)"));
         var rx = p.x + row_w - S(10);
-        if (m.streaming) rx -= liveBadge(d, v2(p.x + row_w - S(58), p.y + (h - S(15)) / 2)) + S(14);
+        if (m.streaming) rx -= liveBadge(d, v2(rx - liveBadgeWidth(), p.y + (h - S(15)) / 2)) + S(14);
         // câmera, microfone desligado / silenciado pelo admin, surdo, rota
         const iy = p.y + (h - S(14)) / 2;
         if (m.camera()) {
@@ -3110,46 +3258,6 @@ pub const App = struct {
             a.toast("Convite copiado! Quem receber cola no campo de endereço.", .{}, false);
     }
 
-    fn drawUserPanel(a: *App, cl: *Client, size: c.ImVec2_c) void {
-        const d = drawList();
-        const p = c.igGetCursorScreenPos();
-        rectFill(d, p.x, p.y, p.x + size.x, p.y + size.y, col.bg_user, 0);
-        cl.mutex.lock();
-        const my_id = cl.my_id;
-        cl.mutex.unlock();
-        const live = a.sharer != null;
-        const me_speaking = if (a.mic) |m| m.speaking.load(.monotonic) else false;
-        drawAvatarSpeaking(d, v2(p.x + S(26), p.y + size.y / 2), S(16), my_id, a.myName(), live, me_speaking);
-
-        var name_buf: [32]u8 = undefined;
-        const nm = a.myName();
-        const shown = if (nm.len > 14) std.fmt.bufPrint(&name_buf, "{s}…", .{nm[0..12]}) catch nm else nm;
-        drawTextF(d, font_semibold, 14, v2(p.x + S(50), p.y + S(10)), col.header, shown);
-        var status_text: []const u8 = tr("Online");
-        var status_col = col.muted;
-        if (a.sharer) |s| {
-            s.mutex.lock();
-            const st = s.state;
-            s.mutex.unlock();
-            status_text = if (st == .starting) tr("Iniciando...") else tr("Ao vivo");
-            status_col = if (st == .starting) col.yellow else col.red;
-        }
-        drawTextF(d, font_regular, 12, v2(p.x + S(50), p.y + S(29)), status_col, status_text);
-
-        const bs = S(34);
-        const bx = p.x + size.x - bs * 3 - S(8);
-        const by = p.y + (size.y - bs) / 2;
-        c.igSetCursorScreenPos(v2(bx, by));
-        const mic_on = a.mic != null;
-        const mic_tip: [:0]const u8 = if (a.admin_muted) tr("O admin silenciou seu microfone") else if (mic_on) tr("Desligar o microfone") else tr("Ligar o microfone");
-        if (iconButton("##mic", if (mic_on) ic.mic else ic.mic_slash, bs, if (mic_on) col.text else col.red, col.hover, mic_tip)) a.toggleMic(via_clique);
-        c.igSameLine(0, 0);
-        if (iconButton("##deaf", ic.headphones, bs, if (a.deaf) col.red else col.text, col.hover, if (a.deaf) tr("Voltar a ouvir a sala") else tr("Parar de ouvir a sala (surdo)"))) a.toggleDeaf(via_clique);
-        if (a.deaf) slash(d, v2(bx + bs, by), bs);
-        c.igSameLine(0, 0);
-        if (iconButton("##gear", ic.gear, bs, col.text, col.hover, tr("Configurações"))) a.openSettings();
-    }
-
     /// Liga/desliga os clipes das transmissões que já estão sendo assistidas.
     fn applyClips(a: *App) void {
         const cl = a.client orelse return;
@@ -3232,6 +3340,13 @@ pub const App = struct {
         }
         const d = drawList();
         const o = c.igGetCursorScreenPos();
+        if (!a.theater) {
+            // palco: um degradê leve (o fundo não é chapado)
+            c.ImDrawList_AddRectFilledMultiColor(d, o, v2(o.x + size.x, o.y + size.y), col.bg_main, col.bg_main, col.bg_dark, col.bg_dark);
+        }
+        // a cápsula de controles tem o espaço dela embaixo (nada fica por baixo)
+        const dock_h: f32 = if (a.theater) 0 else S(86);
+        defer if (!a.theater) a.drawDock(cl, o, size);
 
         // monta a lista de quadros
         var tiles: [33]Tile = undefined;
@@ -3283,49 +3398,14 @@ pub const App = struct {
             n += 1;
         }
 
-        // barra do topo
-        const top_h = if (a.theater) 0 else S(48);
-        if (top_h > 0) {
-            rectFill(d, o.x, o.y + top_h - 1, o.x + size.x, o.y + top_h, rgba(0x000000, 60), 0);
-            var tx = o.x + S(18);
-            if (!a.side_visible) {
-                // barra lateral recolhida (janela estreita): botão pra trazer de volta
-                c.igSetCursorScreenPos(v2(o.x + S(8), o.y + S(7)));
-                if (iconButton("##side", ic.users, S(34), col.muted, col.hover, tr("Membros e controles"))) {
-                    a.cfg.show_chat = false;
-                    config.save(&a.cfg);
-                }
-                tx += S(36);
-            }
-            drawTextF(d, font_regular, 16, v2(tx, o.y + S(14)), col.muted, ic.tv);
-            drawTextF(d, font_bold, 15.5, v2(tx + S(28), o.y + S(14)), col.header, tr("Transmissões"));
-            if (n > 0) {
-                const cnt = fmtZ("{d} na tela", .{n});
-                drawTextF(d, font_regular, 13, v2(tx + S(144), o.y + S(16)), col.muted, cnt);
-            }
-            c.igSetCursorScreenPos(v2(o.x + size.x - S(44), o.y + S(7)));
-            if (!a.chat_visible) {
-                if (iconButton("##showchat", ic.comments, S(34), if (a.chat_unread > 0) col.header else col.muted, col.hover, tr("Mostrar chat"))) {
-                    a.cfg.show_chat = true;
-                    config.save(&a.cfg);
-                }
-                if (a.chat_unread > 0) {
-                    const bp = v2(o.x + size.x - S(16), o.y + S(12));
-                    c.ImDrawList_AddCircleFilled(d, bp, S(7), col.red, 0);
-                    const t = fmtZ("{d}", .{@min(a.chat_unread, 9)});
-                    const ts = textSizeF(font_bold, 10, t);
-                    drawTextF(d, font_bold, 10, v2(bp.x - ts.x / 2, bp.y - ts.y / 2), col.white, t);
-                }
-            }
-        }
-
+        const top_h: f32 = 0;
         const area_x = o.x + S(if (a.theater) 0 else 16);
         const area_y = o.y + top_h + S(if (a.theater) 0 else 16);
         const area_w = size.x - S(if (a.theater) 0 else 32);
-        const area_h = size.y - top_h - S(if (a.theater) 0 else 32);
+        const area_h = size.y - top_h - S(if (a.theater) 0 else 32) - dock_h;
 
         if (n == 0) {
-            a.drawEmpty(cl, v2(o.x, o.y + top_h), v2(size.x, size.y - top_h));
+            a.drawEmpty(cl, v2(o.x, o.y + top_h), v2(size.x, size.y - top_h - dock_h));
             return;
         }
 
@@ -4571,31 +4651,42 @@ pub const App = struct {
     }
 
     /// Reações embaixo da mensagem (as que alguém deu). Clique liga/desliga a sua.
-    fn drawReactionChips(a: *App, cl: *Client, line: *const client_mod.ChatLine, me: u32) void {
+    /// Reações embaixo da mensagem (pílulas): ícone + quantos. Clique liga/desliga a sua.
+    fn drawReactionChips(a: *App, cl: *Client, line: *const client_mod.ChatLine, me: u32, left: f32, max_x: f32) void {
         _ = a;
         if (line.n_reacts == 0) return;
-        c.igDummy(v2(0, S(2)));
-        var first = true;
+        const h = S(24);
+        var x = left;
+        var y = c.igGetCursorScreenPos().y + S(4);
+        const d = drawList();
         for (0..proto.reactions) |e| {
             const rc = line.reactCount(@intCast(e), me);
             if (rc.n == 0) continue;
-            if (!first) c.igSameLine(0, S(4));
-            first = false;
-            const label = fmtZ("{d}", .{rc.n});
+            // (o número num buffer só dele: o fmtZ é compartilhado e o id do
+            // botão logo abaixo apagava o número, que saía como "#")
+            var nb: [8]u8 = undefined;
+            const label = std.fmt.bufPrintZ(&nb, "{d}", .{rc.n}) catch "?";
             const tw = textSizeF(font_semibold, 12.5, label).x;
-            const w = S(32) + tw;
-            const h = S(22);
-            const p = c.igGetCursorScreenPos();
-            const clicked = c.igInvisibleButton(fmtZ("##chip{d}_{d}", .{ line.id, e }).ptr, v2(w, h), 0);
+            const w = S(36) + tw;
+            if (x + w > max_x and x > left) {
+                x = left;
+                y += h + S(4);
+            }
+            var ib: [40]u8 = undefined;
+            const id = std.fmt.bufPrintZ(&ib, "##chip{d}_{d}", .{ line.id, e }) catch "##chip";
+            c.igSetCursorScreenPos(v2(x, y));
+            const clicked = c.igInvisibleButton(id.ptr, v2(w, h), 0);
             const hov = c.igIsItemHovered(0);
-            const d = drawList();
-            rectFill(d, p.x, p.y, p.x + w, p.y + h, if (rc.mine) withAlpha(col.blurple, 70) else if (hov) col.hover else rgba(0x000000, 60), S(8));
-            if (rc.mine) c.ImDrawList_AddRect(d, p, v2(p.x + w, p.y + h), col.blurple, S(8) * col.round, S(1), 0);
-            drawTextF(d, font_regular, 12.5, v2(p.x + S(8), p.y + S(4)), reaction_colors[e], reaction_icons[e]);
-            drawTextF(d, font_semibold, 12.5, v2(p.x + S(26), p.y + S(3)), col.text, label);
+            rectFill(d, x, y, x + w, y + h, if (rc.mine) withAlpha(col.blurple, 60) else if (hov) col.hover else withAlpha(col.text, 14), h / 2);
+            c.ImDrawList_AddRect(d, v2(x, y), v2(x + w, y + h), if (rc.mine) col.blurple else withAlpha(col.text, 26), h / 2 * col.round, S(1), 0);
+            drawTextF(d, font_regular, 12.5, v2(x + S(10), y + S(5)), reaction_colors[e], reaction_icons[e]);
+            drawTextF(d, font_semibold, 12.5, v2(x + S(28), y + S(4)), col.text, label);
             if (hov) tooltipText(reactionName(e));
             if (clicked) cl.sendReact(line.id, @intCast(e), !rc.mine);
+            x += w + S(6);
         }
+        c.igSetCursorScreenPos(v2(left, y + h + S(2)));
+        c.igDummy(v2(0, 0));
     }
 
     /// Imagem aberta em tela cheia (clique ou Esc fecha).
@@ -4682,27 +4773,20 @@ pub const App = struct {
     }
 
     fn drawChat(a: *App, cl: *Client, size: c.ImVec2_c) void {
-        c.igPushStyleColor_U32(c.ImGuiCol_ChildBg, col.bg_side);
+        c.igPushStyleColor_U32(c.ImGuiCol_ChildBg, 0);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(0, 0));
         _ = c.igBeginChild_Str("chat", size, 0, c.ImGuiWindowFlags_NoScrollbar);
         const d = drawList();
         const o = c.igGetCursorScreenPos();
-        const hh = S(48);
-        rectFill(d, o.x, o.y + hh - 1, o.x + size.x, o.y + hh, rgba(0x000000, 60), 0);
-        drawTextF(d, font_regular, 16, v2(o.x + S(16), o.y + S(14)), col.muted, ic.comments);
-        drawTextF(d, font_bold, 15.5, v2(o.x + S(44), o.y + S(14)), col.header, tr("Chat"));
-        c.igSetCursorScreenPos(v2(o.x + size.x - S(44), o.y + S(7)));
-        if (iconButton("##hidechat", ic.xmark, S(34), col.muted, col.hover, tr("Esconder chat"))) {
-            a.cfg.show_chat = false;
-            config.save(&a.cfg);
-        }
+        const hh = S(34);
+        drawTextF(d, font_bold, 11, v2(o.x + S(16), o.y + S(12)), col.muted, tr("CHAT"));
         c.igSetCursorScreenPos(v2(o.x, o.y + hh));
 
         // mensagens
         const input_h = S(68);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(14), S(10)));
         c.igPushStyleColor_U32(c.ImGuiCol_ScrollbarBg, 0);
-        _ = c.igBeginChild_Str("msgs", v2(size.x, size.y - hh - input_h), 0, 0);
+        _ = c.igBeginChild_Str("msgs", v2(size.x, size.y - hh - input_h), c.ImGuiChildFlags_AlwaysUseWindowPadding, 0);
         const at_bottom = c.igGetScrollY() >= c.igGetScrollMaxY() - S(4);
 
         cl.mutex.lock();
@@ -4763,7 +4847,7 @@ pub const App = struct {
                 const dl = drawList();
                 drawTextF(dl, font_regular, 12, v2(p.x + S(4), p.y + S(2)), col.green, ic.arrow_right);
                 c.igSetCursorScreenPos(v2(p.x + S(24), p.y));
-                c.igPushTextWrapPos(0);
+                c.igPushTextWrapPos(size.x - S(18));
                 pushFont(font_regular, 13.5);
                 var sb: [256]u8 = undefined;
                 textColored(col.muted, i18n.server(text, &sb));
@@ -4790,7 +4874,7 @@ pub const App = struct {
             }
             const left = c.igGetCursorScreenPos().x;
             if (text.len > 0) {
-                c.igPushTextWrapPos(0);
+                c.igPushTextWrapPos(size.x - S(18));
                 pushFont(font_regular, 14.5);
                 textColored(col.text, text);
                 popFont();
@@ -4804,10 +4888,7 @@ pub const App = struct {
                 textColored(col.faint, fmtZ("{s}  imagem antiga (não está mais guardada na sala)", .{ic.image}));
                 popFont();
             }
-            if (line.n_reacts > 0) {
-                c.igSetCursorScreenPos(v2(left, c.igGetCursorScreenPos().y));
-                a.drawReactionChips(cl, line, me);
-            }
+            if (line.n_reacts > 0) a.drawReactionChips(cl, line, me, left, c.igGetWindowPos().x + size.x - S(18));
             const bottom = c.igGetCursorScreenPos().y;
             // menção a você: fundo amarelado com faixa do lado (como no Discord)
             if (line.from != me and mentions(text, my_name)) {
@@ -4870,7 +4951,7 @@ pub const App = struct {
         a.chat_sent_len = 0;
         a.updateMentionSuggestions(cl);
         c.igSetNextItemWidth(bw - S(82));
-        const enter = c.igInputTextWithHint("##chatin", tr("Mensagem, @nome, ou cole/arraste uma imagem"), &a.chat_input, a.chat_input.len, c.ImGuiInputTextFlags_EnterReturnsTrue | c.ImGuiInputTextFlags_CallbackAlways | c.ImGuiInputTextFlags_CallbackCompletion, chatCallback, a);
+        const enter = c.igInputTextWithHint("##chatin", tr("Mensagem ou @nome"), &a.chat_input, a.chat_input.len, c.ImGuiInputTextFlags_EnterReturnsTrue | c.ImGuiInputTextFlags_CallbackAlways | c.ImGuiInputTextFlags_CallbackCompletion, chatCallback, a);
         const input_active = c.igIsItemActive();
         c.igPopStyleVar(1);
         c.igPopStyleColor(3);
@@ -5061,7 +5142,8 @@ pub const App = struct {
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         c.igPushStyleColor_U32(c.ImGuiCol_CheckMark, col.white);
         _ = c.igCheckbox(tr("Mostrar o cursor do mouse###cursor"), &a.cfg.cursor);
-        _ = c.igCheckbox(tr("Usar a placa de vídeo (NVIDIA; no Windows também AMD e Intel), se tiver###hardware"), &a.cfg.hardware);
+        _ = c.igCheckbox(tr("Usar a placa de vídeo, se tiver###hardware"), &a.cfg.hardware);
+        if (c.igIsItemHovered(0)) tooltipText(tr("NVIDIA; no Windows também AMD e Intel. Sem placa que sirva, vai pela CPU."));
 
         c.igPopStyleColor(2);
 
@@ -5227,7 +5309,9 @@ pub const App = struct {
             }
         }
         if (c.igCheckbox(tr("Clipes: guardar o finalzinho do que você assiste (pra salvar um clipe na hora)###clips"), &a.cfg.clips)) a.applyClips();
-        c.igSameLine(0, S(8));
+        // do lado se couber, senão embaixo
+        const folder_w = textSizeF(font_regular, 15, tr("Abrir a pasta###clipsdir")).x + S(16);
+        if (c.igGetContentRegionAvail().x - (c.igGetItemRectMax().x - c.igGetCursorScreenPos().x) > folder_w + S(8)) c.igSameLine(0, S(8));
         if (c.igSmallButton(tr("Abrir a pasta###clipsdir"))) a.openClipsFolder();
         c.igPopStyleColor(1);
         if (a.cfg.clips) {
@@ -5491,14 +5575,22 @@ pub const App = struct {
         }
         if (k >= c.GLFW_KEY_F1 and k <= c.GLFW_KEY_F25) return std.fmt.bufPrint(buf, "F{d}", .{k - c.GLFW_KEY_F1 + 1}) catch "?";
         const special = [_]struct { k: c_int, n: []const u8 }{
-            .{ .k = c.GLFW_KEY_SPACE, .n = tr("Espaço") },             .{ .k = c.GLFW_KEY_LEFT_CONTROL, .n = tr("Ctrl esq.") },
-            .{ .k = c.GLFW_KEY_RIGHT_CONTROL, .n = tr("Ctrl dir.") }, .{ .k = c.GLFW_KEY_LEFT_ALT, .n = "Alt" },
-            .{ .k = c.GLFW_KEY_RIGHT_ALT, .n = "AltGr" },         .{ .k = c.GLFW_KEY_LEFT_SHIFT, .n = tr("Shift esq.") },
-            .{ .k = c.GLFW_KEY_RIGHT_SHIFT, .n = tr("Shift dir.") },  .{ .k = c.GLFW_KEY_CAPS_LOCK, .n = "Caps Lock" },
-            .{ .k = c.GLFW_KEY_TAB, .n = "Tab" },                  .{ .k = c.GLFW_KEY_INSERT, .n = "Insert" },
-            .{ .k = c.GLFW_KEY_HOME, .n = "Home" },                .{ .k = c.GLFW_KEY_END, .n = "End" },
-            .{ .k = c.GLFW_KEY_PAGE_UP, .n = "Page Up" },          .{ .k = c.GLFW_KEY_PAGE_DOWN, .n = "Page Down" },
-            .{ .k = c.GLFW_KEY_PAUSE, .n = "Pause" },              .{ .k = c.GLFW_KEY_SCROLL_LOCK, .n = "Scroll Lock" },
+            .{ .k = c.GLFW_KEY_SPACE, .n = tr("Espaço") },
+            .{ .k = c.GLFW_KEY_LEFT_CONTROL, .n = tr("Ctrl esq.") },
+            .{ .k = c.GLFW_KEY_RIGHT_CONTROL, .n = tr("Ctrl dir.") },
+            .{ .k = c.GLFW_KEY_LEFT_ALT, .n = "Alt" },
+            .{ .k = c.GLFW_KEY_RIGHT_ALT, .n = "AltGr" },
+            .{ .k = c.GLFW_KEY_LEFT_SHIFT, .n = tr("Shift esq.") },
+            .{ .k = c.GLFW_KEY_RIGHT_SHIFT, .n = tr("Shift dir.") },
+            .{ .k = c.GLFW_KEY_CAPS_LOCK, .n = "Caps Lock" },
+            .{ .k = c.GLFW_KEY_TAB, .n = "Tab" },
+            .{ .k = c.GLFW_KEY_INSERT, .n = "Insert" },
+            .{ .k = c.GLFW_KEY_HOME, .n = "Home" },
+            .{ .k = c.GLFW_KEY_END, .n = "End" },
+            .{ .k = c.GLFW_KEY_PAGE_UP, .n = "Page Up" },
+            .{ .k = c.GLFW_KEY_PAGE_DOWN, .n = "Page Down" },
+            .{ .k = c.GLFW_KEY_PAUSE, .n = "Pause" },
+            .{ .k = c.GLFW_KEY_SCROLL_LOCK, .n = "Scroll Lock" },
         };
         for (special) |sp| if (sp.k == k) return sp.n;
         return i18n.bufPrint(buf, "tecla {d}", .{k}) catch "?";
@@ -6361,7 +6453,7 @@ pub const App = struct {
         });
         const cf = &a.cfg;
         try w.print(",\"cfg\":{{\"name\":{f},\"join_addr\":{f},\"join_pass\":{f},\"room_name\":{f},\"host_pass\":{f},\"port\":{f},\"public_addr\":{f}", .{
-            s(config.getStr(&cf.name)), s(config.getStr(&cf.join_addr)), s(config.getStr(&cf.join_pass)), s(config.getStr(&cf.room_name)),
+            s(config.getStr(&cf.name)),      s(config.getStr(&cf.join_addr)),    s(config.getStr(&cf.join_pass)),   s(config.getStr(&cf.room_name)),
             s(config.getStr(&cf.host_pass)), s(std.mem.sliceTo(&a.port_buf, 0)), s(config.getStr(&cf.public_addr)),
         });
         try w.print(",\"fps\":{d},\"quality\":{d},\"mode\":{d},\"resolution\":{d},\"cursor\":{},\"audio\":{},\"hardware\":{},\"stats_always\":{},\"show_chat\":{}", .{
@@ -6475,7 +6567,7 @@ pub const App = struct {
             const has_audio = v.audio_registered;
             const rs: clip.Buffer.RecState = if (v.clip) |cb| cb.recState() else .{ .active = false, .waiting = false, .ms = 0, .failed = false };
             try w.print("{{\"stream\":{d},\"fps\":{d:.1},\"w\":{d},\"h\":{d},\"shown\":{},\"audio\":{},\"volume\":{d:.2},\"muted\":{},\"clip_secs\":{d:.1},\"recording\":{},\"rec_ms\":{d},\"decoder\":{f},\"codec\":{f},\"latency\":{d:.0},\"cursor_apart\":{},\"cursor_x\":{d},\"cursor_y\":{d},\"view_sent_h\":{d}}}", .{
-                v.stream, v.fps, v.tex_w, v.tex_h, v.tex != 0, has_audio, v.audio_ring.getVolume(), v.audio_ring.isMuted(), if (v.clip) |cb| cb.seconds() else -1, rs.active, rs.ms, s(v.decoder_name), s(v.codec.name()), v.latency_ms,
+                v.stream,                      v.fps,                       v.tex_w,                     v.tex_h,       v.tex != 0, has_audio, v.audio_ring.getVolume(), v.audio_ring.isMuted(), if (v.clip) |cb| cb.seconds() else -1, rs.active, rs.ms, s(v.decoder_name), s(v.codec.name()), v.latency_ms,
                 v.cursor_apart.load(.acquire), v.cursor_x.load(.monotonic), v.cursor_y.load(.monotonic), v.view_sent_h,
             });
         }
@@ -6548,7 +6640,8 @@ pub const App = struct {
         }
         if (a.n_toasts == 0) return;
         const d = c.igGetForegroundDrawList_ViewportPtr(c.igGetMainViewport());
-        var y = size.y - S(24);
+        // na sala, acima da cápsula de controles (não por cima dela)
+        var y = size.y - S(24) - (if (a.screen == .room and !a.theater) S(84) else 0);
         var k = a.n_toasts;
         while (k > 0) {
             k -= 1;
