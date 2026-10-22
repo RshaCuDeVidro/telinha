@@ -161,6 +161,8 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 37 | file_ack | S→C | `u32 arquivo`, `u64 recebido` (até onde chegou) |
 | 38 | file_get | C→S | `u32 arquivo`, `u64 posição` (múltipla de 64), `u32 tamanho` (até 64 KB) |
 | 39 | file_cancel | C→S | `u32 arquivo`: desiste de subir |
+| 40 | web_hello | C→S | só do navegador: `str senha` + os mesmos campos do `hello` |
+| 41 | web_link | S→C | `str endereço`: o link https pra assistir no navegador (vazio = não tem) |
 
 `versão_do_app` ("3.0.0") serve só pra avisar quem está desatualizado (a
 interface mostra "fulano está no telinha X: tem versão nova"); vazia = não
@@ -188,6 +190,7 @@ servidor sobe (se mudou, o servidor reiniciou e os ids do chat recomeçaram).
 | 3 | internet, IPv4 (porta aberta no roteador, servidor dedicado) |
 | 4 | internet, IPv6 |
 | 5 | link público (conexão entregue pelo túnel embutido) |
+| 6 | assistindo pelo navegador (`web_hello`) |
 
 **denied:** `código` 0 = genérico, 1 = expulso, 2 = banido, 3 = o dono fechou
 a sala, 4 = o link público por onde você entrou foi desligado, 5 = sala
@@ -415,6 +418,29 @@ Mensagem velha demais (fora do histórico) vai sem citação.
 estiver (qualquer canal); não entra no histórico do canal nem tem reação. O
 servidor guarda as últimas 64 (sem as imagens) só pra conferir citação numa
 resposta dentro da privada; em público, citar uma privada não leva o trecho.
+
+### Navegador
+
+O servidor dedicado com `--web` serve uma página (em `127.0.0.1`, atrás de um
+HTTPS: o navegador só decodifica vídeo em página segura) e um WebSocket em
+`/ws`. Cada mensagem vai num quadro binário, igual ao que vai cifrado no TCP
+(`u8 tipo` + payload), sem cifrar de novo: quem cifra é o HTTPS. A primeira é o
+`web_hello`: a senha confere direto (comparação em tempo constante) e o resto é
+um `hello` normal — só que pelo navegador ninguém vira admin, e não tem UDP.
+
+Quem entra assim é um **membro normal** com a rota 6: recebe os mesmos quadros
+já codificados (nada é recodificado; quem transmite não gasta nada a mais),
+confirma cada um com `ack` (o controle de atraso vale igual), diz o tamanho em
+que mostra (`view_size`) e desenha o cursor (`feat_cursor`: quem transmite
+segue no caminho direto pela placa). Do navegador o servidor só aceita
+`watch`, `keyreq`, `ack`, `ping`, `view_size`, `chat`, `react`, `channel` e
+`call` — ele assiste e conversa, não transmite. O IP de quem assiste vem do
+cabeçalho do proxy (`CF-Connecting-IP`, `X-Forwarded-For`), pro banimento.
+
+`web_link` vai pra quem entra pelo app quando o servidor sabe o endereço
+público (o túnel rápido da Cloudflare que ele mesmo sobe, ou um fixo); muda
+quando o túnel cai e volta. O app monta o link com a senha e o canal depois do
+`#` (essa parte nunca sai do navegador nos pedidos).
 
 ### Arquivos
 

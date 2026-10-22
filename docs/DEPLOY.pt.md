@@ -100,6 +100,25 @@ trava e tópico), banidos, silenciados e sem pincel vão pra um arquivo de estad
 (`--estado ARQUIVO` / `TELINHA_ESTADO`; por padrão `estado.txt` do lado da chave) e
 voltam depois de reiniciar.
 
+## Assistir pelo navegador
+
+Quem não tem o app assiste por um link, sem instalar nada. O servidor serve a
+página e repassa os mesmos quadros que já manda pros apps (quem transmite não
+gasta nada a mais). O navegador só decodifica vídeo em página **https**, então a
+porta web fica em `127.0.0.1` e precisa de um HTTPS na frente:
+
+- **Sem conta, sem domínio:** `--web 7778 --web-tunel` sobe um túnel rápido da
+  Cloudflare (`cloudflared`, [baixe aqui](https://github.com/cloudflare/cloudflared/releases))
+  e divulga o endereço `https://….trycloudflare.com` na sala; no app, o botão da
+  telinha (ao lado do convite) copia o link com a senha. O endereço muda a cada
+  vez que o túnel sobe — o app sempre recebe o atual.
+- **Com domínio seu** (túnel nomeado da Cloudflare, Caddy, nginx...): aponte o
+  HTTPS pra `http://127.0.0.1:7778` (com WebSocket) e use
+  `--web 7778 --web-link https://tela.seudominio.com`.
+
+No systemd, junte às opções do `ExecStart` (ex.: `--web 7778 --web-tunel`) com o
+`cloudflared` em `/usr/local/bin`.
+
 ## Arquivos
 
 Quem está na sala manda arquivos (até 256 MB) e cada um baixa quando quiser. O

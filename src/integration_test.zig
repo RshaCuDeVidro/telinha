@@ -2575,3 +2575,222 @@ test "arquivos: sobe em pedaços (com confirmação), aparece no chat, baixa igu
     try fileData(&a, id2, 512, data[0..64]);
     _ = try a.expect(.notice);
 }
+
+// ------------------------------------------------------- navegador (web.zig)
+
+/// O que a página do navegador faz: WebSocket no /ws e o protocolo da sala
+/// em quadros binários (com máscara, como todo navegador manda).
+const WsClient = struct {
+    sock: net.Socket,
+    buf: std.ArrayList(u8) = .empty,
+
+    fn connect(port: u16) !WsClient {
+        const s = try net.connect("127.0.0.1", port);
+        errdefer net.close(s);
+        net.setRecvTimeout(s, 5000);
+        try net.sendAll(s, "GET /ws HTTP/1.1\r\nHost: sala.trycloudflare.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nCF-Connecting-IP: 203.0.113.50\r\n\r\n");
+        var head: [512]u8 = undefined;
+        var n: usize = 0;
+        while (std.mem.indexOf(u8, head[0..n], "\r\n\r\n") == null) {
+            const got = try net.recvSome(s, head[n..]);
+            if (got == 0) return error.Closed;
+            n += got;
+        }
+        if (!std.mem.startsWith(u8, head[0..n], "HTTP/1.1 101")) return error.NoUpgrade;
+        if (std.mem.indexOf(u8, head[0..n], "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=") == null) return error.BadAccept;
+        return .{ .sock = s };
+    }
+
+    fn close(c: *WsClient) void {
+        net.close(c.sock);
+        c.buf.deinit(std.heap.c_allocator);
+    }
+
+    fn send(c: *WsClient, m: *proto.Msg) !void {
+        defer m.release();
+        const plain = m.data[4..];
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(std.heap.c_allocator);
+        const a = std.heap.c_allocator;
+        try out.append(a, 0x82);
+        if (plain.len < 126) try out.append(a, 0x80 | @as(u8, @intCast(plain.len))) else {
+            try out.append(a, 0x80 | 126);
+            var b: [2]u8 = undefined;
+            std.mem.writeInt(u16, &b, @intCast(plain.len), .big);
+            try out.appendSlice(a, &b);
+        }
+        const mask = [4]u8{ 0x37, 0xfa, 0x21, 0x3d };
+        try out.appendSlice(a, &mask);
+        for (plain, 0..) |b, i| try out.append(a, b ^ mask[i % 4]);
+        try net.sendAll(c.sock, out.items);
+    }
+
+    /// Próxima mensagem do servidor (u8 tipo + payload).
+    fn recv(c: *WsClient) ![]const u8 {
+        var h: [2]u8 = undefined;
+        try net.recvAll(c.sock, &h);
+        if (h[1] & 0x80 != 0) return error.MaskedFromServer;
+        var len: u64 = h[1] & 0x7F;
+        if (len == 126) {
+            var b: [2]u8 = undefined;
+            try net.recvAll(c.sock, &b);
+            len = std.mem.readInt(u16, &b, .big);
+        } else if (len == 127) {
+            var b: [8]u8 = undefined;
+            try net.recvAll(c.sock, &b);
+            len = std.mem.readInt(u64, &b, .big);
+        }
+        try c.buf.resize(std.heap.c_allocator, @intCast(len));
+        try net.recvAll(c.sock, c.buf.items);
+        return c.buf.items;
+    }
+
+    fn expect(c: *WsClient, typ: proto.Type) ![]const u8 {
+        for (0..2000) |_| {
+            const m = try c.recv();
+            if (m.len > 0 and m[0] == @intFromEnum(typ)) return m[1..];
+        }
+        return error.NotFound;
+    }
+
+    fn hello(c: *WsClient, password: []const u8, name: []const u8) !void {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.web_hello);
+        try b.str(password);
+        try b.str(name);
+        try b.str("token-que-nao-vale"); // pelo navegador ninguém vira admin
+        try b.u64_(77);
+        try b.str("web");
+        try b.u8_(proto.codecs_h264);
+        try b.u8_(proto.feat_cursor | proto.feat_view_size | proto.feat_calls);
+        try b.str("");
+        try c.send(try b.finish());
+    }
+};
+
+test "navegador: WebSocket com senha, vira membro (rota navegador), assiste e confirma os quadros; senha errada fica de fora" {
+    net.init();
+    const port = freshPort();
+    const web_port = freshPort();
+    const srv = try Server.start(.{ .port = port, .password = "pw", .admin_token = "token-que-nao-vale" });
+    defer srv.stop();
+    try srv.startWeb(web_port);
+    srv.setWebLink("https://sala-teste.trycloudflare.com");
+
+    // senha errada: recusada com o motivo
+    {
+        var bad = try WsClient.connect(web_port);
+        defer bad.close();
+        try bad.hello("errada", "Intruso");
+        var r: proto.Reader = .{ .data = try bad.expect(.denied) };
+        try testing.expectEqualStrings("Senha errada.", try r.str());
+    }
+
+    var streamer = try TestClient.connect(port, "Ana", "pw", "");
+    defer streamer.close();
+    try streamer.welcome();
+    // quem entra pelo app recebe o link pra divulgar
+    var lr: proto.Reader = .{ .data = try streamer.expect(.web_link) };
+    try testing.expectEqualStrings("https://sala-teste.trycloudflare.com", try lr.str());
+
+    var web = try WsClient.connect(web_port);
+    defer web.close();
+    try web.hello("pw", "Visitante");
+    var wr: proto.Reader = .{ .data = try web.expect(.welcome) };
+    const web_id = try wr.u32_();
+    _ = try wr.str();
+    try testing.expectEqual(@as(u8, 0), try wr.u8_()); // não virou admin, mesmo com o token
+    _ = try wr.u64_();
+    _ = try wr.u64_();
+    try testing.expectEqual(proto.route_web, try wr.u8_());
+
+    // a Ana vê o visitante na lista, com a rota "navegador"
+    var found = false;
+    for (0..20) |_| {
+        var mr: proto.Reader = .{ .data = try streamer.expect(.members) };
+        _ = try mr.u8_();
+        const n = try mr.u16_();
+        for (0..n) |_| {
+            const id = try mr.u32_();
+            _ = try mr.str();
+            _ = try mr.u8_();
+            const route = try mr.u8_();
+            _ = try mr.take(10);
+            const k = try mr.u16_();
+            _ = try mr.take(@as(usize, k) * 4);
+            if (id == web_id and route & 0x1F == proto.route_web) found = true;
+        }
+        if (found) break;
+    }
+    try testing.expect(found);
+
+    // assiste a tela da Ana: o servidor pede o IDR e repassa; o navegador confirma
+    try streamer.streamStart(proto.kind_screen, 0);
+    {
+        const m = try proto.Msg.alloc(.watch, 6);
+        std.mem.writeInt(u32, m.payload()[0..4], streamer.id, .little);
+        m.payload()[4] = 1;
+        m.payload()[5] = 0;
+        try web.send(m);
+    }
+    _ = try streamer.expect(.keyreq);
+    try streamer.send(try frameSeq(true, 3000, 1));
+    var fr: proto.Reader = .{ .data = try web.expect(.frame) };
+    try testing.expectEqual(streamer.id, try fr.u32_());
+    try testing.expectEqual(@as(u32, 1), try fr.u32_());
+    try testing.expectEqual(proto.frame_key, try fr.u8_());
+    try testing.expectEqual(@as(usize, 8 + 8 + 3000), fr.rest().len);
+    {
+        const m = try proto.Msg.alloc(.ack, 8);
+        std.mem.writeInt(u32, m.payload()[0..4], streamer.id, .little);
+        std.mem.writeInt(u32, m.payload()[4..8], 1, .little);
+        try web.send(m);
+    }
+    // os seguintes chegam também (o controle de atraso vale pro navegador)
+    try streamer.send(try frameSeq(false, 500, 2));
+    var f2: proto.Reader = .{ .data = try web.expect(.frame) };
+    _ = try f2.u32_();
+    try testing.expectEqual(@as(u32, 2), try f2.u32_());
+
+    // o navegador conversa no chat
+    {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.chat);
+        try b.str("oi do navegador");
+        try web.send(try b.finish());
+    }
+    var buf: [256]u8 = undefined;
+    const got = try streamer.userChat(&buf);
+    try testing.expectEqualStrings("oi do navegador", got.text);
+    try testing.expectEqual(web_id, got.from);
+}
+
+test "navegador: a página e os arquivos dela (e nada além)" {
+    net.init();
+    const port = freshPort();
+    const web_port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+    try srv.startWeb(web_port);
+    for ([_]struct { []const u8, []const u8 }{
+        .{ "/", "text/html" }, .{ "/app.js", "text/javascript" }, .{ "/app.css", "text/css" }, .{ "/audio-worklet.js", "text/javascript" },
+        .{ "/../../etc/passwd", "404" },
+    }) |want| {
+        const s = try net.connect("127.0.0.1", web_port);
+        defer net.close(s);
+        net.setRecvTimeout(s, 5000);
+        var req: [200]u8 = undefined;
+        try net.sendAll(s, try std.fmt.bufPrint(&req, "GET {s} HTTP/1.1\r\nHost: x\r\n\r\n", .{want[0]}));
+        var resp: [600]u8 = undefined;
+        var n: usize = 0;
+        while (n < resp.len) {
+            const got = net.recvSome(s, resp[n..]) catch break;
+            if (got == 0) break;
+            n += got;
+        }
+        try testing.expect(std.mem.indexOf(u8, resp[0..n], want[1]) != null);
+        if (!std.mem.eql(u8, want[1], "404")) try testing.expect(std.mem.indexOf(u8, resp[0..n], "Content-Security-Policy") != null);
+    }
+}

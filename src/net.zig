@@ -79,6 +79,32 @@ pub fn listen(port: u16) Error!Socket {
     return s4;
 }
 
+/// Escuta só nesta máquina (127.0.0.1): o que fica atrás de um proxy/túnel.
+pub fn listenLocal(port: u16) Error!Socket {
+    const s4 = c.socket(c.AF_INET, c.SOCK_STREAM, c.IPPROTO_TCP);
+    if (s4 == invalid) return error.ListenFailed;
+    setOpt(s4, c.SOL_SOCKET, c.SO_REUSEADDR, 1);
+    const a4 = sockaddr4(.{ 127, 0, 0, 1 }, port);
+    if (c.bind(s4, @ptrCast(&a4), @sizeOf(c.struct_sockaddr_in)) != 0 or c.listen(s4, 64) != 0) {
+        close(s4);
+        return error.ListenFailed;
+    }
+    return s4;
+}
+
+extern "c" fn inet_pton(af: c_int, src: [*:0]const u8, dst: *anyopaque) c_int;
+
+/// "203.0.113.7" / "2001:db8::1" em bytes (4 ou 16); vazio se não for IP.
+pub fn parseIp(s: []const u8, out: *[16]u8) []u8 {
+    var z: [64]u8 = undefined;
+    if (s.len >= z.len) return out[0..0];
+    @memcpy(z[0..s.len], s);
+    z[s.len] = 0;
+    if (inet_pton(c.AF_INET, @ptrCast(&z), out) == 1) return out[0..4];
+    if (inet_pton(c.AF_INET6, @ptrCast(&z), out) == 1) return out[0..16];
+    return out[0..0];
+}
+
 pub fn accept(ls: Socket) Error!Socket {
     const s = c.accept(ls, null, null);
     if (s == invalid) return error.AcceptFailed;

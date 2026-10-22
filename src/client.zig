@@ -850,6 +850,9 @@ pub const Client = struct {
     /// resposta (id, uma vez) e privada (membro; 0 = o canal).
     compose_reply: std.atomic.Value(u32) = .init(0),
     compose_to: std.atomic.Value(u32) = .init(0),
+    /// Link pra assistir no navegador que o servidor divulga (vazio = não tem).
+    web_link: [300]u8 = undefined,
+    web_link_len: usize = 0,
     /// Arquivos subindo e descendo nessa sala (filexfer.zig).
     xfers: filexfer.Registry = .{},
     instance: u64 = 0,
@@ -1675,6 +1678,13 @@ pub const Client = struct {
             .identity => if (cl.id_state == .unknown and !cl.checkIdentity(payload)) return error.Identity,
             .channel => try cl.onChannels(&r),
             .stats => try cl.onStats(&r),
+            .web_link => {
+                const link = try r.str();
+                cl.mutex.lock();
+                defer cl.mutex.unlock();
+                // só https (é o que o navegador precisa; e vira um link clicável)
+                if (link.len == 0 or std.mem.startsWith(u8, link, "https://")) copyInto(&cl.web_link, &cl.web_link_len, link);
+            },
             .file_ready => {
                 const local = try r.u32_();
                 const id = try r.u32_();

@@ -7,6 +7,7 @@
 const std = @import("std");
 const sync = @import("sync.zig");
 const net = @import("net.zig");
+const web = @import("web.zig");
 const proto = @import("proto.zig");
 const Server = @import("server.zig").Server;
 const tunnel = @import("tunnel.zig");
@@ -46,11 +47,93 @@ const usage =
     \\                         sem --senha, cria uma senha aleatória
     \\  --upnp                 pede pro roteador abrir a porta (UPnP): conexão
     \\                         direta, sem túnel; também cria senha se não tiver
+    \\  --web PORTA            assistir pelo navegador: a página e o WebSocket em
+    \\                         127.0.0.1:PORTA ($TELINHA_WEB), pra ficar atrás de
+    \\                         um HTTPS (o navegador só decodifica em página segura)
+    \\  --web-tunel            sobe um túnel rápido da Cloudflare (cloudflared, sem
+    \\                         conta) pra porta web e divulga o link na sala
+    \\                         ($TELINHA_WEB_TUNEL=1); muda a cada vez que sobe
+    \\  --web-link URL         o endereço HTTPS fixo da porta web (domínio seu,
+    \\                         túnel nomeado, outro proxy) em vez do túnel rápido
+    \\  --cloudflared CAMINHO  o executável (padrão: cloudflared do PATH)
     \\  -h, --help             mostra isso
     \\
 ;
 
 extern "c" fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
+
+// ---------------------------------------------- túnel rápido da Cloudflare
+
+extern "c" fn pipe(fds: *[2]c_int) c_int;
+extern "c" fn read(fd: c_int, buf: [*]u8, n: usize) isize;
+extern "c" fn close(fd: c_int) c_int;
+extern "c" fn waitpid(pid: c_int, status: ?*c_int, options: c_int) c_int;
+extern "c" fn posix_spawnp(pid: *c_int, file: [*:0]const u8, actions: ?*const anyopaque, attrs: ?*const anyopaque, argv: [*:null]const ?[*:0]const u8, envp: [*:null]const ?[*:0]const u8) c_int;
+extern "c" fn posix_spawn_file_actions_init(a: *anyopaque) c_int;
+extern "c" fn posix_spawn_file_actions_adddup2(a: *anyopaque, fd: c_int, newfd: c_int) c_int;
+extern "c" fn posix_spawn_file_actions_addclose(a: *anyopaque, fd: c_int) c_int;
+extern "c" fn posix_spawn_file_actions_destroy(a: *anyopaque) c_int;
+extern "c" var environ: [*:null]const ?[*:0]const u8;
+
+/// Mantém o túnel rápido (cloudflared, sem conta) apontando pra porta web e
+/// divulga o endereço na sala; caiu, sobe de novo (o endereço muda).
+fn webTunnel(srv: *Server, exe: []const u8, port: u16) void {
+    sync.nameThread("web-tunel");
+    var exe_z: [400]u8 = undefined;
+    var url_arg: [64]u8 = undefined;
+    const ez = std.fmt.bufPrintZ(&exe_z, "{s}", .{exe}) catch return;
+    const uz = std.fmt.bufPrintZ(&url_arg, "http://127.0.0.1:{d}", .{port}) catch return;
+    var backoff: u32 = 2_000;
+    while (true) {
+        var fds: [2]c_int = undefined;
+        if (pipe(&fds) != 0) return;
+        var fa: [128]u8 align(16) = undefined; // posix_spawn_file_actions_t (opaco)
+        _ = posix_spawn_file_actions_init(&fa);
+        _ = posix_spawn_file_actions_adddup2(&fa, fds[1], 2);
+        _ = posix_spawn_file_actions_adddup2(&fa, fds[1], 1);
+        _ = posix_spawn_file_actions_addclose(&fa, fds[0]);
+        const argv = [_:null]?[*:0]const u8{ ez.ptr, "tunnel", "--no-autoupdate", "--url", uz.ptr, null };
+        var pid: c_int = 0;
+        const rc = posix_spawnp(&pid, ez.ptr, &fa, null, &argv, environ);
+        _ = posix_spawn_file_actions_destroy(&fa);
+        _ = close(fds[1]);
+        if (rc != 0) {
+            _ = close(fds[0]);
+            log("não achei o cloudflared (instale ou use --cloudflared CAMINHO): sem link pro navegador");
+            return;
+        }
+        // lê o que ele imprime até achar o endereço (e continua lendo, pra ele não travar)
+        var line: [1024]u8 = undefined;
+        var n: usize = 0;
+        var announced = false;
+        while (true) {
+            var b: [512]u8 = undefined;
+            const got = read(fds[0], &b, b.len);
+            if (got <= 0) break;
+            for (b[0..@intCast(got)]) |ch| {
+                if (ch == '\n' or n == line.len) {
+                    if (!announced) if (web.findTryCloudflare(line[0..n])) |url| {
+                        srv.setWebLink(url);
+                        var lb: [400]u8 = undefined;
+                        log(std.fmt.bufPrint(&lb, "link pra assistir no navegador: {s}", .{url}) catch "");
+                        announced = true;
+                        backoff = 2_000;
+                    };
+                    n = 0;
+                } else {
+                    line[n] = ch;
+                    n += 1;
+                }
+            }
+        }
+        _ = close(fds[0]);
+        _ = waitpid(pid, null, 0);
+        srv.setWebLink("");
+        log("o túnel do navegador caiu; subindo de novo");
+        sync.sleepMs(backoff);
+        backoff = @min(backoff * 2, 60_000);
+    }
+}
 extern "c" fn getuid() c_uint;
 extern "c" fn chmod(path: [*:0]const u8, mode: c_uint) c_int;
 
@@ -205,6 +288,11 @@ pub fn main(init: std.process.Init) !void {
     var files_dir: []const u8 = env("TELINHA_ARQUIVOS") orelse "";
     var public_host: ?[]const u8 = null;
     var use_upnp = false;
+    var web_port: u16 = 0;
+    if (env("TELINHA_WEB")) |w| web_port = std.fmt.parseInt(u16, w, 10) catch die("TELINHA_WEB inválida: {s}", .{w});
+    var web_tunnel = if (env("TELINHA_WEB_TUNEL")) |v| std.mem.eql(u8, v, "1") else false;
+    var web_link: []const u8 = env("TELINHA_WEB_LINK") orelse "";
+    var cloudflared: []const u8 = env("TELINHA_CLOUDFLARED") orelse "cloudflared";
     if (env("TELINHA_PORTA")) |p| port = std.fmt.parseInt(u16, p, 10) catch die("TELINHA_PORTA inválida: {s}", .{p});
 
     var i: usize = 1;
@@ -216,6 +304,10 @@ pub fn main(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, a, "--upnp")) {
             use_upnp = true;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--web-tunel")) {
+            web_tunnel = true;
             continue;
         }
         if (std.mem.eql(u8, a, "--sem-canais-novos")) {
@@ -247,6 +339,12 @@ pub fn main(init: std.process.Init) !void {
             state_path = v;
         } else if (std.mem.eql(u8, a, "--arquivos")) {
             files_dir = v;
+        } else if (std.mem.eql(u8, a, "--web")) {
+            web_port = std.fmt.parseInt(u16, v, 10) catch die("porta web inválida: {s}", .{v});
+        } else if (std.mem.eql(u8, a, "--web-link")) {
+            web_link = v;
+        } else if (std.mem.eql(u8, a, "--cloudflared")) {
+            cloudflared = v;
         } else if (std.mem.eql(u8, a, "-k") or std.mem.eql(u8, a, "--chave")) {
             key_path = v;
         } else if (std.mem.eql(u8, a, "-c") or std.mem.eql(u8, a, "--canais")) {
@@ -297,6 +395,17 @@ pub fn main(init: std.process.Init) !void {
         const m = upnp.Mapper.start(port, to, to_port) catch die("não consegui iniciar o UPnP", .{});
         sync.spawn(watchUpnp, .{ m, password }) catch {};
     }
+
+    if (web_port != 0) {
+        srv.startWeb(web_port) catch die("não consegui abrir a porta web {d} (já está em uso?)", .{web_port});
+        log(std.fmt.bufPrint(&buf, "assistir pelo navegador: http://127.0.0.1:{d} (precisa de HTTPS na frente)", .{web_port}) catch "");
+        if (web_link.len > 0) {
+            srv.setWebLink(web_link);
+            log(std.fmt.bufPrint(&buf, "link pra assistir no navegador: {s}", .{web_link}) catch "");
+        } else if (web_tunnel) {
+            sync.spawn(webTunnel, .{ srv, cloudflared, web_port }) catch {};
+        }
+    } else if (web_tunnel or web_link.len > 0) die("--web-tunel e --web-link precisam do --web PORTA", .{});
 
     // estatística a cada minuto
     var last_bytes: u64 = 0;

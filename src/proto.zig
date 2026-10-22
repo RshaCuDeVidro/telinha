@@ -63,6 +63,9 @@ pub const Type = enum(u8) {
     file_ack = 37, // S→C u32 arquivo, u64 recebido: até onde chegou (o ritmo de quem sobe)
     file_get = 38, // C→S u32 arquivo, u64 posição, u32 tamanho: me manda esse pedaço
     file_cancel = 39, // C→S u32 arquivo: desiste de subir
+    // assistir pelo navegador (web.zig): a página fala o mesmo protocolo, por WebSocket
+    web_hello = 40, // C→S (só do navegador) str senha + os campos do hello
+    web_link = 41, // S→C str endereço: link pra assistir no navegador (vazio = não tem)
     _,
 };
 
@@ -160,6 +163,7 @@ pub const route_lan: u8 = 2; // rede local (ou VPN tipo Tailscale)
 pub const route_internet: u8 = 3; // internet, IPv4 (porta aberta no roteador, servidor dedicado)
 pub const route_internet6: u8 = 4; // internet, IPv6
 pub const route_tunnel: u8 = 5; // link público (túnel)
+pub const route_web: u8 = 6; // assistindo pelo navegador
 
 /// denied: por que a conexão vai cair
 pub const deny_generic: u8 = 0;
@@ -715,7 +719,9 @@ pub const SendQueue = struct {
 
     /// Loop da thread escritora: cifra e envia. Sai quando a fila fecha ou o envio falha.
     /// `link`: caminho UDP (quadro/som/voz vão por ele quando está de pé).
-    pub fn writerLoop(q: *SendQueue, s: net.Socket, ch: *crypto.Channel, link: ?*const std.atomic.Value(?*udp.Link)) void {
+    /// `ch` null = navegador: cada mensagem vai num quadro WebSocket (sem
+    /// cifrar aqui: quem cifra é o HTTPS na frente).
+    pub fn writerLoop(q: *SendQueue, s: net.Socket, ch: ?*crypto.Channel, link: ?*const std.atomic.Value(?*udp.Link)) void {
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(gpa);
         while (q.pop()) |m| {
@@ -726,7 +732,7 @@ pub const SendQueue = struct {
                 continue;
             };
             out.clearRetainingCapacity();
-            sealInto(&out, ch, m) catch {
+            (if (ch) |c| sealInto(&out, c, m) else wsFrameInto(&out, m)) catch {
                 q.close();
                 net.shutdown(s);
                 return;
@@ -740,7 +746,7 @@ pub const SendQueue = struct {
                     _ = q.sent_bytes.fetchAdd(nx.data.len, .monotonic);
                     continue;
                 };
-                sealInto(&out, ch, nx) catch break;
+                (if (ch) |c| sealInto(&out, c, nx) else wsFrameInto(&out, nx)) catch break;
             }
             net.sendAll(s, out.items) catch {
                 q.close(); // ninguém espera por uma escritora morta
@@ -753,6 +759,27 @@ pub const SendQueue = struct {
         }
     }
 };
+
+/// Quadro WebSocket binário (servidor → navegador: sem máscara) com a
+/// mensagem (u8 tipo + payload, igual ao que vai cifrado no TCP).
+pub fn wsFrameInto(out: *std.ArrayList(u8), m: *Msg) !void {
+    const plain = m.data[4..];
+    try out.append(gpa, 0x82); // FIN + binário
+    if (plain.len < 126) {
+        try out.append(gpa, @intCast(plain.len));
+    } else if (plain.len < 65536) {
+        try out.append(gpa, 126);
+        var b: [2]u8 = undefined;
+        std.mem.writeInt(u16, &b, @intCast(plain.len), .big);
+        try out.appendSlice(gpa, &b);
+    } else {
+        try out.append(gpa, 127);
+        var b: [8]u8 = undefined;
+        std.mem.writeInt(u64, &b, plain.len, .big);
+        try out.appendSlice(gpa, &b);
+    }
+    try out.appendSlice(gpa, plain);
+}
 
 /// Cifra e manda uma mensagem na hora, sem fila (o servidor manda a
 /// identidade antes de existir a thread escritora). Solta a mensagem.

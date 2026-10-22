@@ -165,6 +165,8 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | 37 | file_ack | S→C | `u32 file`, `u64 received` (how far it got) |
 | 38 | file_get | C→S | `u32 file`, `u64 position` (multiple of 64), `u32 size` (up to 64 KB) |
 | 39 | file_cancel | C→S | `u32 file`: give up uploading |
+| 40 | web_hello | C→S | browser only: `str password` + the same fields as `hello` |
+| 41 | web_link | S→C | `str address`: the https link to watch in a browser (empty = none) |
 
 `versão_do_app` ("3.0.0") only serves to warn whoever is out of date (the
 interface shows "so-and-so is on telinha X: there is a new version"); empty = not
@@ -191,6 +193,7 @@ starts (if it changed, the server restarted and the chat ids started over).
 | 3 | internet, IPv4 (port opened on the router, dedicated server) |
 | 4 | internet, IPv6 |
 | 5 | public link (connection delivered by the embedded tunnel) |
+| 6 | watching in a browser (`web_hello`) |
 
 **denied:** `código` 0 = generic, 1 = kicked, 2 = banned, 3 = the owner closed
 the room, 4 = the public link you came in through was turned off, 5 = room
@@ -422,6 +425,31 @@ message too old (out of the history) goes without a quote.
 (any channel); it isn't stored in the channel history and has no reactions. The
 server keeps the last 64 (without images) only to check quotes in a reply inside
 the private conversation; in public, quoting a private message carries no snippet.
+
+### Browser
+
+The dedicated server with `--web` serves a page (on `127.0.0.1`, behind HTTPS:
+browsers only decode video on a secure page) and a WebSocket at `/ws`. Each
+message travels in a binary frame, the same as what goes encrypted over TCP
+(`u8 tipo` + payload), without encrypting again: HTTPS does that. The first one
+is `web_hello`: the password is checked directly (constant-time comparison) and
+the rest is a normal `hello` — except nobody becomes admin from a browser, and
+there's no UDP.
+
+Whoever joins this way is a **regular member** with route 6: they get the same
+already-encoded frames (nothing is re-encoded; the streamer spends nothing
+extra), confirm each one with `ack` (delay control works the same), report the
+size they show it at (`view_size`) and draw the cursor (`feat_cursor`: the
+streamer stays on the direct GPU path). From a browser the server only accepts
+`watch`, `keyreq`, `ack`, `ping`, `view_size`, `chat`, `react`, `channel` and
+`call` — it watches and chats, it doesn't stream. The viewer's IP comes from the
+proxy header (`CF-Connecting-IP`, `X-Forwarded-For`), for bans.
+
+`web_link` is sent to people joining from the app when the server knows the
+public address (the Cloudflare quick tunnel it starts itself, or a fixed one); it
+changes when the tunnel drops and comes back. The app builds the link with the
+password and the channel after the `#` (that part never leaves the browser in
+requests).
 
 ### Files
 

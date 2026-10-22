@@ -16,6 +16,7 @@ const std = @import("std");
 const sync = @import("sync.zig");
 const net = @import("net.zig");
 const files_mod = @import("files.zig");
+const web = @import("web.zig");
 const builtin = @import("builtin");
 const proto = @import("proto.zig");
 const udp = @import("udp.zig");
@@ -81,6 +82,7 @@ const ViewSize = struct { stream: u32, h: u16 };
 const Conn = struct {
     server: *Server,
     sock: net.Socket,
+    web: bool = false, // assistindo pelo navegador (WebSocket; web.zig)
     channel: crypto.Channel = undefined,
     id: u32 = 0,
     name: [48]u8 = undefined,
@@ -537,6 +539,9 @@ pub const Server = struct {
     /// resposta a uma delas; não são mandadas pra mais ninguém).
     dms: [64]ChatEntry = undefined,
     files: files_mod.Store = .{},
+    web_listener: ?*web.Listener = null,
+    web_link: [300]u8 = undefined, // link pra assistir no navegador (vazio = não tem)
+    web_link_len: usize = 0,
     dms_len: usize = 0,
     dms_head: usize = 0,
     stopped: std.atomic.Value(bool) = .init(false),
@@ -814,6 +819,8 @@ pub const Server = struct {
         s.stopped.store(true, .release);
         net.shutdown(s.listen_sock);
         net.close(s.listen_sock);
+        if (s.web_listener) |l| l.stop();
+        s.web_listener = null;
         var list: std.ArrayList(*Conn) = .empty;
         defer list.deinit(gpa);
         s.mutex.lock();
@@ -971,8 +978,79 @@ pub const Server = struct {
 
     fn writerLoop(cn: *Conn) void {
         sync.nameThread("sala-envio");
-        cn.queue.writerLoop(cn.sock, &cn.channel, &cn.udp);
+        if (cn.web) cn.queue.writerLoop(cn.sock, null, null) else cn.queue.writerLoop(cn.sock, &cn.channel, &cn.udp);
         cn.release();
+    }
+
+    // ------------------------------------------------- navegador (web.zig)
+
+    /// Liga a porta web (só 127.0.0.1: fica atrás do HTTPS de um túnel/proxy).
+    pub fn startWeb(s: *Server, port: u16) !void {
+        s.web_listener = try web.Listener.start(port, s, adoptWebCallback);
+    }
+
+    /// O link que a sala divulga pra assistir no navegador (o túnel mudou de
+    /// endereço, ou caiu: vazio). Manda pra todo mundo.
+    pub fn setWebLink(s: *Server, link: []const u8) void {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        copyInto(&s.web_link, &s.web_link_len, link);
+        for (s.conns.items) |o| if (o.authed and !o.web) pushWebLink(s, o) catch {};
+    }
+
+    fn pushWebLink(s: *Server, cn: *Conn) !void {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.web_link);
+        try b.str(s.web_link[0..s.web_link_len]);
+        cn.queue.pushOwned(try b.finish());
+    }
+
+    fn adoptWebCallback(ctx: *anyopaque, sock: net.Socket, ip: []const u8) void {
+        const s: *Server = @ptrCast(@alignCast(ctx));
+        if (s.stopped.load(.acquire)) return net.close(sock);
+        const cn = gpa.create(Conn) catch return net.close(sock);
+        cn.* = .{ .server = s, .sock = sock, .web = true, .route = proto.route_web };
+        const n = @min(ip.len, cn.ip.len);
+        @memcpy(cn.ip[0..n], ip[0..n]);
+        cn.ip_len = n;
+        s.retain(); // solta no release da conexão
+        readerLoop(cn); // já está numa thread só dessa conexão (web.serveOne)
+    }
+
+    /// O primeiro do navegador: `web_hello` (a senha e os campos do hello).
+    fn webHandshake(s: *Server, cn: *Conn, buf: *std.ArrayList(u8)) !void {
+        net.setRecvTimeout(cn.sock, handshake_timeout_ms);
+        const msg = (try web.readMessage(cn.sock, buf)) orelse return error.Protocol;
+        if (msg.len < 1 or msg[0] != @intFromEnum(proto.Type.web_hello)) return error.Protocol;
+        var r: proto.Reader = .{ .data = msg[1..] };
+        const given = try r.str();
+        s.mutex.lock();
+        const ok = constEql(given, s.password[0..s.password_len]);
+        s.mutex.unlock();
+        if (!ok) {
+            // senha errada: diz e fecha (sem escritora ainda: manda direto)
+            var out: std.ArrayList(u8) = .empty;
+            defer out.deinit(gpa);
+            var b: proto.Builder = .{};
+            defer b.deinit();
+            try b.begin(.denied);
+            try b.str("Senha errada.");
+            try b.u8_(proto.deny_generic);
+            const m = try b.finish();
+            defer m.release();
+            try proto.wsFrameInto(&out, m);
+            net.sendAll(cn.sock, out.items) catch {};
+            s.log("navegador recusado: senha errada", .{});
+            return error.AuthFailed;
+        }
+        net.setRecvTimeout(cn.sock, 0);
+        _ = cn.refs.fetchAdd(1, .monotonic);
+        sync.spawn(writerLoop, .{cn}) catch {
+            _ = cn.refs.fetchSub(1, .monotonic);
+            return error.ThreadFailed;
+        };
+        try s.helloFields(cn, &r);
     }
 
     fn handshake(s: *Server, cn: *Conn, rb: *proto.RecvBuf) !void {
@@ -1026,8 +1104,17 @@ pub const Server = struct {
             return error.ThreadFailed;
         };
         var r: proto.Reader = .{ .data = proto.payloadOf(rb) };
+        try s.helloFields(cn, &r);
+    }
+
+    /// Os campos do hello (do app, ou do navegador depois da senha): nome,
+    /// token, versão, o que decodifica e entende, o canal. Entra na sala.
+    fn helloFields(s: *Server, cn: *Conn, r: *proto.Reader) !void {
         const name = try r.str();
-        const token = try r.str();
+        const token = if (cn.web) blk: {
+            _ = try r.str(); // pelo navegador não vira admin
+            break :blk "";
+        } else try r.str();
         cn.client_key = r.u64_() catch 0;
         if (r.str()) |v| {
             const n = @min(v.len, cn.app_version.len - 1);
@@ -1045,7 +1132,23 @@ pub const Server = struct {
         const s = cn.server;
         var rb: proto.RecvBuf = .{};
         defer rb.deinit();
-        if (s.handshake(cn, &rb)) {
+        if (cn.web) {
+            var wb: std.ArrayList(u8) = .empty;
+            defer wb.deinit(gpa);
+            if (s.webHandshake(cn, &wb)) {
+                while (true) {
+                    const msg = (web.readMessage(cn.sock, &wb) catch break) orelse continue;
+                    if (msg.len == 0) continue;
+                    const typ: proto.Type = @enumFromInt(msg[0]);
+                    // o navegador só assiste, conversa e troca de canal
+                    switch (typ) {
+                        .watch, .keyreq, .ack, .ping, .view_size, .chat, .react, .channel, .call => {},
+                        else => continue,
+                    }
+                    s.handle(cn, typ, msg[1..]) catch break;
+                }
+            } else |_| {}
+        } else if (s.handshake(cn, &rb)) {
             while (true) {
                 const typ = proto.recvMsg(cn.sock, &cn.channel, &rb) catch break;
                 s.handle(cn, typ, proto.payloadOf(&rb)) catch break;
@@ -1687,6 +1790,8 @@ pub const Server = struct {
         s.pushChannels(cn);
         try s.pushHistory(cn);
         if (needs_pw) pushNotice(cn, proto.notice_channel, "Esse canal tem senha.", proto.notice_channel_needs_password) catch {};
+        // dá pra chamar gente pelo navegador: o link (o app mostra "copiar")
+        if (s.web_link_len > 0 and !cn.web) s.pushWebLink(cn) catch {};
 
         // silenciado pelo admin antes de cair: continua silenciado (e sem pincel)
         if (cn.client_key != 0 and !cn.owner) for (s.muted_keys.items) |k| if (k == cn.client_key) {
@@ -2950,4 +3055,15 @@ pub fn humanSize(n: u64, buf: []u8) []const u8 {
     if (n < 1024 * 1024) return std.fmt.bufPrint(buf, "{d} KB", .{n / 1024}) catch "";
     const tenths = n * 10 / (1024 * 1024);
     return std.fmt.bufPrint(buf, "{d},{d} MB", .{ tenths / 10, tenths % 10 }) catch "";
+}
+
+/// Comparação que não diz pelo tempo onde a senha diferiu.
+fn constEql(a: []const u8, b: []const u8) bool {
+    var diff: u8 = @intFromBool(a.len != b.len);
+    for (0..@max(a.len, b.len)) |i| {
+        const x = if (i < a.len) a[i] else 0;
+        const y = if (i < b.len) b[i] else 0;
+        diff |= x ^ y;
+    }
+    return diff == 0;
 }

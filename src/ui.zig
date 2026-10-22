@@ -332,6 +332,13 @@ fn ellipsizeMiddle(font: *c.ImFont, size: f32, text: []const u8, avail: f32, buf
     return text;
 }
 
+/// Pro fim de um link (depois do "#"): tudo que não é letra/número/-._~ vira %XX.
+fn percentEncode(w: *std.Io.Writer, s: []const u8) !void {
+    for (s) |ch| {
+        if (std.ascii.isAlphanumeric(ch) or std.mem.indexOfScalar(u8, "-._~", ch) != null) try w.writeByte(ch) else try w.print("%{X:0>2}", .{ch});
+    }
+}
+
 /// Programa/script (o cartão não oferece "Abrir": só a pasta).
 fn looksRunnable(name: []const u8) bool {
     const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return false;
@@ -3997,6 +4004,12 @@ pub const App = struct {
         rx -= bs + S(4);
         c.igSetCursorScreenPos(v2(rx, by));
         if (iconButton("##invite", ic.user_plus, bs, col.muted, col.hover, tr("Copiar convite da sala"))) a.copyInvite();
+        // o servidor tem página pra assistir no navegador: o link (pra quem não tem o app)
+        if (cl.web_link_len > 0) {
+            rx -= bs + S(4);
+            c.igSetCursorScreenPos(v2(rx, by));
+            if (iconButton("##weblink", ic.tv, bs, col.muted, col.hover, tr("Copiar o link pra assistir no navegador (sem instalar nada)"))) a.copyWebLink(cl);
+        }
         if (i_am_admin) {
             rx -= bs + S(4);
             c.igSetCursorScreenPos(v2(rx, by));
@@ -4484,6 +4497,7 @@ pub const App = struct {
             proto.route_internet => tr("Direto pela internet (IPv4)"),
             proto.route_internet6 => tr("Direto pela internet (IPv6)"),
             proto.route_tunnel => tr("Pelo link público (túnel)"),
+            proto.route_web => tr("Assistindo pelo navegador"),
             else => "",
         };
     }
@@ -4493,6 +4507,7 @@ pub const App = struct {
             proto.route_local => ic.laptop,
             proto.route_lan => ic.house,
             proto.route_tunnel => ic.globe,
+            proto.route_web => ic.tv,
             proto.route_internet, proto.route_internet6 => ic.link,
             else => "",
         };
@@ -4788,6 +4803,34 @@ pub const App = struct {
         if (std.mem.trim(u8, config.getStr(&a.cfg.public_addr), " ").len > 0) return true;
         var v6: [1][16]u8 = undefined;
         return net.globalIp6(&v6) > 0;
+    }
+
+    /// O link da página do servidor pra assistir no navegador, com a senha e o
+    /// canal no fim (depois do "#": não vai pro servidor nem pro túnel no pedido).
+    fn copyWebLink(a: *App, cl: *Client) void {
+        var lb: [300]u8 = undefined;
+        var cb: [proto.channel_name_max]u8 = undefined;
+        cl.mutex.lock();
+        const link = lb[0..cl.web_link_len];
+        @memcpy(link, cl.web_link[0..cl.web_link_len]);
+        const chan = cb[0..cl.chan_name_len];
+        @memcpy(chan, cl.chan_name[0..cl.chan_name_len]);
+        cl.mutex.unlock();
+        const pass = if (a.server != null) config.getStr(&a.cfg.host_pass) else config.getStr(&a.cfg.join_pass);
+        var out: [1200]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&out);
+        w.print("{s}/#", .{std.mem.trimEnd(u8, link, "/")}) catch return;
+        if (pass.len > 0) {
+            w.writeAll("s=") catch return;
+            percentEncode(&w, pass) catch return;
+            w.writeByte('&') catch return;
+        }
+        w.writeAll("c=") catch return;
+        percentEncode(&w, chan) catch return;
+        w.writeByte(0) catch return;
+        const z = w.buffered();
+        c.igSetClipboardText(@ptrCast(z.ptr));
+        a.toast("Link copiado: quem abrir assiste pelo navegador, sem instalar nada.", .{}, false);
     }
 
     fn copyInvite(a: *App) void {

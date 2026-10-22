@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark">
+<title>telinha</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo" aria-hidden="true">▣</span> <b>telinha</b></div>
+  <div class="room"><span id="room-name"></span> <span id="chan" class="chan"></span></div>
+  <div class="status"><span id="dot" class="dot"></span><span id="status-text"></span></div>
+</header>
+
+<main id="join" class="join" hidden>
+  <form id="join-form" class="card">
+    <h1 id="t-join-title"></h1>
+    <p id="t-join-sub" class="muted"></p>
+    <label><span id="t-name"></span><input id="in-name" maxlength="32" autocomplete="nickname" required></label>
+    <label id="pw-row"><span id="t-pass"></span><input id="in-pass" type="password" autocomplete="off"></label>
+    <button id="btn-join" type="submit"></button>
+    <p id="join-err" class="err" role="alert"></p>
+  </form>
+  <p id="t-nosupport" class="err" hidden></p>
+</main>
+
+<main id="room" class="room-layout" hidden>
+  <section class="stage-col">
+    <div id="streams" class="streams" role="tablist"></div>
+    <div id="stage" class="stage">
+      <canvas id="video" aria-label="vídeo"></canvas>
+      <canvas id="cursor" class="cursor-layer" aria-hidden="true"></canvas>
+      <div id="empty" class="empty"></div>
+      <div class="controls">
+        <button id="btn-sound" class="ctl"></button>
+        <input id="vol" type="range" min="0" max="100" value="100" aria-label="volume">
+        <span id="info" class="info"></span>
+        <button id="btn-full" class="ctl" title="tela cheia">⛶</button>
+      </div>
+    </div>
+  </section>
+  <aside class="side">
+    <h2 id="t-people"></h2>
+    <ul id="people" class="people"></ul>
+    <h2 id="t-chat"></h2>
+    <div id="chat" class="chat" aria-live="polite"></div>
+    <form id="chat-form" class="chat-form">
+      <input id="chat-in" maxlength="4000" autocomplete="off">
+      <button id="btn-send" type="submit">➤</button>
+    </form>
+  </aside>
+</main>
+<div id="toast" class="toast" role="status"></div>
+<script src="app.js"></script>
+</body>
+</html>

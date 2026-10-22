@@ -597,6 +597,79 @@ def arquivo_na_sala():
 
 
 @test
+def navegador_assiste():
+    """Assistir pelo navegador: servidor dedicado com --web; um Chromium headless (perfil descartável, sem janela) abre a página com a senha no link, entra como membro, assiste a tela da Ana e decodifica os quadros de verdade pelo WebCodecs (avisa no chat); aparece na lista com a rota 'navegador'."""
+    with Session("navegador") as s:
+        p, wp = port(), port()
+        s.spawn("srv", [SERVER, "--porta", str(p), "--senha", "pw", "--web", str(wp), "--web-link", "https://sala-teste.trycloudflare.com"], {k: os.environ[k] for k in ("HOME", "PATH")})
+        time.sleep(0.6)
+        # algo mudando na tela da Ana (senão não sai quadro novo)
+        s.display(91, "1600x900")
+        s.spawn("xterm", ["xterm", "-geometry", "120x40+0+0", "-e", "sh", "-c", "while :; do head -c 600 /dev/urandom | base64; sleep 0.05; done"], dict(os.environ, DISPLAY=":91"))
+        time.sleep(1.0)
+        a = s.app("a", 91, ["--nome", "Ana", "--entrar", f"127.0.0.1:{p}", "--senha", "pw", "--transmitir", "--software", "--janela", "1240,620,360,280"], size=(1600, 900))
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--senha", "pw"])
+        b.wait(lambda st: st["status"] == "connected", 10, "a Bia entrar")
+        # o app mostra o botão de copiar o link do navegador (com a senha e o canal depois do #)
+        b.click("##weblink")
+        b.wait(lambda st: st["clipboard"] == "https://sala-teste.trycloudflare.com/#s=pw&c=geral", 3, "copiar o link do navegador")
+        a.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 20, "a Ana transmitir")
+        # o navegador: headless, tudo dentro da pasta do teste (nunca o perfil/chaveiro de verdade)
+        home = os.path.join(s.base, "chrome-home")
+        os.makedirs(home)
+        env = {"HOME": home, "PATH": os.environ["PATH"], "XDG_CONFIG_HOME": os.path.join(home, ".config"), "XDG_CACHE_HOME": os.path.join(home, ".cache"), "LANG": "pt_BR.UTF-8"}
+        chrome = s.spawn("chromium", ["chromium", "--headless=new", "--no-first-run", "--no-default-browser-check", "--password-store=basic",
+                                      "--disable-extensions", "--mute-audio", f"--user-data-dir={os.path.join(home, 'perfil')}", "--remote-debugging-port=0",
+                                      f"http://127.0.0.1:{wp}/#s=pw&n=Navegador&qa=1"], env)
+        try:
+            st = b.wait(lambda st: any(m["name"] == "Navegador" for m in st["members"]), 30, "o navegador entrar na sala")
+            web = next(m for m in st["members"] if m["name"] == "Navegador")
+            expect(web["route"] == 6, f"rota errada pro navegador: {web}")
+            st = b.wait(lambda st: any(l["text"].startswith("[qa]") and "quadros decodificados" in l["text"] for l in st["chat"]), 45, "o navegador decodificar a transmissão")
+            line = next(l for l in st["chat"] if "quadros decodificados" in l["text"])
+            log(f"navegador: {line['text']}")
+            expect(line["name"] == "Navegador", f"quem mandou: {line}")
+            # e a Ana vê que o navegador está assistindo
+            aid = b.member_id("Ana")
+            a.wait(lambda st: any(m["name"] == "Navegador" and aid in m["watching"] for m in st["members"]), 10, "a Ana ver o navegador assistindo")
+        finally:
+            try:
+                os.killpg(chrome.pid, signal.SIGTERM)  # só o grupo do Chromium deste teste
+            except OSError:
+                pass
+
+
+@test
+def navegador_som():
+    """Som no navegador: a Ana transmite com som (um tom no áudio privado do teste); o Chromium headless (tocando no PipeWire privado, mudo) decodifica o Opus pelo WebCodecs e o pico do sinal confere que não é silêncio."""
+    with Session("navegador-som", audio=True) as s:
+        s.play_tone()
+        p, wp = port(), port()
+        s.spawn("srv", [SERVER, "--porta", str(p), "--senha", "pw", "--web", str(wp)], {k: os.environ[k] for k in ("HOME", "PATH")})
+        time.sleep(0.6)
+        a = s.app("a", 91, ["--nome", "Ana", "--entrar", f"127.0.0.1:{p}", "--senha", "pw", "--transmitir", "--software"])
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--senha", "pw"])
+        a.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live" and st["sharer"]["audio"], 20, "a Ana transmitir com som")
+        home = os.path.join(s.base, "chrome-home")
+        os.makedirs(home)
+        env = s.audio_env({"HOME": home, "XDG_CONFIG_HOME": os.path.join(home, ".config"), "XDG_CACHE_HOME": os.path.join(home, ".cache")})
+        chrome = s.spawn("chromium", ["chromium", "--headless=new", "--no-first-run", "--no-default-browser-check", "--password-store=basic",
+                                      "--disable-extensions", "--mute-audio", "--autoplay-policy=no-user-gesture-required",
+                                      f"--user-data-dir={os.path.join(home, 'perfil')}", f"http://127.0.0.1:{wp}/#s=pw&n=Navegador&qa=1"], env)
+        try:
+            st = b.wait(lambda st: any(l["text"].startswith("[qa] som decodificado") for l in st["chat"]), 45, "o navegador decodificar o som")
+            line = next(l for l in st["chat"] if l["text"].startswith("[qa] som decodificado"))
+            log(f"navegador: {line['text']}")
+            peak = float(line["text"].rsplit(" ", 1)[1])
+            expect(peak > 0.05, f"o som chegou mudo: {line['text']}")
+        finally:
+            try:
+                os.killpg(chrome.pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+
+@test
 def identidade_servidor():
     """Identidade do servidor: o convite leva a impressão e quem entra por ele confere; convite com impressão errada não entra; num servidor dedicado, a primeira vez é lembrada e, se a chave mudar, o app avisa e só entra depois de confiar na nova."""
     with Session("identidade") as s:

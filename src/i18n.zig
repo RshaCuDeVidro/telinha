@@ -729,6 +729,10 @@ const table = [_][2][]const u8{
     .{ "{s}  privado pra {s}", "{s}  private to {s}" },
     .{ "{s}  privado pra você", "{s}  private to you" },
     .{ "Use /msg nome mensagem (o nome de alguém da sala).", "Use /msg name message (the name of someone in the room)." },
+    // assistir pelo navegador
+    .{ "Copiar o link pra assistir no navegador (sem instalar nada)", "Copy the link to watch in a browser (nothing to install)" },
+    .{ "Link copiado: quem abrir assiste pelo navegador, sem instalar nada.", "Link copied: whoever opens it watches in the browser, nothing to install." },
+    .{ "Assistindo pelo navegador", "Watching in a browser" },
     // arquivos na sala
     .{ "Abrir", "Open" },
     .{ "Arquivo grande demais (até 256 MB).", "File too big (up to 256 MB)." },

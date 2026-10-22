@@ -101,6 +101,25 @@ channel. Pinned channels (with their password, lock and topic), bans, admin mute
 and pen removals are written to a state file (`--estado FILE` / `TELINHA_ESTADO`;
 by default `estado.txt` next to the key) and come back after a restart.
 
+## Watching in a browser
+
+People without the app watch through a link, nothing to install. The server
+serves the page and forwards the same frames it already sends to the apps (the
+streamer spends nothing extra). Browsers only decode video on an **https** page,
+so the web port stays on `127.0.0.1` and needs HTTPS in front:
+
+- **No account, no domain:** `--web 7778 --web-tunel` starts a Cloudflare quick
+  tunnel (`cloudflared`, [download](https://github.com/cloudflare/cloudflared/releases))
+  and announces the `https://….trycloudflare.com` address in the room; in the app,
+  the screen button (next to the invite) copies the link with the password. The
+  address changes every time the tunnel starts — the app always gets the current one.
+- **With your own domain** (Cloudflare named tunnel, Caddy, nginx...): point HTTPS
+  at `http://127.0.0.1:7778` (with WebSocket) and use
+  `--web 7778 --web-link https://screen.yourdomain.com`.
+
+Under systemd, add it to the `ExecStart` options (e.g. `--web 7778 --web-tunel`)
+with `cloudflared` in `/usr/local/bin`.
+
 ## Files
 
 People in the room send files (up to 256 MB) and everyone downloads when they
