@@ -43,7 +43,7 @@ apagar também.
 ### Tem pra macOS ou celular?
 
 App não. Mas, se a sala estiver num [servidor dedicado](DEPLOY.pt.md) com
-`--web`, dá pra **assistir pelo navegador**, inclusive no celular: o botão 📺
+`--web`, dá pra **assistir pelo navegador**, inclusive no celular: o botão da TV
 na sala copia o link.
 
 ## Conectar

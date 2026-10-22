@@ -42,7 +42,7 @@ delete them too.
 ### Is there a macOS or phone app?
 
 No app. But if the room is on a [dedicated server](DEPLOY.md) with `--web`, you
-can **watch from a browser**, phones included: the 📺 button in the room copies
+can **watch from a browser**, phones included: the TV button in the room copies
 the link.
 
 ## Connecting

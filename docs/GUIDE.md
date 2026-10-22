@@ -8,7 +8,7 @@ want to get going, the first three sections are enough.
 ## Create a room
 
 Open telinha and click **Create room**. The default port is 7777 and the
-password is optional. Whoever creates the room gets the crown 👑 and is its
+password is optional. Whoever creates the room gets the crown and is its
 admin.
 
 The room lives on your computer while telinha is open. For a room that is
@@ -119,7 +119,7 @@ headphones); automatic gain for quiet microphones and a mic volume.
   person replied to is notified.
 - **Private messages**: only the two of you see them, in any channel. From the
   message's menu, the person's menu or `/msg name text`.
-- **Files** up to 256 MB: the 📎 paperclip, dragging the file onto the window
+- **Files** up to 256 MB: the paperclip button, dragging the file onto the window
   or `/arquivo path`. It's uploaded once to the server and each person
   downloads it when they click, in the background, without hurting video and
   voice. On the server it's encrypted and gone after 2 hours.
@@ -132,7 +132,7 @@ chat, and the **call** (voice and streams) is separate: you can read one channel
 while staying in another's call.
 
 - Click a channel in the panel to read its chat.
-- Click a channel's headphones 🎧 to join its call. Your stream comes along.
+- Click a channel's headphones icon to join its call. Your stream comes along.
 - **+** creates a channel. An empty channel disappears on its own, except the
   server's pinned ones.
 - Admins can set a password, lock it and change the topic (right-click the
@@ -177,7 +177,7 @@ guess at the bottleneck.
 
 ## Watch from a browser
 
-On a [dedicated server](DEPLOY.md) started with `--web`, the room shows a 📺
+On a [dedicated server](DEPLOY.md) started with `--web`, the room shows a TV
 button that copies a link. Whoever opens it watches in the browser with nothing
 to install: video, the stream's sound, the call's voices and the chat. The
 server only relays the same frames, so the streamer pays nothing extra.
@@ -186,7 +186,7 @@ From a browser you can watch and chat; going live and talking need the app.
 
 ## Settings
 
-The gear ⚙ opens the settings, in a room or on the home screen.
+The gear button opens the settings, in a room or on the home screen.
 
 | Page | What's there |
 |---|---|

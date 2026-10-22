@@ -12,7 +12,7 @@
 <p align="center">
   <img alt="Platforms" src="https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-5865f2?style=flat-square">
   <img alt="Zig 0.16" src="https://img.shields.io/badge/zig-0.16-f7a41d?style=flat-square">
-  <img alt="Version 3.2.0" src="https://img.shields.io/badge/version-3.2.0-9333ea?style=flat-square">
+  <img alt="Version 3.3.0" src="https://img.shields.io/badge/version-3.3.0-9333ea?style=flat-square">
   <img alt="MIT license" src="https://img.shields.io/badge/license-MIT-22c55e?style=flat-square">
 </p>
 
@@ -138,6 +138,7 @@ On Wayland, the system asks which screen or window to share the first time and r
 - **Automatic reconnection** that resumes your stream and the streams you were watching.
 - **Updates itself** on Windows and Linux: shows what changes, checks the release signature and swaps the executable. The version history is in Settings → About.
 - Live stats: resolution, frame rate, bandwidth and measured end-to-end latency.
+- **Bots**: a [Python SDK](docs/BOTS.md) for making your own (commands, events, music in the call, files) and a ready-made [music bot](docs/BOTS_MUSIC.md). They show up with a BOT tag and never become admin.
 - **Configurable global hotkeys** for clip, mic, deafen, share, screenshot and a master toggle.
 - Themes: dark, light, pwnd neon, pwnd light, Nord, Dracula, or your own CSS.
 
@@ -264,6 +265,7 @@ The same docs, with search, live at **[rshacudevidro.github.io/telinha](https://
 
 - [User guide](docs/GUIDE.md): everything the app does, chat commands, shortcuts and settings.
 - [Troubleshooting](docs/FAQ.md): the questions that come up most.
+- [Bots](docs/BOTS.md): the Python SDK, the music bot, a tutorial and the API reference.
 - [Architecture](docs/ARCHITECTURE.md): threads, the video pipeline, bandwidth control and performance decisions.
 - [Protocol](docs/PROTOCOL.md): handshake, encryption and every message type.
 - [Dedicated server](docs/DEPLOY.md): static binary, Docker and systemd.

@@ -12,7 +12,7 @@
 <p align="center">
   <img alt="Plataformas" src="https://img.shields.io/badge/plataformas-Linux%20%7C%20Windows-5865f2?style=flat-square">
   <img alt="Zig 0.16" src="https://img.shields.io/badge/zig-0.16-f7a41d?style=flat-square">
-  <img alt="Versão 3.2.0" src="https://img.shields.io/badge/vers%C3%A3o-3.2.0-9333ea?style=flat-square">
+  <img alt="Versão 3.3.0" src="https://img.shields.io/badge/vers%C3%A3o-3.3.0-9333ea?style=flat-square">
   <img alt="Licença MIT" src="https://img.shields.io/badge/licen%C3%A7a-MIT-22c55e?style=flat-square">
 </p>
 
@@ -138,6 +138,7 @@ No Wayland o sistema pergunta qual tela ou janela compartilhar na primeira vez e
 - **Reconexão automática**, que retoma a sua transmissão e as que você estava assistindo.
 - **Atualiza sozinho** no Windows e no Linux: mostra o que muda, confere a assinatura da release e troca o executável. O histórico de versões fica em Configurações → Sobre.
 - Estatísticas ao vivo: resolução, fps, banda e atraso de ponta a ponta medido.
+- **Bots**: um [SDK em Python](docs/BOTS.pt.md) pra fazer os seus (comandos, eventos, música na call, arquivos) e um [bot de música](docs/BOTS_MUSIC.pt.md) pronto. Aparecem com a etiqueta BOT e nunca viram admin.
 - **Atalhos globais configuráveis** pra clipe, microfone, surdo, transmitir, print e um que liga e desliga todos.
 - Temas: escuro, claro, pwnd (neon), pwnd claro, Nord, Drácula, ou o seu próprio CSS.
 
@@ -262,6 +263,7 @@ Os mesmos docs, com busca, ficam em **[rshacudevidro.github.io/telinha](https://
 
 - [Guia de uso](docs/GUIDE.pt.md): tudo o que o app faz, comandos do chat, atalhos e configurações.
 - [Problemas comuns](docs/FAQ.pt.md): as dúvidas que mais aparecem.
+- [Bots](docs/BOTS.pt.md): o SDK em Python, o bot de música, um tutorial e a referência da API.
 - [Arquitetura](docs/ARCHITECTURE.pt.md): threads, pipeline de vídeo, controle de banda e decisões de desempenho.
 - [Protocolo](docs/PROTOCOL.pt.md): handshake, criptografia e cada tipo de mensagem.
 - [Servidor dedicado](docs/DEPLOY.pt.md): binário estático, Docker e systemd.

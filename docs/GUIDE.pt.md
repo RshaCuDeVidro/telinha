@@ -8,7 +8,7 @@ você só quer começar logo, os três primeiros tópicos bastam.
 ## Criar uma sala
 
 Abra o telinha e clique em **Criar sala**. A porta padrão é 7777 e a senha é
-opcional. Quem cria a sala ganha a coroa 👑 e é o admin dela.
+opcional. Quem cria a sala ganha a coroa e é o admin dela.
 
 A sala fica no seu computador enquanto o telinha estiver aberto. Pra ter uma
 sala sempre ligada, mesmo com o seu PC desligado, use um
@@ -120,7 +120,7 @@ do microfone.
   quem foi respondido é avisado.
 - **Mensagem privada**: só os dois veem, em qualquer canal. Pelo menu da
   mensagem, pelo menu da pessoa ou com `/msg nome texto`.
-- **Arquivos** de até 256 MB: o clipe 📎, arrastar o arquivo pra janela ou
+- **Arquivos** de até 256 MB: o botão do clipe, arrastar o arquivo pra janela ou
   `/arquivo caminho`. Ele sobe uma vez pro servidor e cada um baixa quando
   clicar, em segundo plano, sem atrapalhar vídeo e voz. No servidor fica
   cifrado e some depois de 2 horas.
@@ -133,7 +133,7 @@ o seu chat, e a **call** (voz e transmissões) é separada: dá pra ler um canal
 e continuar na call de outro.
 
 - Clique num canal no painel pra ler o chat dele.
-- Clique no fone 🎧 do canal pra entrar na call dele. A sua transmissão vai
+- Clique no ícone de fone do canal pra entrar na call dele. A sua transmissão vai
   junto.
 - O **+** cria um canal. Canal vazio some sozinho, a não ser os fixos do
   servidor.
@@ -179,7 +179,7 @@ palpite em português claro de qual é o gargalo.
 
 ## Assistir pelo navegador
 
-Num [servidor dedicado](DEPLOY.pt.md) com `--web`, aparece na sala um botão 📺
+Num [servidor dedicado](DEPLOY.pt.md) com `--web`, aparece na sala um botão de TV
 que copia um link. Quem abrir o link assiste pelo navegador, sem instalar
 nada: vídeo, som da transmissão, voz da call e chat. O servidor só repassa os
 mesmos quadros, então quem transmite não gasta nada a mais.
@@ -189,7 +189,7 @@ app.
 
 ## Configurações
 
-A engrenagem ⚙ abre as configurações, na sala ou na tela inicial.
+O botão da engrenagem abre as configurações, na sala ou na tela inicial.
 
 | Página | O que tem |
 |---|---|

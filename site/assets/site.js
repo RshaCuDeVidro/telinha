@@ -87,6 +87,42 @@
   const mainTab = $('.lang-tab[data-os-tab="' + os + '"]');
   if (mainTab) mainTab.click();
 
+  // ---------------------------------------------------- menu no celular
+  const menuBtn = $('.menu-btn');
+  const mnav = $('#mobile-nav');
+  if (menuBtn && mnav) menuBtn.addEventListener('click', () => {
+    mnav.hidden = !mnav.hidden;
+    menuBtn.setAttribute('aria-expanded', String(!mnav.hidden));
+  });
+
+  // ---------------------------------------------------- o terminal do topo "digita" a sessão
+  // (sem JS, ou com "menos movimento", o texto já está todo lá)
+  const term = $('.term-body[data-boot]');
+  if (term && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const lines = $$('span', term).map((sp) => ({ cls: sp.className, text: sp.textContent }));
+    const caret = () => { const c = document.createElement('span'); c.className = 'caret'; return c; };
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const visible = () => new Promise((r) => { if (!document.hidden) r(); else document.addEventListener('visibilitychange', function f() { if (!document.hidden) { document.removeEventListener('visibilitychange', f); r(); } }); });
+    (async function play() {
+      for (;;) {
+        term.textContent = '';
+        for (const l of lines) {
+          await visible();
+          const sp = document.createElement('span'); sp.className = l.cls; term.append(sp);
+          if (l.cls === 't-cmd') {
+            const c = caret(); sp.append(c);
+            for (const ch of l.text) { c.before(ch); await wait(28 + Math.random() * 45); }
+            await wait(260); c.remove();
+          } else {
+            sp.textContent = l.text; await wait(l.cls === 't-live' ? 700 : 340);
+          }
+        }
+        const c = caret(); term.append(c);
+        await wait(6500);
+      }
+    })();
+  }
+
   // ---------------------------------------------------- gaveta no celular
   const drawerBtn = $('.tk-drawer-btn');
   const overlay = $('.tk-drawer-overlay');
@@ -178,6 +214,6 @@
   addEventListener('keydown', (e) => {
     const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || document.activeElement.isContentEditable;
     if ((e.key === 'k' && (e.ctrlKey || e.metaKey)) || (e.key === '/' && !typing)) { e.preventDefault(); open(); }
-    else if (e.key === 'Escape') { close(); document.body.classList.remove('drawer-open'); }
+    else if (e.key === 'Escape') { close(); document.body.classList.remove('drawer-open'); if (mnav) mnav.hidden = true; }
   });
 })();

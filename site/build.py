@@ -37,27 +37,35 @@ GH_BLOB = f"{GH}/blob/main/"
 SITE_URL = f"https://{REPO.split('/')[0].lower()}.github.io/{REPO.split('/')[1]}/"
 SITE_PATH = urlsplit(SITE_URL).path  # "/telinha/" (pro 404, que é servido em qualquer caminho)
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from icons import icon, sprite  # noqa: E402
 TOP = os.path.dirname(HERE)
 LANGS = ("pt", "en")
 
 # ------------------------------------------------------------------ páginas
 # (slug, fonte em inglês, fonte em português, trecho do README ou None)
 SECTIONS = [
-    ("start", {"pt": "Começar", "en": "Getting started"}, [
+    ("start", {"pt": "Começar", "en": "Getting started", "icon": "play"}, [
         ("guide", "docs/GUIDE.md", "docs/GUIDE.pt.md", None),
         ("connecting", "docs/CONNECTING.md", "docs/CONNECTING.pt.md", None),
         ("faq", "docs/FAQ.md", "docs/FAQ.pt.md", None),
     ]),
-    ("server", {"pt": "Servidor", "en": "Server"}, [
+    ("server", {"pt": "Servidor", "en": "Server", "icon": "server"}, [
         ("deploy", "docs/DEPLOY.md", "docs/DEPLOY.pt.md", None),
     ]),
-    ("dev", {"pt": "Desenvolvimento", "en": "Development"}, [
+    ("bots", {"pt": "Bots", "en": "Bots", "icon": "bot"}, [
+        ("bots", "docs/BOTS.md", "docs/BOTS.pt.md", None),
+        ("bots-music", "docs/BOTS_MUSIC.md", "docs/BOTS_MUSIC.pt.md", None),
+        ("bots-tutorial", "docs/BOTS_TUTORIAL.md", "docs/BOTS_TUTORIAL.pt.md", None),
+        ("bots-api", "docs/BOTS_API.md", "docs/BOTS_API.pt.md", None),
+    ]),
+    ("dev", {"pt": "Desenvolvimento", "en": "Development", "icon": "code"}, [
         ("building", "README.md", "README.pt.md", {"en": "Building from source", "pt": "Compilar"}),
         ("architecture", "docs/ARCHITECTURE.md", "docs/ARCHITECTURE.pt.md", None),
         ("protocol", "docs/PROTOCOL.md", "docs/PROTOCOL.pt.md", None),
         ("contributing", "CONTRIBUTING.md", "CONTRIBUTING.pt.md", None),
     ]),
-    ("news", {"pt": "Novidades", "en": "What's new"}, [
+    ("news", {"pt": "Novidades", "en": "What's new", "icon": "spark"}, [
         ("changelog", "CHANGELOG.md", "CHANGELOG.pt.md", None),
     ]),
 ]
@@ -67,15 +75,19 @@ NAV = {
     "connecting": {"pt": "Conectar de fora", "en": "Connecting from outside"},
     "protocol": {"pt": "Protocolo", "en": "Protocol"},
     "contributing": {"pt": "Contribuir", "en": "Contributing"},
+    "bots": {"pt": "Visão geral", "en": "Overview"},
+    "bots-music": {"pt": "Bot de música", "en": "Music bot"},
+    "bots-tutorial": {"pt": "Criar um bot", "en": "Make a bot"},
+    "bots-api": {"pt": "Referência da API", "en": "API reference"},
 }
 
 UI = {
     "pt": {
-        "home": "Início", "docs": "Docs", "server": "Servidor", "news": "Novidades",
+        "home": "Início", "docs": "Docs", "server": "Servidor", "news": "Novidades", "bots": "Bots", "menu_btn": "Menu",
         "search": "buscar", "searchTitle": "Buscar na documentação", "theme": "Tema claro/escuro",
         "crt": "Efeito CRT", "other_lang": "English", "other_lang_short": "EN",
-        "menu": "☰ páginas", "top": "Voltar ao topo", "on_page": "nesta página",
-        "edit": "✎ editar esta página", "source": "⌥ ver o .md no GitHub", "updated": "atualizado",
+        "menu": "páginas", "top": "Voltar ao topo", "on_page": "nesta página",
+        "edit": "editar esta página", "source": "ver o .md no GitHub", "updated": "atualizado",
         "read": "min de leitura", "prev": "anterior", "next": "próxima",
         "copy": "copiar", "copied": "copiado!", "loading": "carregando o índice…",
         "searchHint": "digite pra buscar em todas as páginas",
@@ -88,11 +100,11 @@ UI = {
         "desc": "Compartilhar a tela em grupo, com atraso baixo, no Linux e no Windows. Uma sala estilo Discord onde qualquer um transmite e todo mundo assiste, fala e conversa.",
     },
     "en": {
-        "home": "Home", "docs": "Docs", "server": "Server", "news": "What's new",
+        "home": "Home", "docs": "Docs", "server": "Server", "news": "What's new", "bots": "Bots", "menu_btn": "Menu",
         "search": "search", "searchTitle": "Search the docs", "theme": "Light/dark theme",
         "crt": "CRT effect", "other_lang": "Português", "other_lang_short": "PT",
-        "menu": "☰ pages", "top": "Back to top", "on_page": "on this page",
-        "edit": "✎ edit this page", "source": "⌥ view the .md on GitHub", "updated": "updated",
+        "menu": "pages", "top": "Back to top", "on_page": "on this page",
+        "edit": "edit this page", "source": "view the .md on GitHub", "updated": "updated",
         "read": "min read", "prev": "previous", "next": "next",
         "copy": "copy", "copied": "copied!", "loading": "loading the index…",
         "searchHint": "type to search every page",
@@ -106,7 +118,6 @@ UI = {
     },
 }
 
-ICON_GH = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>'
 
 
 # ------------------------------------------------------------------ utilidades
@@ -226,6 +237,18 @@ def callouts(h, lang):
     return "".join(out)
 
 
+EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u2300-\u23FF\u21A9\u21AA\u2194-\u2199\u2934\u2935\uFE0F\u200D\u20E3]")
+
+
+def strip_emoji(h):
+    """O site não usa emoji (o app e o changelog dele usam): tira, menos dentro de código."""
+    parts = re.split(r"(<pre.*?</pre>|<code.*?</code>)", h, flags=re.S)
+    for i in range(0, len(parts), 2):
+        t = EMOJI.sub("", parts[i])
+        parts[i] = re.sub(r"(<li>|<p>|<h[1-6][^>]*>)\s+", r"\1", t)
+    return "".join(parts)
+
+
 def anchors(h):
     return re.sub(r'<h([234]) id="([^"]+)">(.*?)</h\1>',
                   lambda m: f'<h{m.group(1)} id="{m.group(2)}">{m.group(3)}<a class="anchor" href="#{m.group(2)}" aria-hidden="true" tabindex="-1">#</a></h{m.group(1)}>', h)
@@ -332,7 +355,7 @@ window.TELINHA={json.dumps(js, ensure_ascii=False)};
 </head>"""
 
 
-def header(lang, base, active, path):
+def header(lang, base, active, path, page_class=""):
     t = UI[lang]
     lp = "" if lang == "pt" else "en/"
     other = "en" if lang == "pt" else "pt"
@@ -341,26 +364,26 @@ def header(lang, base, active, path):
     def nav(key, href):
         cls = ' class="active" aria-current="page"' if active == key else ""
         return f'<a href="{base}{href}"{cls}>{t[key]}</a>'
-    return f"""<body class="bg-grid">
+    links = "".join(nav(k, h) for k, h in (("home", lp), ("docs", lp + "docs/guide/"), ("server", lp + "docs/deploy/"),
+                                           ("bots", lp + "docs/bots/"), ("news", lp + "docs/changelog/")))
+    return f"""<body class="bg-grid{(' page-' + page_class) if page_class else ''}">
+{sprite()}
 <a class="sr-only" href="#conteudo">{t['skip']}</a>
 <div class="scroll-progress" aria-hidden="true"></div>
 <header class="site-header">
   <div class="header-inner">
     <a class="logo glitch-hover" href="{base}{lp}"><img src="{base}assets/icon.png" alt="" width="26" height="26">telinha<span class="logo-path">~/wiki</span></a>
-    <nav class="main-nav" aria-label="principal">
-      {nav('home', lp)}
-      {nav('docs', lp + 'docs/guide/')}
-      {nav('server', lp + 'docs/deploy/')}
-      {nav('news', lp + 'docs/changelog/')}
-    </nav>
+    <nav class="main-nav" aria-label="principal">{links}</nav>
     <div class="header-tools">
-      <button class="search-btn" type="button" title="{t['searchTitle']}"><span aria-hidden="true">⌕</span><span class="label">{t['search']}</span><kbd>Ctrl K</kbd></button>
+      <button class="search-btn" type="button" title="{t['searchTitle']}">{icon("search")}<span class="label">{t['search']}</span><kbd>Ctrl K</kbd></button>
       <a class="icon-btn lang-switch" data-lang="{other}" href="{base}{alt_path}" hreflang="{other}" title="{t['other_lang']}">{t['other_lang_short']}</a>
-      <button class="icon-btn crt-toggle" type="button" title="{t['crt']}" aria-label="{t['crt']}">▤</button>
-      <button class="icon-btn theme-toggle" type="button" title="{t['theme']}" aria-label="{t['theme']}"><span class="sun">☀</span><span class="moon">☾</span></button>
-      <a class="icon-btn" href="{GH}" target="_blank" rel="noopener" title="GitHub" aria-label="GitHub">{ICON_GH}</a>
+      <button class="icon-btn crt-toggle" type="button" title="{t['crt']}" aria-label="{t['crt']}">{icon("crt")}</button>
+      <button class="icon-btn theme-toggle" type="button" title="{t['theme']}" aria-label="{t['theme']}">{icon("sun", "sun")}{icon("moon", "moon")}</button>
+      <a class="icon-btn gh-btn" href="{GH}" target="_blank" rel="noopener" title="GitHub" aria-label="GitHub">{icon("github")}</a>
+      <button class="icon-btn menu-btn" type="button" aria-expanded="false" aria-controls="mobile-nav" title="{t['menu_btn']}" aria-label="{t['menu_btn']}">{icon("menu", "open")}{icon("close", "shut")}</button>
     </div>
   </div>
+  <nav class="mobile-nav" id="mobile-nav" aria-label="principal" hidden>{links}<a href="{GH}" target="_blank" rel="noopener">GitHub {icon("external")}</a></nav>
 </header>"""
 
 
@@ -386,7 +409,7 @@ def footer(lang, base):
     <div class="search-foot">{t['nav_keys']}</div>
   </div>
 </div>
-<button class="tk-top-btn" type="button" aria-label="{t['top']}" title="{t['top']}">↑</button>
+<button class="tk-top-btn" type="button" aria-label="{t['top']}" title="{t['top']}">{icon("arrow-up")}</button>
 <script src="{base}assets/site.js" defer></script>
 </body>
 </html>
@@ -397,7 +420,7 @@ def sidebar(site, lang, base, current):
     t = UI[lang]
     parts = [f'<aside class="tk-sidebar" aria-label="docs"><div class="tk-sidebar-header"><div class="prompt"><b>$</b> ls ~/telinha/docs</div><h2>docs</h2></div><ul class="tk-tree">']
     for _, names, pages in SECTIONS:
-        parts.append(f'<li><div class="tk-tree-cat-name">{names[lang]}</div><ul class="tk-tree-pages">')
+        parts.append(f'<li><div class="tk-tree-cat-name">{icon(names["icon"])}{names[lang]}</div><ul class="tk-tree-pages">')
         for slug, *_ in pages:
             p = site.by_slug[(lang, slug)]
             cls = " active" if slug == current else ""
@@ -444,7 +467,7 @@ def build(out):
             path = site.page_path(lang, p["slug"])
             base = "../" * path.count("/")
             body = p["body"]
-            body = callouts(body, lang)
+            body = strip_emoji(callouts(body, lang))
             body = anchors(kbd(body))
             body = site.fix_links(body, p["src"], lang, base)
             words = len(plain(body).split())
@@ -454,7 +477,7 @@ def build(out):
             if p["updated"]:
                 meta.append(f'<span class="meta-item">{t["updated"]} <b>{p["updated"]}</b></span>')
             meta.append(f'<span class="meta-item"><b>{max(1, round(words / 200))}</b> {t["read"]}</span>')
-            meta.append(f'<span class="meta-item"><a href="{GH}/edit/main/{p["src"]}" target="_blank" rel="noopener">{t["edit"]}</a></span>')
+            meta.append(f'<span class="meta-item"><a href="{GH}/edit/main/{p["src"]}" target="_blank" rel="noopener">{icon("edit")} {t["edit"]}</a></span>')
             prev_html = next_html = ""
             if i > 0:
                 q = pages[i - 1]
@@ -465,8 +488,8 @@ def build(out):
             toc_html = ""
             if len(p["toc"]) >= 2:
                 items = "".join(f'<li class="lvl{lvl}"><a class="toc-link" href="#{hid}">{html.escape(name)}</a></li>' for lvl, hid, name in p["toc"])
-                toc_html = f'<nav class="toc" aria-label="{t["on_page"]}"><div class="toc-title">{t["on_page"]}</div><ul>{items}</ul><div class="toc-actions"><a href="{GH_BLOB}{p["src"]}" target="_blank" rel="noopener">{t["source"]}</a></div></nav>'
-            page = head(lang, p["title"], desc, base, path) + header(lang, base, "news" if p["slug"] == "changelog" else "server" if p["slug"] == "deploy" else "docs", path)
+                toc_html = f'<nav class="toc" aria-label="{t["on_page"]}"><div class="toc-title">{t["on_page"]}</div><ul>{items}</ul><div class="toc-actions"><a href="{GH_BLOB}{p["src"]}" target="_blank" rel="noopener">{icon("file")} {t["source"]}</a></div></nav>'
+            page = head(lang, p["title"], desc, base, path) + header(lang, base, "news" if p["slug"] == "changelog" else "server" if p["slug"] == "deploy" else "bots" if p["slug"].startswith("bots") else "docs", path, p["slug"])
             page += f"""
 <div class="docs-shell{'' if toc_html else ' no-toc'}">
   {sidebar(site, lang, base, p['slug'])}
@@ -484,7 +507,7 @@ def build(out):
   </main>
   {toc_html}
 </div>
-<button class="tk-drawer-btn" type="button">{t['menu']}</button>
+<button class="tk-drawer-btn" type="button">{icon("menu")} {t['menu']}</button>
 <div class="tk-drawer-overlay"></div>
 """ + footer(lang, base)
             write(os.path.join(out, path, "index.html"), page)
@@ -499,8 +522,10 @@ def build(out):
         for m in re.finditer(r"\{\{img\}\}([^\"']+)", content):
             site.images.add("docs/img/" + m.group(1))
         content = content.replace("{{img}}", base + "img/")
+        content = re.sub(r"\{\{icon:([a-z-]+)\}\}", lambda m: icon(m.group(1)), content)
         content = content.replace("{{base}}", base).replace("{{lp}}", "" if lang == "pt" else "en/")
         content = content.replace("{{version}}", version).replace("{{gh}}", GH)
+        content = content.replace("{{news}}", news_html(lang, base))
         redirect = ""
         if lang == "pt":
             # primeira visita, navegador em outra língua: vai pro inglês (escolher no seletor vale pra sempre)
@@ -540,6 +565,30 @@ def build(out):
     write(os.path.join(out, "robots.txt"), f"User-agent: *\nAllow: /\nSitemap: {SITE_URL}sitemap.xml\n")
     write(os.path.join(out, ".nojekyll"), "")
     return site
+
+
+def news_html(lang, base):
+    """Os destaques da seção mais nova do CHANGELOG (a página inicial mostra sozinha)."""
+    text = read("CHANGELOG.pt.md" if lang == "pt" else "CHANGELOG.md")
+    m = re.search(r"^## (.+)$", text, re.M)
+    if not m:
+        return ""
+    title = m.group(1).strip()
+    rest = text[m.end():]
+    end = re.search(r"^## ", rest, re.M)
+    sec = rest[: end.start()] if end else rest
+    hl = re.search(r"^### (?:Destaques|Highlights)\s*$(.*?)(?=^### |^<!--|\Z)", sec, re.M | re.S)
+    if not hl:
+        return ""
+    md = markdown.Markdown(extensions=["sane_lists"])
+    body = strip_emoji(md.convert(hl.group(1)))
+    lp = "" if lang == "pt" else "en/"
+    label = ("v" + title) if title[:1].isdigit() else title
+    anchor = gh_slug(title)
+    href = f"{base}{lp}docs/changelog/#{anchor}"
+    more = "o changelog inteiro →" if lang == "pt" else "the full changelog →"
+    return (f'<div class="news-head"><span class="tag-badge">{html.escape(label)}</span>'
+            f'<a href="{href}">{more}</a></div><div class="news-body markdown-body">{body}</div>')
 
 
 def index_sections(entries, p, body, path):

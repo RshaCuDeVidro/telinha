@@ -2,7 +2,7 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
-## Ainda não lançada
+## 3.3.0
 
 Conversa com a 3.2 e a 3.1 (as mensagens novas são ignoradas por app e servidor antigos; mensagem privada e arquivo só vão pra quem entende).
 
@@ -12,6 +12,8 @@ Conversa com a 3.2 e a 3.1 (as mensagens novas são ignoradas por app e servidor
 - 📎 **Arquivos na sala**: qualquer arquivo de até 256 MB, pelo clipe, arrastando pra janela ou com `/arquivo`. Sobe uma vez pro servidor e cada um baixa quando clicar, em segundo plano, sem atrapalhar vídeo, voz e chat.
 - ↩️ **Responder citando** uma mensagem e **mensagem privada** (pelo menu da mensagem, da pessoa ou `/msg nome texto`).
 - 🧪 **AV1 experimental** (NVIDIA RTX 40 em diante): mais nítido com a mesma banda, quando todo mundo que assiste decodifica. Desligado por padrão, em Configurações → Desempenho.
+- 🤖 **Bots**: um SDK em Python pra fazer os seus (comandos, eventos, privada, música na call, arquivos) e um **bot de música** pronto (pasta, arquivos da sala, rádios). Aparecem com a etiqueta BOT e nunca viram admin.
+- 🌐 **Site novo**, com a wiki inteira em português e inglês, busca e o guia de uso: https://rshacudevidro.github.io/telinha/
 
 <!-- detalhes -->
 
@@ -40,6 +42,21 @@ Conversa com a 3.2 e a 3.1 (as mensagens novas são ignoradas por app e servidor
   driver mais antigo); quem assiste decodifica pelo NVDEC (RTX 30 em diante)
   ou no navegador. Se o AV1 não abrir, a transmissão segue em HEVC/H.264.
   Clipes e gravações em AV1 saem em MP4 (av01).
+- **Bots** (`sdk/python`, `bots/musica`): o bot se marca no `hello`
+  (`feat_bot`) e aparece com a etiqueta BOT na lista e no chat (no app e no
+  navegador); nunca vira admin, nem mandando o token do dono. No servidor
+  dedicado, `--sem-bots` recusa todos e `--token-bots` pede um token só
+  deles. O SDK fala o protocolo nativo (cifrado), reconecta sozinho, confere a
+  identidade do servidor, toca som na call pelo ffmpeg (Opus estéreo de 20 ms,
+  no ritmo) e manda/baixa arquivos; os testes dele rodam no CI contra o
+  servidor recém-compilado. Guia, tutorial e referência no site.
+- **Site** (GitHub Pages): gerado dos `.md` do repositório a cada push, com
+  busca (Ctrl+K), índice da página, tema claro/escuro e o visual neon; docs
+  novos de guia de uso, problemas comuns e bots.
+- Os símbolos ▶ ⏸ ⏩ e afins agora carregam a fonte de emoji colorida (antes
+  viravam "?").
+- A pasta temporária de arquivos da sala criada pelo app não fica mais
+  esquecida no /tmp.
 
 ## 3.2.0
 

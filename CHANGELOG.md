@@ -2,7 +2,7 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
-## Unreleased
+## 3.3.0
 
 Talks to 3.2 and 3.1 (the new messages are ignored by older apps and servers; private messages and files only go to those who understand them).
 
@@ -12,6 +12,8 @@ Talks to 3.2 and 3.1 (the new messages are ignored by older apps and servers; pr
 - 📎 **Files in the room**: any file up to 256 MB, through the paperclip, dragging it onto the window or with `/arquivo`. It's uploaded once to the server and each person downloads it when they click, in the background, without hurting video, voice or chat.
 - ↩️ **Reply quoting** a message and **private messages** (from the message's menu, the person's menu or `/msg name text`).
 - 🧪 **Experimental AV1** (NVIDIA RTX 40 and newer): sharper at the same bandwidth, when everyone watching can decode it. Off by default, under Settings → Performance.
+- 🤖 **Bots**: a Python SDK for making your own (commands, events, private messages, music in the call, files) and a ready-made **music bot** (a folder, room files, radios). They show up with a BOT tag and never become admin.
+- 🌐 **New website**, with the whole wiki in English and Portuguese, search and a user guide: https://rshacudevidro.github.io/telinha/en/
 
 <!-- detalhes -->
 
@@ -41,6 +43,22 @@ Talks to 3.2 and 3.1 (the new messages are ignored by older apps and servers; pr
   drivers); viewers decode with NVDEC (RTX 30 and newer) or in the browser. If
   AV1 doesn't open, the stream carries on in HEVC/H.264. Clips and recordings
   in AV1 come out as MP4 (av01).
+- **Bots** (`sdk/python`, `bots/musica`): a bot labels itself in `hello`
+  (`feat_bot`) and shows up with a BOT tag in the list and the chat (in the app
+  and the browser); it never becomes admin, not even by sending the owner
+  token. On a dedicated server, `--sem-bots` refuses them all and
+  `--token-bots` requires a token just for them. The SDK speaks the native
+  (encrypted) protocol, reconnects by itself, checks the server identity,
+  plays sound in the call through ffmpeg (paced 20 ms stereo Opus) and
+  sends/downloads files; its tests run in CI against the freshly built server.
+  Guide, tutorial and reference on the website.
+- **Website** (GitHub Pages): generated from the repository's `.md` files on
+  every push, with search (Ctrl+K), a per-page outline, light/dark themes and
+  the neon look; new docs for the user guide, troubleshooting and bots.
+- The ▶ ⏸ ⏩ symbols and the like now load the color emoji font (they used to
+  show up as "?").
+- The temporary room-files folder created by the app is no longer left behind
+  in /tmp.
 
 ## 3.2.0
 
