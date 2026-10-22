@@ -114,11 +114,11 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | type | name | direction | payload |
 |---|---|---|---|
 | 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (what it decodes, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (channel to join; empty or missing = the default) |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1), `u8 recursos_do_servidor` (`srv_*`: 1 = private messages and quoted replies; an older server doesn't send it = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (the server closes right after) |
 | 4 | members | S→C | `u8 sala` (1 = locked), `u16 n`, n × member (below), n × `str versão_do_app` (same order) |
-| 5 | chat | C→S | `str texto`, image (optional, below) |
-| 5 | chat | S→C | `u32 id`, `u32 de` (0 = system), `str nome`, `str texto`, `u64 hora` (room clock, µs), `u8 flags` (1 = history), image, `u8 n`, n × (`u8 reação`, `u32 de`) |
+| 5 | chat | C→S | `str texto`, image (optional, below), `u32 resposta` (id of the message replied to; 0 = none), `u32 pra` (private to this member; 0 = the channel) |
+| 5 | chat | S→C | `u32 id`, `u32 de` (0 = system), `str nome`, `str texto`, `u64 hora` (room clock, µs), `u8 flags` (1 = history), image, `u8 n`, n × (`u8 reação`, `u32 de`), `u32 resposta` (if ≠ 0: `u32 de`, `str nome`, `str trecho`), `u32 pra` (if ≠ 0: `str nome`) |
 | 6 | stream_start | C→S | `u8 tipo`, `u16 w`, `u16 h`, `u8 fps`, `u8 flags` (1 = with audio; screen only) |
 | 7 | stream_stop | C→S | `u8 tipo` |
 | 8 | frame | C→S | frame (below) |
@@ -253,6 +253,9 @@ doesn't send it and it counts as 0, everything as before):
   screen generates no frame. Someone who doesn't understand joined: the cursor
   goes back into the video right away. Recording your own screen too (the
   recording carries the cursor).
+- `feat_dm` (8): understands private messages. The server refuses a private
+  message to someone who doesn't (telling the sender with `notice` 10): an older
+  app would show it as if it were for everyone.
 - `feat_view_size` (2): viewers say at what height they show each stream
   (`view_size`, in steps: 360, 480, 540, 720, 900, 1080, 1440, 2160; it goes up
   instantly, and only down after 3 s smaller). The server sends the streamer the
@@ -292,7 +295,8 @@ channel (chat and call, even if locked).
 
 **notice** — types: 1 = microphone muted, 2 = microphone released, 3 = stream
 stopped (`extra` = its type), 4 = became admin, 5 = is no longer admin, 7/8 = pen
-taken away/given back, 9 = an admin moved you to another channel. The
+taken away/given back, 9 = an admin moved you to another channel, 10 = the
+private message didn't go (the person left or their app can't receive it). The
 `texto` already comes ready ("Ana muted your microphone."). 6 = couldn't switch
 channel (invalid name, switching too fast, the server doesn't allow new
 channels or has too many).
@@ -402,6 +406,15 @@ kicked, locked...) — gets a growing `id` (starts at 1 for each server instance
 and the time on the room clock, and enters a ring with the last 50. The client
 ignores a history message with an `id` it has already seen and converts the time
 to the local clock.
+
+**Reply:** the quoted snippet (up to 140 bytes, no line breaks) comes from the
+**server**, from the replier's channel history — nobody can forge a quote. A
+message too old (out of the history) goes without a quote.
+
+**Private** (`pra` ≠ 0): goes only to the sender and to `pra`, wherever they are
+(any channel); it isn't stored in the channel history and has no reactions. The
+server keeps the last 64 (without images) only to check quotes in a reply inside
+the private conversation; in public, quoting a private message carries no snippet.
 
 ### Channels
 

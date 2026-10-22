@@ -108,6 +108,10 @@ const room_log_saved = "saved";
 const via_clique = "clique";
 
 const ic = struct {
+    const reply = &iconArr(0xF3E5);
+    const paperclip = &iconArr(0xF0C6);
+    const file = &iconArr(0xF15B);
+    const download = &iconArr(0xF019);
     const desktop = &iconArr(0xF390);
     const eraser = &iconArr(0xF12D);
     const bug = &iconArr(0xF188);
@@ -302,6 +306,13 @@ pub fn onDrop(_: ?*c.GLFWwindow, count: c_int, paths: [*c][*c]const u8) callconv
 }
 
 /// "@Nome" (nome inteiro, sem diferenciar maiúscula) no texto?
+fn copyName(dst: []u8, len: *usize, src: []const u8) void {
+    var n = @min(src.len, dst.len);
+    while (n > 0 and n < src.len and src[n] & 0xC0 == 0x80) n -= 1; // sem cortar um caractere no meio
+    @memcpy(dst[0..n], src[0..n]);
+    len.* = n;
+}
+
 fn mentions(text: []const u8, name: []const u8) bool {
     if (name.len == 0) return false;
     var i: usize = 0;
@@ -854,6 +865,20 @@ pub const App = struct {
     msg_menu_len: usize = 0,
     msg_menu_name: [48]u8 = undefined,
     msg_menu_name_len: usize = 0,
+    msg_menu_id: u32 = 0, // a mensagem do menu (responder)
+    msg_menu_from: u32 = 0,
+    msg_menu_to: u32 = 0, // era privada (0 = do canal)
+    msg_menu_to_name: [48]u8 = undefined,
+    msg_menu_to_name_len: usize = 0,
+    // pra onde a caixa de mensagem aponta: resposta (citação) e privada
+    reply_id: u32 = 0,
+    reply_name: [48]u8 = undefined,
+    reply_name_len: usize = 0,
+    reply_snip: [proto.chat_quote_max]u8 = undefined,
+    reply_snip_len: usize = 0,
+    dm_to: u32 = 0,
+    dm_name: [48]u8 = undefined,
+    dm_name_len: usize = 0,
     draw_pts: [proto.draw_max_points][2]u16 = undefined,
     draw_n: usize = 0,
     draw_new: bool = false, // o próximo envio começa um traço
@@ -1314,7 +1339,7 @@ pub const App = struct {
                 left -= 1;
                 if (l.from == 0 or l.from == cl.my_id) continue;
                 fresh += 1;
-                const ment = mentions(l.text, my_name);
+                const ment = mentions(l.text, my_name) or l.to == cl.my_id or l.reply_from == cl.my_id;
                 if (name_len == 0 or (ment and !mentioned)) {
                     name_len = @min(l.name_len, name.len);
                     @memcpy(name[0..name_len], l.name[0..name_len]);
@@ -1930,7 +1955,7 @@ pub const App = struct {
                 },
                 else => {},
             }
-            const bad = n.kind == proto.notice_muted or n.kind == proto.notice_stream_stopped or n.kind == proto.notice_admin_off or n.kind == proto.notice_channel or n.kind == proto.notice_draw_off;
+            const bad = n.kind == proto.notice_muted or n.kind == proto.notice_stream_stopped or n.kind == proto.notice_admin_off or n.kind == proto.notice_channel or n.kind == proto.notice_draw_off or n.kind == proto.notice_dm;
             var nb: [200]u8 = undefined;
             a.toast("{s}", .{i18n.server(n.textSlice(), &nb)}, bad);
         }
@@ -4542,6 +4567,14 @@ pub const App = struct {
         pushFont(font_semibold, 13);
         textColored(col.muted, name);
         popFont();
+        if (target.id != cl.my_id and cl.server_features & proto.srv_dm != 0 and
+            c.igSelectable_Bool(fmtZ("{s}  Mensagem privada###mdmember", .{ic.lock}), false, 0, v2(S(220), 0)))
+        {
+            a.startDm(target.id, name);
+            a.cfg.show_chat = true;
+            a.focus_chat = true;
+            c.igCloseCurrentPopup();
+        }
         const route = routeText(target.route);
         if (route.len > 0) {
             pushFont(font_regular, 12);
@@ -6583,6 +6616,34 @@ pub const App = struct {
         a.mention_apply_len = n;
     }
 
+    /// A caixa de mensagem passa a ir em privado pra essa pessoa.
+    fn startDm(a: *App, id: u32, name: []const u8) void {
+        a.dm_to = id;
+        copyName(&a.dm_name, &a.dm_name_len, name);
+    }
+
+    /// Barra em cima da caixa de mensagem (respondendo / privado pra): ícone,
+    /// título, um trecho (cortado) e o X. true = clicou no X.
+    fn composeBar(a: *App, d: *c.ImDrawList, p: c.ImVec2_c, w: f32, h: f32, icon: []const u8, color: u32, title: []const u8, snip: []const u8, comptime close_id: [:0]const u8) bool {
+        _ = a;
+        const x0 = p.x + S(12);
+        const x1 = p.x + w - S(12);
+        rectFill(d, x0, p.y + S(4), x1, p.y + h, withAlpha(color, 30), S(6));
+        drawTextF(d, font_regular, 12, v2(x0 + S(10), p.y + S(9)), color, icon);
+        drawTextF(d, font_semibold, 12.5, v2(x0 + S(30), p.y + S(8)), col.text, title);
+        if (snip.len > 0) {
+            const sx = x0 + S(38) + textSizeF(font_semibold, 12.5, title).x;
+            c.ImDrawList_PushClipRect(d, v2(sx, p.y), v2(x1 - S(30), p.y + h), true);
+            drawTextF(d, font_regular, 12.5, v2(sx, p.y + S(8)), col.muted, snip);
+            c.ImDrawList_PopClipRect(d);
+        }
+        const back = c.igGetCursorScreenPos();
+        c.igSetCursorScreenPos(v2(x1 - S(26), p.y + S(5)));
+        const close = iconButton(close_id, ic.xmark, S(22), col.muted, col.hover, tr("Cancelar"));
+        c.igSetCursorScreenPos(back);
+        return close;
+    }
+
     fn drawChat(a: *App, cl: *Client, size: c.ImVec2_c) void {
         c.igPushStyleColor_U32(c.ImGuiCol_ChildBg, 0);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(0, 0));
@@ -6619,8 +6680,17 @@ pub const App = struct {
         const typed_h = if (typed.len == 0) 0 else c.igCalcTextSize(typed.ptr, typed.ptr + typed.len, false, box_w).y;
         popFont();
         const box_h = std.math.clamp(typed_h + S(18), S(44), S(160));
+        // a caixa aponta pra uma resposta e/ou uma privada: uma barra pra cada
+        if (cl.server_features & proto.srv_dm == 0) {
+            a.reply_id = 0;
+            a.dm_to = 0;
+        }
+        cl.compose_to.store(a.dm_to, .release);
+        cl.compose_reply.store(a.reply_id, .release);
+        const bar_h = S(26);
+        const bars: f32 = @floatFromInt(@as(u32, @intFromBool(a.reply_id != 0)) + @intFromBool(a.dm_to != 0));
         // mensagens
-        const input_h = box_h + S(24);
+        const input_h = box_h + S(24) + bars * bar_h;
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(14), S(10)));
         c.igPushStyleColor_U32(c.ImGuiCol_ScrollbarBg, 0);
         _ = c.igBeginChild_Str("msgs", v2(size.x, size.y - hh - input_h), c.ImGuiChildFlags_AlwaysUseWindowPadding, 0);
@@ -6671,7 +6741,9 @@ pub const App = struct {
             // fora da área visível e já medida: só reserva o espaço (500 linhas
             // com quebra de texto custavam ~2 ms por quadro, com o cliente travado)
             const y0 = c.igGetCursorPosY();
-            const with_header = line.from != 0 and line.from != last_from;
+            // privada e resposta sempre com o cabeçalho (o aviso e a citação ficam claros)
+            const special = line.to != 0 or line.reply_id != 0;
+            const with_header = line.from != 0 and (line.from != last_from or special);
             if (a.chat_h.get(line.id)) |ch| if (ch.header == with_header and ch.width == size.x and
                 (y0 + ch.h < view_top - view_h or y0 > view_top + 2 * view_h))
             {
@@ -6697,7 +6769,7 @@ pub const App = struct {
             }
             defer a.chat_h.put(gpa_ui, line.id, .{ .h = c.igGetCursorPosY() - y0, .header = with_header, .width = size.x }) catch {};
             var top: f32 = 0;
-            if (line.from != last_from) {
+            if (line.from != last_from or special) {
                 c.igDummy(v2(0, S(12)));
                 const p = c.igGetCursorScreenPos();
                 top = p.y;
@@ -6705,13 +6777,35 @@ pub const App = struct {
                 drawAvatar(dl, v2(p.x + S(18), p.y + S(18)), S(18), line.from, line.nameSlice(), false);
                 drawTextF(dl, font_semibold, 14.5, v2(p.x + S(48), p.y), avatarColor(line.from), line.nameSlice());
                 const ns = textSizeF(font_semibold, 14.5, line.nameSlice());
-                drawTextF(dl, font_regular, 11.5, v2(p.x + S(54) + ns.x, p.y + S(3)), col.faint, fmtZ("{d:0>2}:{d:0>2}", .{ line.hour, line.minute }));
+                const time_z = fmtZ("{d:0>2}:{d:0>2}", .{ line.hour, line.minute });
+                drawTextF(dl, font_regular, 11.5, v2(p.x + S(54) + ns.x, p.y + S(3)), col.faint, time_z);
+                if (line.to != 0) {
+                    // privada: pra quem (ou "pra você")
+                    const tx = p.x + S(62) + ns.x + textSizeF(font_regular, 11.5, time_z).x;
+                    const who = if (line.from == me) fmtZ("{s}  privado pra {s}", .{ ic.lock, line.toName() }) else fmtZ("{s}  privado pra você", .{ic.lock});
+                    drawTextF(dl, font_semibold, 11.5, v2(tx, p.y + S(3)), col.blurple, who);
+                }
                 c.igSetCursorScreenPos(v2(p.x + S(48), p.y + S(20)));
             } else {
                 top = c.igGetCursorScreenPos().y;
                 c.igSetCursorPosX(c.igGetCursorPosX() + S(48));
             }
             const left = c.igGetCursorScreenPos().x;
+            if (line.reply_id != 0) {
+                // a citação: barrinha, quem disse e o começo do que disse
+                const qp = c.igGetCursorScreenPos();
+                const dl = drawList();
+                rectFill(dl, qp.x, qp.y + S(2), qp.x + S(3), qp.y + S(18), withAlpha(col.text, 60), 1);
+                const qn = line.replyName();
+                drawTextF(dl, font_semibold, 12.5, v2(qp.x + S(10), qp.y + S(2)), avatarColor(line.reply_from), qn);
+                const qx = qp.x + S(16) + textSizeF(font_semibold, 12.5, qn).x;
+                c.ImDrawList_PushClipRect(dl, v2(qx, qp.y), v2(c.igGetWindowPos().x + size.x - S(18), qp.y + S(20)), true);
+                drawTextF(dl, font_regular, 12.5, v2(qx, qp.y + S(2)), col.muted, line.replySnip());
+                c.ImDrawList_PopClipRect(dl);
+                noteEmoji(line.replySnip());
+                c.igDummy(v2(1, S(20)));
+                c.igSetCursorScreenPos(v2(left, c.igGetCursorScreenPos().y));
+            }
             if (text.len > 0 and markdown.hasMarkup(text)) {
                 a.drawRichText(text, c.igGetWindowPos().x + size.x - S(18), line.id);
             } else if (text.len > 0) {
@@ -6731,8 +6825,16 @@ pub const App = struct {
             }
             if (line.n_reacts > 0) a.drawReactionChips(cl, line, me, left, c.igGetWindowPos().x + size.x - S(18));
             const bottom = c.igGetCursorScreenPos().y;
-            // menção a você: fundo amarelado com faixa do lado (como no Discord)
-            if (line.from != me and mentions(text, my_name)) {
+            // privada: fundo azulado
+            if (line.to != 0) {
+                c.ImDrawList_ChannelsSetCurrent(mdl, 0);
+                const wx = c.igGetWindowPos().x;
+                rectFill(mdl, wx, top - S(2), wx + size.x, bottom + S(2), withAlpha(col.blurple, 22), 0);
+                rectFill(mdl, wx, top - S(2), wx + S(3), bottom + S(2), col.blurple, 0);
+                c.ImDrawList_ChannelsSetCurrent(mdl, 1);
+            }
+            // menção a você (ou resposta a uma mensagem sua): fundo amarelado com faixa do lado (como no Discord)
+            if (line.from != me and line.to == 0 and (mentions(text, my_name) or line.reply_from == me)) {
                 c.ImDrawList_ChannelsSetCurrent(mdl, 0);
                 const wx = c.igGetWindowPos().x;
                 rectFill(mdl, wx, top - S(2), wx + size.x, bottom + S(2), withAlpha(col.yellow, 26), 0);
@@ -6743,7 +6845,11 @@ pub const App = struct {
             if (msgs_hovered and mouse.y >= top - S(10) and mouse.y < bottom + S(2)) {
                 hover_line = line.id;
                 // clique direito: copiar o texto / responder
-                if (c.igIsMouseClicked_Bool(1, false) and text.len > 0) {
+                if (c.igIsMouseClicked_Bool(1, false) and (text.len > 0 or line.img != null)) {
+                    a.msg_menu_id = line.id;
+                    a.msg_menu_from = line.from;
+                    a.msg_menu_to = line.to;
+                    copyName(&a.msg_menu_to_name, &a.msg_menu_to_name_len, line.toName());
                     a.msg_menu_len = @min(text.len, a.msg_menu_text.len);
                     @memcpy(a.msg_menu_text[0..a.msg_menu_len], text[0..a.msg_menu_len]);
                     a.msg_menu_name_len = @min(line.name_len, a.msg_menu_name.len);
@@ -6751,7 +6857,7 @@ pub const App = struct {
                     _ = c.igOpenPopup_Str("##msgmenu", 0);
                 }
             }
-            if (a.react_hover == line.id) {
+            if (a.react_hover == line.id and line.to == 0) { // privada não tem reação
                 const bs = S(26);
                 const bx0 = c.igGetWindowPos().x + size.x - S(14) - bs * proto.reactions - S(8);
                 const by0 = top - S(12);
@@ -6765,7 +6871,8 @@ pub const App = struct {
                 }
                 c.igSetCursorScreenPos(back);
             }
-            last_from = line.from;
+            // depois de uma privada ou resposta, a próxima mostra o cabeçalho de novo
+            last_from = if (special) 0xfffffffe else line.from;
         }
         c.ImDrawList_ChannelsMerge(mdl);
         if (c.igBeginPopup("##msgmenu", 0)) {
@@ -6775,8 +6882,38 @@ pub const App = struct {
                 z[a.msg_menu_len] = 0;
                 c.igSetClipboardText(@ptrCast(&z));
             }
-            if (c.igSelectable_Bool(fmtZ("{s}  Responder###mreply", .{ic.arrow_right}), false, 0, v2(S(200), 0))) {
-                // "@nome " no começo da caixa (a pessoa é avisada pela menção)
+            const dm_ok = cl.server_features & proto.srv_dm != 0;
+            if (dm_ok and c.igSelectable_Bool(fmtZ("{s}  Responder###mreply", .{ic.reply}), false, 0, v2(S(220), 0))) {
+                // citando: a barra em cima da caixa; resposta numa privada continua privada
+                a.reply_id = a.msg_menu_id;
+                copyName(&a.reply_name, &a.reply_name_len, a.msg_menu_name[0..a.msg_menu_name_len]);
+                var snip = std.mem.trim(u8, a.msg_menu_text[0..a.msg_menu_len], " \t\r\n");
+                if (snip.len > a.reply_snip.len) {
+                    var n = a.reply_snip.len;
+                    while (n > 0 and snip[n] & 0xC0 == 0x80) n -= 1;
+                    snip = snip[0..n];
+                }
+                @memcpy(a.reply_snip[0..snip.len], snip);
+                a.reply_snip_len = snip.len;
+                for (a.reply_snip[0..snip.len]) |*ch| if (ch.* == '\n') {
+                    ch.* = ' ';
+                };
+                if (a.msg_menu_to != 0) {
+                    if (a.msg_menu_from == me)
+                        a.startDm(a.msg_menu_to, a.msg_menu_to_name[0..a.msg_menu_to_name_len])
+                    else
+                        a.startDm(a.msg_menu_from, a.msg_menu_name[0..a.msg_menu_name_len]);
+                }
+                a.focus_chat = true;
+            }
+            if (dm_ok and a.msg_menu_from != me and a.msg_menu_from != 0 and a.msg_menu_to == 0 and
+                c.igSelectable_Bool(fmtZ("{s}  Mensagem privada###mdm", .{ic.lock}), false, 0, v2(S(220), 0)))
+            {
+                a.startDm(a.msg_menu_from, a.msg_menu_name[0..a.msg_menu_name_len]);
+                a.focus_chat = true;
+            }
+            if (!dm_ok and c.igSelectable_Bool(fmtZ("{s}  Responder###mreply", .{ic.reply}), false, 0, v2(S(220), 0))) {
+                // servidor antigo: "@nome " no começo da caixa (a pessoa é avisada pela menção)
                 const cur_len = std.mem.indexOfScalar(u8, &a.chat_input, 0) orelse a.chat_input.len;
                 const name = a.msg_menu_name[0..a.msg_menu_name_len];
                 if (name.len + 2 + cur_len < a.chat_input.len) {
@@ -6802,8 +6939,16 @@ pub const App = struct {
         c.igPopStyleColor(1);
         c.igPopStyleVar(1);
 
-        // caixa de mensagem
-        const ip = c.igGetCursorScreenPos();
+        // caixa de mensagem (com as barras de resposta/privada em cima)
+        var ip = c.igGetCursorScreenPos();
+        if (a.dm_to != 0) {
+            if (a.composeBar(d, ip, size.x, bar_h, ic.lock, col.blurple, fmtZ("Privado pra {s}", .{a.dm_name[0..a.dm_name_len]}), "", "##dmclose")) a.dm_to = 0;
+            ip.y += bar_h;
+        }
+        if (a.reply_id != 0) {
+            if (a.composeBar(d, ip, size.x, bar_h, ic.arrow_right, col.muted, fmtZ("Respondendo {s}", .{a.reply_name[0..a.reply_name_len]}), a.reply_snip[0..a.reply_snip_len], "##replyclose")) a.reply_id = 0;
+            ip.y += bar_h;
+        }
         const bx = ip.x + S(12);
         const by = ip.y + S(10);
         const bw = size.x - S(24);
@@ -6827,6 +6972,7 @@ pub const App = struct {
         c.igSetNextItemWidth(bw - S(82));
         var hint_buf: [96]u8 = undefined;
         const hint: [:0]const u8 = blk: {
+            if (a.dm_to != 0) break :blk i18n.bufPrintZ(&hint_buf, "Mensagem privada pra {s}", .{a.dm_name[0..a.dm_name_len]}) catch tr("Mensagem ou @nome");
             cl.mutex.lock();
             defer cl.mutex.unlock();
             if (!cl.chans_supported) break :blk tr("Mensagem ou @nome");
@@ -6895,7 +7041,10 @@ pub const App = struct {
         if (enter or send_click) {
             const raw = if (enter and a.chat_sent_len > 0) a.chat_sent[0..a.chat_sent_len] else std.mem.sliceTo(&a.chat_input, 0);
             const msg = std.mem.trim(u8, raw, " \t");
-            if (msg.len > 0 and !a.chatCommand(cl, msg)) cl.sendChat(msg);
+            if (msg.len > 0 and !a.chatCommand(cl, msg)) {
+                cl.sendChat(msg, a.reply_id, a.dm_to);
+                a.reply_id = 0; // a resposta é uma vez; a privada continua até fechar
+            }
             @memset(&a.chat_input, 0);
             if (send_click) a.focus_chat = true; // o clique no botão tirou o foco
         }
@@ -7150,6 +7299,36 @@ pub const App = struct {
             } else if (arg.len == 0) {
                 a.toast("Use /join nome-do-canal (cria o canal se ele não existir).", .{}, false);
             } else a.askChannel(cl, arg, false);
+            return true;
+        }
+        if (is(cmd, &.{ "msg", "m", "w", "privado", "pm", "dm" })) {
+            // /msg nome texto (o nome pode ter espaço: vale o maior nome de alguém da sala que bate)
+            if (cl.server_features & proto.srv_dm == 0) {
+                a.toast("Esse servidor não tem mensagem privada (é de uma versão mais velha do telinha).", .{}, true);
+                return true;
+            }
+            var best_id: u32 = 0;
+            var best_len: usize = 0;
+            var best_name: [48]u8 = undefined;
+            cl.mutex.lock();
+            for (cl.members.items) |*m| {
+                const n = m.nameSlice();
+                if (m.id == cl.my_id or n.len <= best_len or arg.len < n.len or !std.ascii.eqlIgnoreCase(arg[0..n.len], n)) continue;
+                if (arg.len > n.len and arg[n.len] != ' ') continue;
+                best_id = m.id;
+                best_len = n.len;
+                @memcpy(best_name[0..n.len], n);
+            }
+            cl.mutex.unlock();
+            if (best_id == 0) {
+                a.toast("Use /msg nome mensagem (o nome de alguém da sala).", .{}, false);
+                return true;
+            }
+            const body = std.mem.trim(u8, arg[best_len..], " ");
+            if (body.len == 0) {
+                // só o nome: a caixa passa a ir em privado pra essa pessoa
+                a.startDm(best_id, best_name[0..best_len]);
+            } else cl.sendChat(body, 0, best_id);
             return true;
         }
         if (is(cmd, &.{ "call", "voz", "voice" })) {
@@ -8682,6 +8861,7 @@ pub const App = struct {
         try w.print(",\"lang\":{f}", .{s(@tagName(i18n.get()))});
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);
         try w.print(",\"clipboard\":{f},\"chat_input\":{f}", .{ s(if (cb_text != null) std.mem.span(cb_text) else ""), s(std.mem.sliceTo(&a.chat_input, 0)) });
+        try w.print(",\"reply_to\":{d},\"dm_to\":{d}", .{ a.reply_id, a.dm_to });
         try w.print(",\"notifications_sent\":{d},\"away\":{},\"iconified\":{},\"preview_uploads\":{d}", .{ a.notifications_sent, a.away(), a.iconified, a.preview_uploads });
         try w.writeAll(",\"sources\":[");
         for (a.sources[0..a.n_sources], 0..) |*src, i| {
@@ -8830,6 +9010,7 @@ pub const App = struct {
             for (cl.chat.items[first..], 0..) |*l, i| {
                 if (i > 0) try w.writeByte(',');
                 try w.print("{{\"id\":{d},\"from\":{d},\"name\":{f},\"text\":{f},\"history\":{}", .{ l.id, l.from, s(l.nameSlice()), s(l.text), l.history });
+                try w.print(",\"reply_id\":{d},\"reply_from\":{d},\"reply_name\":{f},\"reply_snip\":{f},\"to\":{d},\"to_name\":{f}", .{ l.reply_id, l.reply_from, s(l.replyName()), s(l.replySnip()), l.to, s(l.toName()) });
                 const ready = for (a.img_cache) |e| {
                     if (e.id == l.id and e.tex != 0) break true;
                 } else false;

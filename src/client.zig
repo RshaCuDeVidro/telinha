@@ -147,8 +147,29 @@ pub const ChatLine = struct {
     img_expired: bool = false, // era imagem, mas saiu do histórico da sala
     reacts: [32]React = undefined,
     n_reacts: u8 = 0,
+    // resposta: a mensagem citada (trecho que o servidor mandou)
+    reply_id: u32 = 0,
+    reply_from: u32 = 0,
+    reply_name: [48]u8 = undefined,
+    reply_name_len: usize = 0,
+    reply_snip: [proto.chat_quote_max]u8 = undefined,
+    reply_snip_len: usize = 0,
+    // privada (0 = pra todo mundo): entre `from` e `to`
+    to: u32 = 0,
+    to_name: [48]u8 = undefined,
+    to_name_len: usize = 0,
 
     pub const React = struct { emoji: u8, from: u32 };
+
+    pub fn replyName(self: *const ChatLine) []const u8 {
+        return self.reply_name[0..self.reply_name_len];
+    }
+    pub fn replySnip(self: *const ChatLine) []const u8 {
+        return self.reply_snip[0..self.reply_snip_len];
+    }
+    pub fn toName(self: *const ChatLine) []const u8 {
+        return self.to_name[0..self.to_name_len];
+    }
 
     pub fn nameSlice(self: *const ChatLine) []const u8 {
         return self.name[0..self.name_len];
@@ -813,6 +834,12 @@ pub const Client = struct {
     chat_react_gen: u32 = 0, // muda quando chega reação (a UI redesenha)
     /// Último id de mensagem visto (o histórico que chega depois não repete).
     chat_last_id: u32 = 0,
+    /// O que o servidor sabe fazer (proto.srv_*; servidor antigo: 0).
+    server_features: u8 = 0,
+    /// Pra onde a caixa de mensagem aponta (a imagem colada vai junto):
+    /// resposta (id, uma vez) e privada (membro; 0 = o canal).
+    compose_reply: std.atomic.Value(u32) = .init(0),
+    compose_to: std.atomic.Value(u32) = .init(0),
     instance: u64 = 0,
     server_version: [16]u8 = undefined, // versão do app/servidor que hospeda
     server_version_len: usize = 0,
@@ -1277,6 +1304,8 @@ pub const Client = struct {
                     const token = r.u32_() catch 0;
                     if (token != 0 and getenv("TELINHA_SEM_UDP") == null and cl.udp.load(.acquire) == null) cl.startUdp(token);
                 }
+                // servidor antigo: 0 (sem privada; ela sairia pra todo mundo)
+                cl.server_features = r.u8_() catch 0;
                 cl.clock_offset.store(@as(i64, @intCast(server_us)) - @as(i64, @intCast(sync.nowUs())), .monotonic);
                 cl.status = .connected;
                 // servidor sem identidade (versão antiga, ou sem chave): nada a conferir
@@ -1488,6 +1517,19 @@ pub const Client = struct {
                     const from = try r.u32_();
                     if (emoji < proto.reactions) line.setReact(emoji, from, true);
                 }
+                // resposta e privada (servidor antigo não manda: 0)
+                line.reply_id = r.u32_() catch 0;
+                line.reply_from = 0;
+                line.reply_name_len = 0;
+                line.reply_snip_len = 0;
+                if (line.reply_id != 0) {
+                    line.reply_from = try r.u32_();
+                    copyInto(&line.reply_name, &line.reply_name_len, try r.str());
+                    copyInto(&line.reply_snip, &line.reply_snip_len, try r.str());
+                }
+                line.to = r.u32_() catch 0;
+                line.to_name_len = 0;
+                if (line.to != 0) copyInto(&line.to_name, &line.to_name_len, try r.str());
                 cl.mutex.lock();
                 defer cl.mutex.unlock();
                 // histórico que já chegou (não deveria repetir, mas não custa)
@@ -1863,11 +1905,18 @@ pub const Client = struct {
         return cl.notices.orderedRemove(0);
     }
 
-    pub fn sendChat(cl: *Client, text: []const u8) void {
+    /// `reply_to`: id da mensagem respondida (0 = nenhuma); `to`: privada pra
+    /// esse membro (0 = pra todo mundo do canal).
+    pub fn sendChat(cl: *Client, text: []const u8, reply_to: u32, to: u32) void {
         var b: proto.Builder = .{};
         defer b.deinit();
         b.begin(.chat) catch return;
         b.str(text) catch return;
+        if (reply_to != 0 or to != 0) {
+            b.u8_(proto.chat_img_none) catch return;
+            b.u32_(reply_to) catch return;
+            b.u32_(to) catch return;
+        }
         cl.queue.pushOwned(b.finish() catch return);
     }
 
@@ -1883,6 +1932,9 @@ pub const Client = struct {
         b.u16_(h) catch return;
         b.u32_(@intCast(h264.len)) catch return;
         b.bytes(h264) catch return;
+        // a imagem vai pra onde a caixa de mensagem está apontando (resposta, privada)
+        b.u32_(cl.compose_reply.swap(0, .acq_rel)) catch return;
+        b.u32_(cl.compose_to.load(.acquire)) catch return;
         cl.queue.pushOwned(b.finish() catch return);
     }
 

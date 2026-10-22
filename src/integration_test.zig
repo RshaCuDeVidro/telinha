@@ -2318,3 +2318,145 @@ test "PCP: roteador que só fala PCP (o NAT-PMP volta com erro de versão)" {
 test "NAT-PMP: nos testes, sem roteador de mentira, nunca acha o de verdade" {
     try testing.expect(natpmp.gateway() == null);
 }
+
+// ------------------------------------------------------- resposta e privada
+
+const FullChat = struct {
+    id: u32,
+    from: u32,
+    text: [256]u8 = undefined,
+    text_len: usize = 0,
+    history: bool,
+    reply_id: u32 = 0,
+    reply_from: u32 = 0,
+    snip: [proto.chat_quote_max]u8 = undefined,
+    snip_len: usize = 0,
+    to: u32 = 0,
+
+    fn textSlice(f: *const FullChat) []const u8 {
+        return f.text[0..f.text_len];
+    }
+    fn snipSlice(f: *const FullChat) []const u8 {
+        return f.snip[0..f.snip_len];
+    }
+};
+
+/// Próxima mensagem de chat de alguém, com a citação e o "pra" (pula avisos do sistema).
+fn fullChat(c: *TestClient) !FullChat {
+    while (true) {
+        var r: proto.Reader = .{ .data = try c.expect(.chat) };
+        var f: FullChat = .{ .id = try r.u32_(), .from = try r.u32_(), .history = false };
+        _ = try r.str();
+        const text = try r.str();
+        _ = try r.u64_();
+        f.history = (try r.u8_()) & proto.chat_history != 0;
+        if ((try r.u8_()) == proto.chat_img_h264) {
+            _ = try r.u16_();
+            _ = try r.u16_();
+            _ = try r.take(try r.u32_());
+        }
+        for (0..try r.u8_()) |_| {
+            _ = try r.u8_();
+            _ = try r.u32_();
+        }
+        f.reply_id = try r.u32_();
+        if (f.reply_id != 0) {
+            f.reply_from = try r.u32_();
+            _ = try r.str();
+            const sn = try r.str();
+            @memcpy(f.snip[0..sn.len], sn);
+            f.snip_len = sn.len;
+        }
+        f.to = try r.u32_();
+        if (f.to != 0) _ = try r.str();
+        if (f.from == 0) continue;
+        @memcpy(f.text[0..text.len], text);
+        f.text_len = text.len;
+        return f;
+    }
+}
+
+fn sendChatTo(c: *TestClient, text: []const u8, reply_to: u32, to: u32) !void {
+    var b: proto.Builder = .{};
+    defer b.deinit();
+    try b.begin(.chat);
+    try b.str(text);
+    try b.u8_(proto.chat_img_none);
+    try b.u32_(reply_to);
+    try b.u32_(to);
+    try c.send(try b.finish());
+}
+
+test "chat: resposta cita do histórico; privada só pros dois, fora do histórico, recusada pra app antigo" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+    var a = try TestClient.connectFeats(port, "Ana", "", "", 1, 0, "", proto.features_mine);
+    defer a.close();
+    try a.welcome();
+    var b = try TestClient.connectFeats(port, "Bia", "", "", 2, 0, "", proto.features_mine);
+    defer b.close();
+    try b.welcome();
+    var old = try TestClient.connect(port, "Velho", "", ""); // app antigo: sem privada
+    defer old.close();
+    try old.welcome();
+
+    try sendChatTo(&a, "oi pessoal, tudo certo?", 0, 0);
+    const pub1 = try fullChat(&b);
+    try testing.expectEqualStrings("oi pessoal, tudo certo?", pub1.textSlice());
+    _ = try fullChat(&old);
+    _ = try fullChat(&a); // o eco
+
+    // resposta: o trecho vem do servidor (do histórico), não de quem respondeu
+    try sendChatTo(&b, "tudo!", pub1.id, 0);
+    const rep = try fullChat(&a);
+    try testing.expectEqualStrings("tudo!", rep.textSlice());
+    try testing.expectEqual(pub1.id, rep.reply_id);
+    try testing.expectEqual(a.id, rep.reply_from);
+    try testing.expectEqualStrings("oi pessoal, tudo certo?", rep.snipSlice());
+    try testing.expectEqual(pub1.id, (try fullChat(&old)).reply_id);
+    _ = try fullChat(&b); // o eco da própria resposta
+
+    // privada: Ana -> Bia; o Velho não vê
+    try sendChatTo(&a, "segredo", 0, b.id);
+    const dm = try fullChat(&b);
+    try testing.expectEqualStrings("segredo", dm.textSlice());
+    try testing.expectEqual(b.id, dm.to);
+    const echo = try fullChat(&a);
+    try testing.expectEqualStrings("segredo", echo.textSlice());
+    // resposta dentro da privada cita a privada
+    try sendChatTo(&b, "guardo sim", dm.id, a.id);
+    const dm2 = try fullChat(&a);
+    try testing.expectEqual(dm.id, dm2.reply_id);
+    try testing.expectEqualStrings("segredo", dm2.snipSlice());
+    _ = try fullChat(&b);
+    // em público, citar uma privada não vaza o trecho
+    try sendChatTo(&b, "falando nisso", dm.id, 0);
+    try testing.expectEqual(@as(u32, 0), (try fullChat(&a)).reply_id);
+    _ = try fullChat(&b);
+    try sendChatTo(&a, "depois", 0, 0);
+    // o Velho recebe as públicas, nunca a privada
+    try testing.expectEqualStrings("falando nisso", (try fullChat(&old)).textSlice());
+    try testing.expectEqualStrings("depois", (try fullChat(&old)).textSlice());
+
+    // privada pra app antigo: recusada, com aviso pra quem mandou
+    try sendChatTo(&a, "pro velho", 0, old.id);
+    var nr: proto.Reader = .{ .data = try a.expect(.notice) };
+    try testing.expectEqual(proto.notice_dm, try nr.u8_());
+
+    // quem entra depois vê o histórico sem nenhuma privada
+    var d = try TestClient.connectFeats(port, "Davi", "", "", 4, 0, "", proto.features_mine);
+    defer d.close();
+    try d.welcome();
+    var seen_reply = false;
+    while (true) {
+        const h = try fullChat(&d);
+        try testing.expect(h.history);
+        try testing.expect(h.to == 0);
+        try testing.expect(std.mem.indexOf(u8, h.textSlice(), "segredo") == null and std.mem.indexOf(u8, h.textSlice(), "guardo") == null);
+        if (h.reply_id == pub1.id) seen_reply = true;
+        if (std.mem.eql(u8, h.textSlice(), "depois")) break;
+    }
+    try testing.expect(seen_reply);
+}

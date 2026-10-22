@@ -27,7 +27,7 @@ pub const Type = enum(u8) {
     welcome = 2, // S→C u32 meu_id, str nome_da_sala, u8 sou_admin, u64 relógio_us, u64 instância_do_servidor, u8 rota (por onde eu cheguei)
     denied = 3, // S→C str motivo, u8 código (deny_*): a conexão vai cair e não adianta reconectar
     members = 4, // S→C u8 sala (room_*), u16 n, n×Member (ver docs/PROTOCOL.md)
-    chat = 5, // C→S str texto | S→C u32 id, u32 de (0 = sistema), str nome, str texto, u64 hora (relógio da sala, µs), u8 flags (chat_*)
+    chat = 5, // C→S str texto, imagem, u32 resposta, u32 pra | S→C u32 id, u32 de (0 = sistema), str nome, str texto, u64 hora (relógio da sala, µs), u8 flags (chat_*), imagem, reações, citação, pra (ver PROTOCOL)
     stream_start = 6, // C→S u8 tipo (kind_*), u16 w, u16 h, u8 fps, u8 flags (1 = com áudio)
     stream_stop = 7, // C→S u8 tipo
     frame = 8, // C→S frame | S→C u32 stream + frame
@@ -178,6 +178,7 @@ pub const notice_channel: u8 = 6; // não deu pra entrar no canal (o texto diz p
 pub const notice_draw_off: u8 = 7; // o admin tirou seu pincel
 pub const notice_draw_on: u8 = 8; // devolveu
 pub const notice_moved: u8 = 9; // um admin te levou pra outro canal
+pub const notice_dm: u8 = 10; // a mensagem privada não foi (o texto diz por quê)
 /// notice_channel com extra = 1: o canal pede senha (o app pergunta)
 pub const notice_channel_needs_password: u8 = 1;
 /// Só no app (não vem do servidor): chegou um log mandado pela sala (texto = nome + caminho).
@@ -185,6 +186,8 @@ pub const notice_log_received: u8 = 100;
 
 /// chat
 pub const chat_history: u8 = 1; // mensagem antiga (quem acabou de entrar): sem som nem notificação
+/// Resposta: o trecho citado que o servidor manda junto (bytes).
+pub const chat_quote_max = 140;
 
 /// keyreq (de quem assiste): por que precisa de um IDR
 pub const keyreq_lost: u8 = 0; // o decoder perdeu a referência (atrasou ou deu erro)
@@ -221,7 +224,14 @@ pub const feat_view_size: u8 = 2;
 /// feat_calls: a call (voz e transmissões) é separada do canal de texto:
 /// `channel` troca só o chat, `call` troca a call. App sem isso: os dois juntos.
 pub const feat_calls: u8 = 4;
-pub const features_mine: u8 = feat_cursor | feat_view_size | feat_calls;
+/// feat_dm: entende mensagem privada (o servidor não manda privada pra app
+/// antigo: ele mostraria como se fosse pra todo mundo).
+pub const feat_dm: u8 = 8;
+pub const features_mine: u8 = feat_cursor | feat_view_size | feat_calls | feat_dm;
+
+/// O que o servidor sabe fazer (último campo do welcome; servidor antigo: 0).
+pub const srv_dm: u8 = 1; // mensagem privada e resposta citada
+pub const server_features: u8 = srv_dm;
 /// view_size: "quero a resolução toda" (tela cheia, gravando, ou app antigo).
 pub const view_full: u16 = 0xFFFF;
 

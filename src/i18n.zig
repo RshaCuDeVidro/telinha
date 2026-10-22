@@ -193,6 +193,8 @@ const server_infixes = [_]Suffix{
     .{ " entrou no #", "{s} joined #{s}" },
 };
 const server_whole = [_]Suffix{
+    .{ "Essa pessoa não está mais na sala.", "That person isn't in the room anymore." },
+    .{ "Essa pessoa usa uma versão do telinha que não recebe mensagem privada.", "That person uses a telinha version that can't receive private messages." },
     .{ "O dono fechou a sala.", "The owner closed the room." },
     .{ "O link público da sala foi desligado.", "The room's public link was turned off." },
     .{ "Você foi removido da sala.", "You were removed from the room." },
@@ -716,6 +718,15 @@ const table = [_][2][]const u8{
     .{ "O PC não estava dando conta de {d}p no fps escolhido: transmitindo em {d}p (volta sozinho quando folgar).", "Your PC couldn't keep up with {d}p at the chosen fps: streaming at {d}p (goes back up on its own when there's headroom)." },
     .{ "Folgou: a transmissão voltou pra resolução escolhida.", "Headroom is back: the stream returned to the chosen resolution." },
     .{ "Folgou: a transmissão subiu pra {d}p.", "Headroom is back: the stream went up to {d}p." },
+    // resposta e mensagem privada
+    .{ "Esse servidor não tem mensagem privada (é de uma versão mais velha do telinha).", "This server has no private messages (it's an older telinha version)." },
+    .{ "Privado pra {s}", "Private to {s}" },
+    .{ "Mensagem privada pra {s}", "Private message to {s}" },
+    .{ "Respondendo {s}", "Replying to {s}" },
+    .{ "{s}  Mensagem privada", "{s}  Private message" },
+    .{ "{s}  privado pra {s}", "{s}  private to {s}" },
+    .{ "{s}  privado pra você", "{s}  private to you" },
+    .{ "Use /msg nome mensagem (o nome de alguém da sala).", "Use /msg name message (the name of someone in the room)." },
     // atualização
     .{ "Abrir a página", "Open the page" },
     .{ "As novidades estão na página da versão.", "What's new is on the release page." },

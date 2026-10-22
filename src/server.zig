@@ -315,8 +315,36 @@ const ChatEntry = struct {
     img_h: u16 = 0,
     img_expired: bool = false, // a imagem saiu da memória (histórico grande demais)
     reacts: std.ArrayList(React) = .empty,
+    // resposta: a mensagem citada (o trecho vem daqui, não de quem respondeu)
+    reply_id: u32 = 0,
+    reply_from: u32 = 0,
+    reply_name: [48]u8 = undefined,
+    reply_name_len: usize = 0,
+    reply_snip: [proto.chat_quote_max]u8 = undefined,
+    reply_snip_len: usize = 0,
+    // privada: só quem mandou e `to` recebem (não entra no histórico do canal)
+    to: u32 = 0,
+    to_name: [48]u8 = undefined,
+    to_name_len: usize = 0,
 
     const React = struct { emoji: u8, from: u32 };
+
+    /// Copia o começo da mensagem `q` pro trecho citado (sem cortar um
+    /// caractere UTF-8 no meio; imagem sem texto vira "[imagem]").
+    fn quote(e: *ChatEntry, q: *const ChatEntry) void {
+        e.reply_id = q.id;
+        e.reply_from = q.from;
+        Server.copyInto(&e.reply_name, &e.reply_name_len, q.name[0..q.name_len]);
+        var t: []const u8 = std.mem.trim(u8, q.text, " \t\r\n");
+        if (t.len == 0 and (q.img != null or q.img_expired)) t = "[imagem]";
+        var n = @min(t.len, e.reply_snip.len);
+        while (n > 0 and n < t.len and t[n] & 0xC0 == 0x80) n -= 1;
+        @memcpy(e.reply_snip[0..n], t[0..n]);
+        e.reply_snip_len = n;
+        for (e.reply_snip[0..n]) |*ch| if (ch.* == '\n' or ch.* == '\r') {
+            ch.* = ' ';
+        };
+    }
 
     fn free(e: *ChatEntry) void {
         gpa.free(e.text);
@@ -495,6 +523,11 @@ pub const Server = struct {
     chans_sent: [1024]u8 = undefined, // última lista de canais mandada (só manda se mudar)
     chans_sent_len: usize = 0,
     next_chat_id: u32 = 1,
+    /// As últimas mensagens privadas (pra conferir o trecho citado numa
+    /// resposta a uma delas; não são mandadas pra mais ninguém).
+    dms: [64]ChatEntry = undefined,
+    dms_len: usize = 0,
+    dms_head: usize = 0,
     stopped: std.atomic.Value(bool) = .init(false),
     /// Dono (quem chamou start) + uma por thread do servidor + uma por conexão
     /// + o túnel: o último a soltar libera tudo (histórico do chat, imagens...).
@@ -565,6 +598,7 @@ pub const Server = struct {
         if (s.refs.fetchSub(1, .acq_rel) != 1) return;
         for (s.chans.items) |ch| ch.destroy();
         s.chans.deinit(gpa);
+        for (0..s.dms_len) |i| s.dms[(s.dms_head + i) % s.dms.len].free();
         s.conns.deinit(gpa);
         s.bans.deinit(gpa);
         s.muted_keys.deinit(gpa);
@@ -1023,6 +1057,9 @@ pub const Server = struct {
                     if (w < 16 or h < 16 or w > proto.chat_image_side or h > proto.chat_image_side or len == 0 or len > proto.chat_image_max) return error.BadMessage;
                     img = .{ .w = w, .h = h, .data = try r.take(len) };
                 }
+                // (campos do fim: app antigo não manda)
+                const reply_to = r.u32_() catch 0;
+                const to = r.u32_() catch 0;
                 if (text.len == 0 and img == null) return;
                 s.mutex.lock();
                 defer s.mutex.unlock();
@@ -1031,7 +1068,8 @@ pub const Server = struct {
                     if (now -% cn.last_img_ms < chat_img_interval_ms) return; // rajada de imagem: ignora
                     cn.last_img_ms = now;
                 }
-                try s.broadcastChatImg(cn.chan, cn.id, cn.nameSlice(), text, img);
+                if (to != 0) return s.sendDm(cn, to, reply_to, text, img);
+                try s.postChat(cn.chan, cn.id, cn.nameSlice(), text, img, s.findQuote(cn, reply_to, false));
             },
             .react => {
                 const id = try r.u32_();
@@ -1614,6 +1652,7 @@ pub const Server = struct {
             try b.u8_(1);
             try b.u32_(l.ep.token);
         } else try b.u8_(0);
+        try b.u8_(proto.server_features); // o que este servidor sabe fazer (srv_*)
         cn.queue.pushOwned(try b.finish());
 
         // em que canal ela está e quais existem; depois o que já foi dito nele
@@ -1695,6 +1734,15 @@ pub const Server = struct {
             try b.u8_(rc.emoji);
             try b.u32_(rc.from);
         }
+        // resposta (0 = não é) e privada (0 = pra todo mundo)
+        try b.u32_(e.reply_id);
+        if (e.reply_id != 0) {
+            try b.u32_(e.reply_from);
+            try b.str(e.reply_name[0..e.reply_name_len]);
+            try b.str(e.reply_snip[0..e.reply_snip_len]);
+        }
+        try b.u32_(e.to);
+        if (e.to != 0) try b.str(e.to_name[0..e.to_name_len]);
         return b.finish();
     }
 
@@ -1703,10 +1751,11 @@ pub const Server = struct {
     /// Aviso do sistema no chat de um canal (guarda no histórico dele e manda
     /// pra quem está nele). Chamado com o mutex travado.
     fn broadcastChat(s: *Server, ch: *Chan, text: []const u8) !void {
-        return s.broadcastChatImg(ch, 0, "", text, null);
+        return s.postChat(ch, 0, "", text, null, null);
     }
 
-    fn broadcastChatImg(s: *Server, ch: *Chan, from: u32, name: []const u8, text: []const u8, img: ?Image) !void {
+    /// Uma mensagem nova (o id é o próximo). Mutex travado.
+    fn newEntry(s: *Server, from: u32, name: []const u8, text: []const u8, img: ?Image, quote: ?*const ChatEntry) !ChatEntry {
         const owned = try gpa.dupe(u8, text[0..@min(text.len, 4000)]);
         var e: ChatEntry = .{ .id = s.next_chat_id, .from = from, .text = owned, .time_us = s.nowUs() };
         if (img) |im| {
@@ -1719,6 +1768,65 @@ pub const Server = struct {
         }
         s.next_chat_id +%= 1;
         copyInto(&e.name, &e.name_len, name);
+        if (quote) |q| e.quote(q);
+        return e;
+    }
+
+    /// A mensagem citada numa resposta: do histórico do canal de quem
+    /// responde, ou (`dm`) das privadas em que ele está. null = velha demais.
+    fn findQuote(s: *Server, cn: *Conn, id: u32, dm: bool) ?*const ChatEntry {
+        if (id == 0) return null;
+        const ch = cn.chan;
+        for (0..ch.chat_len) |i| {
+            const e = &ch.chat_log[(ch.chat_head + i) % chat_history_len];
+            if (e.id == id and e.from != 0) return e;
+        }
+        // numa privada dá pra citar a conversa privada (e o canal); em público, só o canal
+        if (!dm) return null;
+        for (0..s.dms_len) |i| {
+            const e = &s.dms[(s.dms_head + i) % s.dms.len];
+            if (e.id == id and (e.from == cn.id or e.to == cn.id)) return e;
+        }
+        return null;
+    }
+
+    /// Mensagem privada de `cn` pra `to`: só os dois recebem. Mutex travado.
+    fn sendDm(s: *Server, cn: *Conn, to: u32, reply_to: u32, text: []const u8, img: ?Image) !void {
+        const target = for (s.conns.items) |o| {
+            if (o.id == to and o.authed) break o;
+        } else return pushNotice(cn, proto.notice_dm, "Essa pessoa não está mais na sala.", 0);
+        if (target == cn) return;
+        if (target.features & proto.feat_dm == 0)
+            return pushNotice(cn, proto.notice_dm, "Essa pessoa usa uma versão do telinha que não recebe mensagem privada.", 0);
+        var e = try s.newEntry(cn.id, cn.nameSlice(), text, img, s.findQuote(cn, reply_to, true));
+        e.to = to;
+        copyInto(&e.to_name, &e.to_name_len, target.nameSlice());
+        const m = chatMsg(&e, 0) catch |err| {
+            e.free();
+            return err;
+        };
+        defer m.release();
+        // guarda (pra conferir citações), sem a imagem: ela já foi
+        if (e.img) |im| {
+            gpa.free(im);
+            e.img = null;
+            e.img_expired = true;
+        }
+        if (s.dms_len == s.dms.len) {
+            s.dms[s.dms_head].free();
+            s.dms[s.dms_head] = e;
+            s.dms_head = (s.dms_head + 1) % s.dms.len;
+        } else {
+            s.dms[(s.dms_head + s.dms_len) % s.dms.len] = e;
+            s.dms_len += 1;
+        }
+        cn.queue.push(m);
+        target.queue.push(m);
+    }
+
+    /// Mensagem no chat de um canal (histórico + quem está nele). Mutex travado.
+    fn postChat(s: *Server, ch: *Chan, from: u32, name: []const u8, text: []const u8, img: ?Image, quote: ?*const ChatEntry) !void {
+        var e = try s.newEntry(from, name, text, img, quote);
         const m = chatMsg(&e, 0) catch |err| {
             e.free();
             return err;

@@ -477,6 +477,70 @@ def chat_markdown():
         b.screenshot(os.path.join(s.base, "markdown.png"))
 
 
+def hover_msg(app, mid):
+    """Passa o mouse pelo chat até ficar em cima da mensagem `mid` (devolve o y)."""
+    for y in range(90, 740, 10):
+        app.move(1150, y)
+        if app.state()["react_hover"] == mid:
+            return y
+    raise QAError(f"[{app.name}] não achei a mensagem {mid} no chat")
+
+
+@test
+def chat_resposta_privada():
+    """Responder citando (clique direito → Responder: barra em cima da caixa, a citação chega em todo mundo) e mensagem privada (pelo menu da mensagem e com /msg): só os dois veem."""
+    with Session("resposta") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)])
+        a.wait(lambda st: st["status"] == "connected", 10, "a sala")
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}"])
+        c = s.app("c", 93, ["--nome", "Caio", "--entrar", f"127.0.0.1:{p}"])
+        for x in (b, c):
+            x.wait(lambda st: st["status"] == "connected", 10, "entrar")
+        bid = a.member_id("Bia")
+        aid = b.member_id("Ana")
+        b.click("##chatin")
+        b.type("alguem viu o jogo ontem?\n")
+        st = a.wait(lambda st: any(l["text"] == "alguem viu o jogo ontem?" for l in st["chat"]), 5, "a mensagem da Bia")
+        mid = next(l["id"] for l in st["chat"] if l["text"] == "alguem viu o jogo ontem?")
+        # responder citando
+        y = hover_msg(a, mid)
+        a.click_at(1150, y, button=3)
+        a.click("###mreply")
+        a.wait(lambda st: st["reply_to"] == mid, 3, "a barra de resposta")
+        a.type("vi sim, foi demais\n")
+        st = c.wait(lambda st: any(l["text"] == "vi sim, foi demais" for l in st["chat"]), 5, "a resposta chegar")
+        r = next(l for l in st["chat"] if l["text"] == "vi sim, foi demais")
+        expect(r["reply_id"] == mid and r["reply_name"] == "Bia" and r["reply_snip"] == "alguem viu o jogo ontem?", f"citação errada: {r}")
+        expect(a.state()["reply_to"] == 0, "a resposta devia ser uma vez só")
+        # privada pelo menu da mensagem
+        y = hover_msg(a, mid)
+        a.click_at(1150, y, button=3)
+        a.click("###mdm")
+        a.wait(lambda st: st["dm_to"] == bid, 3, "a caixa em privado pra Bia")
+        a.screenshot(os.path.join(s.base, "privada_caixa.png"))
+        a.type("tenho um segredo\n")
+        st = b.wait(lambda st: any(l["text"] == "tenho um segredo" for l in st["chat"]), 5, "a privada chegar")
+        dm = next(l for l in st["chat"] if l["text"] == "tenho um segredo")
+        expect(dm["to"] == bid and dm["from"] == aid, f"privada errada: {dm}")
+        # /msg do Caio pra Ana (sem mudar a caixa dele)
+        c.click("##chatin")
+        c.type("/msg Ana oi so pra voce\n")
+        a.wait(lambda st: any(l["text"] == "oi so pra voce" and l["to"] == aid for l in st["chat"]), 5, "o /msg chegar")
+        # o Caio nunca viu a privada da Ana, e a Bia nunca viu a do Caio
+        time.sleep(0.5)
+        expect(not any(l["text"] == "tenho um segredo" for l in c.state()["chat"]), "o Caio viu a privada")
+        expect(not any(l["text"] == "oi so pra voce" for l in b.state()["chat"]), "a Bia viu a privada do Caio")
+        time.sleep(0.4)
+        a.screenshot(os.path.join(s.base, "privada.png"))
+        # fechar a privada: volta pro canal
+        a.click("##dmclose")
+        a.wait(lambda st: st["dm_to"] == 0, 3, "fechar a privada")
+        a.click("##chatin")
+        a.type("de volta pro canal\n")
+        b.wait(lambda st: any(l["text"] == "de volta pro canal" and l["to"] == 0 for l in st["chat"]), 5, "mensagem pública depois da privada")
+
+
 @test
 def identidade_servidor():
     """Identidade do servidor: o convite leva a impressão e quem entra por ele confere; convite com impressão errada não entra; num servidor dedicado, a primeira vez é lembrada e, se a chave mudar, o app avisa e só entra depois de confiar na nova."""

@@ -110,11 +110,11 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | tipo | nome | direção | payload |
 |---|---|---|---|
 | 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (o que decodifica, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (canal pra entrar; vazio ou sem o campo = o padrão) |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1), `u8 recursos_do_servidor` (`srv_*`: 1 = mensagem privada e resposta citada; servidor antigo não manda = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (servidor fecha em seguida) |
 | 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo), n × `str versão_do_app` (mesma ordem) |
-| 5 | chat | C→S | `str texto`, imagem (opcional, abaixo) |
-| 5 | chat | S→C | `u32 id`, `u32 de` (0 = sistema), `str nome`, `str texto`, `u64 hora` (relógio da sala, µs), `u8 flags` (1 = histórico), imagem, `u8 n`, n × (`u8 reação`, `u32 de`) |
+| 5 | chat | C→S | `str texto`, imagem (opcional, abaixo), `u32 resposta` (id da mensagem respondida; 0 = nenhuma), `u32 pra` (privada pra esse membro; 0 = o canal) |
+| 5 | chat | S→C | `u32 id`, `u32 de` (0 = sistema), `str nome`, `str texto`, `u64 hora` (relógio da sala, µs), `u8 flags` (1 = histórico), imagem, `u8 n`, n × (`u8 reação`, `u32 de`), `u32 resposta` (se ≠ 0: `u32 de`, `str nome`, `str trecho`), `u32 pra` (se ≠ 0: `str nome`) |
 | 6 | stream_start | C→S | `u8 tipo`, `u16 w`, `u16 h`, `u8 fps`, `u8 flags` (1 = com áudio; só vale pra tela) |
 | 7 | stream_stop | C→S | `u8 tipo` |
 | 8 | frame | C→S | frame (abaixo) |
@@ -248,6 +248,9 @@ manda e vale 0, tudo como antes):
   segundo; o servidor corta acima de 130). Mexer o mouse com a tela parada
   não gera quadro. Entrou alguém que não entende: o cursor volta pro vídeo
   na hora. Gravando a própria tela, também (a gravação leva o cursor).
+- `feat_dm` (8): entende mensagem privada. O servidor recusa privada pra quem
+  não entende (avisa quem mandou com `notice` 10): o app antigo mostraria como
+  se fosse pra todo mundo.
 - `feat_view_size` (2): quem assiste diz em que altura mostra cada
   transmissão (`view_size`, em degraus: 360, 480, 540, 720, 900, 1080,
   1440, 2160; sobe na hora, só desce depois de 3 s menor). O servidor manda
@@ -285,7 +288,8 @@ call, mesmo trancado).
 
 **notice** — tipos: 1 = microfone silenciado, 2 = microfone liberado, 3 =
 transmissão parada (`extra` = tipo dela), 4 = virou admin, 5 = deixou de ser
-admin, 7/8 = pincel tirado/devolvido, 9 = um admin te levou pra outro canal. O
+admin, 7/8 = pincel tirado/devolvido, 9 = um admin te levou pra outro canal, 10 =
+a mensagem privada não foi (a pessoa saiu ou o app dela não recebe). O
 `texto` já vem pronto ("Ana silenciou seu microfone."). 6 = não deu pra
 trocar de canal (nome inválido, trocando rápido demais, o servidor não deixa
 criar canal ou já tem canais demais).
@@ -395,6 +399,15 @@ expulsou, trancou...) — ganha um `id` crescente (começa em 1 a cada
 instância do servidor) e a hora no relógio da sala, e entra num anel com as
 últimas 50. O cliente ignora mensagem de histórico com `id` que já viu e
 converte a hora pro relógio local.
+
+**Resposta:** o trecho citado (até 140 bytes, sem quebra de linha) vem do
+**servidor**, do histórico do canal de quem responde — ninguém forja citação.
+Mensagem velha demais (fora do histórico) vai sem citação.
+
+**Privada** (`pra` ≠ 0): vai só pra quem mandou e pra `pra`, esteja onde
+estiver (qualquer canal); não entra no histórico do canal nem tem reação. O
+servidor guarda as últimas 64 (sem as imagens) só pra conferir citação numa
+resposta dentro da privada; em público, citar uma privada não leva o trecho.
 
 ### Canais
 
