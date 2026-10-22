@@ -110,7 +110,34 @@ async def poll(ctx, question: str):
 The whole example, counting votes through the `reaction` event, is in
 [`examples/enquete.py`](../sdk/python/examples/enquete.py).
 
-## 4. Private messages, channels and the call
+## 4. Cards and buttons
+
+A card (`Embed`) is a message with a title, fields, a progress bar and buttons,
+like the music bot's "now playing". Each button takes an `on_click`, called
+when anyone in the room clicks it, with who clicked and where they are:
+
+```python
+from telinha import Embed, Icon
+
+@bot.command(help="rolls a die, with a button to roll again")
+async def roll(ctx):
+    card = Embed(kicker="DICE", title=str(random.randint(1, 6)), color=0x22c55e)
+
+    async def again(click):
+        card.title = str(random.randint(1, 6))
+        card.footer = f"rolled by {click.member_name}"
+        await msg.edit(embed=card)          # changes the card in place
+
+    card.add_button("Roll again", icon=Icon.DICE, style="primary", on_click=again)
+    msg = await ctx.reply_card(card, "rolled a die")
+```
+
+`reply_card` answers quoting the command; the text is what apps before 3.4
+show instead of the card. `send(..., image="cover.jpg")` attaches an image
+(with `thumbnail=True` it becomes the card's cover). Everything about cards is
+in the [reference](BOTS_API.md#embed).
+
+## 5. Private messages, channels and the call
 
 ```python
 await bot.send("just for you", to=member.id)       # private message
@@ -123,7 +150,7 @@ The SDK waits by itself for the gap the server requires between switches
 (800 ms). `bot.channel`, `bot.call`, `bot.channels` and `bot.members` show where
 the bot is and who's with it.
 
-## 5. Sound in the call
+## 6. Sound in the call
 
 ```python
 from telinha import Player
@@ -141,7 +168,7 @@ Opus at the right pace and turns the bot's "microphone" on while it plays.
 `pause()`, `resume()`, `stop()`, `set_volume(0.5)` and `position` do the rest.
 The [music bot](BOTS_MUSIC.md) is a complete example, with a queue.
 
-## 6. Files
+## 7. Files
 
 ```python
 @bot.on("message")
@@ -158,7 +185,7 @@ async def report(ctx):
 Up to 256 MB per file. Uploading and downloading, the SDK follows the pace of
 the server's acknowledgements (it doesn't trample the room's voice and video).
 
-## 7. Running it for real
+## 8. Running it for real
 
 - `bot.run()` reconnects by itself if the connection drops (every 1 s, backing
   off to 30 s). If the room **refuses** the bot (wrong password, kicked, banned,

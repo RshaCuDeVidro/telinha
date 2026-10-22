@@ -59,6 +59,7 @@ class Player:
         self.ffmpeg = ffmpeg
         self.volume = 1.0
         self.source: str | None = None
+        self.headers: dict = {}
         self.position = 0.0  # segundos tocados da fonte atual
         self._proc: asyncio.subprocess.Process | None = None
         self._resume = asyncio.Event()
@@ -74,8 +75,9 @@ class Player:
     def paused(self) -> bool:
         return self.playing and not self._resume.is_set()
 
-    async def play(self, source: str, *, volume: float | None = None, start: float = 0.0) -> bool:
-        """Toca até o fim. Retorna True se terminou, False se foi parado."""
+    async def play(self, source: str, *, volume: float | None = None, start: float = 0.0, headers: dict | None = None) -> bool:
+        """Toca até o fim. Retorna True se terminou, False se foi parado.
+        `headers`: cabeçalhos HTTP pra fonte (o que o yt-dlp manda usar)."""
         if not shutil.which(self.ffmpeg):
             raise FFmpegMissing()
         if self.playing:
@@ -83,6 +85,7 @@ class Player:
         if volume is not None:
             self.volume = volume
         self.source = source
+        self.headers = headers or {}
         self.position = start
         self._stop = False
         self._resume.set()
@@ -117,6 +120,8 @@ class Player:
         args = [self.ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error"]
         if source.startswith(("http://", "https://")):
             args += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
+            if self.headers:
+                args += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in self.headers.items())]
         if start > 0:
             args += ["-ss", f"{start:.2f}"]
         args += ["-i", source, "-vn", "-af", f"volume={self.volume:.3f}", "-ac", "2" if self.stereo else "1", "-ar", "48000",

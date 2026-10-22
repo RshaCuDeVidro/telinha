@@ -95,6 +95,8 @@ const Conn = struct {
     decode_codecs: u8 = proto.codecs_h264, // o que essa pessoa decodifica (H.264 sempre)
     features: u8 = 0, // o que o app dela entende (feat_*; app antigo: 0)
     bot: bool = false, // conectou como bot (feat_bot): marcado na lista, nunca admin
+    last_edit_ms: u64 = 0, // chat_edit (limite de ritmo)
+    last_action_ms: u64 = 0, // embed_action (limite de ritmo)
     view_sizes: std.ArrayList(ViewSize) = .empty, // em que tamanho ela mostra cada transmissão
     cursor_sec: u64 = 0, // limite do cursor (como o do ponteiro)
     cursor_count: u32 = 0,
@@ -336,6 +338,8 @@ const ChatEntry = struct {
     file_name: [proto.file_name_max]u8 = undefined,
     file_name_len: usize = 0,
     file_size: u64 = 0,
+    // cartão (proto.embed_*): bytes como vieram; o servidor não interpreta
+    embed: ?[]u8 = null,
 
     const React = struct { emoji: u8, from: u32 };
 
@@ -359,6 +363,7 @@ const ChatEntry = struct {
     fn free(e: *ChatEntry) void {
         gpa.free(e.text);
         if (e.img) |im| gpa.free(im);
+        if (e.embed) |em| gpa.free(em);
         e.reacts.deinit(gpa);
     }
 };
@@ -367,6 +372,20 @@ const ChatEntry = struct {
 const chat_img_budget = 24 * 1024 * 1024;
 /// Imagem no chat: no máximo uma a cada tanto, por pessoa.
 const chat_img_interval_ms = 1500;
+/// Editar mensagem (chat_edit) e clicar em botão de cartão: no máximo tantas por segundo.
+const chat_edit_interval_ms = 200;
+const embed_action_interval_ms = 120;
+
+/// O cartão (embed) no fim de chat/chat_edit: u32 tamanho + bytes. null = sem
+/// (tamanho 0, campo ausente de app antigo, ou versão que não é a nossa).
+fn readEmbed(r: *proto.Reader) !?[]const u8 {
+    const n = r.u32_() catch return null;
+    if (n == 0) return null;
+    if (n > proto.embed_max) return error.BadMessage;
+    const b = try r.take(n);
+    if (b[0] != proto.embed_version) return null;
+    return b;
+}
 
 /// Um canal (como no IRC): o chat dele, quem está nele e as transmissões de
 /// quem está nele. Voz, "assistir", ponteiro e desenho só dentro do canal.
@@ -1169,7 +1188,7 @@ pub const Server = struct {
                     const typ: proto.Type = @enumFromInt(msg[0]);
                     // o navegador só assiste, conversa e troca de canal
                     switch (typ) {
-                        .watch, .keyreq, .ack, .ping, .view_size, .chat, .react, .channel, .call => {},
+                        .watch, .keyreq, .ack, .ping, .view_size, .chat, .react, .channel, .call, .embed_action => {},
                         else => continue,
                     }
                     s.handle(cn, typ, msg[1..]) catch break;
@@ -1208,7 +1227,8 @@ pub const Server = struct {
                 // (campos do fim: app antigo não manda)
                 const reply_to = r.u32_() catch 0;
                 const to = r.u32_() catch 0;
-                if (text.len == 0 and img == null) return;
+                const embed = try readEmbed(&r);
+                if (text.len == 0 and img == null and embed == null) return;
                 s.mutex.lock();
                 defer s.mutex.unlock();
                 if (img != null) {
@@ -1216,8 +1236,34 @@ pub const Server = struct {
                     if (now -% cn.last_img_ms < chat_img_interval_ms) return; // rajada de imagem: ignora
                     cn.last_img_ms = now;
                 }
-                if (to != 0) return s.sendDm(cn, to, reply_to, text, img);
-                try s.postChat(cn.chan, cn.id, cn.nameSlice(), text, img, s.findQuote(cn, reply_to, false));
+                if (to != 0) return s.sendDm(cn, to, reply_to, text, img, embed);
+                var e = try s.newEntry(cn.id, cn.nameSlice(), text, img, s.findQuote(cn, reply_to, false));
+                if (embed) |em| e.embed = gpa.dupe(u8, em) catch {
+                    e.free();
+                    return error.OutOfMemory;
+                };
+                try s.postEntryFrom(cn.chan, e, cn);
+            },
+            .chat_edit => {
+                const id = try r.u32_();
+                const text = std.mem.trim(u8, try r.str(), " \t\r\n");
+                const embed = try readEmbed(&r);
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                const now = sync.nowMs();
+                if (now -% cn.last_edit_ms < chat_edit_interval_ms) return; // rajada: ignora
+                cn.last_edit_ms = now;
+                try s.editChat(cn, id, text, embed);
+            },
+            .embed_action => {
+                const id = try r.u32_();
+                const button = try r.u8_();
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                const now = sync.nowMs();
+                if (now -% cn.last_action_ms < embed_action_interval_ms) return; // clique repetido: ignora
+                cn.last_action_ms = now;
+                try s.embedAction(cn, id, button);
             },
             .file_put => try s.onFilePut(cn, &r),
             .file_data => try s.onFileData(cn, &r),
@@ -1879,6 +1925,12 @@ pub const Server = struct {
     }
 
     fn chatMsg(e: *const ChatEntry, flags: u8) !*proto.Msg {
+        return chatMsgFor(e, flags, null);
+    }
+
+    /// Pra um bot: no fim vai onde está quem mandou (o canal de texto e a
+    /// call), pra ele poder ir atrás (o "!join" de qualquer canal).
+    fn chatMsgFor(e: *const ChatEntry, flags: u8, sender: ?*const Conn) !*proto.Msg {
         var b: proto.Builder = .{};
         defer b.deinit();
         try b.begin(.chat);
@@ -1916,7 +1968,84 @@ pub const Server = struct {
             try b.str(e.file_name[0..e.file_name_len]);
             try b.u64_(e.file_size);
         }
+        // cartão (0 = nenhum)
+        const em = e.embed orelse &.{};
+        try b.u32_(@intCast(em.len));
+        try b.bytes(em);
+        if (sender) |sc| try writeWhere(&b, sc);
         return b.finish();
+    }
+
+    /// A mensagem `id` que `cn` pode ver: do histórico do canal dela ou das
+    /// privadas em que ela está. Mutex travado.
+    fn visibleEntry(s: *Server, cn: *const Conn, id: u32) ?*ChatEntry {
+        if (id == 0) return null;
+        const ch = cn.chan;
+        for (0..ch.chat_len) |i| {
+            const e = &ch.chat_log[(ch.chat_head + i) % chat_history_len];
+            if (e.id == id) return e;
+        }
+        for (0..s.dms_len) |i| {
+            const e = &s.dms[(s.dms_head + i) % s.dms.len];
+            if (e.id == id and (e.from == cn.id or e.to == cn.id)) return e;
+        }
+        return null;
+    }
+
+    /// O autor muda a própria mensagem (o texto e o cartão; a imagem fica):
+    /// um bot atualizando o "tocando agora", por exemplo. Mutex travado.
+    fn editChat(s: *Server, cn: *Conn, id: u32, text: []const u8, embed: ?[]const u8) !void {
+        const e = s.visibleEntry(cn, id) orelse return;
+        if (e.from != cn.id) return; // só o autor
+        if (text.len == 0 and embed == null and e.img == null and !e.img_expired) return;
+        const owned = try gpa.dupe(u8, text[0..@min(text.len, 4000)]);
+        const new_embed: ?[]u8 = if (embed) |em| gpa.dupe(u8, em) catch {
+            gpa.free(owned);
+            return error.OutOfMemory;
+        } else null;
+        gpa.free(e.text);
+        e.text = owned;
+        if (e.embed) |old| gpa.free(old);
+        e.embed = new_embed;
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.chat_edit);
+        try b.u32_(e.id);
+        try b.str(e.text);
+        const em = e.embed orelse &.{};
+        try b.u32_(@intCast(em.len));
+        try b.bytes(em);
+        const m = try b.finish();
+        defer m.release();
+        if (e.to != 0) {
+            for (s.conns.items) |o| if (o.id == e.from or o.id == e.to) o.queue.push(m);
+        } else for (s.conns.items) |o| if (o.chan == cn.chan) o.queue.push(m);
+    }
+
+    /// Clique num botão de cartão: vai só pro autor da mensagem (um bot, quase
+    /// sempre), com quem clicou e, se ele for bot, onde quem clicou está.
+    fn embedAction(s: *Server, cn: *Conn, id: u32, button: u8) !void {
+        if (button >= proto.embed_max_buttons) return;
+        const e = s.visibleEntry(cn, id) orelse return;
+        if (e.embed == null or e.from == cn.id) return;
+        const author = for (s.conns.items) |o| {
+            if (o.id == e.from and o.authed) break o;
+        } else return; // quem mandou já saiu
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.embed_action);
+        try b.u32_(id);
+        try b.u8_(button);
+        try b.u32_(cn.id);
+        try b.str(cn.nameSlice());
+        if (author.bot) try writeWhere(&b, cn);
+        author.queue.pushOwned(try b.finish());
+    }
+
+    /// Onde a pessoa está: str canal de texto, str call ("" = fora de call).
+    fn writeWhere(b: *proto.Builder, cn: *const Conn) !void {
+        try b.str(if (cn.authed) cn.chan.nameSlice() else "");
+        try b.str(if (cn.call) |cc| cc.nameSlice() else "");
     }
 
     const Image = struct { w: u16, h: u16, data: []const u8 };
@@ -2084,14 +2213,18 @@ pub const Server = struct {
     }
 
     /// Mensagem privada de `cn` pra `to`: só os dois recebem. Mutex travado.
-    fn sendDm(s: *Server, cn: *Conn, to: u32, reply_to: u32, text: []const u8, img: ?Image) !void {
+    fn sendDm(s: *Server, cn: *Conn, to: u32, reply_to: u32, text: []const u8, img: ?Image, embed: ?[]const u8) !void {
         const target = for (s.conns.items) |o| {
             if (o.id == to and o.authed) break o;
         } else return pushNotice(cn, proto.notice_dm, "Essa pessoa não está mais na sala.", 0);
         if (target == cn) return;
         if (target.features & proto.feat_dm == 0)
             return pushNotice(cn, proto.notice_dm, "Essa pessoa usa uma versão do telinha que não recebe mensagem privada.", 0);
-        const e = try s.newEntry(cn.id, cn.nameSlice(), text, img, s.findQuote(cn, reply_to, true));
+        var e = try s.newEntry(cn.id, cn.nameSlice(), text, img, s.findQuote(cn, reply_to, true));
+        if (embed) |em| e.embed = gpa.dupe(u8, em) catch {
+            e.free();
+            return error.OutOfMemory;
+        };
         return s.deliverDm(cn, target, e);
     }
 
@@ -2105,6 +2238,9 @@ pub const Server = struct {
             return err;
         };
         defer m.release();
+        // bot recebe também onde está quem mandou (pra ir atrás)
+        const mb: ?*proto.Msg = if (target.bot) chatMsgFor(&e, 0, cn) catch null else null;
+        defer if (mb) |x| x.release();
         // guarda (pra conferir citações), sem a imagem: ela já foi
         if (e.img) |im| {
             gpa.free(im);
@@ -2120,7 +2256,7 @@ pub const Server = struct {
             s.dms_len += 1;
         }
         cn.queue.push(m);
-        target.queue.push(m);
+        target.queue.push(mb orelse m);
     }
 
     /// Mensagem no chat de um canal (histórico + quem está nele). Mutex travado.
@@ -2130,12 +2266,23 @@ pub const Server = struct {
 
     /// Põe a mensagem pronta (`e`) no histórico do canal e manda pra quem está nele.
     fn postEntry(s: *Server, ch: *Chan, entry: ChatEntry) !void {
+        return s.postEntryFrom(ch, entry, null);
+    }
+
+    /// O mesmo, dizendo quem mandou: os bots do canal recebem onde ele está.
+    fn postEntryFrom(s: *Server, ch: *Chan, entry: ChatEntry, sender: ?*const Conn) !void {
         var e = entry;
         const m = chatMsg(&e, 0) catch |err| {
             e.free();
             return err;
         };
         defer m.release();
+        var mb: ?*proto.Msg = null; // a versão dos bots (só se tiver bot no canal)
+        defer if (mb) |x| x.release();
+        if (sender) |sc| for (s.conns.items) |o| if (o.chan == ch and o.bot) {
+            mb = chatMsgFor(&e, 0, sc) catch null;
+            break;
+        };
         if (ch.chat_len == chat_history_len) {
             ch.chat_log[ch.chat_head].free();
             ch.chat_log[ch.chat_head] = e;
@@ -2147,7 +2294,7 @@ pub const Server = struct {
         // memória: as imagens mais velhas expiram (o limite vale pro servidor
         // todo, contando todos os canais, do mais novo pro mais velho de cada um)
         s.expireImages();
-        for (s.conns.items) |o| if (o.chan == ch) o.queue.push(m);
+        for (s.conns.items) |o| if (o.chan == ch) o.queue.push(if (o.bot) (mb orelse m) else m);
     }
 
     fn expireImages(s: *Server) void {

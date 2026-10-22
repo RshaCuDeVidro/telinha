@@ -2,6 +2,50 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.4.0
+
+Talks to 3.3, 3.2 and 3.1 (older apps show a card as text, without buttons).
+
+### Highlights
+
+- 🃏 **Bot cards**: instead of plain text, a bot answers with a card with a cover, a title, fields, a progress bar that moves by itself and up to 5 buttons anyone in the room can click. The bot changes the card in place ("now playing" becomes "paused" without flooding the chat). In the app and the browser.
+- 🎵 **New music bot**: plays YouTube, SoundCloud and Bandcamp links (playlists too), Spotify, Deezer, Apple Music and Tidal links (they become a search by name), and searches by name: `!play popular monster`, or `!search` with buttons to pick. Commands in English (`!play`, `!queue`, `!skip`, `!np`...); the Portuguese ones still work.
+- 📍 **The bot goes to any channel**: `/msg Música !join` from any channel brings the bot to your call, and `!join games` sends it to #games.
+- 🐍 **SDK 0.2**: `Embed` with buttons that call your function, `edit()` to change a message, images and covers in `send`, and the bot knows where whoever talked to it is.
+
+<!-- detalhes -->
+
+### All changes
+
+- **Cards** (protocol): the card rides at the end of `chat` (up to 8 KB; the
+  server only checks size and version, whoever draws validates the rest). New
+  messages: `chat_edit` (42), the author changes their own message, at most
+  every 200 ms; and `embed_action` (43), the click, which goes only to the
+  card's author, at most every 120 ms per person. A bot also gets where
+  whoever talked to it or clicked is (channel and call), in private too. See
+  docs/PROTOCOL.md.
+- **In the app**: a bar in the card's color, the cover (decoded by the same
+  decoder as the video, no PNG/JPEG reader exposed to the network), a title
+  that becomes a link, Markdown, side-by-side fields, a progress bar that moves
+  by itself (it only redraws every half second, and only with the card on
+  screen) and buttons with icons. On the browser page too.
+- **Music bot**: "now playing" with the cover, the bar and the Pause, Skip,
+  Stop, Shuffle and Loop buttons, closed as PLAYED/STOPPED when it ends;
+  `!search` with five results and a button for each; `!queue`, `!np`,
+  `!remove`, `!clear`, `!radios` with buttons, `!leave`; the help card. Links
+  through yt-dlp (optional), playlists up to 50 songs. When YouTube refuses the
+  server ("Sign in to confirm you're not a bot"), it plays the same song from
+  SoundCloud and remembers it for 30 minutes; `--cookies` to get YouTube
+  itself. Folder files show their length, tags and embedded cover. Options in
+  English (`--folder`, `--name`...); the old ones still work.
+- **SDK**: `Embed`, `Button`, `Click` (`reply`, `whisper`), `Icon`, `Style`;
+  `send(embed=, image=)`, `edit()`, `click()`, `ctx.reply_card()`; the
+  `action` and `edit` events; `Message.embed`, `author_channel`,
+  `author_call`; `Player.play(headers=)`; `Bot(lang="en")` for the SDK's own
+  answers. Edits in a row wait for their turn by themselves (the server
+  ignores them under 200 ms), and so do images in a row (1.5 s).
+- The music bot's tests run in CI against the freshly built server.
+
 ## 3.3.0
 
 Talks to 3.2 and 3.1 (the new messages are ignored by older apps and servers; private messages and files only go to those who understand them).

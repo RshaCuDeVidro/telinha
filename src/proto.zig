@@ -15,7 +15,7 @@ const udp = @import("udp.zig");
 
 pub const version: u16 = 6;
 /// Versão do app (vai no hello/welcome/members pra avisar quem está desatualizado).
-pub const app_version = "3.3.0";
+pub const app_version = "3.4.0";
 pub const max_msg = 32 * 1024 * 1024;
 /// Marcador em claro no lugar do tamanho: "senha errada" (o servidor não
 /// conseguiu decifrar a primeira mensagem).
@@ -66,6 +66,9 @@ pub const Type = enum(u8) {
     // assistir pelo navegador (web.zig): a página fala o mesmo protocolo, por WebSocket
     web_hello = 40, // C→S (só do navegador) str senha + os campos do hello
     web_link = 41, // S→C str endereço: link pra assistir no navegador (vazio = não tem)
+    // cartões (embed) e botões, ver docs/PROTOCOL.md "Cartões"
+    chat_edit = 42, // C→S u32 id, str texto, u32 n, embed (só o autor) | S→C o mesmo: a mensagem mudou
+    embed_action = 43, // C→S u32 id, u8 botão | S→C u32 id, u8 botão, u32 de, str nome (só pro autor da mensagem)
     _,
 };
 
@@ -252,12 +255,21 @@ pub const feat_dm: u8 = 8;
 /// nunca vira admin (nem com o token do dono) e o servidor pode recusar bots
 /// ou pedir um token só deles (o último campo do hello).
 pub const feat_bot: u8 = 16;
-pub const features_mine: u8 = feat_cursor | feat_view_size | feat_calls | feat_dm;
+/// feat_embed: desenha cartões (embed) e os botões deles; entende chat_edit.
+pub const feat_embed: u8 = 32;
+pub const features_mine: u8 = feat_cursor | feat_view_size | feat_calls | feat_dm | feat_embed;
 
 /// O que o servidor sabe fazer (último campo do welcome; servidor antigo: 0).
 pub const srv_dm: u8 = 1; // mensagem privada e resposta citada
 pub const srv_files: u8 = 2; // arquivos na sala (file_*)
-pub const server_features: u8 = srv_dm | srv_files;
+pub const srv_embed: u8 = 4; // cartões, edição e botões (chat_edit, embed_action)
+pub const server_features: u8 = srv_dm | srv_files | srv_embed;
+/// Cartão (embed): bloco opaco pro servidor, no fim do chat (u32 tamanho + bytes).
+/// Formato em docs/PROTOCOL.md; o primeiro byte é a versão.
+pub const embed_max = 8 * 1024;
+pub const embed_version: u8 = 1;
+pub const embed_max_buttons = 5;
+pub const embed_max_fields = 12;
 /// view_size: "quero a resolução toda" (tela cheia, gravando, ou app antigo).
 pub const view_full: u16 = 0xFFFF;
 

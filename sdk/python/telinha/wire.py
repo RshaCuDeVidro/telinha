@@ -56,6 +56,8 @@ class MsgType(enum.IntEnum):
     FILE_CANCEL = 39
     WEB_HELLO = 40
     WEB_LINK = 41
+    CHAT_EDIT = 42
+    EMBED_ACTION = 43
 
 
 # hello: o que este cliente entende (feat_*)
@@ -64,10 +66,21 @@ FEAT_VIEW_SIZE = 2
 FEAT_CALLS = 4
 FEAT_DM = 8
 FEAT_BOT = 16
+FEAT_EMBED = 32
 
 # welcome: o que o servidor sabe fazer (srv_*)
 SRV_DM = 1
 SRV_FILES = 2
+SRV_EMBED = 4
+
+# cartões (embed): ver docs/PROTOCOL.md "Cartões"
+EMBED_VERSION = 1
+EMBED_MAX = 8 * 1024
+EMBED_MAX_FIELDS = 12
+EMBED_MAX_BUTTONS = 5
+EMBED_FLAG_THUMB = 1
+EMBED_FLAG_PROGRESS = 2
+EMBED_FLAG_BIG_IMAGE = 4
 
 # members: flags de cada pessoa
 MEMBER_STREAMING = 1

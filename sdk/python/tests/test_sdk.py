@@ -24,6 +24,7 @@ sys.path.insert(0, str(HERE.parent))
 
 from telinha import (Bot, Client, Denied, Deny, IdentityMismatch, Invite, Player, Reaction,  # noqa: E402
                      WrongPassword)
+from telinha.bot import TEXTS  # noqa: E402
 from telinha.crypto import fingerprint  # noqa: E402
 
 TOP = HERE.parents[2]
@@ -197,6 +198,10 @@ class SdkTest(unittest.IsolatedAsyncioTestCase):
         await ana.send("!ajuda")
         await until(lambda: any(x.text.startswith("**Comandos**") and "!soma <a> [b]" in x.text for x in got), what="a ajuda")
         self.assertFalse(any(x.text == "eco: oi" for x in got))
+        # as respostas do próprio SDK em inglês
+        bot.texts = TEXTS["en"]
+        await ana.send("!soma")
+        await until(lambda: any(x.text == "Usage: !soma <a> [b]" for x in got), what="o uso em inglês")
 
     async def test_senha_errada(self):
         c = Client(self.room.invite(password="errada"), "Mal", reconnect=False)
@@ -264,6 +269,74 @@ class SdkTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: dj.me in ana.members)
         await dj.set_voice(mic=True)
         await until(lambda: ana.members[dj.me].mic, what="o microfone do bot ligado")
+
+    async def test_cartao_botoes_edicao_e_capa(self):
+        from telinha import Embed, Icon
+        bot = await self.join(Client(self.room.invite(), "Robô"))
+        ana = await self.join(Client(self.room.invite(), "Ana"))
+        got, edits, clicks = [], [], []
+        ana.on("message")(_collect(got))
+
+        async def on_edit(mid, text, emb):
+            edits.append((mid, text, emb))
+        ana.on("edit")(on_edit)
+
+        async def pulou(click):
+            clicks.append(click)
+        card = Embed(title="Popular Monster", kicker="NOW PLAYING", color=0xd946ef, description="**Falling In Reverse**",
+                     url="https://example.com/x", progress=(1000, 232_000), thumbnail=True)
+        card.add_field("Requested by", "Ana").add_field("Queue", 3)
+        card.add_button("Pause", icon="pause", style="primary")
+        card.add_button("Skip", icon=Icon.NEXT, on_click=pulou)
+        with tempfile.TemporaryDirectory() as d:
+            capa = Path(d) / "capa.png"
+            subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=400x300", "-frames:v", "1", str(capa)], check=True)
+            sent = await bot.send("Now playing: Popular Monster", embed=card, image=capa)
+        self.assertIsNotNone(sent)
+        await until(lambda: any(m.embed for m in got), what="o cartão chegar")
+        m = next(m for m in got if m.embed)
+        self.assertTrue(m.has_image)
+        self.assertEqual(m.embed.title, "Popular Monster")
+        self.assertEqual(m.embed.progress, (1000, 232_000))
+        self.assertEqual([b.label for b in m.embed.buttons], ["Pause", "Skip"])
+        self.assertEqual([(f.name, f.value) for f in m.embed.fields], [("Requested by", "Ana"), ("Queue", "3")])
+        # clique: chega no bot, com onde a Ana está, e chama o on_click do botão certo
+        await ana.click(m.id, 1)
+        await until(lambda: clicks, what="o clique chegar")
+        self.assertEqual((clicks[0].member_id, clicks[0].member_name, clicks[0].channel, clicks[0].call), (ana.me, "Ana", "geral", "geral"))
+        # edição: o cartão muda no lugar
+        card.paused = True
+        card.kicker = "PAUSED"
+        await sent.edit("Paused: Popular Monster", embed=card)
+        await until(lambda: edits, what="a edição chegar")
+        self.assertEqual(edits[0][0], m.id)
+        self.assertEqual(edits[0][2].kicker, "PAUSED")
+        self.assertTrue(edits[0][2].paused)
+        # duas seguidas (continuar e já pular): o servidor ignora a menos de 200 ms,
+        # o SDK espera a vez e as duas chegam
+        card.paused = False
+        card.kicker = "NOW PLAYING"
+        await sent.edit(embed=card)
+        await sent.edit("Played: Popular Monster", embed=Embed(title="Popular Monster", kicker="PLAYED"))
+        await until(lambda: len(edits) == 3, what="as duas edições seguidas")
+        self.assertEqual([e[2].kicker for e in edits], ["PAUSED", "NOW PLAYING", "PLAYED"])
+        # só o autor edita
+        await ana.edit(m.id, "hackeado")
+        await bot.send("depois")
+        await until(lambda: any(x.text == "depois" for x in got))
+        self.assertEqual(len(edits), 3)
+
+    async def test_bot_sabe_onde_quem_falou_esta(self):
+        bot = await self.join(Client(self.room.invite(), "Robô"))
+        ana = await self.join(Client(self.room.invite(), "Ana"))
+        got = []
+        bot.on("message")(_collect(got))
+        await ana.join_channel("jogos")
+        await until(lambda: ana.channel == "jogos")
+        await ana.send("me acha", to=bot.me)  # de outro canal, em privado
+        await until(lambda: any(x.text == "me acha" for x in got), what="a privada")
+        dm = next(x for x in got if x.text == "me acha")
+        self.assertEqual((dm.author_channel, dm.author_call), ("jogos", "geral"))
 
     async def test_canais(self):
         bot = await self.join(Client(self.room.invite(), "Robô"))

@@ -110,7 +110,35 @@ async def enquete(ctx, pergunta: str):
 O exemplo inteiro, contando os votos pelo evento `reaction`, está em
 [`examples/enquete.py`](../sdk/python/examples/enquete.py).
 
-## 4. Privada, canais e call
+## 4. Cartões e botões
+
+Um cartão (`Embed`) é uma mensagem com título, campos, barra de progresso e
+botões, como o "tocando agora" do bot de música. Cada botão leva um
+`on_click`, chamado quando qualquer um da sala clica, com quem clicou e onde
+a pessoa está:
+
+```python
+from telinha import Embed, Icon
+
+@bot.command(help="joga um dado, com um botão pra jogar de novo")
+async def dado(ctx):
+    card = Embed(kicker="DADO", title=str(random.randint(1, 6)), color=0x22c55e)
+
+    async def de_novo(click):
+        card.title = str(random.randint(1, 6))
+        card.footer = f"jogado por {click.member_name}"
+        await msg.edit(embed=card)          # muda o cartão no lugar
+
+    card.add_button("Jogar de novo", icon=Icon.DICE, style="primary", on_click=de_novo)
+    msg = await ctx.reply_card(card, "jogou um dado")
+```
+
+`reply_card` responde citando o comando; o texto é o que app de antes da 3.4
+mostra no lugar do cartão. `send(..., image="capa.jpg")` junta uma imagem
+(com `thumbnail=True` ela vira a capa do cartão). Tudo sobre cartões está na
+[referência](BOTS_API.pt.md#embed).
+
+## 5. Privada, canais e call
 
 ```python
 await bot.send("só pra você", to=member.id)        # mensagem privada
@@ -123,7 +151,7 @@ O SDK espera sozinho o intervalo que o servidor exige entre trocas (800 ms).
 `bot.channel`, `bot.call`, `bot.channels` e `bot.members` mostram onde o bot
 está e quem está com ele.
 
-## 5. Som na call
+## 6. Som na call
 
 ```python
 from telinha import Player
@@ -141,7 +169,7 @@ manda Opus estéreo no ritmo certo e liga o "microfone" do bot enquanto toca.
 `pause()`, `resume()`, `stop()`, `set_volume(0.5)` e `position` fazem o
 resto. O [bot de música](BOTS_MUSIC.pt.md) é um exemplo completo, com fila.
 
-## 6. Arquivos
+## 7. Arquivos
 
 ```python
 @bot.on("message")
@@ -158,7 +186,7 @@ async def relatorio(ctx):
 Até 256 MB por arquivo. Subindo e baixando, o SDK segue o ritmo das
 confirmações do servidor (não atropela a voz e o vídeo da sala).
 
-## 7. Rodando de verdade
+## 8. Rodando de verdade
 
 - `bot.run()` reconecta sozinho se a conexão cair (de 1 em 1 s, depois até
   30 s). Se a sala **recusar** o bot (senha errada, expulso, banido, sala sem

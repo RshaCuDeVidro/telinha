@@ -3,8 +3,8 @@
 <sub>[🇺🇸 English](README.md) · [🇧🇷 Português](README.pt.md)</sub>
 
 Bots for [telinha](https://rshacudevidro.github.io/telinha/en/), the low-latency
-group screen-sharing app: chat, commands, reactions, private messages, channels,
-music in the call and files.
+group screen-sharing app: chat, commands, cards with buttons, reactions, private
+messages, channels, music in the call and files.
 
 ```sh
 pip install "git+https://github.com/RshaCuDeVidro/telinha#subdirectory=sdk/python"

@@ -33,7 +33,8 @@ const $ = (id) => document.getElementById(id);
 
 // ----------------------------------------------------------- protocolo
 const T = { hello: 1, welcome: 2, denied: 3, members: 4, chat: 5, frame: 8, watch: 9, keyreq: 10, ping: 11, pong: 12,
-  audio: 14, ack: 15, voice: 17, notice: 20, cursor: 25, view_size: 26, channel: 29, web_hello: 40 };
+  audio: 14, ack: 15, voice: 17, notice: 20, cursor: 25, view_size: 26, channel: 29, web_hello: 40,
+  chat_edit: 42, embed_action: 43 };
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -58,7 +59,7 @@ class R {
   left() { return this.d.length - this.p; }
 }
 
-const FEAT = 1 | 2 | 4; // cursor fora do vídeo, tamanho em que assiste, call separada
+const FEAT = 1 | 2 | 4 | 32; // cursor fora do vídeo, tamanho em que assiste, call separada, cartões
 const STEPS = [360, 480, 540, 720, 900, 1080, 1440, 2160];
 const CODECS = [ // o que pedir ao WebCodecs pra cada codec do protocolo (0 H.264, 1 HEVC, 2 AV1)
   'avc1.640034', 'hvc1.1.6.L153.B0', 'av01.0.15M.08'];
@@ -136,6 +137,7 @@ function onMessage(u8) {
     case T.members: onMembers(r); break;
     case T.channel: { st.chan = r.str(); $('chan').textContent = '#' + st.chan; break; }
     case T.chat: onChat(r); break;
+    case T.chat_edit: onChatEdit(r); break;
     case T.frame: onFrame(r); break;
     case T.audio: onAudio(r); break;
     case T.voice: onVoice(r); break;
@@ -366,21 +368,180 @@ function onVoice(r) {
 }
 
 // -------------------------------------------------------------- chat
-function onChat(r) {
-  r.u32(); const from = r.u32(); const name = r.str(); let text = r.str();
-  r.u64(); const flags = r.u8();
+// ---------------------------------------------------------------- chat
+// A mensagem inteira (docs/PROTOCOL.md): o que a página mostra é o texto, a
+// imagem (decodificada pelo WebCodecs, como o vídeo) e o cartão dos bots.
+function readChat(r) {
+  const m = { id: r.u32(), from: r.u32(), name: r.str(), text: r.str() };
+  r.u64(); r.u8();
   const img = r.u8();
-  if (img === 1) { r.u16(); r.u16(); r.bytes(r.u32()); if (!text) text = L.image; }
-  void flags;
+  if (img === 1) { m.img = { w: r.u16(), h: r.u16() }; m.img.data = r.bytes(r.u32()).slice(); }
+  const nr = r.left() ? r.u8() : 0;
+  for (let i = 0; i < nr; i++) { r.u8(); r.u32(); }
+  if (r.left() >= 4) { const rep = r.u32(); if (rep) { r.u32(); m.quoteName = r.str(); m.quote = r.str(); } }
+  if (r.left() >= 4) { const to = r.u32(); if (to) r.str(); }
+  if (r.left() >= 4) { const f = r.u32(); if (f) { m.file = r.str(); r.u64(); } }
+  if (r.left() >= 4) { const n = r.u32(); if (n) m.embed = readEmbed(r.bytes(n)); }
+  return m;
+}
+
+function readEmbed(b) {
+  try {
+    if (b[0] !== 1) return null;
+    const r = new R(b, 1);
+    const e = { color: r.u32(), flags: r.u8(), kicker: r.str(), title: r.str(), url: r.str(), desc: r.str(), footer: r.str(), fields: [], buttons: [] };
+    if (e.flags & 2) { e.elapsed = r.u32(); e.total = r.u32(); e.paused = r.u8() !== 0; e.at = performance.now(); }
+    for (let i = r.u8(); i > 0; i--) e.fields.push({ name: r.str(), value: r.str(), inline: r.u8() !== 0 });
+    for (let i = r.u8(); i > 0; i--) { const bt = { style: r.u8(), icon: r.u8(), label: r.str() }; bt.disabled = r.left() ? (r.u8() & 1) !== 0 : false; e.buttons.push(bt); }
+    if (!/^https?:\/\//.test(e.url)) e.url = '';
+    e.fields = e.fields.slice(0, 12); e.buttons = e.buttons.slice(0, 5);
+    return e;
+  } catch (err) { return null; }
+}
+
+// markdown pequeno e seguro: escapa tudo e só então põe negrito, itálico, código e link
+function md(text) {
+  const esc = text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  return esc
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<i>$2</i>')
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/\n/g, '<br>');
+}
+
+const ICON = { // os mesmos números do embed.zig; traço fino como no resto
+  1: 'M7 4.5v15l12-7.5z', 2: 'M7 5h3.5v14H7zM13.5 5H17v14h-3.5z', 3: 'M6 5l9 7-9 7zM17 5v14', 4: 'M18 5l-9 7 9 7zM7 5v14',
+  5: 'M6 6h12v12H6z', 6: 'M3 7h3.5c4 0 6 10 10 10H21M17.5 14l3.5 3-3.5 3M3 17h3.5c1.4 0 2.6-1.2 3.6-2.8M21 7h-4.5c-1.4 0-2.6 1.2-3.6 2.8M17.5 4l3.5 3-3.5 3',
+  7: 'M17 2.5l3 3-3 3M4 11V9a3.5 3.5 0 0 1 3.5-3.5H20M7 21.5l-3-3 3-3M20 13v2a3.5 3.5 0 0 1-3.5 3.5H4', 8: 'M4 9.5h3.5L12 5v14l-4.5-4.5H4zM15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11',
+  9: 'M4 9.5h3.5L12 5v14l-4.5-4.5H4zM15.5 9a4 4 0 0 1 0 6', 10: 'M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01',
+  11: 'M12 20s-7.5-4.6-7.5-10A4.3 4.3 0 0 1 12 7.3 4.3 4.3 0 0 1 19.5 10c0 5.4-7.5 10-7.5 10z', 12: 'M9 18V5.5l11-2V16M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM17 19a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+  13: 'M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8',
+  14: 'M11 17.5a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13zM16 16l4.5 4.5', 15: 'M12 5v14M5 12h14', 16: 'M5 12.5l4.5 4.5L19 7', 17: 'M6 6l12 12M18 6L6 18',
+  18: 'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1',
+  19: 'M4 14v-2a8 8 0 0 1 16 0v2M4 14h3v6H5.5A1.5 1.5 0 0 1 4 18.5zM20 14h-3v6h1.5a1.5 1.5 0 0 0 1.5-1.5z', 20: 'M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3',
+  21: 'M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z', 22: 'M5 3.5h14A1.5 1.5 0 0 1 20.5 5v14a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19V5A1.5 1.5 0 0 1 5 3.5zM8.5 8.5h.01M15.5 15.5h.01M12 12h.01',
+};
+function icon(n) {
+  if (!ICON[n]) return null;
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('aria-hidden', 'true');
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', ICON[n]); svg.append(p);
+  return svg;
+}
+const dur = (ms) => { const s = Math.floor(ms / 1000); return s >= 3600 ? `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+
+// imagem do chat: um quadro H.264, decodificado como o vídeo
+function chatImage(img, cls) {
+  const cv = document.createElement('canvas'); cv.className = cls; cv.width = img.w; cv.height = img.h;
+  if (!('VideoDecoder' in window)) return cv;
+  try {
+    const d = new VideoDecoder({ output: (f) => { cv.getContext('2d').drawImage(f, 0, 0, cv.width, cv.height); f.close(); d.close(); }, error: () => {} });
+    d.configure({ codec: 'avc1.42E01F', optimizeForLatency: true });
+    d.decode(new EncodedVideoChunk({ type: 'key', timestamp: 0, data: img.data }));
+    d.flush().catch(() => {});
+  } catch (err) { /* sem imagem */ }
+  return cv;
+}
+
+function renderCard(m) {
+  const e = m.embed;
+  const card = document.createElement('div'); card.className = 'card-embed';
+  const accent = e.color ? '#' + (e.color & 0xffffff).toString(16).padStart(6, '0') : 'var(--accent)';
+  card.style.setProperty('--c', accent);
+  const body = document.createElement('div'); body.className = 'ce-body';
+  if (e.kicker) { const k = document.createElement('div'); k.className = 'ce-kicker'; k.textContent = e.kicker; body.append(k); }
+  if (e.title) {
+    const t = document.createElement(e.url ? 'a' : 'div'); t.className = 'ce-title'; t.textContent = e.title;
+    if (e.url) { t.href = e.url; t.target = '_blank'; t.rel = 'noopener noreferrer'; }
+    body.append(t);
+  }
+  if (e.desc) { const dd = document.createElement('div'); dd.className = 'ce-desc'; dd.innerHTML = md(e.desc); body.append(dd); }
+  const top = document.createElement('div'); top.className = 'ce-top'; top.append(body);
+  if (m.img && (e.flags & 1)) top.append(chatImage(m.img, 'ce-thumb'));
+  card.append(top);
+  if (e.fields.length) {
+    const g = document.createElement('div'); g.className = 'ce-fields';
+    for (const f of e.fields) {
+      const fd = document.createElement('div'); fd.className = 'ce-field' + (f.inline ? '' : ' wide');
+      const n = document.createElement('div'); n.className = 'ce-fname'; n.textContent = f.name;
+      const v = document.createElement('div'); v.className = 'ce-fval'; v.innerHTML = md(f.value);
+      fd.append(n, v); g.append(fd);
+    }
+    card.append(g);
+  }
+  if (m.img && (e.flags & 4) && !(e.flags & 1)) card.append(chatImage(m.img, 'ce-big'));
+  if (e.flags & 2) {
+    const pr = document.createElement('div'); pr.className = 'ce-progress';
+    pr.innerHTML = '<span class="ce-t0"></span><div class="ce-bar"><i></i></div><span class="ce-t1"></span>';
+    card.append(pr);
+    let shown = false; // o primeiro tick roda antes do cartão entrar na página
+    const tick = () => {
+      if (pr.isConnected) shown = true;
+      else if (shown) return; // a mensagem saiu (ou foi redesenhada): para
+      const pos = e.paused ? e.elapsed : Math.min(e.total || Infinity, e.elapsed + (performance.now() - e.at));
+      pr.querySelector('.ce-t0').textContent = dur(pos);
+      pr.querySelector('.ce-t1').textContent = e.total ? dur(e.total) : L.live;
+      pr.querySelector('i').style.width = e.total ? (100 * pos / e.total).toFixed(2) + '%' : '100%';
+      pr.classList.toggle('live', !e.total); pr.classList.toggle('paused', e.paused);
+      if (!e.paused && (!e.total || pos < e.total)) setTimeout(tick, 500);
+    };
+    tick();
+  }
+  if (e.buttons.length) {
+    const row = document.createElement('div'); row.className = 'ce-buttons';
+    e.buttons.forEach((bt, i) => {
+      const b = document.createElement('button'); b.type = 'button';
+      b.className = 'ce-btn ' + (['', 'primary', 'danger', 'success'][bt.style] || '');
+      const ic = icon(bt.icon); if (ic) b.append(ic);
+      if (bt.label) b.append(bt.label);
+      b.disabled = bt.disabled;
+      b.onclick = () => send(new W(T.embed_action).u32(m.id).u8(i).done());
+      row.append(b);
+    });
+    card.append(row);
+  }
+  if (e.footer) { const f = document.createElement('div'); f.className = 'ce-footer'; f.textContent = e.footer; card.append(f); }
+  return card;
+}
+
+const msgEls = new Map(); // id → a mensagem (pra quando ela for editada)
+
+function renderMsg(m) {
   const div = document.createElement('div');
-  div.className = 'msg' + (from ? '' : ' sys');
-  if (from) { const who = document.createElement('span'); who.className = 'who'; who.style.color = color(from); who.textContent = name; div.append(who); }
-  div.append(text);
+  div.className = 'msg' + (m.from ? '' : ' sys');
+  if (m.from) {
+    const who = document.createElement('span'); who.className = 'who'; who.style.color = color(m.from); who.textContent = m.name; div.append(who);
+    const mem = st.members.get(m.from);
+    if (mem && mem.bot) { const t = document.createElement('span'); t.className = 'bot-tag'; t.textContent = 'BOT'; div.append(t); }
+  }
+  if (m.quote !== undefined) { const q = document.createElement('div'); q.className = 'quote'; q.textContent = `${m.quoteName}: ${m.quote}`; div.append(q); }
+  if (m.embed) div.append(renderCard(m));
+  else {
+    const t = document.createElement('span'); t.innerHTML = md(m.file ? `📎 ${m.file}` : m.text); div.append(t);
+    if (m.img) div.append(chatImage(m.img, 'chat-img'));
+  }
+  return div;
+}
+
+function onChat(r) {
+  const m = readChat(r);
+  const div = renderMsg(m);
+  msgEls.set(m.id, { el: div, m });
   const box = $('chat');
   const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 8;
   box.append(div);
-  while (box.children.length > 300) box.firstChild.remove();
+  while (box.children.length > 300) { const first = box.firstChild; for (const [k, v] of msgEls) if (v.el === first) msgEls.delete(k); first.remove(); }
   if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function onChatEdit(r) {
+  const id = r.u32(); const text = r.str();
+  const n = r.left() >= 4 ? r.u32() : 0;
+  const cur = msgEls.get(id); if (!cur) return;
+  cur.m.text = text; cur.m.embed = n ? readEmbed(r.bytes(n)) : null;
+  const div = renderMsg(cur.m);
+  cur.el.replaceWith(div); cur.el = div;
 }
 
 // --------------------------------------------------------------- início

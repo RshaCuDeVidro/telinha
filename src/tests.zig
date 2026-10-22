@@ -19,6 +19,7 @@ test {
     _ = @import("bgflow.zig");
     _ = @import("files.zig");
     _ = @import("web.zig");
+    _ = @import("embed.zig");
     _ = @import("chatimg.zig");
     _ = @import("i18n.zig");
     _ = @import("udp.zig");

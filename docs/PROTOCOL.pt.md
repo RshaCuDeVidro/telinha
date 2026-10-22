@@ -110,11 +110,11 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | tipo | nome | direção | payload |
 |---|---|---|---|
 | 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (o que decodifica, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (canal pra entrar; vazio ou sem o campo = o padrão), `str token_bot` (só bot; ver `feat_bot`) |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1), `u8 recursos_do_servidor` (`srv_*`: 1 = mensagem privada e resposta citada, 2 = arquivos; servidor antigo não manda = 0) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1), `u8 recursos_do_servidor` (`srv_*`: 1 = mensagem privada e resposta citada, 2 = arquivos, 4 = cartões; servidor antigo não manda = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (servidor fecha em seguida) |
 | 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo), n × `str versão_do_app` (mesma ordem), n × `u8 tipo` (1 = bot; servidor antigo não manda) |
-| 5 | chat | C→S | `str texto`, imagem (opcional, abaixo), `u32 resposta` (id da mensagem respondida; 0 = nenhuma), `u32 pra` (privada pra esse membro; 0 = o canal) |
-| 5 | chat | S→C | `u32 id`, `u32 de` (0 = sistema), `str nome`, `str texto`, `u64 hora` (relógio da sala, µs), `u8 flags` (1 = histórico), imagem, `u8 n`, n × (`u8 reação`, `u32 de`), `u32 resposta` (se ≠ 0: `u32 de`, `str nome`, `str trecho`), `u32 pra` (se ≠ 0: `str nome`), `u32 arquivo` (se ≠ 0: `str nome`, `u64 tamanho`) |
+| 5 | chat | C→S | `str texto`, imagem (opcional, abaixo), `u32 resposta` (id da mensagem respondida; 0 = nenhuma), `u32 pra` (privada pra esse membro; 0 = o canal), `u32 n` + n bytes de um [cartão](#cartões) (0 = nenhum) |
+| 5 | chat | S→C | `u32 id`, `u32 de` (0 = sistema), `str nome`, `str texto`, `u64 hora` (relógio da sala, µs), `u8 flags` (1 = histórico), imagem, `u8 n`, n × (`u8 reação`, `u32 de`), `u32 resposta` (se ≠ 0: `u32 de`, `str nome`, `str trecho`), `u32 pra` (se ≠ 0: `str nome`), `u32 arquivo` (se ≠ 0: `str nome`, `u64 tamanho`), `u32 n` + n bytes de um cartão; **só pra bot**, nas mensagens ao vivo: `str canal`, `str call` de quem mandou (onde a pessoa está agora; `call` vazia = fora de call) |
 | 6 | stream_start | C→S | `u8 tipo`, `u16 w`, `u16 h`, `u8 fps`, `u8 flags` (1 = com áudio; só vale pra tela) |
 | 7 | stream_stop | C→S | `u8 tipo` |
 | 8 | frame | C→S | frame (abaixo) |
@@ -163,6 +163,9 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 39 | file_cancel | C→S | `u32 arquivo`: desiste de subir |
 | 40 | web_hello | C→S | só do navegador: `str senha` + os mesmos campos do `hello` |
 | 41 | web_link | S→C | `str endereço`: o link https pra assistir no navegador (vazio = não tem) |
+| 42 | chat_edit | C→S / S→C | `u32 id`, `str texto`, `u32 n` + n bytes de um cartão (0 = nenhum): o autor muda a própria mensagem (a imagem fica) |
+| 43 | embed_action | C→S | `u32 id`, `u8 botão`: alguém clicou num botão de um cartão |
+| 43 | embed_action | S→C | `u32 id`, `u8 botão`, `u32 de`, `str nome` e, se o autor do cartão for bot, `str canal`, `str call` de quem clicou; vai só pro autor do cartão |
 
 `versão_do_app` ("3.0.0") serve só pra avisar quem está desatualizado (a
 interface mostra "fulano está no telinha X: tem versão nova"); vazia = não
@@ -267,6 +270,9 @@ manda e vale 0, tudo como antes):
   recusa promover); o servidor pode recusar todos (`--sem-bots`) ou pedir o
   `token_bot` (`--token-bots`), respondendo `denied` 7. É uma marca honesta,
   não uma trava: quem não se marca entra como pessoa, com os mesmos poderes.
+- `feat_embed` (32): desenha cartões e os botões deles e entende `chat_edit`.
+  Informativo: o cartão vai no fim do `chat`, que app antigo não lê (mostra o
+  texto), e ele ignora o `chat_edit`.
 - `feat_dm` (8): entende mensagem privada. O servidor recusa privada pra quem
   não entende (avisa quem mandou com `notice` 10): o app antigo mostraria como
   se fosse pra todo mundo.
@@ -428,6 +434,39 @@ Mensagem velha demais (fora do histórico) vai sem citação.
 estiver (qualquer canal); não entra no histórico do canal nem tem reação. O
 servidor guarda as últimas 64 (sem as imagens) só pra conferir citação numa
 resposta dentro da privada; em público, citar uma privada não leva o trecho.
+
+### Cartões
+
+Um cartão (embed) vai no fim do `chat` e do `chat_edit`, até 8 KB, e o
+servidor guarda como veio (só confere o tamanho e o byte de versão; quem
+desenha valida o resto). Little-endian, `str` = `u16` + UTF-8:
+
+```
+u8  versão (1)
+u32 cor 0xRRGGBB (0 = a cor de destaque do tema)
+u8  flags: 1 = a imagem é a capa, 2 = tem progresso, 4 = imagem grande
+str kicker, str título, str url (http/https), str descrição (Markdown), str rodapé
+[flags & 2] u32 posição_ms, u32 total_ms (0 = ao vivo), u8 pausado
+u8 n_campos (≤ 12) × (str nome, str valor, u8 inline)
+u8 n_botões (≤ 5) × (u8 estilo: 0 neutro, 1 primário, 2 perigo, 3 sucesso,
+                     u8 ícone (0–22), str rótulo, u8 flags: 1 = desativado)
+```
+
+O app anda a barra de progresso sozinho desde que a mensagem chegou (ou foi
+editada) até `pausado`. Ícones: 0 nenhum, 1 play, 2 pause, 3 próxima,
+4 anterior, 5 parar, 6 aleatório, 7 repetir, 8 volume +, 9 volume −,
+10 lista, 11 coração, 12 música, 13 rádio, 14 busca, 15 mais, 16 ok,
+17 fechar, 18 link, 19 entrar, 20 lixeira, 21 estrela, 22 dado.
+
+**Edição** (`chat_edit`): só o autor, numa mensagem ainda no histórico do
+canal em que ele está (ou numa privada dele), no máximo uma a cada 200 ms (mais
+rápido é ignorado). Vai pra quem está naquele canal (ou pros dois da privada).
+
+**Clique** (`embed_action`): num cartão que quem clicou enxerga, que não seja
+dele, no máximo um a cada 120 ms por pessoa. Só o autor recebe; ninguém mais
+vê o clique. Bot fica sabendo onde está quem clicou, e onde está quem
+escreveu pra ele (no `chat`, inclusive na privada): é assim que o
+`/msg Bot !join` funciona de qualquer canal.
 
 ### Navegador
 

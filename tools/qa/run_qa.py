@@ -671,7 +671,7 @@ def navegador_som():
 
 @test
 def bot_de_musica():
-    """Bot de música (bots/musica, feito com o sdk/python) num servidor dedicado: aparece na lista com a etiqueta BOT, a Bia pede `!tocar tom` pelo chat do app, o bot responde citando e o app dela toca a voz do bot (som de verdade decodificado no PipeWire privado)."""
+    """Bot de música (bots/musica, feito com o sdk/python) num servidor dedicado: aparece na lista com a etiqueta BOT, a Bia pede `!play tom` pelo chat do app, o bot responde com o cartão NOW PLAYING e o app dela toca a voz do bot (som de verdade decodificado no PipeWire privado); o botão Pause do cartão pausa e o cartão muda no lugar."""
     if not shutil.which("ffmpeg"):
         log("sem ffmpeg: pulado")
         return
@@ -692,12 +692,52 @@ def bot_de_musica():
         bot = next(m for m in st["members"] if m["name"] == "Música")
         expect(bot["bot"] and not bot["admin"], f"o bot devia vir marcado como bot: {bot}")
         b.click("##chatin")
-        b.type("!tocar tom\n")
-        st = b.wait(lambda st: any(l["name"] == "Música" and "Tocando" in l["text"] for l in st["chat"]), 10, "o bot responder")
+        b.type("!play tom\n")
+        st = b.wait(lambda st: any(l["name"] == "Música" and l["embed"] and l["embed"]["kicker"] == "NOW PLAYING" for l in st["chat"]), 10, "o cartão NOW PLAYING")
+        card = next(l for l in st["chat"] if l["name"] == "Música" and l["embed"])
+        expect(card["embed"]["title"] == "Tom de teste" and card["embed"]["buttons"] == 5 and card["embed"]["progress"], f"cartão errado: {card['embed']}")
         b.wait(lambda st: any(m["id"] == bot["id"] and m["speaking"] for m in st["members"]), 10, "o app da Bia tocar a voz do bot")
         b.wait(lambda st: any(m["id"] == bot["id"] and m["flags"] & 8 for m in st["members"]), 5, "o microfone do bot aparecer ligado")
+        time.sleep(1)
         b.screenshot(os.path.join(s.base, "bot_musica.png"))
-        log("o app tocando a música do bot; print em bot_musica.png")
+        b.click(f"##eb{card['id']}_0")  # Pause
+        b.wait(lambda st: any(l["id"] == card["id"] and l["embed"] and l["embed"]["kicker"] == "PAUSED" and l["embed"]["paused"] for l in st["chat"]), 5, "o cartão pausar")
+        b.wait(lambda st: not any(m["id"] == bot["id"] and m["speaking"] for m in st["members"]), 5, "o som parar")
+        log("o app tocando a música do bot, cartão e pausa pelo botão; print em bot_musica.png")
+
+
+@test
+def cartao_de_bot():
+    """Cartão de bot (embed) no app: capa, título, campos, barra de progresso que anda sozinha e botões; clicar num botão chega no bot, que edita o cartão no lugar e responde."""
+    if not shutil.which("ffmpeg"):
+        log("sem ffmpeg: pulado")
+        return
+    with Session("cartao") as s:
+        p = port()
+        s.spawn("srv", [SERVER, "--porta", str(p), "--senha", "pw", "--chave", os.path.join(s.base, "srv.key")], {k: os.environ[k] for k in ("HOME", "PATH")})
+        time.sleep(0.6)
+        capa = os.path.join(s.base, "capa.png")
+        subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=480x480", "-frames:v", "1", capa], check=True)
+        lang_env = {"TELINHA_IDIOMA": os.environ["QA_IDIOMA"]} if os.environ.get("QA_IDIOMA") else None
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--senha", "pw"], extra_env=lang_env)
+        b.wait(lambda st: st["status"] == "connected", 10, "a Bia entrar")
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+        s.spawn("bot", [sys.executable, os.path.join(root, "tools", "qa", "bot_cartao.py"), f"telinha://127.0.0.1:{p}#pw", capa], {"HOME": s.base, "PATH": os.environ["PATH"]})
+        st = b.wait(lambda st: any(l["embed"] and l["img_ready"] for l in st["chat"]), 20, "o cartão chegar com a capa")
+        line = next(l for l in st["chat"] if l["embed"])
+        em = line["embed"]
+        expect(em["title"] == "Popular Monster" and em["buttons"] == 4 and em["fields"] == 3 and em["progress"], f"cartão errado: {em}")
+        p0 = em["position_ms"]
+        time.sleep(1.2)
+        p1 = next(l for l in b.state()["chat"] if l["id"] == line["id"])["embed"]["position_ms"]
+        expect(p1 - p0 >= 900, f"a barra não andou sozinha ({p0} → {p1})")
+        b.screenshot(os.path.join(s.base, "cartao.png"))
+        b.click(f"##eb{line['id']}_1")
+        st = b.wait(lambda st: any(l["text"].startswith("clicou: Skip") for l in st["chat"]), 10, "o bot receber o clique")
+        expect(any("Bia em #geral" in l["text"] for l in st["chat"]), "o bot não soube de onde veio o clique")
+        st = b.wait(lambda st: any(l["id"] == line["id"] and l["embed"] and l["embed"]["kicker"] == "SKIPPED" and l["embed"]["paused"] for l in st["chat"]), 5, "o cartão mudar no lugar")
+        b.screenshot(os.path.join(s.base, "cartao_editado.png"))
+        log("cartão desenhado, clique chegou no bot e o cartão foi editado no lugar")
 
 
 @test

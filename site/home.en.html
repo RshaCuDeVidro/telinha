@@ -116,7 +116,8 @@
         <h3>{{icon:bot}} A bot is one more in the room</h3>
         <p>It reads and sends messages, answers commands, reacts, plays sound in the call and handles files. It shows up with a <b>BOT</b> tag and never becomes admin; the room owner can refuse bots or require a token.</p>
         <ul class="ticks">
-          <li>{{icon:music}}<span><b>A ready-made music bot:</b> a folder, room files, radios. <code>!tocar</code>, <code>!fila</code>, <code>!pular</code>, <code>!volume</code>.</span></li>
+          <li>{{icon:music}}<span><b>A ready-made music bot:</b> YouTube, SoundCloud and Spotify links, search by name, a folder, radios. <code>!play</code>, <code>!search</code>, <code>!queue</code>, <code>!skip</code>.</span></li>
+          <li>{{icon:spark}}<span><b>Cards with buttons:</b> a cover, fields, a progress bar that moves by itself and buttons anyone can click; the bot changes the card in place.</span></li>
           <li>{{icon:code}}<span><b>A Python SDK:</b> commands with typed arguments, events, private messages, music and files.</span></li>
           <li>{{icon:server}}<span>Runs on a VPS, a Raspberry Pi or your PC. It costs the streamer nothing.</span></li>
         </ul>
@@ -139,7 +140,7 @@ bot = Bot(<span class="s">"telinha://my.room:7777#password"</span>, <span class=
 
 bot.run()</span></pre>
         </div>
-        <figure class="shot-wide"><img src="{{img}}en/bot.png" alt="The music bot in a room: the BOT tag, the !tocar request and the quoted reply" loading="lazy" width="340" height="470"><figcaption><b>In the app:</b> the BOT tag, the request and the quoted reply, and the green ring of whoever is playing.</figcaption></figure>
+        <figure class="shot-wide"><img src="{{img}}en/bot.png" alt="The music bot in a room: the !play request and the NOW PLAYING card with the progress bar and buttons" loading="lazy" width="340" height="470"><figcaption><b>In the app:</b> the bot's card, with the bar that moves by itself and the buttons, and the green ring of whoever is playing.</figcaption></figure>
       </div>
     </div>
   </section>

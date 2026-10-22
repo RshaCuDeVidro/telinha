@@ -123,6 +123,9 @@ headphones); automatic gain for quiet microphones and a mic volume.
   or `/arquivo path`. It's uploaded once to the server and each person
   downloads it when they click, in the background, without hurting video and
   voice. On the server it's encrypted and gone after 2 hours.
+- **[Bot](BOTS.md) cards**: a cover, fields, a progress bar that moves by
+  itself and buttons; clicking a button sends the click to the bot, which
+  changes the card in place.
 - Desktop notifications while telinha is in the background.
 
 ## Channels

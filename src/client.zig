@@ -4,6 +4,7 @@ const std = @import("std");
 const sync = @import("sync.zig");
 const net = @import("net.zig");
 const proto = @import("proto.zig");
+const embed_mod = @import("embed.zig");
 const filexfer = @import("filexfer.zig");
 const udp = @import("udp.zig");
 const crypto = @import("crypto.zig");
@@ -166,6 +167,8 @@ pub const ChatLine = struct {
     file_name: [proto.file_name_max]u8 = undefined,
     file_name_len: usize = 0,
     file_size: u64 = 0,
+    // cartão de bot (embed.zig); o texto vira só o reserva pra app antigo
+    embed: ?*embed_mod.Embed = null,
 
     pub const React = struct { emoji: u8, from: u32 };
 
@@ -216,6 +219,7 @@ pub const ChatLine = struct {
     }
 
     fn free(self: *ChatLine) void {
+        if (self.embed) |e| e.deinit();
         gpa.free(self.text);
         if (self.img) |im| gpa.free(im);
     }
@@ -844,6 +848,7 @@ pub const Client = struct {
     chat_count: u64 = 0, // total de mensagens já recebidas (pra rolar o chat)
     chat_new: u64 = 0, // mensagens novas (não de histórico) — notificação
     chat_react_gen: u32 = 0, // muda quando chega reação (a UI redesenha)
+    chat_edits: u32 = 0, // muda quando uma mensagem é editada (a UI mede de novo)
     /// Último id de mensagem visto (o histórico que chega depois não repete).
     chat_last_id: u32 = 0,
     /// O que o servidor sabe fazer (proto.srv_*; servidor antigo: 0).
@@ -1558,6 +1563,9 @@ pub const Client = struct {
                     copyInto(&line.file_name, &line.file_name_len, try r.str());
                     line.file_size = try r.u64_();
                 }
+                line.embed = null;
+                const embed_len = r.u32_() catch 0;
+                const embed_bytes: ?[]const u8 = if (embed_len > 0 and embed_len <= proto.embed_max) try r.take(embed_len) else null;
                 cl.mutex.lock();
                 defer cl.mutex.unlock();
                 // histórico que já chegou (não deveria repetir, mas não custa)
@@ -1570,6 +1578,7 @@ pub const Client = struct {
                 line.minute = t.m;
                 line.text = try gpa.dupe(u8, text);
                 if (img_bytes) |ib| line.img = gpa.dupe(u8, ib) catch null;
+                if (embed_bytes) |eb| line.embed = embed_mod.parse(eb, sync.nowMs()) catch null;
                 if (cl.chat.items.len >= 500) {
                     cl.chat.items[0].free();
                     _ = cl.chat.orderedRemove(0);
@@ -1595,6 +1604,28 @@ pub const Client = struct {
                 }
                 cl.chat_count += 1;
                 if (!line.history) cl.chat_new += 1;
+            },
+            .chat_edit => {
+                // o autor (um bot, quase sempre) mudou a mensagem: o texto e o cartão
+                const id = try r.u32_();
+                const text = try r.str();
+                const embed_len = r.u32_() catch 0;
+                const embed_bytes: ?[]const u8 = if (embed_len > 0 and embed_len <= proto.embed_max) try r.take(embed_len) else null;
+                cl.mutex.lock();
+                defer cl.mutex.unlock();
+                var i = cl.chat.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    const ln = &cl.chat.items[i];
+                    if (ln.id != id) continue;
+                    const owned = try gpa.dupe(u8, text);
+                    gpa.free(ln.text);
+                    ln.text = owned;
+                    if (ln.embed) |old| old.deinit();
+                    ln.embed = if (embed_bytes) |eb| embed_mod.parse(eb, sync.nowMs()) catch null else null;
+                    cl.chat_edits +%= 1; // a interface mede a mensagem de novo
+                    break;
+                }
             },
             .react => {
                 const id = try r.u32_();
@@ -1986,6 +2017,14 @@ pub const Client = struct {
         b.u32_(cl.compose_reply.swap(0, .acq_rel)) catch return;
         b.u32_(cl.compose_to.load(.acquire)) catch return;
         cl.queue.pushOwned(b.finish() catch return);
+    }
+
+    /// Clique num botão de cartão (vai pro autor da mensagem, um bot).
+    pub fn sendEmbedAction(cl: *Client, chat_id: u32, button: u8) void {
+        const m = proto.Msg.alloc(.embed_action, 5) catch return;
+        std.mem.writeInt(u32, m.payload()[0..4], chat_id, .little);
+        m.payload()[4] = button;
+        cl.queue.pushOwned(m);
     }
 
     pub fn sendReact(cl: *Client, chat_id: u32, emoji: u8, on: bool) void {

@@ -34,6 +34,17 @@ class CommandError(Exception):
     """Erro que o bot responde no chat (uso errado, argumento inválido)."""
 
 
+# o que o próprio SDK responde no chat, por idioma (Bot(lang="en"))
+TEXTS = {
+    "pt": {"admin": "Esse comando é só pra admin da sala.", "error": "Deu erro aqui, foi mal. 😵",
+           "usage": "Uso: {}", "number": "{}: '{}' não é um número", "member": "Não achei ninguém chamado {} na sala.",
+           "commands": "Comandos", "help": "mostra os comandos", "yes": ("1", "sim", "s", "true", "on", "liga", "yes")},
+    "en": {"admin": "That command is for room admins only.", "error": "Something went wrong, sorry. 😵",
+           "usage": "Usage: {}", "number": "{}: '{}' is not a number", "member": "There's nobody called {} in the room.",
+           "commands": "Commands", "help": "shows the commands", "yes": ("1", "yes", "y", "true", "on", "sim")},
+}
+
+
 @dataclass
 class Command:
     name: str
@@ -74,25 +85,34 @@ class Context:
         """Manda no mesmo lugar (canal ou privada), sem citar. Retorna a mensagem (com o id)."""
         return await self.message.respond(text)
 
+    async def reply_card(self, embed, text: str = "", *, image=None) -> Message | None:
+        """Responde com um cartão (Embed), citando o comando. `text` é o que app
+        antigo mostra no lugar do cartão."""
+        m = self.message
+        to = (m.author_id if m.to_id == self.bot.me else m.to_id) if m.private else 0
+        return await self.bot.send(text or embed.title or " ", embed=embed, image=image, reply_to=m.id, to=to)
+
 
 class Bot(Client):
     def __init__(self, invite, name, *, prefix: str = "!", help_command: str | None = "ajuda",
-                 cooldown: float = 1.0, accept_bots: bool = False, **kw):
+                 cooldown: float = 1.0, accept_bots: bool = False, lang: str = "pt", **kw):
         """
         prefix: o que vem antes do comando ("!" por padrão; "/" é dos comandos do app).
         help_command: nome do comando de ajuda automático (None = sem).
         cooldown: segundos entre comandos da mesma pessoa (anti-flood).
         accept_bots: obedece comandos de outros bots (padrão: não, pra dois bots
                      não ficarem se respondendo pra sempre).
+        lang: idioma do que o SDK responde sozinho (uso errado, erro, ajuda): "pt" ou "en".
         """
         super().__init__(invite, name, **kw)
         self.prefix = prefix
         self.cooldown = cooldown
         self.accept_bots = accept_bots
+        self.texts = TEXTS.get(lang, TEXTS["pt"])
         self.commands: dict[str, Command] = {}
         self._last_cmd: dict[int, float] = {}
         if help_command:
-            self.command(help_command, help="mostra os comandos", aliases=("help",))(self._help)
+            self.command(help_command, help=self.texts["help"], aliases=("help",))(self._help)
         self.on("message")(self._on_message)
 
     def command(self, name: str | None = None, *, help: str = "", aliases: tuple[str, ...] | list[str] = (), admin_only: bool = False):
@@ -132,7 +152,7 @@ class Bot(Client):
         self._last_cmd[msg.author_id] = now
         ctx = Context(self, msg, cmd, rest.strip())
         if cmd.admin_only and not (author and author.admin):
-            await ctx.reply("Esse comando é só pra admin da sala.")
+            await ctx.reply(self.texts["admin"])
             return
         try:
             args = self._parse(cmd, ctx.args)
@@ -141,7 +161,7 @@ class Bot(Client):
             await ctx.reply(str(e))
         except Exception:
             log.exception("erro no comando %s", cmd.name)
-            await ctx.reply("Deu erro aqui, foi mal. 😵")
+            await ctx.reply(self.texts["error"])
 
     def _parse(self, cmd: Command, text: str) -> list:
         try:
@@ -155,7 +175,7 @@ class Bot(Client):
                 return out
             if i >= len(words):
                 if p.default is inspect.Parameter.empty:
-                    raise CommandError(f"Uso: {self.prefix}{cmd.name} {cmd.usage}")
+                    raise CommandError(self.texts["usage"].format(f"{self.prefix}{cmd.name} {cmd.usage}"))
                 out.append(p.default)
                 continue
             # o último str leva o resto da linha (pra frases sem aspas)
@@ -172,13 +192,13 @@ class Bot(Client):
             try:
                 return ann(word.replace(",", ".") if ann is float else word)
             except ValueError:
-                raise CommandError(f"{pname}: '{word}' não é um número") from None
+                raise CommandError(self.texts["number"].format(pname, word)) from None
         if ann is bool:
-            return word.casefold() in ("1", "sim", "s", "true", "on", "liga", "yes")
+            return word.casefold() in self.texts["yes"]
         if ann is Member:
             m = self.member(word)
             if not m:
-                raise CommandError(f"Não achei ninguém chamado {word} na sala.")
+                raise CommandError(self.texts["member"].format(word))
             return m
         return ann(word)
 
@@ -190,4 +210,4 @@ class Bot(Client):
             seen.add(id(cmd))
             usage = f" {cmd.usage}" if cmd.usage else ""
             lines.append(f"`{self.prefix}{cmd.name}{usage}`" + (f" — {cmd.help}" if cmd.help else ""))
-        await ctx.send("**Comandos**\n" + "\n".join(lines))
+        await ctx.send(f"**{self.texts['commands']}**\n" + "\n".join(lines))

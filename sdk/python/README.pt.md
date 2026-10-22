@@ -3,8 +3,8 @@
 <sub>[🇺🇸 English](README.md) · [🇧🇷 Português](README.pt.md)</sub>
 
 Bots pro [telinha](https://rshacudevidro.github.io/telinha/), o app de
-compartilhar a tela em grupo com atraso baixo: chat, comandos, reações,
-privadas, canais, música na call e arquivos.
+compartilhar a tela em grupo com atraso baixo: chat, comandos, cartões com
+botões, reações, privadas, canais, música na call e arquivos.
 
 ```sh
 pip install "git+https://github.com/RshaCuDeVidro/telinha#subdirectory=sdk/python"

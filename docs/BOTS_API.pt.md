@@ -2,12 +2,13 @@
 
 <sub>[🇺🇸 English](BOTS_API.md) · [🇧🇷 Português](BOTS_API.pt.md)</sub>
 
-O pacote `telinha` (`sdk/python`), versão 0.1. Tudo é `asyncio`: os métodos
+O pacote `telinha` (`sdk/python`), versão 0.2. Tudo é `asyncio`: os métodos
 marcados com `await` são corrotinas. Pra começar, veja o
 [tutorial](BOTS_TUTORIAL.pt.md).
 
 ```python
 from telinha import Bot, Client, Player, Reaction, Member, Message, Denied
+from telinha import Embed, Button, Click, Icon, Style
 ```
 
 ## Client
@@ -54,7 +55,9 @@ Client(invite, name, *, password=None, channel=None, bot_token="", key=None, rec
 | `await wait_ready(timeout=None)` | espera o bot estar dentro da sala |
 | `on(evento)` | decorador de handler: `@client.on("message")` |
 | `off(evento, fn)` | tira um handler |
-| `await send(texto, *, reply_to=0, to=0, wait=True)` | manda no chat; `reply_to` cita uma mensagem, `to` manda em privado. Retorna a `Message` registrada (ou `None`). Mais de 4000 bytes vira várias mensagens |
+| `await send(texto, *, embed=None, image=None, reply_to=0, to=0, wait=True)` | manda no chat; `reply_to` cita uma mensagem, `to` manda em privado, `embed` junta um [cartão](#embed), `image` uma imagem (arquivo, link ou `ChatImage`; precisa do ffmpeg). Retorna a `Message` registrada (ou `None`). Mais de 4000 bytes vira várias mensagens |
+| `await edit(message_id, texto, *, embed=None)` | muda uma mensagem do próprio bot (o texto e o cartão; a imagem fica) |
+| `await click(message_id, botão)` | clica num botão do cartão de outro bot |
 | `await react(message_id, reação, on=True)` | põe (ou tira) uma reação |
 | `await join_channel(nome, senha="")` | troca o canal de texto (cria se não existir e o servidor deixar) |
 | `await join_call(nome, senha="")` / `await leave_call()` | entra na call de um canal / sai |
@@ -75,6 +78,8 @@ Client(invite, name, *, password=None, channel=None, bot_token="", key=None, rec
 | `leave` | `member: Member` | saiu |
 | `members` | `members: list[Member]` | a lista mudou (qualquer coisa: microfone, transmissão...) |
 | `reaction` | `message_id, member_id, reaction, on` | alguém pôs ou tirou uma reação |
+| `action` | `click: Click` | alguém clicou num botão de um cartão do bot (o `on_click` do botão também é chamado) |
+| `edit` | `message_id, text, embed` | uma mensagem mudou (um bot atualizando o cartão) |
 | `channels` | `current: str, channels: dict` | a lista de canais mudou (ou o bot trocou) |
 | `notice` | `kind, text, extra` | algo que um admin fez com o bot (`Notice`) |
 | `voice` | `member_id, seq, opus` | voz de alguém na call (pacote Opus cru) |
@@ -87,7 +92,7 @@ derruba o bot.
 ## Bot
 
 ```python
-Bot(invite, name, *, prefix="!", help_command="ajuda", cooldown=1.0, accept_bots=False, **opções_do_Client)
+Bot(invite, name, *, prefix="!", help_command="ajuda", cooldown=1.0, accept_bots=False, lang="pt", **opções_do_Client)
 ```
 
 | Parâmetro | |
@@ -96,6 +101,7 @@ Bot(invite, name, *, prefix="!", help_command="ajuda", cooldown=1.0, accept_bots
 | `help_command` | nome do comando de ajuda automático (`None` = sem; `help` também funciona) |
 | `cooldown` | segundos entre comandos da mesma pessoa |
 | `accept_bots` | obedecer comandos de outros bots |
+| `lang` | idioma do que o SDK responde sozinho (uso errado, erro, ajuda): `"pt"` ou `"en"` |
 
 `@bot.command(name=None, *, help="", aliases=(), admin_only=False)` registra
 um comando. A função recebe `ctx` e os argumentos, convertidos pelos tipos
@@ -116,6 +122,7 @@ chamou. Qualquer outro erro vai pro log e o bot responde "Deu erro aqui".
 | `ctx.author` | o `Member` que chamou (ou `None` se já saiu) |
 | `await ctx.reply(texto)` | responde citando; retorna a `Message` |
 | `await ctx.send(texto)` | manda no mesmo lugar (canal ou privada); retorna a `Message` |
+| `await ctx.reply_card(embed, texto="", *, image=None)` | responde com um cartão, citando; `texto` é o que app de antes da 3.4 mostra no lugar |
 
 ## Message
 
@@ -133,9 +140,12 @@ chamou. Qualquer outro erro vai pro log e o bot responde "Deu erro aqui".
 | `has_image` | tem imagem (o SDK não decodifica imagem) |
 | `reactions` | `[(reação, member_id)]` (só nas antigas; as novas vêm pelo evento) |
 | `channel` | o canal de texto do bot quando ela chegou |
+| `embed` | o cartão (`Embed`), se tiver |
+| `author_channel`, `author_call` | onde o autor está (canal de texto e call; `""` = fora de call). O servidor só conta isso pra bot, e vale na privada também: é assim que o `/msg Bot !join` sabe pra onde ir |
 | `await reply(texto)` | responde citando (em privado, se ela foi privada) |
 | `await respond(texto)` | responde no mesmo lugar, sem citar |
 | `await react(reação, on=True)` | |
+| `await edit(texto=None, *, embed=None)` | muda a mensagem (só as do próprio bot) |
 
 ## Member
 
@@ -164,13 +174,61 @@ Player(client, *, bitrate=128_000, stereo=True, ffmpeg="ffmpeg")
 
 | | |
 |---|---|
-| `await play(fonte, *, volume=None, start=0.0)` | toca um arquivo ou link até o fim; retorna `True` se acabou, `False` se foi parado. Liga o microfone do bot enquanto toca |
+| `await play(fonte, *, volume=None, start=0.0, headers=None)` | toca um arquivo ou link até o fim; retorna `True` se acabou, `False` se foi parado. Liga o microfone do bot enquanto toca. `headers`: cabeçalhos HTTP pro link (os que o yt-dlp manda usar) |
 | `pause()` / `resume()` | |
 | `await stop()` | para (o `play` retorna `False`) |
 | `set_volume(0.0–2.0)` | vale em ~meio segundo |
 | `playing`, `paused`, `position`, `source`, `volume` | |
 
 Precisa do ffmpeg (`FFmpegMissing` se não tiver).
+
+## Embed
+
+Um cartão no chat: barra colorida, uma linha pequena em cima (`kicker`),
+título (link, com `url`), texto em Markdown, campos lado a lado, uma barra de
+progresso que anda sozinha em cada app e até 5 botões. App de antes da 3.4
+mostra só o texto da mensagem.
+
+```python
+card = Embed(title="Popular Monster", kicker="NOW PLAYING", color=0xd946ef,
+             description="by **Falling In Reverse**", url="https://...",
+             progress=(31_000, 232_000), thumbnail=True, footer="SoundCloud")
+card.add_field("Pedido por", "Ana").add_field("Depois", "Voices in My Head")
+card.add_button("Pausar", icon=Icon.PAUSE, style="primary", on_click=pausar)
+card.add_button("Pular", icon="next", on_click=pular)
+msg = await bot.send("Tocando: Popular Monster", embed=card, image="capa.jpg")
+...
+card.kicker, card.paused = "PAUSADO", True
+await msg.edit(embed=card)
+```
+
+| | |
+|---|---|
+| `title`, `url`, `kicker`, `description`, `footer` | texto (a descrição aceita `**negrito**`, `*itálico*`, `` `código` `` e `[links](https://...)`) |
+| `color` | `0xRRGGBB` da barra (`0` = a cor de destaque do tema de quem vê) |
+| `thumbnail` / `big_image` | a imagem da mensagem vai como capa (no canto) / grande, embaixo |
+| `progress`, `paused` | `(posição_ms, total_ms)`; total `0` = ao vivo. Cada app anda sozinho até `paused` |
+| `add_field(nome, valor, inline=True)` | até 12 |
+| `add_button(label="", *, icon=Icon.NONE, style="neutral", disabled=False, on_click=None)` | até 5. `style`: `neutral`, `primary`, `danger`, `success`. `on_click`: `async def f(click: Click)` |
+
+`Icon`: `PLAY`, `PAUSE`, `NEXT`, `PREVIOUS`, `STOP`, `SHUFFLE`, `REPEAT`,
+`VOLUME_UP`, `VOLUME_DOWN`, `LIST`, `HEART`, `MUSIC`, `RADIO`, `SEARCH`,
+`PLUS`, `CHECK`, `CLOSE`, `LINK`, `JOIN`, `TRASH`, `STAR`, `DICE` (ou o nome
+em texto: `icon="next"`).
+
+O clique chega só no autor do cartão, no máximo a cada 120 ms por pessoa, e
+edição no máximo a cada 200 ms (o SDK espera a vez, então duas edições
+seguidas chegam as duas). O SDK lembra os botões dos últimos 300 cartões.
+
+### Click
+
+| | |
+|---|---|
+| `message_id`, `button` | qual cartão e qual botão (a partir de 0) |
+| `member_id`, `member_name` | quem clicou |
+| `channel`, `call` | onde a pessoa está |
+| `await reply(texto, **kw)` | responde citando o cartão |
+| `await whisper(texto)` | responde só pra quem clicou (privada) |
 
 ## Invite
 

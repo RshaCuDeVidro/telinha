@@ -25,6 +25,8 @@ from pathlib import Path
 from . import wire
 from .connection import Connection, ConnectError, WrongPassword, race, secure
 from .crypto import AuthFailed, fingerprint, transcript, verify_identity
+from .embed import Click, Embed
+from .image import ChatImage, encode as encode_image
 from .invite import Invite
 from .models import ChannelInfo, FileInfo, Member, Message, Quote, Welcome
 from .wire import MsgType, Reader, Writer
@@ -33,7 +35,7 @@ log = logging.getLogger("telinha")
 
 __all__ = ["Client", "Denied", "EVENTS"]
 
-SDK_VERSION = "0.1.0"
+SDK_VERSION = "0.2.0"
 PING_EVERY = 10.0  # s
 DEAD_AFTER = 45.0  # s sem nada chegando: a conexão morreu
 FILE_CHUNK = 32 * 1024
@@ -41,6 +43,8 @@ FILE_WINDOW = 8  # pedaços sem confirmação no ar (subindo)
 GET_CHUNK = 64 * 1024
 GET_WINDOW = 4  # pedidos no ar (baixando)
 SWITCH_GAP = 0.85  # s entre trocas de canal/call (o servidor recusa mais rápido que 800 ms)
+IMAGE_GAP = 1.6  # s entre imagens (o servidor descarta mais rápido que 1,5 s)
+EDIT_GAP = 0.25  # s entre edições (o servidor ignora mais rápido que 200 ms)
 
 EVENTS = (
     "ready",  # (welcome: Welcome) entrou (de novo, depois de reconectar também)
@@ -53,6 +57,8 @@ EVENTS = (
     "notice",  # (kind: int, text: str, extra: int) algo que um admin fez com o bot
     "voice",  # (member_id: int, seq: int, opus: bytes) voz de alguém na call
     "web_link",  # (url: str) link pra assistir pelo navegador
+    "action",  # (click: Click) alguém clicou num botão de um cartão do bot
+    "edit",  # (message_id: int, text: str, embed: Embed | None) uma mensagem mudou
     "disconnect",  # (reason: str) caiu (vai tentar de novo, a não ser que tenha sido recusado)
 )
 
@@ -122,8 +128,11 @@ class Client:
         self._mic = False
         self._deaf = False
         self._last_switch = 0.0
-        self._echo: list[tuple[str, int, asyncio.Future]] = []
-        self._tasks: set[asyncio.Task] = set()  # handlers rodando  # mensagens minhas esperando voltar (pra pegar o id)
+        self._last_image = 0.0
+        self._next_edit = 0.0  # quando a próxima edição pode sair
+        self._echo: list[tuple[str, int, asyncio.Future]] = []  # mensagens minhas esperando voltar (pra pegar o id)
+        self._tasks: set[asyncio.Task] = set()  # handlers rodando
+        self._buttons: dict[int, list] = {}  # id da mensagem → callbacks dos botões dela
 
     # ------------------------------------------------------------ eventos
     def on(self, event: str):
@@ -223,7 +232,7 @@ class Client:
             self.fingerprint = conn.fingerprint
             await conn.send(
                 Writer(MsgType.HELLO).str(self.name, 32).str("").u64(self.key).str(f"sdk-python/{SDK_VERSION}")
-                .u8(1).u8(wire.FEAT_BOT | wire.FEAT_DM | wire.FEAT_CALLS).str(self.want_channel).str(self.bot_token).done()
+                .u8(1).u8(wire.FEAT_BOT | wire.FEAT_DM | wire.FEAT_CALLS | wire.FEAT_EMBED).str(self.want_channel).str(self.bot_token).done()
             )
             self._last_rx = time.monotonic()
             pinger = asyncio.create_task(self._pinger(conn))
@@ -353,6 +362,21 @@ class Client:
         elif typ == MsgType.WEB_LINK:
             self.web_link = r.str()
             await self._emit("web_link", self.web_link)
+        elif typ == MsgType.EMBED_ACTION:
+            click = Click(r.u32(), r.u8(), r.u32(), r.str(), _client=self)
+            click.channel = r.opt(r.str, "")
+            click.call = r.opt(r.str, "")
+            cbs = self._buttons.get(click.message_id) or []
+            if click.button < len(cbs) and cbs[click.button]:
+                t = asyncio.create_task(self._run_handler("action", cbs[click.button], (click,)))
+                self._tasks.add(t)
+                t.add_done_callback(self._tasks.discard)
+            await self._emit("action", click)
+        elif typ == MsgType.CHAT_EDIT:
+            mid, text = r.u32(), r.str()
+            n = r.opt(r.u32, 0)
+            emb = Embed.decode(r.take(n)) if n else None
+            await self._emit("edit", mid, text, emb)
         # o resto (quadros, cursor, desenhos...) é de quem assiste transmissão
 
     async def _on_members(self, r: Reader) -> None:
@@ -417,31 +441,87 @@ class Client:
         fid = r.opt(r.u32, 0)
         if fid:
             m.file = FileInfo(fid, r.str(), r.u64())
+        n = r.opt(r.u32, 0)
+        if n:
+            m.embed = Embed.decode(r.take(n))
+        # só bot recebe: onde quem mandou está
+        m.author_channel = r.opt(r.str, "")
+        m.author_call = r.opt(r.str, "")
         return m
 
     # ------------------------------------------------------------ mandando
-    async def send(self, text: str, *, reply_to: int = 0, to: int = 0, wait: bool = True) -> Message | None:
+    async def send(self, text: str = "", *, embed: Embed | None = None, image: "str | os.PathLike | ChatImage | None" = None,
+                   reply_to: int = 0, to: int = 0, wait: bool = True) -> Message | None:
         """Manda no chat do canal atual (ou em privado, com `to` = id da pessoa).
-        `reply_to` = id da mensagem que está respondendo (cita ela).
+
+        `embed`: um cartão (Embed); o `text` vira o que app antigo mostra no lugar.
+        `image`: arquivo, link ou ChatImage (com Embed(thumbnail=True) vira a capa).
+        `reply_to`: id da mensagem que está respondendo (cita ela).
         Texto maior que 4000 bytes vai em mais de uma mensagem.
 
-        Retorna a mensagem como a sala registrou (com o id, pra reagir ou
-        citar depois), ou None com wait=False / se ela não voltar em 5 s."""
+        Retorna a mensagem como a sala registrou (com o id, pra reagir, citar
+        ou editar depois), ou None com wait=False / se ela não voltar em 5 s.
+        Os botões do cartão com on_click passam a responder."""
+        img = image if isinstance(image, ChatImage) or image is None else await encode_image(image, **({"square": 320} if embed and embed.thumbnail else {}))
+        if img is not None:
+            # o servidor descarta a mensagem inteira se vier imagem a menos de 1,5 s
+            # da anterior: espera o que faltar (até 1,6 s) em vez de perder a mensagem
+            wait_img = self._last_image + IMAGE_GAP - time.monotonic()
+            if wait_img > 0:
+                await asyncio.sleep(wait_img)
+            self._last_image = time.monotonic()
+        embed_bytes = embed.encode() if embed else b""
+        parts = _split(text) if text else [""]
         first: asyncio.Future | None = None
-        for part in _split(text):
+        for i, part in enumerate(parts):
             if wait and first is None:
                 first = asyncio.get_running_loop().create_future()
                 self._echo.append((part.strip(), to, first))
-            await self._send(Writer(MsgType.CHAT).str(part).u8(wire.CHAT_IMG_NONE).u32(reply_to).u32(to).done())
+            w = Writer(MsgType.CHAT).str(part)
+            if img and i == 0:
+                w.u8(wire.CHAT_IMG_H264).u16(img.width).u16(img.height).u32(len(img.data)).bytes(img.data)
+            else:
+                w.u8(wire.CHAT_IMG_NONE)
+            w.u32(reply_to).u32(to)
+            last = i == len(parts) - 1
+            w.u32(len(embed_bytes) if last else 0).bytes(embed_bytes if last else b"")
+            await self._send(w.done())
             reply_to = 0  # só a primeira parte cita
         if first is None:
             return None
         try:
-            return await asyncio.wait_for(first, 5)
+            msg = await asyncio.wait_for(first, 5)
         except asyncio.TimeoutError:
             return None
         finally:
             self._echo = [e for e in self._echo if e[2] is not first]
+        if embed and any(b.on_click for b in embed.buttons):
+            self._remember_buttons(msg.id, embed)
+        return msg
+
+    async def edit(self, message_id: int, text: str, *, embed: Embed | None = None) -> None:
+        """Muda uma mensagem do próprio bot (o texto e o cartão; a imagem fica).
+        Bom pra atualizar um "tocando agora" no lugar de mandar outro."""
+        e = embed.encode() if embed else b""
+        # o servidor ignora edição a menos de 200 ms da anterior: cada uma
+        # reserva a sua vez (duas seguidas, tipo "continuar" e "pular", saem as duas)
+        now = time.monotonic()
+        at = max(now, self._next_edit)
+        self._next_edit = at + EDIT_GAP
+        if at > now:
+            await asyncio.sleep(at - now)
+        await self._send(Writer(MsgType.CHAT_EDIT).u32(message_id).str(text).u32(len(e)).bytes(e).done())
+        if embed is not None:
+            self._remember_buttons(message_id, embed)
+
+    def _remember_buttons(self, message_id: int, embed: Embed) -> None:
+        self._buttons[message_id] = [b.on_click for b in embed.buttons]
+        while len(self._buttons) > 300:  # os mais velhos saem
+            self._buttons.pop(next(iter(self._buttons)))
+
+    async def click(self, message_id: int, button: int) -> None:
+        """Clica num botão de um cartão (de outro bot)."""
+        await self._send(Writer(MsgType.EMBED_ACTION).u32(message_id).u8(button).done())
 
     async def react(self, message_id: int, reaction: wire.Reaction | int, on: bool = True) -> None:
         await self._send(Writer(MsgType.REACT).u32(message_id).u8(int(reaction)).u8(int(on)).done())

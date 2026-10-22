@@ -124,6 +124,9 @@ do microfone.
   `/arquivo caminho`. Ele sobe uma vez pro servidor e cada um baixa quando
   clicar, em segundo plano, sem atrapalhar vídeo e voz. No servidor fica
   cifrado e some depois de 2 horas.
+- **Cartões de [bot](BOTS.pt.md)**: capa, campos, barra de progresso que anda
+  sozinha e botões; clicar num botão manda o clique pro bot, que muda o cartão
+  no lugar.
 - Notificações do sistema quando o telinha está em segundo plano.
 
 ## Canais

@@ -114,11 +114,11 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | type | name | direction | payload |
 |---|---|---|---|
 | 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (what it decodes, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (channel to join; empty or missing = the default), `str token_bot` (bots only; see `feat_bot`) |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1), `u8 recursos_do_servidor` (`srv_*`: 1 = private messages and quoted replies, 2 = files; an older server doesn't send it = 0) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1), `u8 recursos_do_servidor` (`srv_*`: 1 = private messages and quoted replies, 2 = files, 4 = cards; an older server doesn't send it = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (the server closes right after) |
 | 4 | members | S→C | `u8 sala` (1 = locked), `u16 n`, n × member (below), n × `str versão_do_app` (same order), n × `u8 tipo` (1 = bot; an older server doesn't send it) |
-| 5 | chat | C→S | `str texto`, image (optional, below), `u32 resposta` (id of the message replied to; 0 = none), `u32 pra` (private to this member; 0 = the channel) |
-| 5 | chat | S→C | `u32 id`, `u32 de` (0 = system), `str nome`, `str texto`, `u64 hora` (room clock, µs), `u8 flags` (1 = history), image, `u8 n`, n × (`u8 reação`, `u32 de`), `u32 resposta` (if ≠ 0: `u32 de`, `str nome`, `str trecho`), `u32 pra` (if ≠ 0: `str nome`), `u32 arquivo` (if ≠ 0: `str nome`, `u64 tamanho`) |
+| 5 | chat | C→S | `str texto`, image (optional, below), `u32 resposta` (id of the message replied to; 0 = none), `u32 pra` (private to this member; 0 = the channel), `u32 n` + n bytes of a [card](#cards) (0 = none) |
+| 5 | chat | S→C | `u32 id`, `u32 de` (0 = system), `str nome`, `str texto`, `u64 hora` (room clock, µs), `u8 flags` (1 = history), image, `u8 n`, n × (`u8 reação`, `u32 de`), `u32 resposta` (if ≠ 0: `u32 de`, `str nome`, `str trecho`), `u32 pra` (if ≠ 0: `str nome`), `u32 arquivo` (if ≠ 0: `str nome`, `u64 tamanho`), `u32 n` + n bytes of a card; **to bots only**, on live messages: `str canal`, `str call` of whoever sent it (where they are now; `call` empty = not in one) |
 | 6 | stream_start | C→S | `u8 tipo`, `u16 w`, `u16 h`, `u8 fps`, `u8 flags` (1 = with audio; screen only) |
 | 7 | stream_stop | C→S | `u8 tipo` |
 | 8 | frame | C→S | frame (below) |
@@ -167,6 +167,9 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | 39 | file_cancel | C→S | `u32 file`: give up uploading |
 | 40 | web_hello | C→S | browser only: `str password` + the same fields as `hello` |
 | 41 | web_link | S→C | `str address`: the https link to watch in a browser (empty = none) |
+| 42 | chat_edit | C→S / S→C | `u32 id`, `str texto`, `u32 n` + n bytes of a card (0 = none): the author changes their own message (the image stays) |
+| 43 | embed_action | C→S | `u32 id`, `u8 botão`: someone clicked a button on a card |
+| 43 | embed_action | S→C | `u32 id`, `u8 botão`, `u32 de`, `str nome` and, if the card's author is a bot, `str canal`, `str call` of whoever clicked; goes only to the card's author |
 
 `versão_do_app` ("3.0.0") only serves to warn whoever is out of date (the
 interface shows "so-and-so is on telinha X: there is a new version"); empty = not
@@ -273,6 +276,9 @@ doesn't send it and it counts as 0, everything as before):
   (`--sem-bots`) or require the `token_bot` (`--token-bots`), answering
   `denied` 7. It's an honest label, not a lock: whoever doesn't label itself
   joins as a person, with the same powers.
+- `feat_embed` (32): draws cards and their buttons and understands `chat_edit`.
+  Informational: the card rides at the end of `chat`, which older apps don't
+  read (they show the text), and they ignore `chat_edit`.
 - `feat_dm` (8): understands private messages. The server refuses a private
   message to someone who doesn't (telling the sender with `notice` 10): an older
   app would show it as if it were for everyone.
@@ -436,6 +442,41 @@ message too old (out of the history) goes without a quote.
 (any channel); it isn't stored in the channel history and has no reactions. The
 server keeps the last 64 (without images) only to check quotes in a reply inside
 the private conversation; in public, quoting a private message carries no snippet.
+
+### Cards
+
+A card (embed) rides at the end of `chat` and `chat_edit`, up to 8 KB, and
+the server stores it as it came (it only checks the size and the version
+byte; whoever draws validates the rest). Little-endian, `str` = `u16` +
+UTF-8:
+
+```
+u8  version (1)
+u32 color 0xRRGGBB (0 = the theme accent)
+u8  flags: 1 = the image is the cover, 2 = has progress, 4 = large image
+str kicker, str title, str url (http/https), str description (Markdown), str footer
+[flags & 2] u32 position_ms, u32 total_ms (0 = live), u8 paused
+u8 n_fields (≤ 12) × (str name, str value, u8 inline)
+u8 n_buttons (≤ 5) × (u8 style: 0 neutral, 1 primary, 2 danger, 3 success,
+                      u8 icon (0–22), str label, u8 flags: 1 = disabled)
+```
+
+The app moves the progress bar by itself from the moment the message arrives
+(or was edited) until `paused`. Icons: 0 none, 1 play, 2 pause, 3 next,
+4 previous, 5 stop, 6 shuffle, 7 repeat, 8 volume up, 9 volume down, 10 list,
+11 heart, 12 music, 13 radio, 14 search, 15 plus, 16 check, 17 close, 18 link,
+19 join, 20 trash, 21 star, 22 dice.
+
+**Editing** (`chat_edit`): only the author, on a message still in the history
+of the channel they're in (or a private one of theirs), at most once every
+200 ms (faster is ignored). It goes to whoever is in that channel (or to the
+two in the private conversation).
+
+**Clicks** (`embed_action`): on a card visible to whoever clicked, not their
+own, at most once every 120 ms per person. Only the author gets it; nobody
+else sees the click. A bot learns where whoever clicked is, and where whoever
+wrote to it is (in `chat`, also in private): that's how `/msg Bot !join`
+works from any channel.
 
 ### Browser
 

@@ -5,6 +5,7 @@ const gl = @import("gl.zig");
 const sync = @import("sync.zig");
 const config = @import("config.zig");
 const client_mod = @import("client.zig");
+const embed_mod = @import("embed.zig");
 const Client = client_mod.Client;
 const View = client_mod.View;
 const Member = client_mod.Member;
@@ -111,6 +112,23 @@ const room_log_saved = "saved";
 const via_clique = "clique";
 
 const ic = struct {
+    // botões de cartão (embed_mod.Icon)
+    const play = &iconArr(0xF04B);
+    const pause = &iconArr(0xF04C);
+    const forward_step = &iconArr(0xF051);
+    const backward_step = &iconArr(0xF048);
+    const shuffle = &iconArr(0xF074);
+    const repeat = &iconArr(0xF363);
+    const volume_low = &iconArr(0xF027);
+    const list = &iconArr(0xF03A);
+    const heart = &iconArr(0xF004);
+    const music = &iconArr(0xF001);
+    const radio = &iconArr(0xF8D7);
+    const search = &iconArr(0xF002);
+    const check = &iconArr(0xF00C);
+    const trash = &iconArr(0xF1F8);
+    const star = &iconArr(0xF005);
+    const dice = &iconArr(0xF522);
     const reply = &iconArr(0xF3E5);
     const paperclip = &iconArr(0xF0C6);
     const file = &iconArr(0xF15B);
@@ -845,6 +863,7 @@ pub const App = struct {
     debug_size_at: f64 = -10,
     debug_sent_via: debuglog.Method = .gofile, // por onde foi o último envio
     chat_h: std.AutoHashMapUnmanaged(u32, ChatH) = .empty, // altura medida de cada mensagem do chat
+    chat_edits_seen: u32 = 0, // client.chat_edits da última vez (mudou: mede de novo)
 
     share_modal: bool = false,
     sources: [48]c.cap_source = undefined, // monitores e, no Windows, janelas
@@ -6698,6 +6717,235 @@ pub const App = struct {
         c.ImDrawList_AddImageRounded(drawList(), .{ ._TexData = null, ._TexID = e.tex }, p, v2(p.x + w, p.y + h), v2(0, 0), v2(1, 1), 0xFFFFFFFF, S(6) * col.round, 0);
     }
 
+    /// O ícone de um botão de cartão.
+    fn embedIcon(i: embed_mod.Icon) []const u8 {
+        return switch (i) {
+            .play => ic.play,
+            .pause => ic.pause,
+            .next => ic.forward_step,
+            .previous => ic.backward_step,
+            .stop => ic.stop,
+            .shuffle => ic.shuffle,
+            .repeat => ic.repeat,
+            .volume_up => ic.volume,
+            .volume_down => ic.volume_low,
+            .list => ic.list,
+            .heart => ic.heart,
+            .music => ic.music,
+            .radio => ic.radio,
+            .search => ic.search,
+            .plus => ic.plus,
+            .check => ic.check,
+            .close => ic.xmark,
+            .link => ic.link,
+            .join => ic.headphones,
+            .trash => ic.trash,
+            .star => ic.star,
+            .dice => ic.dice,
+            else => "",
+        };
+    }
+
+    /// "3:07", "1:02:45".
+    fn fmtDuration(ms: u32, buf: []u8) []const u8 {
+        const s = ms / 1000;
+        if (s >= 3600) return std.fmt.bufPrint(buf, "{d}:{d:0>2}:{d:0>2}", .{ s / 3600, (s / 60) % 60, s % 60 }) catch "";
+        return std.fmt.bufPrint(buf, "{d}:{d:0>2}", .{ s / 60, s % 60 }) catch "";
+    }
+
+    /// Cartão de bot (embed): barra de cor, capa, título com link, descrição
+    /// em markdown, campos, barra de progresso que anda sozinha e botões que
+    /// mandam o clique pro bot. O texto da mensagem fica só pra app antigo.
+    fn drawEmbed(a: *App, cl: *Client, line: *const client_mod.ChatLine, e: *const embed_mod.Embed, max_w: f32) void {
+        const d = drawList();
+        const p0 = c.igGetCursorScreenPos();
+        const w = @max(S(220), @min(max_w, S(520)));
+        const pad = S(14);
+        const accent = if (e.color != 0) rgbRuntime(@intCast(e.color & 0xFFFFFF)) else col.blurple;
+        const img_in_card = e.flags & (embed_mod.flag_thumb | embed_mod.flag_big_image) != 0;
+        const tex: ?*ImgTex = if (line.img != null and img_in_card) a.chatImageTex(line) else null;
+        const thumb: f32 = if (e.hasThumb() and tex != null) S(88) else 0;
+        const left = p0.x + S(4) + pad; // depois da barra de cor
+        const right = p0.x + w - pad;
+        const text_right = if (thumb > 0) right - thumb - S(12) else right;
+        var y = p0.y + pad - S(2);
+        var nb: [256]u8 = undefined;
+
+        if (e.kicker.len > 0) {
+            const k = ellipsizeMiddle(font_bold, 10.5, e.kicker, text_right - left, &nb);
+            drawTextF(d, font_bold, 10.5, v2(left, y), accent, k);
+            y += S(17);
+        }
+        if (e.title.len > 0) {
+            const t = ellipsizeMiddle(font_semibold, 16, e.title, text_right - left, &nb);
+            const ts = textSizeF(font_semibold, 16, t);
+            var title_col = col.header;
+            if (e.url.len > 0) {
+                c.igSetCursorScreenPos(v2(left, y));
+                c.igSetNextItemAllowOverlap();
+                if (c.igInvisibleButton(fmtZ("##et{d}", .{line.id}).ptr, v2(@max(1, ts.x), ts.y), 0)) _ = openPath(e.url);
+                if (c.igIsItemHovered(0)) {
+                    c.igSetMouseCursor(c.ImGuiMouseCursor_Hand);
+                    title_col = accent;
+                    c.ImDrawList_AddLine(d, v2(left, y + ts.y), v2(left + ts.x, y + ts.y), accent, S(1), 0);
+                    var ub: [300]u8 = undefined;
+                    tooltipText(std.fmt.bufPrintZ(&ub, "{s}", .{e.url[0..@min(e.url.len, 280)]}) catch "");
+                }
+            }
+            drawTextF(d, font_semibold, 16, v2(left, y), title_col, t);
+            y += ts.y + S(5);
+        }
+        if (e.description.len > 0) {
+            noteEmoji(e.description);
+            c.igSetCursorScreenPos(v2(left, y));
+            a.drawRichText(e.description, text_right, line.id ^ 0x7E1A_0000);
+            y = c.igGetCursorScreenPos().y + S(2);
+        }
+        // capa no canto (a imagem da mensagem)
+        const thumb_top = p0.y + pad;
+        if (thumb > 0) if (tex) |t| {
+            const iw: f32 = @floatFromInt(t.w);
+            const ih: f32 = @floatFromInt(t.h);
+            // corta pro quadrado (o centro da imagem)
+            const side = @min(iw, ih);
+            const uv_x = (iw - side) / 2 / iw;
+            const uv_y = (ih - side) / 2 / ih;
+            const tx = right - thumb;
+            if (t.tex != 0) {
+                c.ImDrawList_AddImageRounded(d, .{ ._TexData = null, ._TexID = t.tex }, v2(tx, thumb_top), v2(tx + thumb, thumb_top + thumb), v2(uv_x, uv_y), v2(1 - uv_x, 1 - uv_y), 0xFFFFFFFF, S(8) * col.round, 0);
+                c.ImDrawList_AddRect(d, v2(tx, thumb_top), v2(tx + thumb, thumb_top + thumb), withAlpha(accent, 90), S(8) * col.round, S(1), 0);
+            } else rectFill(d, tx, thumb_top, tx + thumb, thumb_top + thumb, withAlpha(col.text, 18), S(8));
+            y = @max(y, thumb_top + thumb + S(4));
+        };
+        // campos: os "inline" lado a lado (até 3 por linha), os outros na largura toda
+        if (e.n_fields > 0) {
+            y += S(6);
+            const cols: usize = if (right - left < S(300)) 2 else 3;
+            const gap = S(14);
+            const col_w = (right - left - gap * @as(f32, @floatFromInt(cols - 1))) / @as(f32, @floatFromInt(cols));
+            const lh = textSizeF(font_regular, 13.5, "Ag").y;
+            var ci: usize = 0;
+            var row_bottom = y;
+            for (e.fieldSlice()) |f| {
+                if (!f.inline_ or ci == cols) {
+                    if (ci > 0) {
+                        y = row_bottom + S(8);
+                        ci = 0;
+                    }
+                }
+                const fw = if (f.inline_) col_w else right - left;
+                const fx = left + @as(f32, @floatFromInt(ci)) * (col_w + gap);
+                drawTextF(d, font_bold, 10.5, v2(fx, y), col.muted, ellipsizeMiddle(font_bold, 10.5, f.name, fw, &nb));
+                noteEmoji(f.value);
+                const vb = richInline(d, f.value, fx, fx + fw, y + S(16), 13.5, lh);
+                row_bottom = @max(row_bottom, vb);
+                if (f.inline_) ci += 1 else {
+                    y = row_bottom + S(8);
+                    ci = 0;
+                }
+            }
+            if (ci > 0) y = row_bottom + S(8);
+        }
+        // imagem grande, embaixo
+        if (!e.hasThumb() and e.flags & embed_mod.flag_big_image != 0) if (tex) |t| {
+            y += S(6);
+            const iw: f32 = @floatFromInt(t.w);
+            const ih: f32 = @floatFromInt(t.h);
+            const sc = @min((right - left) / iw, S(300) / ih);
+            if (t.tex != 0) c.ImDrawList_AddImageRounded(d, .{ ._TexData = null, ._TexID = t.tex }, v2(left, y), v2(left + iw * sc, y + ih * sc), v2(0, 0), v2(1, 1), 0xFFFFFFFF, S(6) * col.round, 0);
+            y += ih * sc + S(4);
+        };
+        // progresso: anda sozinho a partir de quando chegou (o bot só edita quando muda)
+        if (e.hasProgress()) {
+            y += S(8);
+            const now = sync.nowMs();
+            const pos = e.positionMs(now);
+            var tb: [24]u8 = undefined;
+            var tb2: [24]u8 = undefined;
+            const t_left = fmtDuration(pos, &tb);
+            const live = e.total_ms == 0;
+            const t_right = if (live) tr("AO VIVO") else fmtDuration(e.total_ms, &tb2);
+            const mono = fonts_mono.regular;
+            const lw = textSizeF(mono, 11.5, t_left).x;
+            const rw = textSizeF(mono, 11.5, t_right).x;
+            const by = y + S(7);
+            const bx0 = left + lw + S(10);
+            const bx1 = right - rw - S(10);
+            drawTextF(d, mono, 11.5, v2(left, y), if (e.paused) col.faint else col.text, t_left);
+            drawTextF(d, mono, 11.5, v2(right - rw, y), if (live) col.red else col.muted, t_right);
+            rectFill(d, bx0, by - S(2), bx1, by + S(2), withAlpha(col.text, 34), S(2));
+            const frac: f32 = if (live) 1 else @min(1, @as(f32, @floatFromInt(pos)) / @as(f32, @floatFromInt(@max(1, e.total_ms))));
+            const fx = bx0 + (bx1 - bx0) * frac;
+            const fill = if (live) withAlpha(col.red, 160) else if (e.paused) withAlpha(accent, 130) else accent;
+            rectFill(d, bx0, by - S(2), fx, by + S(2), fill, S(2));
+            if (!live) {
+                c.ImDrawList_AddCircleFilled(d, v2(fx, by), S(8), withAlpha(accent, 50), 0);
+                c.ImDrawList_AddCircleFilled(d, v2(fx, by), S(5), if (e.paused) col.muted else accent, 0);
+            }
+            y += S(20);
+            // anda sozinha: só pede outro quadro enquanto o cartão aparece e está tocando
+            if (!e.paused and !live and pos < e.total_ms) redrawIn(0.5);
+        }
+        // botões
+        if (e.n_buttons > 0) {
+            y += S(10);
+            const bh = S(32);
+            var bx = left;
+            for (e.buttonSlice(), 0..) |btn, i| {
+                const glyph = embedIcon(btn.icon);
+                const gw = if (glyph.len > 0) textSizeF(font_regular, 13, glyph).x else 0;
+                const lw = if (btn.label.len > 0) textSizeF(font_semibold, 13, btn.label).x else 0;
+                const bw = @max(bh, gw + lw + (if (glyph.len > 0 and btn.label.len > 0) S(8) else 0) + S(26));
+                if (bx + bw > right + S(1) and bx > left) {
+                    bx = left;
+                    y += bh + S(8);
+                }
+                c.igSetCursorScreenPos(v2(bx, y));
+                c.igSetNextItemAllowOverlap();
+                const clicked = c.igInvisibleButton(fmtZ("##eb{d}_{d}", .{ line.id, i }).ptr, v2(bw, bh), 0);
+                const hov = c.igIsItemHovered(0) and !btn.disabled;
+                const held = c.igIsItemActive() and !btn.disabled;
+                const base = switch (btn.style) {
+                    .primary => accent,
+                    .danger => col.red,
+                    .success => col.green,
+                    else => withAlpha(col.text, 26),
+                };
+                const neutral = btn.style != .primary and btn.style != .danger and btn.style != .success;
+                const fillc = if (btn.disabled) withAlpha(base, 70) else if (held) withAlpha(base, if (neutral) 70 else 200) else if (hov) withAlpha(base, if (neutral) 48 else 235) else base;
+                rectFill(d, bx, y, bx + bw, y + bh, fillc, bh / 2);
+                if (hov and !neutral) c.ImDrawList_AddRect(d, v2(bx - S(1), y - S(1)), v2(bx + bw + S(1), y + bh + S(1)), withAlpha(base, 90), bh / 2, S(2), 0);
+                const fg = if (btn.disabled) col.faint else if (neutral) col.text else theme.textOn(base);
+                var tx = bx + (bw - gw - lw - (if (glyph.len > 0 and btn.label.len > 0) S(8) else 0)) / 2;
+                if (glyph.len > 0) {
+                    drawTextF(d, font_regular, 13, v2(tx, y + (bh - S(15)) / 2), fg, glyph);
+                    tx += gw + (if (btn.label.len > 0) S(8) else 0);
+                }
+                if (btn.label.len > 0) drawTextF(d, font_semibold, 13, v2(tx, y + (bh - S(16)) / 2), fg, btn.label);
+                if (hov) c.igSetMouseCursor(c.ImGuiMouseCursor_Hand);
+                if (clicked and !btn.disabled) cl.sendEmbedAction(line.id, @intCast(i));
+                bx += bw + S(8);
+            }
+            y += bh;
+        }
+        if (e.footer.len > 0) {
+            y += S(10);
+            noteEmoji(e.footer);
+            drawTextF(d, font_regular, 11.5, v2(left, y), col.faint, ellipsizeMiddle(font_regular, 11.5, e.footer, right - left, &nb));
+            y += S(15);
+        }
+        y += pad - S(2);
+        // o fundo, por baixo do que já foi desenhado (canal 0 do chat)
+        c.ImDrawList_ChannelsSetCurrent(d, 0);
+        rectFill(d, p0.x, p0.y, p0.x + w, y, col.bg_side, S(10));
+        c.ImDrawList_AddRect(d, v2(p0.x, p0.y), v2(p0.x + w, y), withAlpha(accent, 55), S(10) * col.round, S(1), 0);
+        rectFill(d, p0.x, p0.y, p0.x + S(4), y, accent, S(10));
+        rectFill(d, p0.x + S(2), p0.y, p0.x + S(4), y, accent, 0);
+        c.ImDrawList_ChannelsSetCurrent(d, 1);
+        c.igSetCursorScreenPos(p0);
+        c.igDummy(v2(w, y - p0.y));
+    }
+
     fn pickMention(a: *App, i: usize) void {
         const n = a.mention_sugg_len[i];
         @memcpy(a.mention_apply[0..n], a.mention_sugg[i][0..n]);
@@ -6925,6 +7173,11 @@ pub const App = struct {
         cl.mutex.lock();
         const count = cl.chat_count;
         const me = cl.my_id;
+        // mensagem editada (cartão de bot mudou): mede tudo de novo
+        if (cl.chat_edits != a.chat_edits_seen) {
+            a.chat_edits_seen = cl.chat_edits;
+            a.chat_h.clearRetainingCapacity();
+        }
         var my_name_buf: [48]u8 = undefined;
         var my_name: []const u8 = "";
         for (cl.members.items) |*m| {
@@ -7043,7 +7296,12 @@ pub const App = struct {
                 c.igDummy(v2(1, S(20)));
                 c.igSetCursorScreenPos(v2(left, c.igGetCursorScreenPos().y));
             }
-            if (line.file_id != 0) {
+            const img_in_card = if (line.embed) |em| em.flags & (embed_mod.flag_thumb | embed_mod.flag_big_image) != 0 else false;
+            if (line.embed) |em| {
+                c.igDummy(v2(0, S(2)));
+                c.igSetCursorScreenPos(v2(left, c.igGetCursorScreenPos().y));
+                a.drawEmbed(cl, line, em, size.x - S(48) - S(36));
+            } else if (line.file_id != 0) {
                 a.drawFileCard(cl, line, size.x - S(48) - S(36));
             } else if (text.len > 0 and markdown.hasMarkup(text)) {
                 a.drawRichText(text, c.igGetWindowPos().x + size.x - S(18), line.id);
@@ -7054,10 +7312,10 @@ pub const App = struct {
                 popFont();
                 c.igPopTextWrapPos();
             }
-            if (line.img != null) {
+            if (line.img != null and !img_in_card) {
                 if (text.len > 0) c.igSetCursorScreenPos(v2(left, c.igGetCursorScreenPos().y + S(2)));
                 a.drawChatLineImage(line, size.x - S(48) - S(36));
-            } else if (line.img_expired) {
+            } else if (line.img_expired and line.embed == null) {
                 pushFont(font_regular, 13);
                 textColored(col.faint, fmtZ("{s}  imagem antiga (não está mais guardada na sala)", .{ic.image}));
                 popFont();
@@ -9287,6 +9545,9 @@ pub const App = struct {
                 const ready = for (a.img_cache) |e| {
                     if (e.id == l.id and e.tex != 0) break true;
                 } else false;
+                if (l.embed) |em| {
+                    try w.print(",\"embed\":{{\"title\":{f},\"kicker\":{f},\"buttons\":{d},\"fields\":{d},\"progress\":{},\"paused\":{},\"position_ms\":{d}}}", .{ s(em.title), s(em.kicker), em.n_buttons, em.n_fields, em.hasProgress(), em.paused, em.positionMs(sync.nowMs()) });
+                } else try w.writeAll(",\"embed\":null");
                 try w.print(",\"img\":{},\"img_w\":{d},\"img_h\":{d},\"img_bytes\":{d},\"img_ready\":{},\"img_expired\":{},\"reacts\":[", .{ l.img != null, l.img_w, l.img_h, if (l.img) |im| im.len else 0, ready, l.img_expired });
                 for (0..proto.reactions) |e| {
                     if (e > 0) try w.writeByte(',');

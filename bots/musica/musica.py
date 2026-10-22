@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""Bot de música do telinha: toca na call da sala.
+"""Music bot for telinha: plays in the room's call, with live cards.
 
-    python3 musica.py "telinha://sala.exemplo:7777#senha" --pasta ~/Música
+    python3 musica.py "telinha://room.example:7777#password" --folder ~/Music
 
-Toca músicas de uma pasta, arquivos mandados na sala (responda o arquivo com
-!tocar), rádios de uma lista e, se você deixar (--links), links diretos de
-áudio. Quem está na call ouve; cada um ajusta o volume do bot como o de
-qualquer pessoa (clique direito no nome).
+Plays songs from a folder, files sent in the room (reply to the file with
+!play), radios from a list, links (YouTube, SoundCloud, Bandcamp and anything
+yt-dlp opens; Spotify, Deezer, Apple Music and Tidal become a search by name) and
+text searches. The "now playing" card has a progress bar that moves by
+itself and buttons (pause, skip, stop, shuffle, loop) that work for anyone.
 
-Comandos (no chat): !tocar, !fila, !pular, !pausar, !continuar, !parar,
-!volume, !tocando, !lista, !radios, !aleatorio, !repetir, !vem, !ajuda.
-Guia: https://rshacudevidro.github.io/telinha/docs/bots-music/
+Commands: !play, !search, !queue, !skip, !pause, !resume, !stop, !volume,
+!np, !loop, !shuffle, !remove, !clear, !radios, !list, !join, !leave, !help.
+Portuguese aliases work too (!tocar, !fila, !pular...). From any channel:
+/msg Música !join (the bot comes to your call).
+Guide: https://rshacudevidro.github.io/telinha/en/docs/bots-music/
 """
 from __future__ import annotations
 
@@ -21,70 +24,56 @@ import os
 import random
 import sys
 import tempfile
-import unicodedata
 from collections import OrderedDict
-from dataclasses import dataclass
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[1] / "sdk" / "python"))  # rodando de dentro do repositório
 
-from telinha import Bot, Context, Denied, FileInfo, Message, Player  # noqa: E402
+from sources import Resolver, Track, fold, nice_source  # noqa: E402
+from telinha import Bot, Click, CommandError, Context, Denied, Embed, FileInfo, Icon, Message, Player  # noqa: E402
+from telinha.image import ImageError, encode as encode_image  # noqa: E402
 
 log = logging.getLogger("musica")
 
-AUDIO_EXT = {".mp3", ".flac", ".ogg", ".opus", ".m4a", ".aac", ".wav", ".wma", ".webm", ".mka", ".aiff", ".alac"}
-SHOW = 10  # itens nas listas do chat
+ACCENT = 0xD946EF  # fúcsia do pwnd
+ACCENT_PAUSED = 0x9333EA
+ACCENT_RADIO = 0x06B6D4
+ACCENT_INFO = 0x7C3AED
+SHOW = 10
 
 
-@dataclass
-class Track:
-    title: str
-    source: str  # caminho, url ou arquivo baixado da sala
-    asked_by: str
-    temp: bool = False  # arquivo da sala baixado: apagar depois de tocar
-
-
-def fold(s: str) -> str:
-    """Pra busca: minúsculas e sem acento."""
-    return "".join(c for c in unicodedata.normalize("NFD", s.casefold()) if unicodedata.category(c) != "Mn")
-
-
-def human(seconds: float) -> str:
-    s = int(seconds)
-    return f"{s // 60}:{s % 60:02d}"
+def human(ms: int) -> str:
+    s = max(0, int(ms // 1000))
+    return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
 
 
 class MusicBot(Bot):
-    def __init__(self, invite: str, name: str, *, folder: Path | None, radios: dict[str, str], allow_links: bool,
-                 volume: float, **kw):
-        super().__init__(invite, name, **kw)
-        self.folder = folder
-        self.radios = radios
-        self.allow_links = allow_links
+    def __init__(self, invite: str, name: str, *, resolver: Resolver, volume: float, **kw):
+        super().__init__(invite, name, help_command=None, lang="en", **kw)
+        self.src = resolver
         self.player = Player(self)
         self.player.volume = volume
         self.queue: list[Track] = []
         self.current: Track | None = None
         self.shuffle = False
-        self.repeat = "nada"  # nada | uma | fila
-        self.recent_files: OrderedDict[int, FileInfo] = OrderedDict()  # arquivos que apareceram no chat
+        self.loop = "off"  # off | one | all
+        self.card: Message | None = None  # o "now playing" (editado quando o estado muda)
+        self.recent_files: OrderedDict[int, FileInfo] = OrderedDict()
         self.tmp = tempfile.TemporaryDirectory(prefix="telinha-musica-")
-        self._wake = asyncio.Event()
-        self._library: list[Path] = []
+        self._wake: asyncio.Event | None = None
+        self._loop_task: asyncio.Task | None = None
         self.on("message")(self._remember_file)
         self.on("ready")(self._on_ready)
         self._register()
 
-    # ---------------------------------------------------------------- biblioteca
-    def library(self) -> list[Path]:
-        if self.folder and not self._library:
-            self._library = sorted(p for p in self.folder.rglob("*") if p.suffix.lower() in AUDIO_EXT and p.is_file())
-        return self._library
-
-    def search(self, query: str) -> list[Path]:
-        words = fold(query).split()
-        return [p for p in self.library() if all(w in fold(str(p.relative_to(self.folder))) for w in words)]
+    # ---------------------------------------------------------------- base
+    @property
+    def wake(self) -> asyncio.Event:
+        if self._wake is None:
+            self._wake = asyncio.Event()
+        return self._wake
 
     async def _remember_file(self, msg: Message) -> None:
         if msg.file:
@@ -93,180 +82,370 @@ class MusicBot(Bot):
                 self.recent_files.popitem(last=False)
 
     async def _on_ready(self, _welcome) -> None:
-        if not hasattr(self, "_loop_task"):
+        if self._loop_task is None:
             self._loop_task = asyncio.create_task(self._play_loop())
+
+    def enqueue(self, tracks: list[Track]) -> int:
+        self.queue.extend(tracks)
+        self.wake.set()
+        return len(self.queue)
 
     # ---------------------------------------------------------------- tocando
     async def _play_loop(self) -> None:
         while True:
             if not self.queue:
-                self._wake.clear()
-                await self._wake.wait()
+                self.wake.clear()
+                await self.wake.wait()
                 continue
             i = random.randrange(len(self.queue)) if self.shuffle else 0
-            track = self.queue.pop(i)
+            asked = track = self.queue.pop(i)
             self.current = track
+            done = resolved = False
             try:
-                done = await self.player.play(track.source)
-            except Exception as e:
-                log.warning("não tocou %s: %s", track.title, e)
-                await self._say(f"Não consegui tocar **{track.title}**. 😕")
-                done = False
+                # o que toca de verdade: o stream (o YouTube recusou? veio do SoundCloud),
+                # ou o arquivo com a duração e as tags
+                track = await self.src.stream(asked)
+                resolved = True
+                self.current = track
+                await self._post_card(track)
+                done = await self.player.play(track.play, headers=track.headers)
+            except Exception as e:  # noqa: BLE001
+                log.warning("couldn't play %s: %s", track.title, e)
+                # o motivo do resolver já vem em inglês; o do ffmpeg fica só no log
+                why = "." if resolved else f": {str(e)[:200]}"
+                await self._say(f"Couldn't play **{track.title}**{why}")
             finally:
                 self.current = None
-            if done and self.repeat == "uma":
-                self.queue.insert(0, track)
-            elif done and self.repeat == "fila":
-                self.queue.append(track)
-            elif track.temp:
-                Path(track.source).unlink(missing_ok=True)
+            await self._close_card(track, done)
+            if done and self.loop == "one":
+                self.queue.insert(0, asked)  # o pedido (o link de stream expira)
+            elif done and self.loop == "all":
+                self.queue.append(asked)
+            elif asked.temp:
+                Path(asked.play).unlink(missing_ok=True)
 
-    async def _say(self, text: str) -> None:
+    async def _say(self, text: str, **kw) -> Message | None:
         try:
-            await self.send(text)
-        except Exception:
-            pass
+            return await self.send(text, **kw)
+        except Exception:  # noqa: BLE001 (a conexão pode ter caído)
+            return None
 
-    def enqueue(self, track: Track) -> int:
-        self.queue.append(track)
-        self._wake.set()
-        return len(self.queue)
+    # ---------------------------------------------------------------- cartões
+    def _np_embed(self, t: Track, *, closing: str = "") -> Embed:
+        paused = self.player.paused and not closing
+        e = Embed(
+            title=t.title[:200],
+            url=t.page if t.page.startswith(("http://", "https://")) else "",
+            kicker=closing or ("LIVE RADIO" if t.live else "PAUSED" if paused else "NOW PLAYING"),
+            color=ACCENT_RADIO if t.live else ACCENT_PAUSED if paused or closing else ACCENT,
+            description=(f"by **{t.artist}**" if t.artist else ""),
+            thumbnail=bool(t.thumbnail),
+            footer=f"{nice_source(t)} · volume {round(self.player.volume * 100)}%" + (" · shuffle" if self.shuffle else "") + (f" · loop {self.loop}" if self.loop != "off" else ""),
+        )
+        if not closing:
+            e.progress = (int(self.player.position * 1000), 0 if t.live else t.duration_ms)
+            e.paused = paused
+        e.add_field("Requested by", t.requested_by or "—")
+        nxt = self.queue[0].title if self.queue and not self.shuffle else (f"{len(self.queue)} in the queue (shuffle)" if self.queue else "—")
+        e.add_field("Up next", nxt[:80])
+        if not closing:
+            e.add_button("Resume" if paused else "Pause", icon=Icon.PLAY if paused else Icon.PAUSE, style="primary", on_click=self._btn_pause)
+            e.add_button("Skip", icon=Icon.NEXT, on_click=self._btn_skip, disabled=False)
+            e.add_button("Stop", icon=Icon.STOP, style="danger", on_click=self._btn_stop)
+            e.add_button("Shuffle", icon=Icon.SHUFFLE, style="success" if self.shuffle else "neutral", on_click=self._btn_shuffle)
+            e.add_button(f"Loop {self.loop}" if self.loop != "off" else "Loop", icon=Icon.REPEAT, style="success" if self.loop != "off" else "neutral", on_click=self._btn_loop)
+        return e
+
+    async def _post_card(self, t: Track) -> None:
+        img = None
+        if t.thumbnail:
+            try:
+                img = await encode_image(t.thumbnail, square=320)
+            except (ImageError, OSError) as e:
+                log.info("no cover for %s: %s", t.title, str(e)[:120])
+        emb = self._np_embed(t)
+        emb.thumbnail = img is not None
+        self.card = await self._say(f"Now playing: {t.title}" + (f" — {t.artist}" if t.artist else ""), embed=emb, image=img)
+
+    async def _refresh_card(self) -> None:
+        if self.card and self.current:
+            emb = self._np_embed(self.current)
+            emb.thumbnail = self.card.embed.thumbnail if self.card.embed else False
+            try:
+                await self.card.edit(embed=emb)
+            except Exception as e:  # noqa: BLE001
+                log.info("couldn't update the card: %s", e)
+
+    async def _close_card(self, t: Track, done: bool) -> None:
+        if not self.card:
+            return
+        emb = self._np_embed(t, closing="PLAYED" if done else "STOPPED")
+        emb.thumbnail = self.card.embed.thumbnail if self.card.embed else False
+        try:
+            await self.card.edit(f"Played: {t.title}", embed=emb)
+        except Exception as e:  # noqa: BLE001
+            log.info("couldn't close the card: %s", e)
+        self.card = None
+
+    # ---------------------------------------------------------------- botões do cartão
+    async def _btn_pause(self, click: Click) -> None:
+        if self.player.paused:
+            self.player.resume()
+        elif self.player.playing:
+            self.player.pause()
+        await self._refresh_card()
+
+    async def _btn_skip(self, click: Click) -> None:
+        if self.current:
+            await self.player.stop()
+
+    async def _btn_stop(self, click: Click) -> None:
+        self.queue.clear()
+        await self.player.stop()
+
+    async def _btn_shuffle(self, click: Click) -> None:
+        self.shuffle = not self.shuffle
+        await self._refresh_card()
+
+    async def _btn_loop(self, click: Click) -> None:
+        self.loop = {"off": "one", "one": "all", "all": "off"}[self.loop]
+        await self._refresh_card()
+
+    # ---------------------------------------------------------------- resolver um pedido
+    async def _resolve(self, ctx: Context, query: str) -> list[Track]:
+        who = ctx.message.author
+        msg = ctx.message
+        if not query and msg.quote and msg.quote.id in self.recent_files:
+            f = self.recent_files[msg.quote.id]
+            path = await self.download(f, Path(self.tmp.name) / f"{f.id}-{Path(f.name).name}")
+            return [Track(Path(f.name).stem, "room", str(path), requested_by=who, temp=True)]
+        if not query:
+            raise CommandError(f"Usage: `{self.prefix}play song name`, a link, or reply to an audio file with `{self.prefix}play`.")
+        if query.startswith(("http://", "https://")):
+            tracks = await self.src.from_url(query)
+        elif r := self.src.radio(query):
+            tracks = [r]
+        elif local := self.src.search_library(query):
+            tracks = [self.src.file_track(local[0])]
+        else:
+            tracks = (await self.src.search(query, 1))[:1]
+        if not tracks:
+            raise CommandError(f'Nothing found for "{query}".')
+        for t in tracks:
+            t.requested_by = who
+        return tracks
+
+    async def _added(self, ctx: Context, tracks: list[Track]) -> None:
+        was_idle = self.current is None and not self.queue
+        pos = self.enqueue(tracks)
+        if was_idle and len(tracks) == 1:
+            return  # o cartão do "now playing" já responde
+        t = tracks[0]
+        e = Embed(kicker="ADDED TO QUEUE", color=ACCENT_INFO, title=t.title[:200] if len(tracks) == 1 else f"{len(tracks)} tracks",
+                  url=t.page if len(tracks) == 1 and t.page.startswith("http") else "",
+                  description=(f"by **{t.artist}**" if len(tracks) == 1 and t.artist else ", ".join(x.title for x in tracks[:3])[:300]))
+        e.add_field("Position", f"#{pos - len(tracks) + 1}" if len(tracks) == 1 else f"#{pos - len(tracks) + 1}–#{pos}")
+        if len(tracks) == 1 and t.duration_ms:
+            e.add_field("Length", human(t.duration_ms))
+        e.add_field("Source", nice_source(t))
+        await ctx.reply_card(e, f"Queued: {t.title}")
 
     # ---------------------------------------------------------------- comandos
     def _register(self) -> None:
         cmd = self.command
 
-        @cmd("tocar", aliases=["play", "p"], help="toca (ou põe na fila): nome da música, rádio ou link; respondendo um arquivo da sala, toca ele")
-        async def tocar(ctx: Context, busca: str = ""):
-            msg = ctx.message
-            if not busca and msg.quote and msg.quote.id in self.recent_files:
-                f = self.recent_files[msg.quote.id]
-                if f.size > 256 * 1024 * 1024:
-                    return await ctx.reply("Arquivo grande demais.")
-                path = await self.download(f, Path(self.tmp.name) / f"{f.id}-{Path(f.name).name}")
-                return await self._added(ctx, Track(f.name, str(path), ctx.message.author, temp=True))
-            if not busca:
-                if self.player.paused:
-                    self.player.resume()
-                    return await ctx.reply("🎶 Continuando.")
-                return await ctx.reply(f"Uso: `{self.prefix}tocar nome da música` (ou responda um arquivo de áudio da sala com `{self.prefix}tocar`).")
-            if busca.startswith(("http://", "https://")):
-                if not self.allow_links:
-                    return await ctx.reply("Links estão desligados nesse bot (quem cuida dele liga com `--links`).")
-                return await self._added(ctx, Track(busca, busca, ctx.message.author))
-            radio = next((n for n in self.radios if fold(n) == fold(busca)), None)
-            if radio:
-                return await self._added(ctx, Track(f"📻 {radio}", self.radios[radio], ctx.message.author))
-            found = self.search(busca)
+        @cmd("play", aliases=["p", "tocar"], help="plays a song (name, link, radio) or queues it; reply to an audio file to play it")
+        async def play(ctx: Context, query: str = ""):
+            if not query and self.player.paused:
+                self.player.resume()
+                await self._refresh_card()
+                return
+            await self._added(ctx, await self._resolve(ctx, query))
+
+        @cmd("search", aliases=["find", "busca", "buscar"], help="shows 5 results to pick with the buttons")
+        async def search(ctx: Context, query: str):
+            found = await self.src.search(query, 5)
             if not found:
-                extra = f" Rádios: {', '.join(self.radios)}." if self.radios else ""
-                return await ctx.reply(f"Não achei nada com \"{busca}\".{extra}")
-            if len(found) > 1 and len(busca) < 3:
-                return await ctx.reply(f"Muita coisa com \"{busca}\": seja mais específico (ou `{self.prefix}lista {busca}`).")
-            p = found[0]
-            await self._added(ctx, Track(p.stem, str(p), ctx.message.author))
+                raise CommandError(f'Nothing found for "{query}".')
+            e = Embed(kicker="SEARCH", title=query[:120], color=ACCENT_INFO, footer="pick with the buttons · the card expires in 2 minutes")
+            for i, t in enumerate(found, 1):
+                e.add_field(f"{i}. {nice_source(t)}" + (f" · {human(t.duration_ms)}" if t.duration_ms else ""),
+                            f"**{t.title[:90]}**" + (f"\n{t.artist[:60]}" if t.artist else ""), inline=False)
+            sent: list[Message] = []
 
-        @cmd("fila", aliases=["queue", "q"], help="o que vem depois")
-        async def fila(ctx: Context):
-            if not self.current and not self.queue:
-                return await ctx.send("A fila está vazia.")
-            lines = []
-            if self.current:
-                lines.append(f"🎶 **{self.current.title}** · {human(self.player.position)} (pediu {self.current.asked_by})")
+            def pick(t: Track):
+                async def go(click: Click):
+                    if not sent:
+                        return
+                    t.requested_by = click.member_name
+                    pos = self.enqueue([t])
+                    done = Embed(kicker="PICKED", title=t.title[:200], url=t.page if t.page.startswith("http") else "", color=ACCENT_INFO,
+                                 description=f"{click.member_name} picked it · position #{pos}")
+                    await sent[0].edit(embed=done)
+                    sent.clear()
+                return go
+            for i, t in enumerate(found, 1):
+                e.add_button(str(i), icon=Icon.PLAY, style="primary" if i == 1 else "neutral", on_click=pick(t))
+            m = await ctx.reply_card(e, "Results for " + query)
+            if m:
+                sent.append(m)
+
+                async def expire():
+                    await asyncio.sleep(120)
+                    if sent:
+                        await m.edit(embed=Embed(kicker="SEARCH", title=query[:120], color=ACCENT_INFO, description="This search expired."))
+                        sent.clear()
+                asyncio.create_task(expire())
+
+        @cmd("queue", aliases=["q", "fila"], help="what's playing and what's next")
+        async def queue(ctx: Context):
+            e = Embed(kicker="QUEUE", color=ACCENT_INFO, title=self.current.title[:200] if self.current else "Nothing playing",
+                      description=(f"now · {human(int(self.player.position * 1000))}" + (f" / {human(self.current.duration_ms)}" if self.current and self.current.duration_ms else "")) if self.current else "")
             for i, t in enumerate(self.queue[:SHOW], 1):
-                lines.append(f"{i}. {t.title} (pediu {t.asked_by})")
-            if len(self.queue) > SHOW:
-                lines.append(f"… e mais {len(self.queue) - SHOW}")
-            flags = [x for x in ("🔀 aleatório" if self.shuffle else "", f"🔁 repetindo {self.repeat}" if self.repeat != "nada" else "") if x]
-            if flags:
-                lines.append(" · ".join(flags))
-            await ctx.send("\n".join(lines))
+                e.add_field(f"{i}. " + (human(t.duration_ms) if t.duration_ms else nice_source(t)), f"{t.title[:80]}\n*{t.requested_by}*", inline=False)
+            extra = len(self.queue) - SHOW
+            e.footer = (f"+{extra} more · " if extra > 0 else "") + f"{len(self.queue)} in the queue" + (" · shuffle" if self.shuffle else "") + (f" · loop {self.loop}" if self.loop != "off" else "")
+            await ctx.reply_card(e, f"{len(self.queue)} in the queue")
 
-        @cmd("pular", aliases=["skip", "s"], help="pula pra próxima")
-        async def pular(ctx: Context):
+        @cmd("skip", aliases=["s", "next", "pular"], help="skips to the next one")
+        async def skip(ctx: Context):
             if not self.current:
-                return await ctx.reply("Não está tocando nada.")
-            title = self.current.title
+                raise CommandError("Nothing is playing.")
             await self.player.stop()
-            await ctx.send(f"👋 Pulou **{title}**.")
 
-        @cmd("pausar", aliases=["pause"], help="pausa")
-        async def pausar(ctx: Context):
-            if self.player.playing:
+        @cmd("pause", aliases=["pausar"], help="pauses")
+        async def pause(ctx: Context):
+            if self.player.playing and not self.player.paused:
                 self.player.pause()
-                await ctx.send("😴 Pausado.")
+                await self._refresh_card()
 
-        @cmd("continuar", aliases=["resume"], help="continua de onde pausou")
-        async def continuar(ctx: Context):
+        @cmd("resume", aliases=["unpause", "continuar"], help="resumes")
+        async def resume(ctx: Context):
             if self.player.paused:
                 self.player.resume()
-                await ctx.send("🎶 Continuando.")
+                await self._refresh_card()
 
-        @cmd("parar", aliases=["stop"], help="para e limpa a fila")
-        async def parar(ctx: Context):
+        @cmd("stop", aliases=["parar"], help="stops and clears the queue")
+        async def stop(ctx: Context):
             self.queue.clear()
             await self.player.stop()
-            await ctx.send("🛑 Parei e limpei a fila.")
 
-        @cmd("volume", aliases=["vol", "v"], help="volume de 0 a 200 (pra todo mundo; cada um também ajusta o seu no app)")
-        async def volume(ctx: Context, quanto: int = -1):
-            if quanto < 0:
-                return await ctx.send(f"🔊 Volume: {round(self.player.volume * 100)}")
-            self.player.set_volume(min(quanto, 200) / 100)
-            await ctx.send(f"🔊 Volume: {round(self.player.volume * 100)}")
+        @cmd("volume", aliases=["vol", "v"], help="volume for everyone, 0 to 200 (each person can also set their own)")
+        async def volume(ctx: Context, amount: int = -1):
+            if amount >= 0:
+                self.player.set_volume(min(amount, 200) / 100)
+                await self._refresh_card()
+            await ctx.send(f"Volume: {round(self.player.volume * 100)}%")
 
-        @cmd("tocando", aliases=["np", "agora"], help="o que está tocando")
-        async def tocando(ctx: Context):
+        @cmd("np", aliases=["nowplaying", "now", "tocando"], help="shows the now playing card again")
+        async def np(ctx: Context):
             if not self.current:
-                return await ctx.send("Não está tocando nada.")
-            state = "😴" if self.player.paused else "🎶"
-            await ctx.send(f"{state} **{self.current.title}** · {human(self.player.position)} (pediu {self.current.asked_by})")
+                raise CommandError("Nothing is playing.")
+            old = self.card
+            await self._post_card(self.current)
+            if old:
+                try:
+                    await old.edit(f"Played: {self.current.title}", embed=self._np_embed(self.current, closing="MOVED DOWN"))
+                except Exception:  # noqa: BLE001
+                    pass
 
-        @cmd("lista", aliases=["list", "busca"], help="lista as músicas da pasta (com um filtro, se quiser)")
-        async def lista(ctx: Context, filtro: str = ""):
-            if not self.folder:
-                return await ctx.reply("Esse bot não tem pasta de músicas.")
-            found = self.search(filtro) if filtro else self.library()
-            if not found:
-                return await ctx.reply("Nada por aqui.")
-            lines = [f"• {p.stem}" for p in found[:SHOW * 2]]
-            if len(found) > SHOW * 2:
-                lines.append(f"… e mais {len(found) - SHOW * 2} (filtre: `{self.prefix}lista palavra`)")
-            await ctx.send(f"🎵 **{len(found)} músicas**\n" + "\n".join(lines))
+        @cmd("loop", aliases=["repeat", "repetir"], help="loop: off, one (the current song) or all (the queue)")
+        async def loop(ctx: Context, mode: str = ""):
+            m = fold(mode)
+            m = {"nada": "off", "uma": "one", "fila": "all", "single": "one", "queue": "all"}.get(m, m)
+            self.loop = m if m in ("off", "one", "all") else {"off": "one", "one": "all", "all": "off"}[self.loop]
+            await self._refresh_card()
+            await ctx.send(f"Loop: {self.loop}")
 
-        @cmd("radios", aliases=["rádios", "radio"], help="as rádios que dá pra tocar")
-        async def radios(ctx: Context):
-            if not self.radios:
-                return await ctx.send("Nenhuma rádio configurada.")
-            await ctx.send("📻 " + ", ".join(f"`{n}`" for n in self.radios) + f"\n`{self.prefix}tocar nome-da-rádio`")
-
-        @cmd("aleatorio", aliases=["aleatório", "shuffle"], help="liga/desliga a ordem aleatória da fila")
-        async def aleatorio(ctx: Context):
+        @cmd("shuffle", aliases=["aleatorio", "aleatório"], help="turns shuffle on/off")
+        async def shuffle(ctx: Context):
             self.shuffle = not self.shuffle
-            await ctx.send("🔀 Aleatório ligado." if self.shuffle else "Aleatório desligado.")
+            await self._refresh_card()
+            await ctx.send("Shuffle on." if self.shuffle else "Shuffle off.")
 
-        @cmd("repetir", aliases=["repeat", "loop"], help="repetir: nada, uma (a atual) ou fila")
-        async def repetir(ctx: Context, modo: str = ""):
-            modos = ["nada", "uma", "fila"]
-            m = fold(modo)
-            self.repeat = m if m in modos else modos[(modos.index(self.repeat) + 1) % 3]
-            await ctx.send(f"🔁 Repetindo: {self.repeat}.")
+        @cmd("remove", aliases=["rm", "remover"], help="removes a song from the queue by its number")
+        async def remove(ctx: Context, number: int):
+            if not 1 <= number <= len(self.queue):
+                raise CommandError(f"The queue has {len(self.queue)} songs.")
+            t = self.queue.pop(number - 1)
+            await ctx.send(f"Removed: {t.title}")
 
-        @cmd("vem", aliases=["join", "entra"], help="o bot entra na call deste canal")
-        async def vem(ctx: Context):
-            await self.join_call(self.channel)
-            await ctx.send(f"Tô na call do #{self.channel}. 🎧")
+        @cmd("clear", aliases=["limpar"], help="clears the queue (the current song keeps playing)")
+        async def clear(ctx: Context):
+            self.queue.clear()
+            await self._refresh_card()
+            await ctx.send("Queue cleared.")
 
-    async def _added(self, ctx: Context, track: Track) -> None:
-        pos = self.enqueue(track)
-        if not self.current and pos == 1:
-            await ctx.reply(f"🎶 Tocando **{track.title}**.")
-        else:
-            await ctx.reply(f"Na fila ({pos}º): **{track.title}**.")
+        @cmd("radios", aliases=["radio", "rádios", "rádio"], help="the radios, or plays one: !radio name")
+        async def radios(ctx: Context, name: str = ""):
+            if name:
+                r = self.src.radio(name)
+                if not r:
+                    raise CommandError(f'No radio called "{name}". Try `{self.prefix}radios`.')
+                r.requested_by = ctx.message.author
+                return await self._added(ctx, [r])
+            if not self.src.radios:
+                raise CommandError("No radios configured.")
+            e = Embed(kicker="RADIOS", title="Live radios", color=ACCENT_RADIO, description=f"`{self.prefix}radio name` or a button below")
+            names = list(self.src.radios)
+            for n in names:
+                e.add_field(n, "live", inline=True)
+
+            def start(n: str):
+                async def go(click: Click):
+                    r = self.src.radio(n)
+                    r.requested_by = click.member_name
+                    self.enqueue([r])
+                return go
+            for n in names[:5]:
+                e.add_button(n, icon=Icon.RADIO, on_click=start(n))
+            await ctx.reply_card(e, "Radios: " + ", ".join(names))
+
+        @cmd("list", aliases=["library", "lista"], help="lists the songs in the bot's folder (with a filter)")
+        async def library(ctx: Context, word: str = ""):
+            if not self.src.folder:
+                raise CommandError("This bot has no music folder.")
+            found = self.src.search_library(word) if word else self.src.library()
+            if not found:
+                raise CommandError("Nothing here.")
+            e = Embed(kicker="LIBRARY", title=f"{len(found)} songs", color=ACCENT_INFO,
+                      description="\n".join(f"• {p.stem}" for p in found[:20]) + (f"\n… and {len(found) - 20} more" if len(found) > 20 else ""))
+            await ctx.reply_card(e, f"{len(found)} songs")
+
+        @cmd("join", aliases=["vem", "entra", "come"], help="joins a channel's call: !join name, or from any channel /msg the bot !join")
+        async def join(ctx: Context, channel: str = ""):
+            target = channel.lstrip("#") or ctx.message.author_call or ctx.message.author_channel or self.channel
+            await self.join_channel(target)
+            await self.join_call(target)
+            for _ in range(30):
+                if self.call == target:
+                    break
+                await asyncio.sleep(0.1)
+            if self.call != target:
+                raise CommandError(f"Couldn't join #{target} (it may have a password or be locked).")
+            await ctx.send(f"Joined the call in #{target}.")
+
+        @cmd("leave", aliases=["sair"], help="leaves the call (the queue stops)")
+        async def leave(ctx: Context):
+            self.queue.clear()
+            await self.player.stop()
+            await self.leave_call()
+            await ctx.send("Left the call.")
+
+        @cmd("help", aliases=["ajuda", "commands", "comandos"], help="this card")
+        async def help_(ctx: Context):
+            p = self.prefix
+            e = Embed(kicker="MUSIC BOT", title="Commands", color=ACCENT, description=f"From any channel: `/msg {self.name} {p}join` brings the bot to your call.")
+            e.add_field("Play", f"`{p}play name or link`\n`{p}search name`\n`{p}radio name`", inline=True)
+            e.add_field("Control", f"`{p}pause` `{p}resume`\n`{p}skip` `{p}stop`\n`{p}volume 80`", inline=True)
+            e.add_field("Queue", f"`{p}queue` `{p}np`\n`{p}loop` `{p}shuffle`\n`{p}remove 2` `{p}clear`", inline=True)
+            e.add_field("Where", f"`{p}join [channel]` `{p}leave`\n`{p}radios` `{p}list`", inline=False)
+            e.footer = "YouTube, SoundCloud, Bandcamp links · Spotify, Deezer and Apple Music become a search · reply to an audio file with !play"
+            await ctx.reply_card(e, "Commands: " + ", ".join(sorted({c.name for c in self.commands.values()})))
 
 
 def load_radios(path: str | None) -> dict[str, str]:
-    """Arquivo com uma rádio por linha: nome = url (linhas com # são comentário)."""
+    """A file with one radio per line: name = url (# lines are comments)."""
     if not path:
         return {}
     out = {}
@@ -281,32 +460,36 @@ def load_radios(path: str | None) -> dict[str, str]:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Bot de música do telinha")
-    ap.add_argument("convite", nargs="?", default=os.environ.get("TELINHA_CONVITE"), help="telinha://... (ou $TELINHA_CONVITE)")
-    ap.add_argument("--nome", default=os.environ.get("TELINHA_BOT_NOME", "Música"))
-    ap.add_argument("--pasta", default=os.environ.get("TELINHA_MUSICAS"), help="pasta com as músicas ($TELINHA_MUSICAS)")
-    ap.add_argument("--radios", default=os.environ.get("TELINHA_RADIOS"), help="arquivo com 'nome = url' por linha")
-    ap.add_argument("--links", action="store_true", default=os.environ.get("TELINHA_LINKS") == "1", help="aceita links http(s) diretos de áudio")
-    ap.add_argument("--volume", type=int, default=int(os.environ.get("TELINHA_VOLUME", "70")), help="0 a 200 (padrão 70)")
-    ap.add_argument("--canal", default=None, help="canal pra entrar (senão o do convite)")
-    ap.add_argument("--token-bots", default=os.environ.get("TELINHA_TOKEN_BOTS", ""), help="se a sala pede token de bot")
-    ap.add_argument("--prefixo", default="!")
+    env = os.environ.get
+    ap = argparse.ArgumentParser(description="telinha music bot")
+    ap.add_argument("invite", nargs="?", default=env("TELINHA_CONVITE"), help="telinha://... (or $TELINHA_CONVITE)")
+    ap.add_argument("--name", "--nome", default=env("TELINHA_BOT_NOME", "Música"))
+    ap.add_argument("--folder", "--pasta", default=env("TELINHA_MUSICAS"), help="music folder ($TELINHA_MUSICAS)")
+    ap.add_argument("--radios", default=env("TELINHA_RADIOS"), help="file with 'name = url' per line")
+    ap.add_argument("--cookies", default=env("TELINHA_YT_COOKIES"), help="YouTube cookies file (Netscape format) for servers YouTube blocks")
+    ap.add_argument("--search", default=env("TELINHA_BUSCA", "youtube,soundcloud"), help="search order (default youtube,soundcloud)")
+    ap.add_argument("--volume", type=int, default=int(env("TELINHA_VOLUME", "70")), help="0 to 200 (default 70)")
+    ap.add_argument("--channel", "--canal", default=None, help="channel to join (otherwise the invite's)")
+    ap.add_argument("--bot-token", "--token-bots", default=env("TELINHA_TOKEN_BOTS", ""), help="if the room asks for a bot token")
+    ap.add_argument("--prefix", "--prefixo", default="!")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
-    if not args.convite:
-        ap.error("faltou o convite (telinha://...)")
+    if not args.invite:
+        ap.error("missing the invite (telinha://...)")
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(asctime)s %(name)s: %(message)s", datefmt="%H:%M:%S")
-    folder = Path(args.pasta).expanduser() if args.pasta else None
+    folder = Path(args.folder).expanduser() if args.folder else None
     if folder and not folder.is_dir():
-        ap.error(f"pasta não existe: {folder}")
-    bot = MusicBot(args.convite, args.nome, folder=folder, radios=load_radios(args.radios), allow_links=args.links,
-                   volume=max(0, min(args.volume, 200)) / 100, channel=args.canal, bot_token=args.token_bots, prefix=args.prefixo)
+        ap.error(f"folder doesn't exist: {folder}")
+    order = tuple(x.strip().lower() for x in args.search.split(",") if x.strip())
+    resolver = Resolver(folder, load_radios(args.radios), cookies=args.cookies, order=order)
+    bot = MusicBot(args.invite, args.name, resolver=resolver, volume=max(0, min(args.volume, 200)) / 100,
+                   channel=args.channel, bot_token=args.bot_token, prefix=args.prefix)
     if folder:
-        log.info("%d músicas em %s", len(bot.library()), folder)
+        log.info("%d songs in %s", len(resolver.library()), folder)
     try:
         bot.run()
     except Denied as e:
-        log.error("a sala recusou o bot: %s", e.reason)
+        log.error("the room refused the bot: %s", e.reason)
         sys.exit(2)
     finally:
         bot.tmp.cleanup()

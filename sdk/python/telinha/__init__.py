@@ -14,6 +14,9 @@ from .audio import FFmpegMissing, Player
 from .bot import Bot, Command, CommandError, Context
 from .client import EVENTS, SDK_VERSION, Client, Denied
 from .connection import ConnectError, IdentityMismatch, WrongPassword
+from .embed import Button, Click, Embed, Field, Icon, Style
+from .image import ChatImage, ImageError
+from .image import encode as encode_image
 from .invite import Address, BadInvite, Invite
 from .models import ChannelInfo, FileInfo, Member, Message, Quote, Welcome
 from .wire import Deny, Notice, Reaction
@@ -22,6 +25,7 @@ __version__ = SDK_VERSION
 
 __all__ = [
     "Bot", "Client", "Context", "Command", "CommandError", "Player", "FFmpegMissing",
+    "Embed", "Field", "Button", "Click", "Icon", "Style", "ChatImage", "ImageError", "encode_image",
     "Invite", "Address", "BadInvite", "Member", "Message", "Quote", "FileInfo", "ChannelInfo", "Welcome",
     "Denied", "ConnectError", "WrongPassword", "IdentityMismatch", "Deny", "Notice", "Reaction", "EVENTS",
 ]

@@ -8,6 +8,7 @@ from . import wire
 
 if TYPE_CHECKING:
     from .client import Client
+    from .embed import Embed
 
 
 @dataclass
@@ -83,6 +84,9 @@ class Message:
     has_image: bool = False
     reactions: list[tuple[int, int]] = field(default_factory=list)  # (reação, de)
     channel: str = ""  # o canal de texto em que o bot estava quando chegou
+    embed: "Embed | None" = None  # cartão (de outro bot, ou o do próprio bot)
+    author_channel: str = ""  # onde quem mandou está (o servidor conta só pra bot)
+    author_call: str = ""  # a call de quem mandou ("" = fora de call)
     _client: "Client | None" = field(default=None, repr=False, compare=False)
 
     @property
@@ -107,6 +111,13 @@ class Message:
 
     async def react(self, reaction: "wire.Reaction | int", on: bool = True) -> None:
         await self._client.react(self.id, reaction, on)
+
+    async def edit(self, text: str | None = None, *, embed: "Embed | None" = None) -> None:
+        """Muda a mensagem (só as do próprio bot): o texto e o cartão. A imagem fica."""
+        await self._client.edit(self.id, self.text if text is None else text, embed=embed)
+        if text is not None:
+            self.text = text
+        self.embed = embed
 
 
 @dataclass
