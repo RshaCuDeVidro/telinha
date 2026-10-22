@@ -1046,11 +1046,21 @@ test "sala: espectador que atrasa perde o atraso, escoa e recomeça de um IDR" {
         seq += 1;
         _ = try streamer.expect(.keyreq);
         // ...e o espectador recomeça exatamente nele
+        const idr_seq = seq;
         try streamer.send(try frameSeq(true, 1000, seq));
         seq += 1;
-        const p = try viewer.expect(.frame);
-        try testing.expect(p[8] & proto.frame_key != 0);
-        try viewer.ackFrame(p);
+        while (true) {
+            const p = try viewer.expect(.frame);
+            const got_seq = std.mem.readInt(u32, p[4..8], .little);
+            try viewer.ackFrame(p);
+            // numa máquina lenta, um quadro do congestionamento que já tinha
+            // saído pro socket chega agora: é de antes, tudo bem
+            if (got_seq + 1 < idr_seq) continue;
+            // o quadro comum de logo antes do IDR não podia ter vindo
+            try testing.expectEqual(idr_seq, got_seq);
+            try testing.expect(p[8] & proto.frame_key != 0);
+            break;
+        }
     }
     // atrasou duas vezes em menos de 10 s: o transmissor é avisado pra baixar a
     // taxa — o quanto precisar, porque o único espectador é "a maioria"
