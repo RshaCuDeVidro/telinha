@@ -542,6 +542,61 @@ def chat_resposta_privada():
 
 
 @test
+def arquivo_na_sala():
+    """Arquivo na sala: /arquivo sobe (barra de progresso), aparece como cartão no chat de quem está no canal, Baixar grava igualzinho na pasta de downloads (do teste); quem transmite continua transmitindo enquanto isso; privada com arquivo só pros dois."""
+    with Session("arquivo") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"])
+        a.wait(lambda st: st["status"] == "connected", 10, "a sala")
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        c = s.app("c", 93, ["--nome", "Caio", "--entrar", f"127.0.0.1:{p}"])
+        aid = b.member_id("Ana")
+        b.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "a Bia ver a Ana")
+        c.wait(lambda st: st["status"] == "connected", 10, "o Caio entrar")
+        # 3 MB de bytes aleatórios (nada comprime)
+        src = os.path.join(s.base, "relatorio de teste.bin")
+        data = os.urandom(3 * 1024 * 1024 + 123)
+        open(src, "wb").write(data)
+        a.click("##chatin")
+        a.type(f"/arquivo {src}\n")
+        st = b.wait(lambda st: any(l["file_id"] for l in st["chat"]), 30, "o cartão do arquivo chegar")
+        line = next(l for l in st["chat"] if l["file_id"])
+        expect(line["file_name"] == "relatorio de teste.bin" and line["file_size"] == len(data), f"anexo errado: {line}")
+        fid = line["file_id"]
+        time.sleep(0.3)
+        b.screenshot(os.path.join(s.base, "cartao.png"))
+        b.click(contains=f"##dl{fid}")
+        st = b.wait(lambda st: any(t["file_id"] == fid and t["state"] in ("done", "failed") for t in st["transfers"]), 60, "baixar")
+        t = next(t for t in st["transfers"] if t["file_id"] == fid)
+        expect(t["state"] == "done", f"o download falhou: {t}")
+        got = open(t["path"], "rb").read()
+        expect(got == data, f"o arquivo baixado é diferente ({len(got)} bytes)")
+        expect(os.path.dirname(t["path"]) == os.path.join(b.dir, "downloads"), f"baixou fora da pasta do teste: {t['path']}")
+        time.sleep(0.3)
+        b.screenshot(os.path.join(s.base, "baixado.png"))
+        # a transmissão da Ana continuou chegando enquanto o arquivo andava
+        v = next(v for v in b.state()["views"] if v["stream"] == aid)
+        expect(v["shown"] and v["fps"] > 0, f"a transmissão parou: {v}")
+        # privada com arquivo: só a Bia vê
+        small = os.path.join(s.base, "segredo.txt")
+        open(small, "w").write("só pra Bia")
+        bid = a.member_id("Bia")
+        a.type(f"/msg Bia ok\n")
+        a.wait(lambda st: any(l["text"] == "ok" and l["to"] == bid for l in st["chat"]), 5, "a privada")
+        st = a.state()
+        mid = next(l["id"] for l in st["chat"] if l["text"] == "ok" and l["to"] == bid)
+        y = hover_msg(a, mid)
+        a.click_at(1150, y, button=3)
+        a.click("###mreply")
+        a.wait(lambda st: st["dm_to"] == bid, 3, "a caixa em privado")
+        a.click("##chatin")
+        a.type(f"/arquivo {small}\n")
+        b.wait(lambda st: any(l["file_name"] == "segredo.txt" and l["to"] == bid for l in st["chat"]), 15, "o arquivo privado chegar")
+        time.sleep(1)
+        expect(not any(l["file_name"] == "segredo.txt" for l in c.state()["chat"]), "o Caio viu o arquivo privado")
+
+
+@test
 def identidade_servidor():
     """Identidade do servidor: o convite leva a impressão e quem entra por ele confere; convite com impressão errada não entra; num servidor dedicado, a primeira vez é lembrada e, se a chave mudar, o app avisa e só entra depois de confiar na nova."""
     with Session("identidade") as s:

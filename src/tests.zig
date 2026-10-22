@@ -16,6 +16,8 @@ test {
     _ = @import("update.zig");
     _ = @import("changelog.zig");
     _ = @import("natpmp.zig");
+    _ = @import("bgflow.zig");
+    _ = @import("files.zig");
     _ = @import("chatimg.zig");
     _ = @import("i18n.zig");
     _ = @import("udp.zig");

@@ -28,6 +28,8 @@ const changelog_pt = @embedFile("changelog_pt");
 const changelog_en = @embedFile("changelog_en");
 const chatimg = @import("chatimg.zig");
 const chatsend = @import("chatsend.zig");
+const filexfer = @import("filexfer.zig");
+const files_mod = @import("files.zig");
 const markdown = @import("markdown.zig");
 const known = @import("known.zig");
 const crypto = @import("crypto.zig");
@@ -306,6 +308,40 @@ pub fn onDrop(_: ?*c.GLFWwindow, count: c_int, paths: [*c][*c]const u8) callconv
 }
 
 /// "@Nome" (nome inteiro, sem diferenciar maiúscula) no texto?
+/// "12,3 MB", "850 KB", "3 bytes".
+fn humanSize(n: u64, buf: []u8) []const u8 {
+    if (n < 1024) return std.fmt.bufPrint(buf, "{d} B", .{n}) catch "";
+    if (n < 1024 * 1024) return std.fmt.bufPrint(buf, "{d} KB", .{n / 1024}) catch "";
+    const tenths = n * 10 / (1024 * 1024);
+    return std.fmt.bufPrint(buf, "{d},{d} MB", .{ tenths / 10, tenths % 10 }) catch "";
+}
+
+/// O texto cabe em `avail`? Senão "começo…fim" (corta no meio, sem partir um caractere).
+fn ellipsizeMiddle(font: *c.ImFont, size: f32, text: []const u8, avail: f32, buf: []u8) []const u8 {
+    if (textSizeF(font, size, text).x <= avail or text.len + 3 > buf.len) return text;
+    var keep = text.len;
+    while (keep > 4) {
+        keep -= 1;
+        var head = keep / 2;
+        var tail_start = text.len - (keep - head);
+        while (head > 0 and text[head] & 0xC0 == 0x80) head -= 1;
+        while (tail_start < text.len and text[tail_start] & 0xC0 == 0x80) tail_start += 1;
+        const out = std.fmt.bufPrint(buf, "{s}…{s}", .{ text[0..head], text[tail_start..] }) catch return text;
+        if (textSizeF(font, size, out).x <= avail) return out;
+    }
+    return text;
+}
+
+/// Programa/script (o cartão não oferece "Abrir": só a pasta).
+fn looksRunnable(name: []const u8) bool {
+    const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return false;
+    const ext = name[dot + 1 ..];
+    for ([_][]const u8{ "exe", "bat", "cmd", "com", "scr", "msi", "ps1", "vbs", "vbe", "js", "jse", "wsf", "jar", "sh", "appimage", "lnk", "pif", "reg", "hta", "cpl", "desktop", "run" }) |e| {
+        if (std.ascii.eqlIgnoreCase(ext, e)) return true;
+    }
+    return false;
+}
+
 fn copyName(dst: []u8, len: *usize, src: []const u8) void {
     var n = @min(src.len, dst.len);
     while (n > 0 and n < src.len and src[n] & 0xC0 == 0x80) n -= 1; // sem cortar um caractere no meio
@@ -1955,7 +1991,7 @@ pub const App = struct {
                 },
                 else => {},
             }
-            const bad = n.kind == proto.notice_muted or n.kind == proto.notice_stream_stopped or n.kind == proto.notice_admin_off or n.kind == proto.notice_channel or n.kind == proto.notice_draw_off or n.kind == proto.notice_dm;
+            const bad = n.kind == proto.notice_muted or n.kind == proto.notice_stream_stopped or n.kind == proto.notice_admin_off or n.kind == proto.notice_channel or n.kind == proto.notice_draw_off or n.kind == proto.notice_dm or n.kind == proto.notice_file_gone;
             var nb: [200]u8 = undefined;
             a.toast("{s}", .{i18n.server(n.textSlice(), &nb)}, bad);
         }
@@ -6399,14 +6435,10 @@ pub const App = struct {
             for (0..n_drops) |i| {
                 const p = drop_paths[i][0..drop_lens[i]];
                 if (a.screen != .room or a.client == null) {
-                    a.toast("Entre numa sala pra mandar imagem no chat.", .{}, true);
+                    a.toast("Entre numa sala pra mandar imagem ou arquivo no chat.", .{}, true);
                     break;
                 }
-                if (!chatsend.looksLikeImage(p)) {
-                    a.toast("Só dá pra mandar imagem (PNG, JPEG, GIF ou BMP).", .{}, true);
-                    continue;
-                }
-                chatsend.sendFile(a.client.?, p);
+                a.sendPath(a.client.?, p);
             }
             n_drops = 0;
         }
@@ -6616,6 +6648,131 @@ pub const App = struct {
         a.mention_apply_len = n;
     }
 
+    /// Manda um arquivo escolhido/solto: imagem vai como imagem no chat; o
+    /// resto vira anexo (pra onde a caixa aponta: canal ou privada, resposta).
+    fn sendPath(a: *App, cl: *Client, path: []const u8) void {
+        if (chatsend.looksLikeImage(path)) return chatsend.sendFile(cl, path);
+        if (cl.server_features & proto.srv_files == 0) {
+            a.toast("Esse servidor não recebe arquivos (é de uma versão mais velha do telinha); dá pra mandar imagem.", .{}, true);
+            return;
+        }
+        filexfer.upload(cl, path, a.dm_to, a.reply_id) catch |e| {
+            a.toast("{s}", .{switch (e) {
+                error.TooBig => tr("Arquivo grande demais (até 256 MB)."),
+                error.Empty => tr("O arquivo está vazio."),
+                else => tr("Não consegui abrir o arquivo."),
+            }}, true);
+            return;
+        };
+        a.reply_id = 0;
+    }
+
+    /// Barra de um arquivo subindo: nome, quanto foi, velocidade e o X.
+    fn uploadBar(a: *App, cl: *Client, d: *c.ImDrawList, p: c.ImVec2_c, w: f32, h: f32, t: *filexfer.Transfer, i: usize) void {
+        const st = t.state.load(.acquire);
+        switch (st) {
+            .done => return cl.xfers.forget(t),
+            .failed => {
+                var eb: [300]u8 = undefined;
+                a.toast("Não mandei {s}: {s}", .{ t.nameSlice(), i18n.dynamic(t.errSlice(), &eb) }, true);
+                return cl.xfers.forget(t);
+            },
+            .canceled => return cl.xfers.forget(t),
+            else => {},
+        }
+        const x0 = p.x + S(12);
+        const x1 = p.x + w - S(12);
+        const prog = t.progress();
+        rectFill(d, x0, p.y + S(4), x1, p.y + h, withAlpha(col.green, 22), S(6));
+        rectFill(d, x0, p.y + h - S(3), x0 + (x1 - x0) * prog, p.y + h, col.green, S(2));
+        var sb: [24]u8 = undefined;
+        var rb: [24]u8 = undefined;
+        const title = if (st == .waiting) fmtZ("{s}  {s}", .{ ic.paperclip, t.nameSlice() }) else fmtZ("{s}  {s}   {d}% · {s}/s", .{ ic.paperclip, t.nameSlice(), @as(u32, @intFromFloat(prog * 100)), humanSize(t.rate(), &rb) });
+        _ = &sb;
+        c.ImDrawList_PushClipRect(d, v2(x0, p.y), v2(x1 - S(30), p.y + h), true);
+        drawTextF(d, font_semibold, 12.5, v2(x0 + S(10), p.y + S(8)), col.text, title);
+        c.ImDrawList_PopClipRect(d);
+        const back = c.igGetCursorScreenPos();
+        c.igSetCursorScreenPos(v2(x1 - S(26), p.y + S(5)));
+        if (iconButton(fmtZ("##upcancel{d}", .{i}), ic.xmark, S(22), col.muted, col.hover, tr("Cancelar"))) t.cancel();
+        c.igSetCursorScreenPos(back);
+        redrawIn(0.25);
+    }
+
+    /// Cartão do arquivo anexado numa mensagem: nome, tamanho e baixar /
+    /// baixando / abrir.
+    fn drawFileCard(a: *App, cl: *Client, line: *const client_mod.ChatLine, max_w: f32) void {
+        const d = drawList();
+        const p = c.igGetCursorScreenPos();
+        const w = @min(max_w, S(380));
+        const h = S(54);
+        rectFill(d, p.x, p.y + S(2), p.x + w, p.y + h, col.input, S(8));
+        drawTextF(d, font_regular, 20, v2(p.x + S(12), p.y + S(15)), col.blurple, ic.file);
+        var sb: [24]u8 = undefined;
+        const name = line.fileName();
+        noteEmoji(name);
+        // nome comprido: corta no meio (a extensão continua aparecendo); inteiro com o mouse em cima
+        var nmb: [proto.file_name_max + 8]u8 = undefined;
+        const name_end = p.x + w - S(140); // à direita: abrir + o botão
+        const shown = ellipsizeMiddle(font_semibold, 13.5, name, name_end - p.x - S(42), &nmb);
+        drawTextF(d, font_semibold, 13.5, v2(p.x + S(42), p.y + S(10)), col.text, shown);
+        if (shown.len != name.len and c.igIsMouseHoveringRect(v2(p.x, p.y), v2(name_end, p.y + h), true)) tooltipText(fmtZ("{s}", .{name}));
+        const dl = cl.xfers.download(line.file_id);
+        defer if (dl) |t| t.release();
+        const bx = p.x + w - S(88);
+        const by = p.y + S(12);
+        c.igSetCursorScreenPos(v2(bx, by));
+        if (dl) |t| switch (t.state.load(.acquire)) {
+            .running, .waiting => {
+                const prog = t.progress();
+                var rb: [24]u8 = undefined;
+                drawTextF(d, font_regular, 12, v2(p.x + S(42), p.y + S(31)), col.muted, fmtZ("{d}% · {s}/s", .{ @as(u32, @intFromFloat(prog * 100)), humanSize(t.rate(), &rb) }));
+                rectFill(d, p.x + S(42), p.y + h - S(6), p.x + w - S(100), p.y + h - S(3), withAlpha(col.text, 30), S(2));
+                rectFill(d, p.x + S(42), p.y + h - S(6), p.x + S(42) + (w - S(142)) * prog, p.y + h - S(3), col.blurple, S(2));
+                if (secondaryButton(fmtZ("{s}##dlx{d}", .{ tr("Cancelar"), line.file_id }), v2(S(80), S(30)))) t.cancel();
+                redrawIn(0.25);
+            },
+            .done => {
+                drawTextF(d, font_regular, 12, v2(p.x + S(42), p.y + S(31)), col.green, fmtZ("{s}  {s}", .{ ic.download, humanSize(line.file_size, &sb) }));
+                const runnable = looksRunnable(name);
+                if (!runnable) {
+                    c.igSetCursorScreenPos(v2(bx - S(44), by));
+                    if (iconButton(fmtZ("##dlopen{d}", .{line.file_id}), ic.file, S(30), col.muted, col.hover, tr("Abrir"))) _ = openPath(t.pathSlice());
+                    c.igSetCursorScreenPos(v2(bx, by));
+                }
+                if (secondaryButton(fmtZ("{s}##dlf{d}", .{ tr("Pasta"), line.file_id }), v2(S(80), S(30)))) {
+                    const pth = t.pathSlice();
+                    const cut = std.mem.lastIndexOfAny(u8, pth, "/\\") orelse pth.len;
+                    _ = openPath(pth[0..cut]);
+                }
+            },
+            .failed, .canceled => {
+                var eb: [300]u8 = undefined;
+                const why = if (t.state.load(.acquire) == .failed) i18n.dynamic(t.errSlice(), &eb) else tr("cancelado");
+                c.ImDrawList_PushClipRect(d, v2(p.x, p.y), v2(bx - S(6), p.y + h), true);
+                drawTextF(d, font_regular, 12, v2(p.x + S(42), p.y + S(31)), col.red, why);
+                c.ImDrawList_PopClipRect(d);
+                if (primaryButton(fmtZ("{s}##dl{d}", .{ tr("De novo"), line.file_id }), v2(S(80), S(30)), col.blurple, col.blurple_hover, col.blurple_active)) {
+                    cl.xfers.forget(t);
+                    a.startDownload(cl, line);
+                }
+            },
+        } else {
+            drawTextF(d, font_regular, 12, v2(p.x + S(42), p.y + S(31)), col.muted, humanSize(line.file_size, &sb));
+            if (primaryButton(fmtZ("{s}  {s}##dl{d}", .{ ic.download, tr("Baixar"), line.file_id }), v2(S(80), S(30)), col.blurple, col.blurple_hover, col.blurple_active)) a.startDownload(cl, line);
+        }
+        c.igSetCursorScreenPos(p);
+        c.igDummy(v2(w, h + S(4)));
+    }
+
+    fn startDownload(a: *App, cl: *Client, line: *const client_mod.ChatLine) void {
+        const t = filexfer.download(cl, line.file_id, line.fileName(), line.file_size) catch {
+            a.toast("Não consegui criar o arquivo na pasta de downloads.", .{}, true);
+            return;
+        };
+        t.release();
+    }
+
     /// A caixa de mensagem passa a ir em privado pra essa pessoa.
     fn startDm(a: *App, id: u32, name: []const u8) void {
         a.dm_to = id;
@@ -6688,7 +6845,20 @@ pub const App = struct {
         cl.compose_to.store(a.dm_to, .release);
         cl.compose_reply.store(a.reply_id, .release);
         const bar_h = S(26);
-        const bars: f32 = @floatFromInt(@as(u32, @intFromBool(a.reply_id != 0)) + @intFromBool(a.dm_to != 0));
+        var ups: [8]*filexfer.Transfer = undefined;
+        var n_ups: usize = 0;
+        {
+            var all: [16]*filexfer.Transfer = undefined;
+            const n = cl.xfers.snapshot(&all);
+            for (all[0..n]) |t| {
+                if (t.kind == .up and n_ups < ups.len) {
+                    ups[n_ups] = t;
+                    n_ups += 1;
+                } else t.release();
+            }
+        }
+        defer for (ups[0..n_ups]) |t| t.release();
+        const bars: f32 = @floatFromInt(@as(u32, @intFromBool(a.reply_id != 0)) + @intFromBool(a.dm_to != 0) + @as(u32, @intCast(n_ups)));
         // mensagens
         const input_h = box_h + S(24) + bars * bar_h;
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(14), S(10)));
@@ -6806,7 +6976,9 @@ pub const App = struct {
                 c.igDummy(v2(1, S(20)));
                 c.igSetCursorScreenPos(v2(left, c.igGetCursorScreenPos().y));
             }
-            if (text.len > 0 and markdown.hasMarkup(text)) {
+            if (line.file_id != 0) {
+                a.drawFileCard(cl, line, size.x - S(48) - S(36));
+            } else if (text.len > 0 and markdown.hasMarkup(text)) {
                 a.drawRichText(text, c.igGetWindowPos().x + size.x - S(18), line.id);
             } else if (text.len > 0) {
                 c.igPushTextWrapPos(size.x - S(18));
@@ -6939,8 +7111,12 @@ pub const App = struct {
         c.igPopStyleColor(1);
         c.igPopStyleVar(1);
 
-        // caixa de mensagem (com as barras de resposta/privada em cima)
+        // caixa de mensagem (com as barras de arquivo subindo, resposta e privada em cima)
         var ip = c.igGetCursorScreenPos();
+        for (ups[0..n_ups], 0..) |t, ui| {
+            a.uploadBar(cl, d, ip, size.x, bar_h, t, ui);
+            ip.y += bar_h;
+        }
         if (a.dm_to != 0) {
             if (a.composeBar(d, ip, size.x, bar_h, ic.lock, col.blurple, fmtZ("Privado pra {s}", .{a.dm_name[0..a.dm_name_len]}), "", "##dmclose")) a.dm_to = 0;
             ip.y += bar_h;
@@ -7015,13 +7191,13 @@ pub const App = struct {
         }
         c.igSameLine(0, 0);
         c.igSetCursorScreenPos(v2(bx + bw - S(76), by + bh - S(39)));
-        if (iconButton("##attach", ic.image, S(34), col.muted, col.hover, tr("Mandar uma imagem (escolher o arquivo; também dá pra arrastar pra janela ou colar com Ctrl+V)"))) {
+        if (iconButton("##attach", ic.paperclip, S(34), col.muted, col.hover, tr("Mandar imagem ou arquivo (escolher; também dá pra arrastar pra janela ou colar imagem com Ctrl+V)"))) {
             // imagem copiada: manda; senão abre a janela do sistema pra escolher o arquivo
             if (!chatsend.paste(cl)) {
                 // (nos testes nunca abre: a janela do portal poderia aparecer na tela de verdade)
-                if (!qa.enabled() and c.filepick_start(tr("Escolha uma imagem pro chat")) == 0) {
+                if (!qa.enabled() and c.filepick_start(tr("Escolha uma imagem ou arquivo pro chat")) == 0) {
                     a.picking_file = true;
-                } else a.toast("Pra mandar imagem: arraste o arquivo pra janela do telinha, ou copie a imagem e aperte Ctrl+V no chat.", .{}, false);
+                } else a.toast("Pra mandar: arraste o arquivo pra janela do telinha, ou copie a imagem e aperte Ctrl+V no chat.", .{}, false);
             }
         }
         if (a.picking_file) {
@@ -7031,7 +7207,7 @@ pub const App = struct {
                 1 => {
                     a.picking_file = false;
                     const path = std.mem.sliceTo(&pb, 0);
-                    if (chatsend.looksLikeImage(path)) chatsend.sendFile(cl, path) else a.toast("Só dá pra mandar imagem (PNG, JPEG, GIF ou BMP).", .{}, true);
+                    a.sendPath(cl, path);
                 },
                 else => a.picking_file = false,
             }
@@ -7329,6 +7505,12 @@ pub const App = struct {
                 // só o nome: a caixa passa a ir em privado pra essa pessoa
                 a.startDm(best_id, best_name[0..best_len]);
             } else cl.sendChat(body, 0, best_id);
+            return true;
+        }
+        if (is(cmd, &.{ "arquivo", "file", "enviar" })) {
+            if (arg.len == 0) {
+                a.toast("Use /arquivo caminho-do-arquivo (ou arraste o arquivo pra janela).", .{}, false);
+            } else a.sendPath(cl, arg);
             return true;
         }
         if (is(cmd, &.{ "call", "voz", "voice" })) {
@@ -8862,6 +9044,17 @@ pub const App = struct {
         const cb_text: [*c]const u8 = c.glfwGetClipboardString(a.window);
         try w.print(",\"clipboard\":{f},\"chat_input\":{f}", .{ s(if (cb_text != null) std.mem.span(cb_text) else ""), s(std.mem.sliceTo(&a.chat_input, 0)) });
         try w.print(",\"reply_to\":{d},\"dm_to\":{d}", .{ a.reply_id, a.dm_to });
+        if (a.client) |xcl| {
+            try w.writeAll(",\"transfers\":[");
+            var all: [16]*filexfer.Transfer = undefined;
+            const n = xcl.xfers.snapshot(&all);
+            for (all[0..n], 0..) |t, i| {
+                if (i > 0) try w.writeByte(',');
+                try w.print("{{\"kind\":{f},\"name\":{f},\"state\":{f},\"file_id\":{d},\"done\":{d},\"size\":{d},\"path\":{f},\"err\":{f}}}", .{ s(@tagName(t.kind)), s(t.nameSlice()), s(@tagName(t.state.load(.acquire))), t.file_id.load(.acquire), t.done_bytes.load(.acquire), t.size, s(t.pathSlice()), s(t.errSlice()) });
+                t.release();
+            }
+            try w.writeAll("]");
+        }
         try w.print(",\"notifications_sent\":{d},\"away\":{},\"iconified\":{},\"preview_uploads\":{d}", .{ a.notifications_sent, a.away(), a.iconified, a.preview_uploads });
         try w.writeAll(",\"sources\":[");
         for (a.sources[0..a.n_sources], 0..) |*src, i| {
@@ -9010,7 +9203,7 @@ pub const App = struct {
             for (cl.chat.items[first..], 0..) |*l, i| {
                 if (i > 0) try w.writeByte(',');
                 try w.print("{{\"id\":{d},\"from\":{d},\"name\":{f},\"text\":{f},\"history\":{}", .{ l.id, l.from, s(l.nameSlice()), s(l.text), l.history });
-                try w.print(",\"reply_id\":{d},\"reply_from\":{d},\"reply_name\":{f},\"reply_snip\":{f},\"to\":{d},\"to_name\":{f}", .{ l.reply_id, l.reply_from, s(l.replyName()), s(l.replySnip()), l.to, s(l.toName()) });
+                try w.print(",\"reply_id\":{d},\"reply_from\":{d},\"reply_name\":{f},\"reply_snip\":{f},\"to\":{d},\"to_name\":{f},\"file_id\":{d},\"file_name\":{f},\"file_size\":{d}", .{ l.reply_id, l.reply_from, s(l.replyName()), s(l.replySnip()), l.to, s(l.toName()), l.file_id, s(l.fileName()), l.file_size });
                 const ready = for (a.img_cache) |e| {
                     if (e.id == l.id and e.tex != 0) break true;
                 } else false;

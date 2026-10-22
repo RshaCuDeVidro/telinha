@@ -295,6 +295,8 @@ class App:
             "XDG_CONFIG_HOME": self.cfg, "TELINHA_SEM_SOM": "1", "ALSA_CONFIG_PATH": alsa,
             # clipes e gravações na pasta do teste (nunca nos Vídeos de verdade)
             "TELINHA_PASTA_CLIPES": os.path.join(self.dir, "clipes"),
+            # downloads de arquivos da sala: na pasta do teste (nunca no ~/Downloads de verdade)
+            "TELINHA_PASTA_ARQUIVOS": os.path.join(self.dir, "downloads"),
             # os testes procuram os botões pelo texto em português (extra_env troca)
             "TELINHA_IDIOMA": "pt",
         })
@@ -312,7 +314,7 @@ class App:
             base.update({
                 "WINEPREFIX": WINEPREFIX, "WINEDEBUG": "-all", "TELINHA_QA": winpath(self.qa_dir),
                 # o wine ignora APPDATA vindo de fora (pega do registro do prefixo)
-                "TELINHA_PASTA_CONFIG": winpath(appdata), "TELINHA_PASTA_CLIPES": winpath(os.path.join(self.dir, "clipes")),
+                "TELINHA_PASTA_CONFIG": winpath(appdata), "TELINHA_PASTA_CLIPES": winpath(os.path.join(self.dir, "clipes")), "TELINHA_PASTA_ARQUIVOS": winpath(os.path.join(self.dir, "downloads")),
             })
         # QA_EXTRA_ENV="A=1;B=2": vai pra todos os apps (ex.: TELINHA_GPU_UPLOAD=1
         # roda a bateria inteira pelo caminho da placa)

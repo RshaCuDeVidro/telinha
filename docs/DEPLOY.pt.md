@@ -100,6 +100,16 @@ trava e tópico), banidos, silenciados e sem pincel vão pra um arquivo de estad
 (`--estado ARQUIVO` / `TELINHA_ESTADO`; por padrão `estado.txt` do lado da chave) e
 voltam depois de reiniciar.
 
+## Arquivos
+
+Quem está na sala manda arquivos (até 256 MB) e cada um baixa quando quiser. O
+servidor guarda no disco, cifrados com uma chave que só existe na memória dele
+(reiniciou, o que sobrou é apagado), em `--arquivos PASTA` / `TELINHA_ARQUIVOS`
+(por padrão a pasta `arquivos` do lado do estado; no systemd acima,
+`/var/lib/telinha/arquivos`). Expiram 2 h depois de mandados, no máximo 2 GB no
+total. Sem uma pasta que dê pra escrever, a sala fica sem arquivos (as imagens
+no chat continuam).
+
 ## Identidade do servidor
 
 O servidor guarda uma chave fixa (`--chave ARQUIVO` / `TELINHA_CHAVE`; por padrão

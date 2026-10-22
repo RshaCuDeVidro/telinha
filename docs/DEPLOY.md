@@ -101,6 +101,16 @@ channel. Pinned channels (with their password, lock and topic), bans, admin mute
 and pen removals are written to a state file (`--estado FILE` / `TELINHA_ESTADO`;
 by default `estado.txt` next to the key) and come back after a restart.
 
+## Files
+
+People in the room send files (up to 256 MB) and everyone downloads when they
+want. The server keeps them on disk, encrypted with a key that only exists in its
+memory (restart it and leftovers are deleted), in `--arquivos DIR` /
+`TELINHA_ARQUIVOS` (by default the `arquivos` folder next to the state file; with
+the systemd unit above, `/var/lib/telinha/arquivos`). They expire 2 h after being
+sent, 2 GB at most in total. Without a writable folder the room has no files (chat
+images still work).
+
 ## Server identity
 
 The server keeps a fixed key (`--chave FILE` / `TELINHA_CHAVE`; by default

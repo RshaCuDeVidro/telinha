@@ -114,11 +114,11 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | type | name | direction | payload |
 |---|---|---|---|
 | 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (what it decodes, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (channel to join; empty or missing = the default) |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1), `u8 recursos_do_servidor` (`srv_*`: 1 = private messages and quoted replies; an older server doesn't send it = 0) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1), `u8 recursos_do_servidor` (`srv_*`: 1 = private messages and quoted replies, 2 = files; an older server doesn't send it = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (the server closes right after) |
 | 4 | members | S→C | `u8 sala` (1 = locked), `u16 n`, n × member (below), n × `str versão_do_app` (same order) |
 | 5 | chat | C→S | `str texto`, image (optional, below), `u32 resposta` (id of the message replied to; 0 = none), `u32 pra` (private to this member; 0 = the channel) |
-| 5 | chat | S→C | `u32 id`, `u32 de` (0 = system), `str nome`, `str texto`, `u64 hora` (room clock, µs), `u8 flags` (1 = history), image, `u8 n`, n × (`u8 reação`, `u32 de`), `u32 resposta` (if ≠ 0: `u32 de`, `str nome`, `str trecho`), `u32 pra` (if ≠ 0: `str nome`) |
+| 5 | chat | S→C | `u32 id`, `u32 de` (0 = system), `str nome`, `str texto`, `u64 hora` (room clock, µs), `u8 flags` (1 = history), image, `u8 n`, n × (`u8 reação`, `u32 de`), `u32 resposta` (if ≠ 0: `u32 de`, `str nome`, `str trecho`), `u32 pra` (if ≠ 0: `str nome`), `u32 arquivo` (if ≠ 0: `str nome`, `u64 tamanho`) |
 | 6 | stream_start | C→S | `u8 tipo`, `u16 w`, `u16 h`, `u8 fps`, `u8 flags` (1 = with audio; screen only) |
 | 7 | stream_stop | C→S | `u8 tipo` |
 | 8 | frame | C→S | frame (below) |
@@ -159,6 +159,12 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | 31 | identity | S→C | `[32] public key`, `[64] signature` of this handshake (see "Server identity"): the first message, before `hello` |
 | 32 | chan_admin | C→S | `u8 action`, `str channel`, `str value`, `u32 target` (admins; table below) |
 | 33 | call | C→S | `str channel` (empty = leave the call), `str password`: join that channel's call |
+| 34 | file_put | C→S | `u32 request`, `str name`, `u64 size`, `u32 to` (private; 0 = the channel), `u32 reply`: I want to send a file |
+| 35 | file_ready | S→C | `u32 request`, `u32 file` (0 = refused), `str reason` |
+| 36 | file_data | C→S / S→C | `u32 file`, `u64 position`, bytes (up to 64 KB): uploading / downloading |
+| 37 | file_ack | S→C | `u32 file`, `u64 received` (how far it got) |
+| 38 | file_get | C→S | `u32 file`, `u64 position` (multiple of 64), `u32 size` (up to 64 KB) |
+| 39 | file_cancel | C→S | `u32 file`: give up uploading |
 
 `versão_do_app` ("3.0.0") only serves to warn whoever is out of date (the
 interface shows "so-and-so is on telinha X: there is a new version"); empty = not
@@ -296,7 +302,8 @@ channel (chat and call, even if locked).
 **notice** — types: 1 = microphone muted, 2 = microphone released, 3 = stream
 stopped (`extra` = its type), 4 = became admin, 5 = is no longer admin, 7/8 = pen
 taken away/given back, 9 = an admin moved you to another channel, 10 = the
-private message didn't go (the person left or their app can't receive it). The
+private message didn't go (the person left or their app can't receive it), 11 =
+the requested file isn't in the room anymore. The
 `texto` already comes ready ("Ana muted your microphone."). 6 = couldn't switch
 channel (invalid name, switching too fast, the server doesn't allow new
 channels or has too many).
@@ -415,6 +422,28 @@ message too old (out of the history) goes without a quote.
 (any channel); it isn't stored in the channel history and has no reactions. The
 server keeps the last 64 (without images) only to check quotes in a reply inside
 the private conversation; in public, quoting a private message carries no snippet.
+
+### Files
+
+The sender uploads once to the server; everyone downloads when they click, at
+their own pace. `file_put` reserves the slot (up to 256 MB per file, 3
+uploading per person); `file_data` goes up in order, in 32 KB pieces, each one
+getting a `file_ack`. Once complete it becomes a chat message in the channel (or
+a private one) carrying the `arquivo`; its text is "📎 name (size)", for older
+apps. Downloaders ask for pieces with `file_get`; only people in the channel the
+file was posted to (or the two in a private conversation) can download. The id
+is random.
+
+Both directions run **in the background** (`bgflow.zig`, like LEDBAT): the window
+of unconfirmed bytes grows while the confirmation delay stays near the lowest
+seen and halves when it rises more than 40 ms above it (a queue building up,
+almost always someone's video competing for the same connection). So the file
+uses the spare bandwidth and doesn't disturb streams, voice or chat.
+
+On the server, files live on disk (`--arquivos`, see DEPLOY), encrypted with
+ChaCha20 and a key that only exists in its memory; they expire 2 h after
+completing, 2 GB at most in total (the oldest goes first), an upload stalled for
+2 min is dropped, and someone leaving mid-upload takes the file with them.
 
 ### Channels
 

@@ -15,6 +15,8 @@
 const std = @import("std");
 const sync = @import("sync.zig");
 const net = @import("net.zig");
+const files_mod = @import("files.zig");
+const builtin = @import("builtin");
 const proto = @import("proto.zig");
 const udp = @import("udp.zig");
 const crypto = @import("crypto.zig");
@@ -326,6 +328,11 @@ const ChatEntry = struct {
     to: u32 = 0,
     to_name: [48]u8 = undefined,
     to_name_len: usize = 0,
+    // arquivo anexado (files.zig): quem vê baixa pelo id
+    file_id: u32 = 0,
+    file_name: [proto.file_name_max]u8 = undefined,
+    file_name_len: usize = 0,
+    file_size: u64 = 0,
 
     const React = struct { emoji: u8, from: u32 };
 
@@ -470,6 +477,9 @@ pub const Options = struct {
     /// fixos com senha/trava/tópico, banidos, silenciados, sem pincel).
     /// Vazio = nada fica (a sala do app).
     state_path: []const u8 = "",
+    /// Onde guardar os arquivos mandados na sala (cifrados; ver files.zig).
+    /// Vazio = uma pasta temporária do sistema.
+    files_dir: []const u8 = "",
 };
 
 const StatsPrev = struct {
@@ -526,6 +536,7 @@ pub const Server = struct {
     /// As últimas mensagens privadas (pra conferir o trecho citado numa
     /// resposta a uma delas; não são mandadas pra mais ninguém).
     dms: [64]ChatEntry = undefined,
+    files: files_mod.Store = .{},
     dms_len: usize = 0,
     dms_head: usize = 0,
     stopped: std.atomic.Value(bool) = .init(false),
@@ -561,6 +572,10 @@ pub const Server = struct {
         };
         copyInto(&s.state_path, &s.state_path_len, opts.state_path);
         s.loadState();
+        {
+            var fb: [480]u8 = undefined;
+            s.files.init(if (opts.files_dir.len > 0) opts.files_dir else tempFilesDir(&fb));
+        }
         var rnd: [8]u8 = undefined;
         sync.osRandom(&rnd);
         s.instance = std.mem.readInt(u64, &rnd, .little);
@@ -599,6 +614,7 @@ pub const Server = struct {
         for (s.chans.items) |ch| ch.destroy();
         s.chans.deinit(gpa);
         for (0..s.dms_len) |i| s.dms[(s.dms_head + i) % s.dms.len].free();
+        s.files.deinit();
         s.conns.deinit(gpa);
         s.bans.deinit(gpa);
         s.muted_keys.deinit(gpa);
@@ -729,6 +745,8 @@ pub const Server = struct {
             defer s.mutex.unlock();
             const now_ms = sync.nowMs();
             const now_us = sync.nowUs();
+            // arquivos vencidos e subidas paradas, a cada 10 s
+            if (ticks % 40 == 0) _ = s.files.expire(now_ms);
             // estatísticas pra quem pediu (o dono olhando), a cada 2 s
             if (ticks % 8 == 0) for (s.conns.items) |o| {
                 if (o.stats_on) {
@@ -1070,6 +1088,16 @@ pub const Server = struct {
                 }
                 if (to != 0) return s.sendDm(cn, to, reply_to, text, img);
                 try s.postChat(cn.chan, cn.id, cn.nameSlice(), text, img, s.findQuote(cn, reply_to, false));
+            },
+            .file_put => try s.onFilePut(cn, &r),
+            .file_data => try s.onFileData(cn, &r),
+            .file_get => try s.onFileGet(cn, &r),
+            .file_cancel => {
+                const id = try r.u32_();
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                const e = s.files.find(id) orelse return;
+                if (e.from == cn.id and !e.complete) s.files.remove(id);
             },
             .react => {
                 const id = try r.u32_();
@@ -1652,7 +1680,7 @@ pub const Server = struct {
             try b.u8_(1);
             try b.u32_(l.ep.token);
         } else try b.u8_(0);
-        try b.u8_(proto.server_features); // o que este servidor sabe fazer (srv_*)
+        try b.u8_(s.serverFeatures()); // o que este servidor sabe fazer (srv_*)
         cn.queue.pushOwned(try b.finish());
 
         // em que canal ela está e quais existem; depois o que já foi dito nele
@@ -1698,6 +1726,12 @@ pub const Server = struct {
         defer s.mutex.unlock();
         const i = std.mem.findScalar(*Conn, s.conns.items, cn) orelse return;
         _ = s.conns.orderedRemove(i);
+        // arquivos que ela estava subindo (pela metade) somem
+        var fi: usize = 0;
+        while (fi < s.files.items.items.len) {
+            const fe = s.files.items.items[fi];
+            if (fe.from == cn.id and !fe.complete) s.files.remove(fe.id) else fi += 1;
+        }
         for (s.conns.items) |o| {
             o.forget(proto.streamId(cn.id, proto.kind_screen));
             o.forget(proto.streamId(cn.id, proto.kind_camera));
@@ -1743,6 +1777,12 @@ pub const Server = struct {
         }
         try b.u32_(e.to);
         if (e.to != 0) try b.str(e.to_name[0..e.to_name_len]);
+        // arquivo (0 = nenhum); o texto já diz "📎 nome (tamanho)" pra app antigo
+        try b.u32_(e.file_id);
+        if (e.file_id != 0) {
+            try b.str(e.file_name[0..e.file_name_len]);
+            try b.u64_(e.file_size);
+        }
         return b.finish();
     }
 
@@ -1790,6 +1830,126 @@ pub const Server = struct {
         return null;
     }
 
+    fn serverFeatures(s: *Server) u8 {
+        return proto.srv_dm | (if (s.files.ok) proto.srv_files else 0);
+    }
+
+    // ------------------------------------------------------------ arquivos
+
+    fn pushFileReady(cn: *Conn, local: u32, id: u32, why: []const u8) !void {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.file_ready);
+        try b.u32_(local);
+        try b.u32_(id);
+        try b.str(why);
+        cn.queue.pushOwned(try b.finish());
+    }
+
+    /// Alguém quer mandar um arquivo: reserva o lugar (ou diz por que não).
+    fn onFilePut(s: *Server, cn: *Conn, r: *proto.Reader) !void {
+        const local = try r.u32_();
+        const raw_name = try r.str();
+        const size = try r.u64_();
+        const to = r.u32_() catch 0;
+        const reply_to = r.u32_() catch 0;
+        var nb: [proto.file_name_max]u8 = undefined;
+        const name = files_mod.cleanName(raw_name, &nb);
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        var mine: usize = 0;
+        for (s.files.items.items) |e| {
+            if (e.from == cn.id and !e.complete) mine += 1;
+        }
+        if (mine >= 3) return pushFileReady(cn, local, 0, "Já tem 3 arquivos seus subindo: espera um terminar.");
+        if (to != 0) {
+            const target = for (s.conns.items) |o| {
+                if (o.id == to and o.authed) break o;
+            } else return pushFileReady(cn, local, 0, "Essa pessoa não está mais na sala.");
+            if (target.features & proto.feat_dm == 0) return pushFileReady(cn, local, 0, "Essa pessoa usa uma versão do telinha que não recebe mensagem privada.");
+        }
+        const e = s.files.create(name, size, cn.id, cn.nameSlice(), to, cn.chan.nameSlice(), reply_to) catch |err| return pushFileReady(cn, local, 0, switch (err) {
+            error.TooBig => "Arquivo grande demais (até 256 MB).",
+            error.Full => "O servidor está cheio de arquivos agora; tenta daqui a pouco.",
+            error.NoStorage => "Esse servidor não guarda arquivos.",
+            else => "Não deu pra receber o arquivo.",
+        });
+        s.log("{s} mandando o arquivo {s} ({d} KB)", .{ cn.nameSlice(), e.nameSlice(), size / 1024 });
+        try pushFileReady(cn, local, e.id, "");
+    }
+
+    /// Um pedaço do arquivo subindo: guarda (cifrado), confirma (o ritmo de
+    /// quem manda vem dessas confirmações) e, completo, aparece no chat.
+    fn onFileData(s: *Server, cn: *Conn, r: *proto.Reader) !void {
+        const id = try r.u32_();
+        const off = try r.u64_();
+        const bytes = r.rest();
+        if (bytes.len == 0 or bytes.len > 64 * 1024) return error.BadMessage;
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        const e = s.files.find(id) orelse return; // cancelado ou expirou
+        if (e.from != cn.id) return error.BadMessage;
+        const got = s.files.write(e, off, bytes) catch {
+            s.files.remove(id);
+            return pushNotice(cn, proto.notice_dm, "O servidor não conseguiu guardar o arquivo.", 0);
+        };
+        const m = try proto.Msg.alloc(.file_ack, 12);
+        std.mem.writeInt(u32, m.payload()[0..4], id, .little);
+        std.mem.writeInt(u64, m.payload()[4..12], got, .little);
+        cn.queue.pushOwned(m);
+        if (e.complete) try s.announceFile(cn, e);
+    }
+
+    /// O arquivo chegou inteiro: vira uma mensagem no chat (do canal, ou privada).
+    fn announceFile(s: *Server, cn: *Conn, f: *files_mod.Entry) !void {
+        var tb: [proto.file_name_max + 40]u8 = undefined;
+        var sb: [24]u8 = undefined;
+        const text = std.fmt.bufPrint(&tb, "\u{1F4CE} {s} ({s})", .{ f.nameSlice(), humanSize(f.size, &sb) }) catch f.nameSlice();
+        const quote = s.findQuote(cn, f.reply_to, f.to != 0);
+        var e = try s.newEntry(cn.id, cn.nameSlice(), text, null, quote);
+        e.file_id = f.id;
+        copyInto(&e.file_name, &e.file_name_len, f.nameSlice());
+        e.file_size = f.size;
+        if (f.to != 0) {
+            const target = for (s.conns.items) |o| {
+                if (o.id == f.to) break o;
+            } else {
+                e.free();
+                s.files.remove(f.id);
+                return pushNotice(cn, proto.notice_dm, "Essa pessoa não está mais na sala.", 0);
+            };
+            return s.deliverDm(cn, target, e);
+        }
+        // no canal onde começou a subir (se ainda existir), senão no de agora
+        const ch = s.findChan(f.chanSlice()) orelse cn.chan;
+        copyInto(&f.chan, &f.chan_len, ch.nameSlice());
+        try s.postEntry(ch, e);
+    }
+
+    /// Alguém baixando: manda o pedaço pedido (quem baixa controla o ritmo).
+    fn onFileGet(s: *Server, cn: *Conn, r: *proto.Reader) !void {
+        const id = try r.u32_();
+        const off = try r.u64_();
+        const len = try r.u32_();
+        if (len == 0 or len > 64 * 1024 or off % 64 != 0) return error.BadMessage;
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        const e = s.files.find(id) orelse return pushNotice(cn, proto.notice_file_gone, "Esse arquivo não está mais na sala (expira em 2 h).", 0);
+        // privada: só os dois; do canal: só quem está nele
+        const allowed = if (e.to != 0) cn.id == e.from or cn.id == e.to else std.mem.eql(u8, cn.chan.nameSlice(), e.chanSlice());
+        if (!allowed or !e.complete or off >= e.size) return;
+        const n: usize = @intCast(@min(len, e.size - off));
+        const m = try proto.Msg.alloc(.file_data, 12 + n);
+        errdefer m.release();
+        std.mem.writeInt(u32, m.payload()[0..4], id, .little);
+        std.mem.writeInt(u64, m.payload()[4..12], off, .little);
+        _ = s.files.read(e, off, m.payload()[12..][0..n]) catch {
+            m.release();
+            return;
+        };
+        cn.queue.pushOwned(m);
+    }
+
     /// Mensagem privada de `cn` pra `to`: só os dois recebem. Mutex travado.
     fn sendDm(s: *Server, cn: *Conn, to: u32, reply_to: u32, text: []const u8, img: ?Image) !void {
         const target = for (s.conns.items) |o| {
@@ -1798,8 +1958,14 @@ pub const Server = struct {
         if (target == cn) return;
         if (target.features & proto.feat_dm == 0)
             return pushNotice(cn, proto.notice_dm, "Essa pessoa usa uma versão do telinha que não recebe mensagem privada.", 0);
-        var e = try s.newEntry(cn.id, cn.nameSlice(), text, img, s.findQuote(cn, reply_to, true));
-        e.to = to;
+        const e = try s.newEntry(cn.id, cn.nameSlice(), text, img, s.findQuote(cn, reply_to, true));
+        return s.deliverDm(cn, target, e);
+    }
+
+    /// Manda a privada pronta (`e`) pros dois e guarda no anel. Mutex travado.
+    fn deliverDm(s: *Server, cn: *Conn, target: *Conn, entry: ChatEntry) !void {
+        var e = entry;
+        e.to = target.id;
         copyInto(&e.to_name, &e.to_name_len, target.nameSlice());
         const m = chatMsg(&e, 0) catch |err| {
             e.free();
@@ -1826,7 +1992,12 @@ pub const Server = struct {
 
     /// Mensagem no chat de um canal (histórico + quem está nele). Mutex travado.
     fn postChat(s: *Server, ch: *Chan, from: u32, name: []const u8, text: []const u8, img: ?Image, quote: ?*const ChatEntry) !void {
-        var e = try s.newEntry(from, name, text, img, quote);
+        return s.postEntry(ch, try s.newEntry(from, name, text, img, quote));
+    }
+
+    /// Põe a mensagem pronta (`e`) no histórico do canal e manda pra quem está nele.
+    fn postEntry(s: *Server, ch: *Chan, entry: ChatEntry) !void {
+        var e = entry;
         const m = chatMsg(&e, 0) catch |err| {
             e.free();
             return err;
@@ -2764,3 +2935,19 @@ pub const Server = struct {
         }
     }
 };
+
+/// Pasta temporária pros arquivos da sala do app: TMPDIR/TEMP + telinha-arquivos-<pid>.
+fn tempFilesDir(buf: []u8) []const u8 {
+    const base = if (std.c.getenv("TEMP")) |t| std.mem.span(t) else if (std.c.getenv("TMPDIR")) |t| std.mem.span(t) else if (builtin.os.tag == .windows) "C:\\Windows\\Temp" else "/tmp";
+    const pid: u32 = if (builtin.os.tag == .windows) GetCurrentProcessId() else @intCast(std.c.getpid());
+    return std.fmt.bufPrint(buf, "{s}{s}telinha-arquivos-{d}", .{ base, if (builtin.os.tag == .windows) "\\" else "/", pid }) catch "";
+}
+extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
+
+/// "12,3 MB", "850 KB", "3 bytes".
+pub fn humanSize(n: u64, buf: []u8) []const u8 {
+    if (n < 1024) return std.fmt.bufPrint(buf, "{d} bytes", .{n}) catch "";
+    if (n < 1024 * 1024) return std.fmt.bufPrint(buf, "{d} KB", .{n / 1024}) catch "";
+    const tenths = n * 10 / (1024 * 1024);
+    return std.fmt.bufPrint(buf, "{d},{d} MB", .{ tenths / 10, tenths % 10 }) catch "";
+}

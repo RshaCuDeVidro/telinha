@@ -56,8 +56,19 @@ pub const Type = enum(u8) {
     chan_admin = 32, // C→S u8 ação (chan_*_act), str canal, str valor, u32 alvo: admin mexe num canal
     call = 33, // C→S str canal (vazio = sai da call), str senha: entra na call de um canal (a voz e as transmissões; o chat é o do `channel`)
     identity = 31, // S→C [32] chave pública Ed25519 do servidor, [64] assinatura do handshake (crypto.transcript): a primeira mensagem, antes do hello
+    // arquivos na sala (ver docs/PROTOCOL.md "Arquivos"): sobe pro servidor e cada um baixa quando quiser
+    file_put = 34, // C→S u32 pedido, str nome, u64 tamanho, u32 pra, u32 resposta
+    file_ready = 35, // S→C u32 pedido, u32 arquivo (0 = recusado), str motivo
+    file_data = 36, // C→S u32 arquivo, u64 posição, bytes (subindo) | S→C u32 arquivo, u64 posição, bytes (baixando)
+    file_ack = 37, // S→C u32 arquivo, u64 recebido: até onde chegou (o ritmo de quem sobe)
+    file_get = 38, // C→S u32 arquivo, u64 posição, u32 tamanho: me manda esse pedaço
+    file_cancel = 39, // C→S u32 arquivo: desiste de subir
     _,
 };
+
+/// Arquivos na sala.
+pub const file_max: u64 = 256 * 1024 * 1024; // por arquivo
+pub const file_name_max = 120; // bytes
 
 /// Imagem no chat: vai como um quadro H.264 (IDR) no fim da mensagem de chat
 /// (u8 chat_img_*, e se tiver: u16 w, u16 h, u32 tamanho, bytes). Quem recebe
@@ -179,6 +190,7 @@ pub const notice_draw_off: u8 = 7; // o admin tirou seu pincel
 pub const notice_draw_on: u8 = 8; // devolveu
 pub const notice_moved: u8 = 9; // um admin te levou pra outro canal
 pub const notice_dm: u8 = 10; // a mensagem privada não foi (o texto diz por quê)
+pub const notice_file_gone: u8 = 11; // o arquivo pedido não está mais na sala
 /// notice_channel com extra = 1: o canal pede senha (o app pergunta)
 pub const notice_channel_needs_password: u8 = 1;
 /// Só no app (não vem do servidor): chegou um log mandado pela sala (texto = nome + caminho).
@@ -231,7 +243,8 @@ pub const features_mine: u8 = feat_cursor | feat_view_size | feat_calls | feat_d
 
 /// O que o servidor sabe fazer (último campo do welcome; servidor antigo: 0).
 pub const srv_dm: u8 = 1; // mensagem privada e resposta citada
-pub const server_features: u8 = srv_dm;
+pub const srv_files: u8 = 2; // arquivos na sala (file_*)
+pub const server_features: u8 = srv_dm | srv_files;
 /// view_size: "quero a resolução toda" (tela cheia, gravando, ou app antigo).
 pub const view_full: u16 = 0xFFFF;
 

@@ -4,6 +4,7 @@ const std = @import("std");
 const sync = @import("sync.zig");
 const net = @import("net.zig");
 const proto = @import("proto.zig");
+const filexfer = @import("filexfer.zig");
 const udp = @import("udp.zig");
 const crypto = @import("crypto.zig");
 const codec = @import("codec.zig");
@@ -158,8 +159,17 @@ pub const ChatLine = struct {
     to: u32 = 0,
     to_name: [48]u8 = undefined,
     to_name_len: usize = 0,
+    // arquivo anexado (0 = nenhum): baixa pelo id
+    file_id: u32 = 0,
+    file_name: [proto.file_name_max]u8 = undefined,
+    file_name_len: usize = 0,
+    file_size: u64 = 0,
 
     pub const React = struct { emoji: u8, from: u32 };
+
+    pub fn fileName(self: *const ChatLine) []const u8 {
+        return self.file_name[0..self.file_name_len];
+    }
 
     pub fn replyName(self: *const ChatLine) []const u8 {
         return self.reply_name[0..self.reply_name_len];
@@ -840,6 +850,8 @@ pub const Client = struct {
     /// resposta (id, uma vez) e privada (membro; 0 = o canal).
     compose_reply: std.atomic.Value(u32) = .init(0),
     compose_to: std.atomic.Value(u32) = .init(0),
+    /// Arquivos subindo e descendo nessa sala (filexfer.zig).
+    xfers: filexfer.Registry = .{},
     instance: u64 = 0,
     server_version: [16]u8 = undefined, // versão do app/servidor que hospeda
     server_version_len: usize = 0,
@@ -948,6 +960,7 @@ pub const Client = struct {
 
     pub fn release(cl: *Client) void {
         if (cl.refs.fetchSub(1, .acq_rel) == 1) {
+            cl.xfers.deinit();
             cl.queue.deinit();
             cl.members.deinit(gpa);
             cl.chan_members.deinit(gpa);
@@ -1530,6 +1543,13 @@ pub const Client = struct {
                 line.to = r.u32_() catch 0;
                 line.to_name_len = 0;
                 if (line.to != 0) copyInto(&line.to_name, &line.to_name_len, try r.str());
+                line.file_id = r.u32_() catch 0;
+                line.file_name_len = 0;
+                line.file_size = 0;
+                if (line.file_id != 0) {
+                    copyInto(&line.file_name, &line.file_name_len, try r.str());
+                    line.file_size = try r.u64_();
+                }
                 cl.mutex.lock();
                 defer cl.mutex.unlock();
                 // histórico que já chegou (não deveria repetir, mas não custa)
@@ -1655,6 +1675,21 @@ pub const Client = struct {
             .identity => if (cl.id_state == .unknown and !cl.checkIdentity(payload)) return error.Identity,
             .channel => try cl.onChannels(&r),
             .stats => try cl.onStats(&r),
+            .file_ready => {
+                const local = try r.u32_();
+                const id = try r.u32_();
+                cl.xfers.onReady(local, id, r.str() catch "");
+                cl.wake();
+            },
+            .file_ack => {
+                const id = try r.u32_();
+                cl.xfers.onAck(id, try r.u64_());
+            },
+            .file_data => {
+                const id = try r.u32_();
+                const off = try r.u64_();
+                cl.xfers.onData(id, off, r.rest());
+            },
             .log_ack => {
                 _ = try r.u32_(); // id
                 const result = try r.u8_();

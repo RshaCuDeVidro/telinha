@@ -110,11 +110,11 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | tipo | nome | direção | payload |
 |---|---|---|---|
 | 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (o que decodifica, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (canal pra entrar; vazio ou sem o campo = o padrão) |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1), `u8 recursos_do_servidor` (`srv_*`: 1 = mensagem privada e resposta citada; servidor antigo não manda = 0) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1), `u8 recursos_do_servidor` (`srv_*`: 1 = mensagem privada e resposta citada, 2 = arquivos; servidor antigo não manda = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (servidor fecha em seguida) |
 | 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo), n × `str versão_do_app` (mesma ordem) |
 | 5 | chat | C→S | `str texto`, imagem (opcional, abaixo), `u32 resposta` (id da mensagem respondida; 0 = nenhuma), `u32 pra` (privada pra esse membro; 0 = o canal) |
-| 5 | chat | S→C | `u32 id`, `u32 de` (0 = sistema), `str nome`, `str texto`, `u64 hora` (relógio da sala, µs), `u8 flags` (1 = histórico), imagem, `u8 n`, n × (`u8 reação`, `u32 de`), `u32 resposta` (se ≠ 0: `u32 de`, `str nome`, `str trecho`), `u32 pra` (se ≠ 0: `str nome`) |
+| 5 | chat | S→C | `u32 id`, `u32 de` (0 = sistema), `str nome`, `str texto`, `u64 hora` (relógio da sala, µs), `u8 flags` (1 = histórico), imagem, `u8 n`, n × (`u8 reação`, `u32 de`), `u32 resposta` (se ≠ 0: `u32 de`, `str nome`, `str trecho`), `u32 pra` (se ≠ 0: `str nome`), `u32 arquivo` (se ≠ 0: `str nome`, `u64 tamanho`) |
 | 6 | stream_start | C→S | `u8 tipo`, `u16 w`, `u16 h`, `u8 fps`, `u8 flags` (1 = com áudio; só vale pra tela) |
 | 7 | stream_stop | C→S | `u8 tipo` |
 | 8 | frame | C→S | frame (abaixo) |
@@ -155,6 +155,12 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 31 | identity | S→C | `[32] chave pública`, `[64] assinatura` deste handshake (ver "Identidade do servidor"): a primeira mensagem, antes do `hello` |
 | 32 | chan_admin | C→S | `u8 ação`, `str canal`, `str valor`, `u32 alvo` (só admin; tabela abaixo) |
 | 33 | call | C→S | `str canal` (vazio = sai da call), `str senha`: entra na call desse canal |
+| 34 | file_put | C→S | `u32 pedido`, `str nome`, `u64 tamanho`, `u32 pra` (privada; 0 = o canal), `u32 resposta`: quero mandar um arquivo |
+| 35 | file_ready | S→C | `u32 pedido`, `u32 arquivo` (0 = recusado), `str motivo` |
+| 36 | file_data | C→S / S→C | `u32 arquivo`, `u64 posição`, bytes (até 64 KB): subindo / baixando |
+| 37 | file_ack | S→C | `u32 arquivo`, `u64 recebido` (até onde chegou) |
+| 38 | file_get | C→S | `u32 arquivo`, `u64 posição` (múltipla de 64), `u32 tamanho` (até 64 KB) |
+| 39 | file_cancel | C→S | `u32 arquivo`: desiste de subir |
 
 `versão_do_app` ("3.0.0") serve só pra avisar quem está desatualizado (a
 interface mostra "fulano está no telinha X: tem versão nova"); vazia = não
@@ -289,7 +295,8 @@ call, mesmo trancado).
 **notice** — tipos: 1 = microfone silenciado, 2 = microfone liberado, 3 =
 transmissão parada (`extra` = tipo dela), 4 = virou admin, 5 = deixou de ser
 admin, 7/8 = pincel tirado/devolvido, 9 = um admin te levou pra outro canal, 10 =
-a mensagem privada não foi (a pessoa saiu ou o app dela não recebe). O
+a mensagem privada não foi (a pessoa saiu ou o app dela não recebe), 11 = o
+arquivo pedido não está mais na sala. O
 `texto` já vem pronto ("Ana silenciou seu microfone."). 6 = não deu pra
 trocar de canal (nome inválido, trocando rápido demais, o servidor não deixa
 criar canal ou já tem canais demais).
@@ -408,6 +415,27 @@ Mensagem velha demais (fora do histórico) vai sem citação.
 estiver (qualquer canal); não entra no histórico do canal nem tem reação. O
 servidor guarda as últimas 64 (sem as imagens) só pra conferir citação numa
 resposta dentro da privada; em público, citar uma privada não leva o trecho.
+
+### Arquivos
+
+Quem manda sobe uma vez pro servidor; cada um baixa quando clicar, no ritmo
+dele. `file_put` reserva o lugar (até 256 MB por arquivo, 3 subindo por
+pessoa); `file_data` sobe em ordem, em pedaços de 32 KB, e cada um ganha um
+`file_ack`. Completo, vira uma mensagem de chat do canal (ou privada) com o
+`arquivo`; o texto dela é "📎 nome (tamanho)", pra app antigo. Quem baixa pede
+pedaços com `file_get`; só baixa quem está no canal onde o arquivo foi postado
+(ou os dois da privada). O id é sorteado.
+
+Os dois lados andam **em segundo plano** (`bgflow.zig`, como o LEDBAT): a
+janela de bytes sem confirmação cresce enquanto o atraso das confirmações fica
+perto do menor já visto e cai pela metade quando ele sobe mais de 40 ms (fila
+enchendo, quase sempre o vídeo de alguém disputando a mesma conexão). Assim o
+arquivo usa a banda que sobra e não atrapalha transmissão, voz nem chat.
+
+No servidor os arquivos ficam no disco (`--arquivos`, ver o DEPLOY), cifrados
+com ChaCha20 e uma chave que só existe na memória dele; expiram 2 h depois de
+completos, no máximo 2 GB no total (o mais velho sai), subida parada há 2 min
+é largada, e quem sai da sala no meio da subida leva o arquivo junto.
 
 ### Canais
 

@@ -22,7 +22,7 @@ const TestClient = struct {
     rb: proto.RecvBuf = .{},
     id: u32 = 0,
     route: u8 = 0,
-    seen: [32]bool = [_]bool{false} ** 32, // tipos de mensagem já recebidos
+    seen: [64]bool = [_]bool{false} ** 64, // tipos de mensagem já recebidos
     last_slow_floor: u8 = 0,
     transcript: [32]u8 = undefined, // o handshake (pra conferir a identidade)
 
@@ -2459,4 +2459,119 @@ test "chat: resposta cita do histórico; privada só pros dois, fora do históri
         if (std.mem.eql(u8, h.textSlice(), "depois")) break;
     }
     try testing.expect(seen_reply);
+}
+
+// ------------------------------------------------------- arquivos
+
+fn filePut(c: *TestClient, local: u32, name: []const u8, size: u64, to: u32) !void {
+    var b: proto.Builder = .{};
+    defer b.deinit();
+    try b.begin(.file_put);
+    try b.u32_(local);
+    try b.str(name);
+    try b.u64_(size);
+    try b.u32_(to);
+    try b.u32_(0);
+    try c.send(try b.finish());
+}
+
+fn fileData(c: *TestClient, id: u32, off: u64, bytes: []const u8) !void {
+    const m = try proto.Msg.alloc(.file_data, 12 + bytes.len);
+    std.mem.writeInt(u32, m.payload()[0..4], id, .little);
+    std.mem.writeInt(u64, m.payload()[4..12], off, .little);
+    @memcpy(m.payload()[12..], bytes);
+    try c.send(m);
+}
+
+fn fileGet(c: *TestClient, id: u32, off: u64, len: u32) !void {
+    const m = try proto.Msg.alloc(.file_get, 16);
+    std.mem.writeInt(u32, m.payload()[0..4], id, .little);
+    std.mem.writeInt(u64, m.payload()[4..12], off, .little);
+    std.mem.writeInt(u32, m.payload()[12..16], len, .little);
+    try c.send(m);
+}
+
+test "arquivos: sobe em pedaços (com confirmação), aparece no chat, baixa igual; outro canal não baixa" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port, .channels = "geral,outro" });
+    defer srv.stop();
+    var a = try TestClient.connectFeats(port, "Ana", "", "", 1, 0, "geral", proto.features_mine);
+    defer a.close();
+    try a.welcome();
+    var b = try TestClient.connectFeats(port, "Bia", "", "", 2, 0, "geral", proto.features_mine);
+    defer b.close();
+    try b.welcome();
+    var o = try TestClient.connectFeats(port, "Outro", "", "", 3, 0, "outro", proto.features_mine);
+    defer o.close();
+    try o.welcome();
+
+    // 100 KB de conteúdo conhecido
+    var data: [100 * 1024]u8 = undefined;
+    for (&data, 0..) |*x, i| x.* = @truncate(i *% 31 +% 7);
+    try filePut(&a, 9, "../../etc/relatório final.bin", data.len, 0);
+    var rr: proto.Reader = .{ .data = try a.expect(.file_ready) };
+    try testing.expectEqual(@as(u32, 9), try rr.u32_());
+    const id = try rr.u32_();
+    try testing.expect(id != 0);
+    // fora de ordem: o servidor não aceita (e larga o arquivo)
+    var off: usize = 0;
+    while (off < data.len) : (off += 32 * 1024) {
+        const n = @min(32 * 1024, data.len - off);
+        try fileData(&a, id, off, data[off..][0..n]);
+        var ar: proto.Reader = .{ .data = try a.expect(.file_ack) };
+        try testing.expectEqual(id, try ar.u32_());
+        try testing.expectEqual(@as(u64, off + n), try ar.u64_());
+    }
+    // apareceu no chat da Bia, com o nome limpo e o tamanho
+    var cr: proto.Reader = undefined;
+    var file_id: u32 = 0;
+    var fname: []const u8 = "";
+    while (file_id == 0) {
+        cr = .{ .data = try b.expect(.chat) };
+        _ = try cr.u32_();
+        const from = try cr.u32_();
+        _ = try cr.str();
+        const text = try cr.str();
+        _ = try cr.u64_();
+        _ = try cr.u8_();
+        _ = try cr.u8_(); // imagem: nenhuma
+        _ = try cr.u8_(); // reações
+        _ = try cr.u32_(); // resposta
+        _ = try cr.u32_(); // pra
+        file_id = try cr.u32_();
+        if (file_id == 0) continue;
+        try testing.expectEqual(a.id, from);
+        fname = try cr.str();
+        try testing.expectEqual(@as(u64, data.len), try cr.u64_());
+        try testing.expect(std.mem.indexOf(u8, text, "relatório final.bin") != null); // pra app antigo
+    }
+    try testing.expectEqual(id, file_id);
+    try testing.expectEqualStrings("relatório final.bin", fname);
+    // a Bia baixa em pedaços e confere
+    var got: [100 * 1024]u8 = undefined;
+    off = 0;
+    while (off < data.len) : (off += 32 * 1024) {
+        try fileGet(&b, id, off, 32 * 1024);
+        var dr: proto.Reader = .{ .data = try b.expect(.file_data) };
+        try testing.expectEqual(id, try dr.u32_());
+        try testing.expectEqual(@as(u64, off), try dr.u64_());
+        const bytes = dr.rest();
+        @memcpy(got[off..][0..bytes.len], bytes);
+    }
+    try testing.expectEqualSlices(u8, &data, &got);
+    // quem está em outro canal não baixa (nem sabe que existe): só ping/pong volta
+    try fileGet(&o, id, 0, 32 * 1024);
+    const ping = try proto.Msg.alloc(.ping, 8);
+    std.mem.writeInt(u64, ping.payload()[0..8], 1234, .little);
+    try o.send(ping);
+    _ = try o.expect(.pong);
+    try testing.expect(!o.seen[@intFromEnum(proto.Type.file_data)]);
+    // pedaço fora de ordem na subida: recusado e o arquivo é largado
+    try filePut(&a, 10, "x.bin", 1000, 0);
+    var rr2: proto.Reader = .{ .data = try a.expect(.file_ready) };
+    _ = try rr2.u32_();
+    const id2 = try rr2.u32_();
+    try fileData(&a, id2, 512, data[0..64]);
+    _ = try a.expect(.notice);
 }

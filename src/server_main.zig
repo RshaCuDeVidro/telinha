@@ -34,6 +34,9 @@ const usage =
     \\  -e, --estado ARQUIVO   onde guardar o que sobrevive a reiniciar: canais
     \\                         fixos (senha, trava, tópico), banidos, silenciados
     \\                         ($TELINHA_ESTADO; padrão: do lado da --chave)
+    \\  --arquivos PASTA       onde guardar os arquivos mandados na sala, cifrados
+    \\                         ($TELINHA_ARQUIVOS; padrão: "arquivos" do lado do
+    \\                         --estado). Expiram em 2 h; no máximo 2 GB
     \\  -k, --chave ARQUIVO    a identidade do servidor ($TELINHA_CHAVE; criada na
     \\                         primeira vez). Padrão: /var/lib/telinha/servidor.key
     \\                         (root) ou ~/.config/telinha/servidor.key. A impressão
@@ -62,6 +65,15 @@ fn fpSuffix() []const u8 {
 var key_used: [400]u8 = undefined;
 var key_used_len: usize = 0;
 var state_buf: [420]u8 = undefined;
+
+var files_buf: [480]u8 = undefined;
+
+/// A pasta dos arquivos da sala: a dada, ou "arquivos" do lado do estado.
+fn filesDir(given: []const u8, state: []const u8) []const u8 {
+    if (given.len > 0) return given;
+    const dir = if (std.mem.lastIndexOfScalar(u8, state, '/')) |i| state[0..i] else ".";
+    return std.fmt.bufPrint(&files_buf, "{s}/arquivos", .{dir}) catch "";
+}
 
 /// O arquivo de estado: o dado, ou "estado.txt" na pasta da chave.
 fn statePath(given: []const u8, key: []const u8) []const u8 {
@@ -190,6 +202,7 @@ pub fn main(init: std.process.Init) !void {
     var new_channels = true;
     var key_path: []const u8 = env("TELINHA_CHAVE") orelse "";
     var state_path: []const u8 = env("TELINHA_ESTADO") orelse "";
+    var files_dir: []const u8 = env("TELINHA_ARQUIVOS") orelse "";
     var public_host: ?[]const u8 = null;
     var use_upnp = false;
     if (env("TELINHA_PORTA")) |p| port = std.fmt.parseInt(u16, p, 10) catch die("TELINHA_PORTA inválida: {s}", .{p});
@@ -232,6 +245,8 @@ pub fn main(init: std.process.Init) !void {
             logs_dir = v;
         } else if (std.mem.eql(u8, a, "-e") or std.mem.eql(u8, a, "--estado")) {
             state_path = v;
+        } else if (std.mem.eql(u8, a, "--arquivos")) {
+            files_dir = v;
         } else if (std.mem.eql(u8, a, "-k") or std.mem.eql(u8, a, "--chave")) {
             key_path = v;
         } else if (std.mem.eql(u8, a, "-c") or std.mem.eql(u8, a, "--canais")) {
@@ -256,7 +271,7 @@ pub fn main(init: std.process.Init) !void {
         const z = std.fmt.bufPrintZ(&lb, "{s}", .{logs_dir}) catch die("pasta de logs longa demais", .{});
         _ = mkdir(z.ptr, 0o750);
     }
-    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir, .channels = channels, .new_channels = new_channels, .identity_seed = loadKey(key_path, &key_used), .state_path = statePath(state_path, key_used[0..key_used_len]) }) catch
+    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir, .channels = channels, .new_channels = new_channels, .identity_seed = loadKey(key_path, &key_used), .state_path = statePath(state_path, key_used[0..key_used_len]), .files_dir = filesDir(files_dir, statePath(state_path, key_used[0..key_used_len])) }) catch
         die("não consegui abrir a porta {d} (já está em uso?)", .{port});
 
     var buf: [256]u8 = undefined;
