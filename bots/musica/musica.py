@@ -228,7 +228,7 @@ class MusicBot(Bot):
         elif local := self.src.search_library(query):
             tracks = [self.src.file_track(local[0])]
         else:
-            tracks = (await self.src.search(query, 1))[:1]
+            tracks = await self.src.find(query)
         if not tracks:
             raise CommandError(f'Nothing found for "{query}".')
         for t in tracks:

@@ -21,7 +21,7 @@ sys.path.insert(0, str(HERE.parents[1] / "sdk" / "python"))
 sys.path.insert(0, str(HERE.parents[1] / "sdk" / "python" / "tests"))
 
 from musica import MusicBot, load_radios  # noqa: E402
-from sources import Resolver  # noqa: E402
+from sources import Resolver, Track, best_match  # noqa: E402
 from telinha import Client  # noqa: E402
 from test_sdk import Room, server_binary, until  # noqa: E402
 
@@ -142,6 +142,16 @@ class ProbeTest(unittest.IsolatedAsyncioTestCase):
             t = await src.stream(src.file_track(src.search_library("sem tag")[0]))
             self.assertEqual((t.title, t.artist, t.thumbnail), ("Sem tag", "Fulano", str(musica)))
             self.assertAlmostEqual(t.duration_ms, 3000, delta=100)
+
+
+class BestMatchTest(unittest.TestCase):
+    def test_a_musica_pedida_e_nao_a_primeira_da_banda(self):
+        found = [Track("I'm Not A Vampire", "soundcloud", "x", artist="Falling In Reverse"),
+                 Track("Popular Monster (Cover)", "soundcloud", "x", artist="Fulano"),
+                 Track("Popular Monster", "soundcloud", "x", artist="Falling In Reverse")]
+        self.assertIs(best_match("Falling In Reverse Popular Monster", found), found[2])
+        self.assertIs(best_match("popular monster cover", found), found[1])
+        self.assertIs(best_match("nada a ver", found), found[0])  # empate: a ordem da busca
 
 
 class RadiosTest(unittest.TestCase):

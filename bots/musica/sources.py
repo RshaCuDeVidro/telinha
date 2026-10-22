@@ -57,6 +57,29 @@ def fold(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", s.casefold()) if unicodedata.category(c) != "Mn")
 
 
+_NOISE = {"cover", "remix", "live", "karaoke", "instrumental", "nightcore", "sped", "slowed", "reverb", "8d", "acoustic", "lyrics", "lyric",
+          "bootleg", "edit", "mashup", "flip", "rework", "vip", "tribute", "parody", "along", "drum", "drums", "playthrough",
+          "tutorial", "reaction"}
+
+
+def _words(s: str) -> set[str]:
+    return set(re.sub(r"[^a-z0-9]+", " ", fold(s)).split())
+
+
+def best_match(query: str, found: list[Track]) -> Track | None:
+    """O resultado que mais parece o pedido (o primeiro da busca nem sempre é:
+    outra música da mesma banda, um cover, um remix). Empate = a ordem da busca."""
+    want = _words(query)
+    if not found or not want:
+        return found[0] if found else None
+
+    def score(t: Track) -> float:
+        got = _words(f"{t.artist} {t.title}")
+        hit = len(want & got) / len(want)
+        return hit - 0.3 * len((got & _NOISE) - want)
+    return max(found, key=score)  # max devolve o primeiro entre os empatados
+
+
 def nice_source(t: Track) -> str:
     return {"file": "Library", "radio": "Radio", "room": "Room file", "youtube": "YouTube", "soundcloud": "SoundCloud",
             "bandcamp": "Bandcamp", "link": "Link"}.get(t.source, t.source.title())
@@ -209,14 +232,23 @@ class Resolver:
             raise RuntimeError("no audio link")
         return info
 
+    async def find(self, query: str) -> list[Track]:
+        """Uma música pelo nome: busca alguns e fica com o que mais parece."""
+        best = best_match(query, await self.search(query, 5))
+        return [best] if best else []
+
     async def _fallback(self, t: Track) -> Track:
-        """YouTube recusou: a mesma música pelo nome no SoundCloud."""
-        q = f"{t.artist} {t.title}".strip() if t.artist and fold(t.artist) not in fold(t.title) else t.title
-        q = re.sub(r"\((official|lyric|lyrics|audio|video|official video|official audio|hd|4k)[^)]*\)|\[[^\]]*\]", "", q, flags=re.I).strip()
-        found = await self.search_provider("soundcloud", q)
-        if not found:
+        """YouTube recusou: a mesma música pelo nome no SoundCloud (só se achar
+        ela mesma; outra da banda, não)."""
+        title = re.sub(r"\((official|lyric|lyrics|audio|video|official video|official audio|music video|visualizer|hd|4k)[^)]*\)|\[[^\]]*\]", "", t.title, flags=re.I)
+        artist = re.sub(r"\s*(vevo|- topic|official|records)\s*$", "", t.artist, flags=re.I).strip()
+        # o título do YouTube quase sempre já tem "Banda - Música"; o canal só entra se não tiver
+        q = title if " - " in title or not artist or fold(artist) in fold(title) else f"{artist} {title}"
+        q = " ".join(re.sub(r"[\"“”'‘’]|\s+-\s+", " ", q).split())  # Banda - "Música" → Banda Música
+        alt = best_match(q, await self.search_provider("soundcloud", q, 4))
+        name = _words(title.split(" - ", 1)[-1]) - _words(artist)  # as palavras da música, sem a banda
+        if not alt or (name and len(name & _words(f"{alt.artist} {alt.title}")) < 0.6 * len(name)):
             raise RuntimeError(f"YouTube refused it and \"{q}\" isn't on SoundCloud either")
-        alt = found[0]
         alt = replace(alt, requested_by=t.requested_by)
         log.info("YouTube recusou %r: tocando %r do SoundCloud", t.title, alt.title)
         return await self.stream(alt)
@@ -236,10 +268,10 @@ class Resolver:
             q = await asyncio.to_thread(self._name_from_store, url)
             if not q:
                 raise RuntimeError("couldn't read the song name from that link")
-            found = await self.search(q, 1)
+            found = await self.find(q)
             if not found:
                 raise RuntimeError(f"couldn't find \"{q}\" to play")
-            return found[:1]
+            return found
         if re.search(r"\.(mp3|ogg|opus|flac|m4a|aac|wav)(\?|$)", url, re.I) or yt_dlp is None:
             name = urllib.parse.unquote(Path(urllib.parse.urlsplit(url).path).stem) or url
             return [Track(name, "link", url, page=url)]
@@ -298,7 +330,7 @@ class Resolver:
             a = re.search(r'"artists":\[\{"name":("(?:[^"\\]|\\.)*")', page)
             title = json.loads(t.group(1)) if t else ""
             artist = json.loads(a.group(1)) if a else ""
-            return f"{artist} {title}".strip()
+            return "" if not t or "not found" in title.lower() else f"{artist} {title}".strip()
         page = self._fetch(url)
 
         def meta(prop: str) -> str:
