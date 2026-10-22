@@ -98,6 +98,21 @@ Windows); é só rodar de novo.
 - Objetos compartilhados entre threads usam contagem de referências; a UI nunca libera algo que outra thread ainda usa.
 - Mudou o protocolo? Suba `proto.version` e atualize `docs/PROTOCOL.md` e `docs/PROTOCOL.pt.md`.
 
+## Documentação e o site
+
+Os docs são `.md` no repositório (sempre nos dois idiomas: `X.md` e `X.pt.md`),
+e o site no GitHub Pages sai deles pelo `site/build.py` a cada push na `main`
+(`.github/workflows/pages.yml`). Pra ver na sua máquina:
+
+```sh
+pip install -r site/requirements.txt
+python3 site/build.py --out _site      # falha se algum link ou âncora interna estiver quebrado
+python3 -m http.server -d _site 8000   # http://127.0.0.1:8000
+```
+
+Página nova entra em `SECTIONS` no `site/build.py`. A página inicial é
+`site/home.pt.html` / `site/home.en.html`; o visual é o `site/assets/style.css`.
+
 ## Soltando uma versão
 
 1. Suba a versão em `build.zig.zon` (`.version`) e `src/proto.zig` (`app_version`), e escreva a seção nos dois changelogs (`CHANGELOG.md` em inglês e `CHANGELOG.pt.md`).

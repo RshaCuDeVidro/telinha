@@ -1,0 +1,109 @@
+<section class="hero wrap">
+  <div class="hero-kicker fade-in">group screen sharing · linux + windows</div>
+  <h1 class="hero-title fade-in"><span class="hero-glitch" data-text="telinha">telinha</span></h1>
+  <p class="hero-sub fade-in">A Discord-style room where <b>anyone can go live</b> and <b>everyone can watch, talk and chat</b>, with genuinely low latency. No accounts, nothing to install on Windows, no third-party server.</p>
+  <div class="dl-row fade-in">
+    <a class="btn" data-os="windows" href="{{gh}}/releases/latest/download/telinha-windows-x86_64.exe"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M0 2.3 6.5 1.4v6.2H0zM7.3 1.3 16 0v7.6H7.3zM0 8.4h6.5v6.2L0 13.7zM7.3 8.4H16V16l-8.7-1.2z"/></svg>Windows <small>.exe</small></a>
+    <a class="btn" data-os="linux" href="#install"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C6.3 0 5.4 1.5 5.4 3.4c0 1 .2 1.7-.3 2.6C4.4 7.2 3 8.7 3 11c0 .6.1 1.1.3 1.6-.5.3-1.3.5-1.3 1.2 0 .9 1.4.8 2.3 1.3.9.5 1.6 1 2.4.6.4-.2.7-.5.9-.5h1.6c.2 0 .5.3.9.5.8.4 1.5-.1 2.4-.6.9-.5 2.3-.4 2.3-1.3 0-.7-.8-.9-1.3-1.2.2-.5.3-1 .3-1.6 0-2.3-1.4-3.8-2.1-5-.5-.9-.3-1.6-.3-2.6C10.6 1.5 9.7 0 8 0zm-1.3 3c.4 0 .6.4.6.9s-.2.9-.6.9-.6-.4-.6-.9.2-.9.6-.9zm2.6 0c.4 0 .6.4.6.9s-.2.9-.6.9-.6-.4-.6-.9.2-.9.6-.9zM8 5.6c.7 0 1.6.4 1.6.8S8.7 7.3 8 7.3s-1.6-.5-1.6-.9.9-.8 1.6-.8z"/></svg>Linux <small>1 command</small></a>
+    <a class="btn" href="{{base}}{{lp}}docs/deploy/">dedicated server</a>
+  </div>
+  <div class="dl-note">v{{version}} · <a href="{{gh}}/releases/latest">every version and file</a> · open source (MIT)</div>
+  <div class="stats-bar">
+    <span><span class="stat-value">~17 ms</span> latency on a LAN</span>
+    <span>1080p60 HEVC for <span class="stat-value">~20%</span> of a core</span>
+    <span><span class="stat-value">X25519 + ChaCha20</span> on every connection</span>
+    <span><span class="stat-value">0</span> accounts</span>
+  </div>
+  <div class="monitor corner-accent">
+    <div class="monitor-glow" aria-hidden="true"></div>
+    <div class="monitor-bar" aria-hidden="true"><i></i><i></i><i></i><span>telinha — live room · pwnd theme</span></div>
+    <div class="monitor-screen"><img src="{{img}}en/room_pwnd.jpg" alt="A telinha room in the pwnd theme: a live stream, the member list and the chat" width="1600" height="900"></div>
+  </div>
+</section>
+
+<div class="wrap">
+  <section class="section">
+    <div class="section-head"><h2>why telinha</h2></div>
+    <div class="card-grid three">
+      <div class="article-card"><div class="ico">⚡</div><h3>Fast</h3><p>Capture, encoding and decoding stay on the GPU. Latency is measured on every frame, and the stream adapts before a delay builds up.</p></div>
+      <div class="article-card"><div class="ico">🔗</div><h3>One invite, done</h3><p>The invite carries every way into the room (LAN, router port, IPv6, public link). Each person joins through the fastest one that works.</p></div>
+      <div class="article-card"><div class="ico">🔒</div><h3>Private</h3><p>Every connection encrypted with X25519 and ChaCha20-Poly1305, with the password in the key derivation. The server's identity is verified.</p></div>
+      <div class="article-card"><div class="ico">🪶</div><h3>Light</h3><p>The interface only redraws when something changes. Features you don't use cost nothing: no CPU, no GPU, no bandwidth.</p></div>
+      <div class="article-card"><div class="ico">📦</div><h3>Portable</h3><p>On Windows it's a single <code>.exe</code>. On Linux it runs on Wayland and X11, on any distro with glibc 2.31+.</p></div>
+      <div class="article-card"><div class="ico">🔄</div><h3>Updates itself</h3><p>Shows what changes, checks the release signature and swaps its own executable. One click, or on its own.</p></div>
+    </div>
+  </section>
+
+  <section class="section" id="install">
+    <div class="section-head"><h2>install</h2><p>pick your system</p></div>
+    <div class="terminal corner-accent">
+      <div class="lang-tabs-bar" role="tablist">
+        <button class="lang-tab active" role="tab" aria-selected="true" aria-controls="t-linux" data-os-tab="linux">linux</button>
+        <button class="lang-tab" role="tab" aria-selected="false" aria-controls="t-windows" data-os-tab="windows">windows</button>
+        <button class="lang-tab" role="tab" aria-selected="false" aria-controls="t-server">server</button>
+      </div>
+      <div class="lang-panel" id="t-linux" role="tabpanel">
+        <p>No <code>sudo</code>: downloads the latest release, checks its SHA256, puts telinha in <code>~/.local/bin</code>, adds it to your app menu and makes <code>telinha://</code> invites open in the app. Run it again to update.</p>
+<pre><span class="ps">$ </span>curl -fsSL https://raw.githubusercontent.com/RshaCuDeVidro/telinha/main/install.sh | sh</pre>
+      </div>
+      <div class="lang-panel" id="t-windows" role="tabpanel" hidden>
+        <p>Download <a href="{{gh}}/releases/latest/download/telinha-windows-x86_64.exe">telinha-windows-x86_64.exe</a> and run it. Nothing to install. SmartScreen warns on first launch (the <code>.exe</code> isn't signed): <b>More info → Run anyway</b>.</p>
+<pre><span class="cm"># optional: check the file against the release's SHA256SUMS</span>
+<span class="ps">PS&gt; </span>Get-FileHash .\telinha-windows-x86_64.exe</pre>
+      </div>
+      <div class="lang-panel" id="t-server" role="tabpanel" hidden>
+        <p>An always-on room on a VPS: a static binary with no dependencies. With <code>--web</code> and <code>--web-tunel</code>, everyone can watch from a browser. <a href="{{base}}{{lp}}docs/deploy/">Full guide →</a></p>
+<pre><span class="ps">$ </span>curl -fsSLo telinha-server {{gh}}/releases/latest/download/telinha-server-linux-x86_64
+<span class="ps">$ </span>chmod +x telinha-server
+<span class="ps">$ </span>./telinha-server --porta 7777 --senha secret --web 7778 --web-tunel</pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head"><h2>in 5 steps</h2><p><a href="{{base}}{{lp}}docs/guide/">full guide →</a></p></div>
+    <ol class="steps">
+      <li><b>Create a room.</b> Open telinha and click <b>Create room</b>. The password is optional.</li>
+      <li><b>Invite people.</b> <b>Open port on router</b> for a direct connection, or <b>Create public link</b> if your ISP uses CGNAT. Then <b>Copy invite</b>.</li>
+      <li><b>Join.</b> Whoever gets it pastes the <code>telinha://…</code> invite on the home screen. If it's already copied, it pastes itself.</li>
+      <li><b>Go live.</b> <b>Share screen</b>, pick what to show, the sound and the quality, then <b>Go live</b>. Everything can change mid-stream.</li>
+      <li><b>Watch and talk.</b> Click anyone who is live. <kbd>F11</kbd> fullscreen, <kbd>Ctrl+M</kbd> microphone, <kbd>Ctrl+D</kbd> deafen.</li>
+    </ol>
+  </section>
+
+  <section class="section">
+    <div class="section-head"><h2>what's inside</h2></div>
+    <div class="card-grid">
+      <a class="article-card" href="{{base}}{{lp}}docs/guide/#go-live"><div class="ico">🖥️</div><h3>Streaming</h3><p>Several people live at once. Screen, window or a cropped area; webcam alongside; all computer sound, one program, or everything but a few.</p><span class="go">› guide</span></a>
+      <a class="article-card" href="{{base}}{{lp}}docs/guide/#watch"><div class="ico">👀</div><h3>Watching</h3><p>Zoom with a minimap, a "look here" pointer, drawing on the stream, clips of the last minutes on a hotkey, MP4 recording and screenshots.</p><span class="go">› guide</span></a>
+      <a class="article-card" href="{{base}}{{lp}}docs/guide/#talk"><div class="ico">🎙️</div><h3>Voice</h3><p>Echo cancellation, noise suppression (RNNoise), push-to-talk that works in-game, automatic gain. Voice jumps ahead of video.</p><span class="go">› guide</span></a>
+      <a class="article-card" href="{{base}}{{lp}}docs/guide/#chat"><div class="ico">💬</div><h3>Chat</h3><p>Markdown, images, reactions, mentions, quoted replies, private messages and files up to 256 MB that download in the background.</p><span class="go">› guide</span></a>
+      <a class="article-card" href="{{base}}{{lp}}docs/guide/#channels"><div class="ico">#️⃣</div><h3>Channels</h3><p>IRC-style: one server, many rooms. Chat and call are separate, so you can read one channel while staying in another's call.</p><span class="go">› guide</span></a>
+      <a class="article-card" href="{{base}}{{lp}}docs/guide/#watch-from-a-browser"><div class="ico">🌐</div><h3>From a browser</h3><p>On a dedicated server, a link to watch with nothing to install, phones included. The streamer pays nothing extra.</p><span class="go">› guide</span></a>
+      <a class="article-card" href="{{base}}{{lp}}docs/architecture/"><div class="ico">🧬</div><h3>Under the hood</h3><p>NVENC/NVDEC, VA-API and Media Foundation; zero-copy GPU capture; HEVC and AV1 (experimental) when everyone can decode; UDP resending only what was lost.</p><span class="go">› architecture</span></a>
+      <a class="article-card" href="{{base}}{{lp}}docs/guide/#for-admins"><div class="ico">👑</div><h3>Control</h3><p>Kick, ban, mute, lock the room, take a pen away. On a dedicated server, stats with a guess at the bottleneck.</p><span class="go">› guide</span></a>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-head"><h2>screenshots</h2></div>
+    <div class="shots">
+      <figure class="shot"><img src="{{img}}en/share.png" alt="Share screen dialog" loading="lazy"><figcaption><b>Going live.</b> What to show, which audio, the content type, resolution, frame rate and quality.</figcaption></figure>
+      <figure class="shot"><img src="{{img}}en/room.jpg" alt="A room in the dark theme" loading="lazy"><figcaption><b>The room.</b> Who's live on top, the stream in the middle, members and chat on the side.</figcaption></figure>
+      <figure class="shot"><img src="{{img}}en/home.png" alt="The home screen" loading="lazy"><figcaption><b>Home screen.</b> Join or create a room, straight into a channel if you like.</figcaption></figure>
+      <figure class="shot"><img src="{{img}}en/stats.png" alt="Server statistics" loading="lazy"><figcaption><b>Server stats.</b> What the admin sees: CPU, memory, bandwidth and the likely bottleneck.</figcaption></figure>
+      <figure class="shot"><img src="{{img}}en/shortcuts.png" alt="Shortcuts settings" loading="lazy"><figcaption><b>Global hotkeys.</b> Any key or mouse button, active while a game is focused.</figcaption></figure>
+      <figure class="shot"><img src="{{img}}en/performance.png" alt="Performance settings" loading="lazy"><figcaption><b>Performance.</b> Automatic quality, cursor outside the video and a test of your PC.</figcaption></figure>
+    </div>
+  </section>
+
+  <section class="cta corner-accent">
+    <h2>ready?</h2>
+    <p>Download it, create a room and send the invite. If you get stuck anywhere, the wiki has the way through.</p>
+    <div class="dl-row">
+      <a class="btn primary" href="{{base}}{{lp}}docs/guide/">read the guide</a>
+      <a class="btn" href="{{base}}{{lp}}docs/connecting/">connect from outside</a>
+      <a class="btn" href="{{base}}{{lp}}docs/faq/">troubleshooting</a>
+    </div>
+  </section>
+</div>

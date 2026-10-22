@@ -100,6 +100,22 @@ on Windows); just run it again.
 - Objects shared between threads use reference counting; the UI never frees something another thread still uses.
 - Changed the protocol? Bump `proto.version` and update `docs/PROTOCOL.md`.
 
+## Documentation and the site
+
+The docs are `.md` files in the repository (always in both languages: `X.md` and
+`X.pt.md`), and the site on GitHub Pages is generated from them by
+`site/build.py` on every push to `main` (`.github/workflows/pages.yml`). To see
+it locally:
+
+```sh
+pip install -r site/requirements.txt
+python3 site/build.py --out _site      # fails if any internal link or anchor is broken
+python3 -m http.server -d _site 8000   # http://127.0.0.1:8000
+```
+
+A new page goes into `SECTIONS` in `site/build.py`. The home page is
+`site/home.pt.html` / `site/home.en.html`; the look is `site/assets/style.css`.
+
 ## Cutting a release
 
 1. Bump the version in `build.zig.zon` (`.version`) and `src/proto.zig` (`app_version`), and write the section in both changelogs (`CHANGELOG.md` and the Portuguese `CHANGELOG.pt.md`).

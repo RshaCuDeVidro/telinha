@@ -1,0 +1,69 @@
+name: Pages
+
+# O site (wiki) sai dos .md do repositório: site/build.py gera, confere todos
+# os links internos (quebrado = falha) e, na main, publica no GitHub Pages.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "site/**"
+      - "README*.md"
+      - "CHANGELOG*.md"
+      - "CONTRIBUTING*.md"
+      - "src/proto.zig"
+      - "assets/icon.png"
+      - "assets/telinha.svg"
+      - ".github/workflows/pages.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "site/**"
+      - "README*.md"
+      - "CHANGELOG*.md"
+      - "CONTRIBUTING*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # "atualizado em" de cada página vem do git log
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Dependências
+        run: pip install -r site/requirements.txt
+
+      - name: Gera o site e confere os links
+        run: python site/build.py --out _site
+
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: _site
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

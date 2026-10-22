@@ -29,3 +29,5 @@ Thumbs.db
 .env
 
 .claude/
+_site/
+site/__pycache__/

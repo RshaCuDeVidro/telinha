@@ -22,6 +22,7 @@
   <a href="#features">Features</a> ·
   <a href="#performance">Performance</a> ·
   <a href="#building-from-source">Build</a> ·
+  <a href="https://rshacudevidro.github.io/telinha/en/"><b>Website &amp; docs</b></a> ·
   <a href="docs/ARCHITECTURE.md">Architecture</a> ·
   <a href="README.pt.md">🇧🇷 Português</a>
 </p>
@@ -259,13 +260,17 @@ To turn a crash report's stack trace into source lines, use `tools/simbolos.py` 
 
 ## Documentation
 
+The same docs, with search, live at **[rshacudevidro.github.io/telinha](https://rshacudevidro.github.io/telinha/en/)**.
+
+- [User guide](docs/GUIDE.md): everything the app does, chat commands, shortcuts and settings.
+- [Troubleshooting](docs/FAQ.md): the questions that come up most.
 - [Architecture](docs/ARCHITECTURE.md): threads, the video pipeline, bandwidth control and performance decisions.
 - [Protocol](docs/PROTOCOL.md): handshake, encryption and every message type.
 - [Dedicated server](docs/DEPLOY.md): static binary, Docker and systemd.
 - [Connection guide](docs/CONNECTING.md): every way for people outside to join (ports, CGNAT, IPv6, VPNs, tunnels).
 - [Contributing](CONTRIBUTING.md) and the [changelog](CHANGELOG.md).
 
-Every doc has a Portuguese version: [README](README.pt.md), [changelog](CHANGELOG.pt.md), [contributing](CONTRIBUTING.pt.md), [architecture](docs/ARCHITECTURE.pt.md), [protocol](docs/PROTOCOL.pt.md), [dedicated server](docs/DEPLOY.pt.md), [connection guide](docs/CONNECTING.pt.md) and [third-party notices](THIRD_PARTY_NOTICES.pt.md).
+Every doc has a Portuguese version: [README](README.pt.md), [user guide](docs/GUIDE.pt.md), [troubleshooting](docs/FAQ.pt.md), [changelog](CHANGELOG.pt.md), [contributing](CONTRIBUTING.pt.md), [architecture](docs/ARCHITECTURE.pt.md), [protocol](docs/PROTOCOL.pt.md), [dedicated server](docs/DEPLOY.pt.md), [connection guide](docs/CONNECTING.pt.md) and [third-party notices](THIRD_PARTY_NOTICES.pt.md).
 
 ## License
 
