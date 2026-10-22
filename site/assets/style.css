@@ -694,27 +694,6 @@ a.article-card:hover { transform: translateY(-2px); }
 .hero-kicker { display: inline-flex; align-items: center; gap: 8px; }
 .hero-kicker .i { width: 15px; height: 15px; }
 .hero-title { font-size: clamp(4.4rem, 11vw, 8.5rem); }
-.hero-bg { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
-.hero-sun {
-  position: absolute; left: 70%; bottom: 36%; width: min(520px, 80vw); aspect-ratio: 1; transform: translateX(-50%);
-  border-radius: 50%; opacity: 0.22;
-  background: linear-gradient(180deg, #f0abfc 0%, var(--neon-fuchsia) 45%, var(--neon-purple) 100%);
-  -webkit-mask-image: repeating-linear-gradient(180deg, #000 0 14px, transparent 14px 20px), linear-gradient(#000 40%, transparent 80%);
-  -webkit-mask-composite: source-in; mask-composite: intersect;
-  filter: blur(0.3px);
-}
-.hero-floor {
-  position: absolute; left: -50%; right: -50%; bottom: 0; height: 46%;
-  background-image: linear-gradient(rgba(217, 70, 239, 0.32) 1px, transparent 1px), linear-gradient(90deg, rgba(217, 70, 239, 0.32) 1px, transparent 1px);
-  background-size: 64px 64px; transform: perspective(380px) rotateX(62deg); transform-origin: 50% 0;
-  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 22%, #000 55%, transparent 100%);
-  mask-image: linear-gradient(180deg, transparent 0%, #000 22%, #000 55%, transparent 100%);
-  animation: floor 3.2s linear infinite;
-}
-.hero-bg::after { content: ""; position: absolute; left: 0; right: 0; bottom: 46%; height: 1px; background: linear-gradient(90deg, transparent, rgba(240, 171, 252, 0.7), transparent); box-shadow: 0 0 24px 4px rgba(217, 70, 239, 0.35); }
-@keyframes floor { from { background-position: 0 0; } to { background-position: 0 64px; } }
-:root[data-theme="light"] .hero-sun { opacity: 0.12; }
-:root[data-theme="light"] .hero-floor { opacity: 0.35; }
 
 .term { background: rgba(5, 3, 10, 0.88); border: 1px solid rgba(147, 51, 234, 0.45); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 22px 60px rgba(0, 0, 0, 0.55), 0 0 40px rgba(147, 51, 234, 0.18); backdrop-filter: blur(4px); }
 :root[data-theme="light"] .term { background: #0b0b12; }
@@ -749,7 +728,6 @@ a.article-card:hover { transform: translateY(-2px); }
 }
 @media (max-width: 1000px) {
   .hero-grid { grid-template-columns: minmax(0, 1fr); gap: 26px; }
-  .hero-sun { bottom: 22%; left: 50%; }
 }
 @media (max-width: 900px) {
   .docs-shell, .docs-shell.no-toc { grid-template-columns: minmax(0, 1fr); padding-top: 16px; }
