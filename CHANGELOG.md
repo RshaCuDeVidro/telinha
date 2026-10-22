@@ -84,7 +84,7 @@ Talks to 3.1 (the new messages are ignored by older apps and servers).
   Color Emoji on Linux, Segoe UI Emoji on Windows) drawn by FreeType. The font is
   only loaded when the first emoji shows up: no memory spent if you never see
   one. Composed emoji (families, skin tones) show their basic form.
-- **Right-click a message** to copy its text or reply (puts the @name in the box).
+- **Right-click a message** to copy its text or reply (puts the `@name` in the box).
 - **Pick the image with the system file picker** from the attach button (portal
   on Linux, the open-file dialog on Windows); paste and drag still work.
 - **Pen**: a palette under the stream with 15 colors plus your own, 4 widths
@@ -242,7 +242,7 @@ Talks to 3.0 (the new fields are optional).
   stream running.
 - **Chat**: images (paste with Ctrl+V or drag the file into the window; opens
   fullscreen with one click), reactions (like, love, haha, fire, wow, sad) and
-  @mentions with Tab to complete, highlight and notification. The image travels
+  mentions (`@name`) with Tab to complete, highlight and notification. The image travels
   as a video frame: no PNG/JPEG reader exposed to the network.
 - **New version warning**: if someone in the room is on a newer version, you
   find out; and the app can ask GitHub on startup (can be turned off). The

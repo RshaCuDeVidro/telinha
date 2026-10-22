@@ -207,6 +207,18 @@ test "changelog: os embutidos no app têm a seção da versão do build" {
     }
 }
 
+test "changelog: sem @menção solta (nas notas da release o GitHub vira menção a um usuário)" {
+    for ([_][]const u8{ @embedFile("changelog_pt"), @embedFile("changelog_en") }) |text| {
+        for (text, 0..) |ch, i| {
+            if (ch != '@' or i + 1 >= text.len or !std.ascii.isAlphanumeric(text[i + 1])) continue;
+            // "`@nome`" (código) não vira menção
+            if (i > 0 and text[i - 1] == '`') continue;
+            std.debug.print("@ solto no CHANGELOG: {s}\n", .{text[i..@min(text.len, i + 30)]});
+            return error.MencaoSolta;
+        }
+    }
+}
+
 test "changelog: linhas (itens com continuação juntos, subtítulos, sem os marcadores)" {
     var it: Iter = .{ .text = sample };
     _ = it.next();

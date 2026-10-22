@@ -86,7 +86,7 @@ Conversa com a 3.1 (as mensagens novas são ignoradas por app e servidor antigos
   FreeType. A fonte só é carregada quando aparece o primeiro emoji: quem não usa
   não gasta memória. Emoji compostos (família, tom de pele) aparecem na versão
   básica.
-- **Clique direito numa mensagem**: copiar o texto ou responder (põe o @nome na
+- **Clique direito numa mensagem**: copiar o texto ou responder (põe o `@nome` na
   caixa).
 - **Escolher a imagem pelo seletor do sistema** no botão de anexar (portal no
   Linux, a janela de abrir arquivo no Windows); colar e arrastar continuam.
@@ -250,7 +250,7 @@ Conversa com a 3.0 (os campos novos são opcionais).
   trocar com a transmissão rolando.
 - **Chat**: imagens (cole com Ctrl+V ou arraste o arquivo pra janela; abre em
   tela cheia com um clique), reações (curti, amei, haha, fogo, uau, triste) e
-  @menções com Tab pra completar, destaque e notificação. A imagem vai como um
+  menções (`@nome`) com Tab pra completar, destaque e notificação. A imagem vai como um
   quadro de vídeo: nada de leitor de PNG/JPEG exposto à rede.
 - **Aviso de versão nova**: se alguém na sala estiver numa versão mais nova,
   você fica sabendo; e o app pode perguntar ao GitHub ao abrir (desligável).
