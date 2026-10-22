@@ -7,15 +7,22 @@
 
 Antes: zig build -Dnative-only=true (usa zig-out/bin/telinha).
 """
+import hashlib
+import json
 import os
 import random
 import re
+import shutil
+import signal
+import subprocess
 import sys
+import threading
 import time
 import traceback
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(__file__))
-from telinha_qa import QAError, Session, log  # noqa: E402
+from telinha_qa import APP, EXE, App, QAError, Session, log  # noqa: E402
 
 TESTS = []
 
@@ -674,6 +681,37 @@ def upnp_e_tunel_proprio():
         a.fill("##pub", "0.tcp.sa.ngrok.io:12345")
         a.click(contains="Copiar convite##proprio")
         a.wait(lambda st: "0.tcp.sa.ngrok.io:12345" in (invite_addrs(st["clipboard"], "pw2") or []), 3, "o convite do túnel próprio")
+        # o guia com os outros jeitos (no teste o link só é anotado)
+        a.click("###guia")
+        a.wait(lambda st: "docs/CONNECTING" in st["opened"], 3, "abrir o guia de conexão")
+
+
+@test
+def natpmp_sem_upnp():
+    """Roteador sem UPnP mas com NAT-PMP (de mentira): 'Abrir porta no roteador' cai pro NAT-PMP, abre TCP e UDP, o convite leva o IP de fora e fechar devolve a porta."""
+    with Session("natpmp") as s:
+        pmp, dead = port(), port()
+        logf = os.path.join(s.base, "pmp.log")
+        s.spawn("pmp", [sys.executable, os.path.join(os.path.dirname(__file__), "mockpmp.py"), str(pmp), logf], dict(os.environ))
+        time.sleep(0.5)
+        p = port()
+        # o UPnP vai pra uma porta onde ninguém responde; o NAT-PMP, pro de mentira
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--senha", "pw3"], extra_env={"TELINHA_UPNP_SSDP": f"127.0.0.1:{dead}", "TELINHA_NATPMP": f"127.0.0.1:{pmp}"})
+        a.wait(lambda st: st["status"] == "connected", 10, "entrar")
+        a.click(contains="Abrir porta no roteador")
+        st = a.wait(lambda st: st["upnp"] and st["upnp"]["state"] != "working", 15, "abrir a porta (UPnP sem resposta, depois NAT-PMP)")
+        expect(st["upnp"]["state"] == "ready" and st["upnp"]["addr"] == f"203.0.113.8:{p}", f"não abriu pelo NAT-PMP: {st['upnp']}")
+        lines = open(logf).read()
+        expect(f"mapeia tcp {p}->{p}" in lines and f"mapeia udp {p}->{p}" in lines, f"pedidos: {lines!r}")
+        a.click(contains="Copiar convite##upnp")
+        a.wait(lambda st: f"203.0.113.8:{p}" in (invite_addrs(st["clipboard"], "pw3") or []), 3, "o convite com o IP de fora")
+        a.click(contains="Fechar porta")
+        a.wait(lambda st: st["upnp"] is None, 3, "fechar a porta")
+        for _ in range(30):
+            if "apaga tcp" in open(logf).read():
+                break
+            time.sleep(0.2)
+        expect("apaga tcp" in open(logf).read() and "apaga udp" in open(logf).read(), "a porta não foi devolvida ao roteador")
 
 
 @test
@@ -1626,7 +1664,7 @@ def udp_bloqueado():
 
 @test
 def versao_nova():
-    """Aviso de versão nova: pelo GitHub (de mentira, local) na tela inicial, e por alguém da sala que está numa versão mais nova."""
+    """Aviso de versão nova: pelo GitHub (de mentira, local) na tela inicial (o aviso abre sozinho; sem assinatura, só o botão da página), e por alguém da sala que está numa versão mais nova."""
     with Session("versao") as s:
         gh = port()
         s.spawn("github", [sys.executable, os.path.join(os.path.dirname(__file__), "mockgithub.py"), str(gh), "v9.1.0"], dict(os.environ))
@@ -1634,8 +1672,17 @@ def versao_nova():
         a = s.app("a", 91, ["--nome", "Ana"], extra_env={"TELINHA_ATUALIZACAO_URL": f"http://127.0.0.1:{gh}/repos/teste/telinha/releases/latest"})
         st = a.wait(lambda st: st["update"] in ("newer", "current", "failed"), 10, "a checagem de versão")
         expect(st["update"] == "newer" and st["update_latest"] == "v9.1.0", f"checagem: {st['update']} {st['update_latest']}")
-        a.click("Baixar##update")
-        a.wait(lambda st: st["opened"] == "https://github.com/teste/telinha/releases/tag/v9.1.0", 3, "abrir a página da release")
+        # release sem SHA256SUMS assinado (um GitHub de mentira bem simples): o
+        # aviso abre sozinho, sem o botão de atualizar, só o da página
+        st = a.wait(lambda st: st["update_modal"], 5, "o aviso de versão nova")
+        expect(not st["update_can"] and "SHA256SUMS" in st["update_why"], f"devia não instalar: {st['update_why']}")
+        a.click("###updpage")
+        a.wait(lambda st: st["opened"] == "https://github.com/teste/telinha/releases/tag/v9.1.0" and not st["update_modal"], 3, "abrir a página da release")
+        # o aviso volta pelo botão da tela inicial
+        a.click("Ver##update")
+        a.wait(lambda st: st["update_modal"], 3, "reabrir o aviso pela tela inicial")
+        a.click("###updlater")
+        a.wait(lambda st: not st["update_modal"], 3, "fechar o aviso (depois)")
         expect("telinha" in open(os.path.join(s.base, "github.log")).read(), "o app não se identificou (user-agent)")
         # na sala: alguém com o telinha mais novo
         p = port()
@@ -1937,6 +1984,190 @@ def congestionado_sem_girar():
         log(f"CPU da thread do encoder (a cada 2 s): {enc}")
         expect(len(enc) >= 3, f"poucas linhas de CPU no log: {enc}")
         expect(max(enc[1:]) < 40, f"o encoder girou sem parar: {enc}")
+
+
+def app_version():
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src", "proto.zig")).read()
+    return re.search(r'app_version = "([^"]+)"', src).group(1)
+
+
+class FakeReleases:
+    """Um "GitHub" de mentira: /<nome>/latest (o JSON da API) e os arquivos da release."""
+
+    def __init__(self, port):
+        self.routes = {}
+        routes = self.routes
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = routes.get(self.path)
+                if body is None:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        self.srv = ThreadingHTTPServer(("127.0.0.1", port), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{port}"
+
+    def release(self, name, tag, files, sig):
+        """Publica uma release em /name/: os arquivos, o SHA256SUMS e a assinatura dada."""
+        sums = "".join(f"{hashlib.sha256(v).hexdigest()}  {k}\n" for k, v in files.items()).encode()
+        allf = dict(files, **{"SHA256SUMS": sums, "SHA256SUMS.sig": sig(sums)})
+        for k, v in allf.items():
+            self.routes[f"/{name}/{k}"] = v
+        rel = {"tag_name": tag, "html_url": f"https://github.com/x/telinha/releases/tag/{tag}", "draft": False,
+               "body": "## Download\n| a | b |\n\n### Highlights\n\n- from the body",
+               "assets": [{"name": k, "size": len(v), "browser_download_url": f"{self.base}/{name}/{k}"} for k, v in allf.items()]}
+        self.routes[f"/{name}/latest"] = json.dumps(rel).encode()
+        return f"{self.base}/{name}/latest"
+
+    def close(self):
+        self.srv.shutdown()
+
+
+@test
+def atualizacao():
+    """Atualizador: versão nova no "GitHub" (de mentira): aviso com o que muda (o CHANGELOG da release, conferido), baixa, confere a assinatura e o sha256, troca o próprio executável e abre de novo; release com a assinatura errada não instala (só o botão da página); depois de atualizar, as novidades aparecem uma vez."""
+    with Session("atualiza") as s:
+        key = os.path.join(s.base, "teste.pem")
+        subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519", "-out", key], check=True, capture_output=True)
+        pub = subprocess.run(["openssl", "pkey", "-in", key, "-pubout", "-outform", "DER"], check=True, capture_output=True).stdout[-32:].hex()
+
+        def sign(data):
+            f = os.path.join(s.base, "assinar")
+            open(f, "wb").write(data)
+            return subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", key, "-rawin", "-in", f], check=True, capture_output=True).stdout
+
+        cur = app_version()
+        cl = f"# Changelog\n\n## Ainda não lançada\n\n- nada\n\n## 9.9.9\n\n### Destaques\n\n- **Atualizador de teste**: coisa\n  nova\n\n## 9.9.8\n\n- a do meio\n\n## {cur}\n\n- a atual\n".encode()
+        new_bin = open(APP, "rb").read() + b"\0versao-nova-do-teste\0"
+        files = {"telinha-linux-x86_64": new_bin, "CHANGELOG.pt.md": cl, "CHANGELOG.md": cl}
+        fake = FakeReleases(port())
+        ok_url = fake.release("ok", "v9.9.9", files, sign)
+        bad_url = fake.release("ruim", "v9.9.9", files, lambda d: bytes([sign(d)[0] ^ 1]) + sign(d)[1:])
+        new_pid = None
+        try:
+            # o app roda de uma cópia (é ela que vai ser trocada)
+            exe = os.path.join(s.base, "bin", "telinha")
+            os.makedirs(os.path.dirname(exe))
+            shutil.copy2(APP, exe)
+            env = {"TELINHA_ATUALIZACAO_URL": ok_url, "TELINHA_CHAVE_ATUALIZACAO": pub, "QA_EXE": exe}
+            a = s.app("a", 91, ["--nome", "Ana"], extra_env=env, wrap=["sh", "-c", 'shift; exec "$QA_EXE" "$@"', "x"])
+            st = a.wait(lambda st: st["update"] == "newer" and st["update_modal"], 20, "o aviso de versão nova")
+            expect(st["update_can"], f"não dá pra instalar: {st['update_why']}")
+            notes = st["update_notes"]
+            log(f"o que muda: {notes[:120]!r}")
+            expect("Atualizador de teste" in notes and "a do meio" in notes and "a atual" not in notes and "nada" not in notes, f"o que muda errado: {notes!r}")
+            time.sleep(0.5)
+            a.screenshot(os.path.join(s.base, "aviso.png"))
+            a.click("###updgo")
+            a.wait(lambda st: st["update"] == "installed", 30, "baixar, conferir e instalar")
+            a.screenshot(os.path.join(s.base, "instalado.png"))
+            expect(hashlib.sha256(open(exe, "rb").read()).digest() == hashlib.sha256(new_bin).digest(), "o executável não foi trocado pelo novo")
+            expect(not os.path.exists(exe + ".novo"), "sobrou o .novo")
+            old_pid = st["pid"]
+            a.click("###updrestart")
+            a.proc.wait(10)
+            a.proc = None  # agora quem escreve o estado é o processo novo
+            st = a.wait(lambda st: st["pid"] != old_pid and st["screen"] == "home", 20, "abrir de novo (o executável novo)")
+            new_pid = st["pid"]
+            expect(os.readlink(f"/proc/{new_pid}/exe") == exe, f"o processo novo não é o executável trocado: {os.readlink(f'/proc/{new_pid}/exe')}")
+            # nada da conexão/arquivos do antigo ficou aberto no novo (só 0,1,2 + os dele)
+            log(f"reabriu: pid {old_pid} -> {new_pid}")
+
+            # assinatura errada: avisa, mas não instala
+            exe2 = os.path.join(s.base, "bin2", "telinha")
+            os.makedirs(os.path.dirname(exe2))
+            shutil.copy2(APP, exe2)
+            before = hashlib.sha256(open(exe2, "rb").read()).digest()
+            b = s.app("b", 92, ["--nome", "Bia"], extra_env=dict(env, TELINHA_ATUALIZACAO_URL=bad_url, QA_EXE=exe2), wrap=["sh", "-c", 'shift; exec "$QA_EXE" "$@"', "x"])
+            st = b.wait(lambda st: st["update"] == "newer" and st["update_modal"], 20, "o aviso (assinatura errada)")
+            expect(not st["update_can"] and "assinatura" in st["update_why"], f"assinatura errada passou: {st['update_why']}")
+            expect("from the body" in st["update_notes"], f"sem o CHANGELOG conferido, as notas da release deviam aparecer: {st['update_notes']!r}")
+            b.find("###updpage")
+            b.screenshot(os.path.join(s.base, "assinatura_errada.png"))
+            expect(b.find("###updgo", timeout=0.5, need=False) is None, "botão de atualizar com a assinatura errada")
+            expect(hashlib.sha256(open(exe2, "rb").read()).digest() == before, "trocou o executável com a assinatura errada")
+
+            # depois de atualizar (abriu numa versão mais nova que a da última vez): as novidades
+            c = s.app("c", 93, ["--nome", "Caio"], config={"client_key": "abc123", "last_version": "3.0.0"})
+            c.wait(lambda st: st["whatsnew"], 10, "as novidades depois de atualizar")
+            time.sleep(0.5)
+            c.screenshot(os.path.join(s.base, "novidades.png"))
+            c.click("###newhist")
+            c.wait(lambda st: not st["whatsnew"] and st["settings_modal"], 3, "o histórico de versões (configurações, Sobre)")
+            time.sleep(0.6)
+            c.screenshot(os.path.join(s.base, "historico.png"))
+            ini = open(os.path.join(c.cfg, "telinha", "config.ini")).read()
+            expect(f"last_version={cur}" in ini, "não anotou a versão")
+        finally:
+            if new_pid:
+                try:
+                    os.kill(new_pid, signal.SIGTERM)
+                except OSError:
+                    pass
+            fake.close()
+
+
+@test
+def atualizacao_windows():
+    """Atualizador no .exe (wine): baixa pelo WinHTTP, confere, renomeia o .exe em uso pra .old, põe o novo no lugar e abre de novo; o novo espera o antigo fechar e apaga o .old."""
+    with Session("atualiza-win") as s:
+        key = os.path.join(s.base, "teste.pem")
+        subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519", "-out", key], check=True, capture_output=True)
+        pub = subprocess.run(["openssl", "pkey", "-in", key, "-pubout", "-outform", "DER"], check=True, capture_output=True).stdout[-32:].hex()
+
+        def sign(data):
+            f = os.path.join(s.base, "assinar")
+            open(f, "wb").write(data)
+            return subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", key, "-rawin", "-in", f], check=True, capture_output=True).stdout
+
+        cur = app_version()
+        cl = f"# Changelog\n\n## 9.9.9\n\n- **No Windows**: troca o .exe\n\n## {cur}\n\n- a atual\n".encode()
+        new_bin = open(EXE, "rb").read() + b"\0versao-nova-do-teste\0"
+        fake = FakeReleases(port())
+        url = fake.release("win", "v9.9.9", {"telinha-windows-x86_64.exe": new_bin, "CHANGELOG.pt.md": cl, "CHANGELOG.md": cl}, sign)
+        try:
+            exe = os.path.join(s.base, "bin", "telinha.exe")
+            os.makedirs(os.path.dirname(exe))
+            shutil.copy2(EXE, exe)
+            a = App(s, "w", 96, ["--nome", "Win"], (1280, 760), {"TELINHA_ATUALIZACAO_URL": url, "TELINHA_CHAVE_ATUALIZACAO": pub, "QA_EXE": exe}, False)
+            a.wine = True
+            # o .exe roda da cópia (é ela que vai ser trocada), nunca o do zig-out
+            a.wrap = ["sh", "-c", 'shift 2; exec wine "$QA_EXE" "$@"', "x"]
+            os.makedirs(os.path.join(a.dir, "appdata"), exist_ok=True)
+            s.apps.append(a)
+            a.start()
+            st = a.wait(lambda st: st["update"] == "newer" and st["update_modal"], 60, "o aviso de versão nova no .exe")
+            expect(st["update_can"], f"não dá pra instalar no .exe: {st['update_why']}")
+            expect("No Windows" in st["update_notes"], f"o que muda: {st['update_notes']!r}")
+            time.sleep(0.5)
+            a.click("###updgo")
+            st = a.wait(lambda st: st["update"] in ("installed", "install_failed"), 60, "baixar e trocar no .exe")
+            expect(st["update"] == "installed", f"falhou: {st['update_err']}")
+            expect(hashlib.sha256(open(exe, "rb").read()).digest() == hashlib.sha256(new_bin).digest(), "o .exe não foi trocado")
+            expect(os.path.exists(exe + ".old"), "o .exe antigo devia ter virado .old")
+            old_pid = st["pid"]
+            a.click("###updrestart")
+            a.proc.wait(30)
+            a.proc = None
+            a.wait(lambda st: st["pid"] != old_pid and st["screen"] == "home", 60, "o .exe novo abrir")
+            # o novo esperou o antigo fechar e apagou o .old
+            for _ in range(50):
+                if not os.path.exists(exe + ".old"):
+                    break
+                time.sleep(0.2)
+            expect(not os.path.exists(exe + ".old"), "sobrou o .old")
+        finally:
+            fake.close()
 
 
 @test

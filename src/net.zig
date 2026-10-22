@@ -486,6 +486,16 @@ pub fn globalIp6(out: [][16]u8) usize {
     return n;
 }
 
+/// IPv4 desta máquina do jeito que `to` a vê (a rota até ele). Não manda pacote.
+pub fn localIp4To(to: [4]u8) ?[4]u8 {
+    const s = c.socket(c.AF_INET, c.SOCK_DGRAM, c.IPPROTO_UDP);
+    if (s == invalid) return null;
+    defer close(s);
+    const a = sockaddr4(to, 9);
+    if (c.connect(s, @ptrCast(&a), @sizeOf(c.struct_sockaddr_in)) != 0) return null;
+    return localIp4(s);
+}
+
 /// IPv4 desta máquina na rede local (o da rota padrão). Não manda pacote:
 /// "conectar" UDP só escolhe a rota.
 pub fn primaryIp4() ?[4]u8 {

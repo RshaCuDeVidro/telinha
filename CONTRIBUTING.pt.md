@@ -100,14 +100,14 @@ Windows); é só rodar de novo.
 
 ## Soltando uma versão
 
-1. Suba a versão em `build.zig.zon` (`.version`) e escreva a seção nos dois changelogs (`CHANGELOG.md` em inglês e `CHANGELOG.pt.md`).
+1. Suba a versão em `build.zig.zon` (`.version`) e `src/proto.zig` (`app_version`), e escreva a seção nos dois changelogs (`CHANGELOG.md` em inglês e `CHANGELOG.pt.md`).
    As notas do release saem dessa seção do `CHANGELOG.md` (`tools/release_notes.sh`): o que vem
    antes de `<!-- detalhes -->` aparece aberto (os destaques), o resto fica num "Full changelog" que abre com um clique.
 2. Commit, depois a tag com o mesmo número:
 
    ```sh
-   git tag v3.1.0
-   git push origin main v3.1.0
+   git tag v3.2.0
+   git push origin main v3.2.0
    ```
 
 3. O CI (`.github/workflows/ci.yml`) roda os testes, compila e publica nos Releases:
@@ -115,6 +115,16 @@ Windows); é só rodar de novo.
    x86_64 e aarch64, símbolos (`telinha-simbolos.tar.gz`) e `SHA256SUMS`. Se a tag
    não bater com o `build.zig.zon`, ou se o binário Linux exigir glibc mais nova
    que 2.31, o CI falha antes de publicar.
+4. **Assinatura**: o CI assina o `SHA256SUMS` (`SHA256SUMS.sig`) com a chave do
+   segredo `TELINHA_ASSINATURA` (Ed25519 em PEM). O atualizador do app só instala
+   o que tiver essa assinatura, conferida com a chave pública em `src/update.zig`
+   (`release_key`). Numa tag sem o segredo, ou com outra chave, o CI falha. Guarde
+   uma cópia da chave privada fora do GitHub: perdeu, as versões já instaladas não
+   aceitam mais atualização sozinhas (vai ser preciso baixar uma vez na mão, com a
+   chave nova no app). Pra trocar: `openssl genpkey -algorithm ed25519 -out
+   chave.pem`, a pública (`openssl pkey -in chave.pem -pubout -outform DER | tail
+   -c 32 | od -An -tx1 | tr -d ' \n'`) no `release_key` e
+   `gh secret set TELINHA_ASSINATURA < chave.pem`.
 
 O build Linux de release dá pra reproduzir localmente:
 

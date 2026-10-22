@@ -2,12 +2,14 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
-## Unreleased
+## 3.2.0
 
 Talks to 3.1 (the new messages are ignored by older apps and servers).
 
 ### Highlights
 
+- 🔄 **Updates itself** (Windows and Linux): when a new version is out, telinha shows what changes and installs it with one click (or on its own, if you want), after checking the release signature. Older versions' notes are in the new **version history** (Settings → About), and right after updating you see what's new.
+- 🌐 **More ways in from outside, no third-party service**: besides UPnP, the router port now also opens through NAT-PMP and PCP, and there's a connection guide, docs/CONNECTING.md (manual port forwarding, CGNAT, IPv6, gaming VPNs, SSH tunnels with no account).
 - 💬 **Channels, IRC-style**: one server, many rooms. Each channel has its own chat, and the **call** (voice and streams) is separate, so you can read one channel while staying in another's call. Channels can have a password, a lock and a topic; pinned ones survive a restart.
 - 🔐 **Verified server identity**: the invite carries the server's fingerprint and the app checks it before sending anything.
 - 📝 **Markdown in the chat**: code blocks with a copy button, `code`, **bold**, *italic*, links; Shift+Enter for a new line. Color emoji.
@@ -25,6 +27,32 @@ Talks to 3.1 (the new messages are ignored by older apps and servers).
 
 ### All changes
 
+- **Auto-update**: the release ships `SHA256SUMS` signed with Ed25519
+  (`SHA256SUMS.sig`, key held by CI); the app checks the signature against the
+  public key built into it, downloads its platform's binary, checks the sha256
+  and only then swaps its own executable (Linux: atomic rename; Windows: the
+  running `.exe` becomes `.old`, deleted on the next start). "Restart now" reopens
+  with the same arguments, after the old one closes (a hosted room frees its port
+  first). If the folder isn't writable (installed as admin), only the
+  release-page button shows. It also checks again every 6 h while open. Options:
+  *Install new versions on its own*, *Skip this version*.
+- **What changes, in your language**: the update dialog shows every changelog
+  section between your version and the new one (the `CHANGELOG` attached to the
+  release, verified by the same `SHA256SUMS`). After updating, a *What's new*
+  dialog; the full history is in Settings → About (the changelogs are built into
+  the app).
+- **Settings from the home screen** (gear at the top right): no need to join a
+  room to change the language, updates and so on.
+- **NAT-PMP and PCP** (RFC 6886/6887) when the router doesn't answer UPnP: TCP and
+  UDP, renewed at half the lease, given back on close; a PCP-only router is
+  detected by the version error.
+- **Connection guide** (`docs/CONNECTING.md`, linked in the app): IPv6, manual port
+  forwarding step by step, how to spot CGNAT and ask the ISP for a public IP,
+  Radmin/ZeroTier/Tailscale, SSH tunnels with no account (Pinggy) and a reverse
+  tunnel to your own VPS. The Pinggy command is in the app's own-tunnel list.
+- **Text drawn at the size it was measured**: ImGui rounds the font size when
+  measuring; drawing didn't. Markdown text (chat, changelog) had gaps between
+  words and link underlines ran past the text.
 - **The call is separate from the text channel** (like Discord): `/join` and
   clicking a channel's name change only the chat; the headphones on each
   channel, `/call name` or the dock button join/leave its call — where voice and

@@ -50,6 +50,9 @@ pub const Config = struct {
     client_key: u64 = 0,
     notifications: bool = true, // notificação do sistema com o telinha em segundo plano
     check_updates: bool = true, // pergunta ao GitHub se tem versão nova (só com -Drepo)
+    update_auto: bool = false, // versão nova: baixa e instala sozinho (senão pergunta)
+    update_skip: [24]u8 = zstr("", 24), // "pular esta versão" (a tag)
+    last_version: [24]u8 = zstr("", 24), // a versão que abriu da última vez (novidades depois de atualizar)
     audio_app: [64]u8 = zstr("", 64), // som de um programa só ("" = tudo; "*janela" = o da janela)
     audio_exclude: [512]u8 = zstr("", 512), // "tudo" menos esses programas (separados por "|" no arquivo)
     debug_log: bool = false, // grava o log de depuração (tudo) num arquivo
@@ -227,9 +230,13 @@ test "atalho na configuração: texto -> tecla" {
     try std.testing.expectEqual(@as(u8, 3), fora.mods);
 }
 
+/// Primeira vez que o app abre nesta máquina (não tinha configuração).
+pub var fresh = false;
+
 pub fn load() Config {
     var cfg = loadFile();
     if (cfg.client_key == 0) {
+        fresh = true;
         var rnd: [8]u8 = undefined;
         sync.osRandom(&rnd);
         cfg.client_key = std.mem.readInt(u64, &rnd, .little) | 1;
@@ -277,6 +284,12 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         setStr(&cfg.debug_webhook, v);
     } else if (std.mem.eql(u8, k, "check_updates")) {
         cfg.check_updates = int != 0;
+    } else if (std.mem.eql(u8, k, "update_auto")) {
+        cfg.update_auto = int != 0;
+    } else if (std.mem.eql(u8, k, "update_skip")) {
+        setStr(&cfg.update_skip, v);
+    } else if (std.mem.eql(u8, k, "last_version")) {
+        setStr(&cfg.last_version, v);
     } else if (std.mem.eql(u8, k, "clips")) {
         cfg.clips = int != 0;
     } else if (std.mem.eql(u8, k, "camera_device")) {
@@ -392,8 +405,9 @@ pub fn save(cfg: *const Config) void {
     _ = c.fwrite(m.ptr, 1, m.len, f);
     // (um format só aceita 32 valores: o resto vai aqui)
     var more2: [700]u8 = undefined;
-    const m2 = std.fmt.bufPrint(&more2, "animations={d}\njoin_channel={s}\ndraw_color={d}\ndraw_size={d}\nshow_drawings={d}\njoin_fp={s}\njoin_fp_for={s}\n", .{
+    const m2 = std.fmt.bufPrint(&more2, "animations={d}\njoin_channel={s}\ndraw_color={d}\ndraw_size={d}\nshow_drawings={d}\njoin_fp={s}\njoin_fp_for={s}\nupdate_auto={d}\nupdate_skip={s}\nlast_version={s}\n", .{
         @intFromBool(cfg.animations), getStr(&cfg.join_channel), cfg.draw_color, cfg.draw_size, @intFromBool(cfg.show_drawings), getStr(&cfg.join_fp), getStr(&cfg.join_fp_for),
+        @intFromBool(cfg.update_auto), getStr(&cfg.update_skip), getStr(&cfg.last_version),
     }) catch return;
     _ = c.fwrite(m2.ptr, 1, m2.len, f);
     inline for (@typeInfo(HotkeyId).@"enum".fields) |fl| {

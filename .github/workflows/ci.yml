@@ -33,6 +33,12 @@ jobs:
             echo "::error::a tag é $GITHUB_REF_NAME mas o build.zig.zon diz $v"
             exit 1
           fi
+          # a versão que o app mostra e compara (atualização, novidades)
+          a=$(sed -n 's/^pub const app_version = "\(.*\)";/\1/p' src/proto.zig)
+          if [ "v$a" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::a tag é $GITHUB_REF_NAME mas o src/proto.zig diz $a"
+            exit 1
+          fi
           # as notas do release saem da seção da versão no CHANGELOG.md
           sh tools/release_notes.sh "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/notas.md"
 
@@ -106,8 +112,37 @@ jobs:
           cp linux-out/bin/telinha.debug simbolos/telinha.debug
           cp zig-out/bin/telinha.pdb simbolos/telinha.pdb
           tar -C simbolos -czf dist/telinha-simbolos.tar.gz telinha.debug telinha.pdb
+          # o "o que muda" que o app mostra antes de atualizar (no idioma dele)
+          cp CHANGELOG.md CHANGELOG.pt.md dist/
           (cd dist && sha256sum * > SHA256SUMS)
           ls -la dist
+
+      - name: Assina o SHA256SUMS
+        # o atualizador do app só instala o que vier com esta assinatura (a
+        # chave pública está no src/update.zig). Numa tag é obrigatória.
+        env:
+          CHAVE: ${{ secrets.TELINHA_ASSINATURA }}
+        run: |
+          if [ -z "$CHAVE" ]; then
+            if [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+              echo "::error::sem o segredo TELINHA_ASSINATURA: a release sairia sem assinatura e o app não atualizaria sozinho"
+              exit 1
+            fi
+            echo "::warning::sem o segredo TELINHA_ASSINATURA: SHA256SUMS sem assinatura (tudo bem fora de uma tag)"
+            exit 0
+          fi
+          umask 077
+          printf '%s\n' "$CHAVE" > "$RUNNER_TEMP/chave.pem"
+          openssl pkeyutl -sign -inkey "$RUNNER_TEMP/chave.pem" -rawin -in dist/SHA256SUMS -out dist/SHA256SUMS.sig
+          rm -f "$RUNNER_TEMP/chave.pem"
+          # confere com a chave pública que vai no app
+          want=$(sed -n 's/.*release_key = hexKey("\([0-9a-f]*\)").*/\1/p' src/update.zig)
+          got=$(printf '%s\n' "$CHAVE" | openssl pkey -pubout -outform DER | tail -c 32 | od -An -tx1 | tr -d " \n")
+          if [ "$want" != "$got" ]; then
+            echo "::error::a chave do segredo não é a que o app conhece (src/update.zig)"
+            exit 1
+          fi
+          ls -la dist/SHA256SUMS.sig
 
       - uses: actions/upload-artifact@v4
         with:

@@ -12,7 +12,7 @@
 <p align="center">
   <img alt="Platforms" src="https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-5865f2?style=flat-square">
   <img alt="Zig 0.16" src="https://img.shields.io/badge/zig-0.16-f7a41d?style=flat-square">
-  <img alt="Version 3.1.0" src="https://img.shields.io/badge/version-3.1.0-9333ea?style=flat-square">
+  <img alt="Version 3.2.0" src="https://img.shields.io/badge/version-3.2.0-9333ea?style=flat-square">
   <img alt="MIT license" src="https://img.shields.io/badge/license-MIT-22c55e?style=flat-square">
 </p>
 
@@ -78,7 +78,7 @@ sudo dnf install libportal pipewire-libs
 ## Quick start
 
 1. **Create a room.** Open telinha and pick **Create room**. The default port is 7777 and the password is optional.
-2. **Invite friends from outside your network.** In the *Inviting people from outside* card, click **Open port on router** for a direct, lowest-latency connection. If your ISP uses CGNAT, click **Create public link** instead. Then **Copy invite** and send it.
+2. **Invite friends from outside your network.** In the *Inviting people from outside* card, click **Open port on router** for a direct, lowest-latency connection. If your ISP uses CGNAT, click **Create public link** instead. Then **Copy invite** and send it. No luck? The [connection guide](docs/CONNECTING.md) has every other way (manual port forwarding, IPv6, gaming VPNs, SSH tunnels), none needing an API key.
 3. **Join.** Paste the `telinha://…` invite on the home screen. telinha pre-fills it if it's already on your clipboard.
 4. **Go live.** Click **Share screen**, choose resolution, frame rate, quality and content type, then **Go live**. Everything can be changed mid-stream.
 5. **Watch.** Click anyone who is live. Press **F11** for fullscreen, **double-click** for theater mode and **Esc** to leave.
@@ -132,6 +132,7 @@ On Wayland, the system asks which screen or window to share the first time and r
 - The room creator gets the crown and can kick, ban, mute, stop a stream, give or remove admin and lock the room.
 - **Server stats for the admin**: CPU, memory, bandwidth in and out, who is lagging and a plain-language guess at the bottleneck.
 - **Automatic reconnection** that resumes your stream and the streams you were watching.
+- **Updates itself** on Windows and Linux: shows what changes, checks the release signature and swaps the executable. The version history is in Settings → About.
 - Live stats: resolution, frame rate, bandwidth and measured end-to-end latency.
 - **Configurable global hotkeys** for clip, mic, deafen, share, screenshot and a master toggle.
 - Themes: dark, light, pwnd neon, pwnd light, Nord, Dracula, or your own CSS.
@@ -258,9 +259,10 @@ To turn a crash report's stack trace into source lines, use `tools/simbolos.py` 
 - [Architecture](docs/ARCHITECTURE.md): threads, the video pipeline, bandwidth control and performance decisions.
 - [Protocol](docs/PROTOCOL.md): handshake, encryption and every message type.
 - [Dedicated server](docs/DEPLOY.md): static binary, Docker and systemd.
+- [Connection guide](docs/CONNECTING.md): every way for people outside to join (ports, CGNAT, IPv6, VPNs, tunnels).
 - [Contributing](CONTRIBUTING.md) and the [changelog](CHANGELOG.md).
 
-Every doc has a Portuguese version: [README](README.pt.md), [changelog](CHANGELOG.pt.md), [contributing](CONTRIBUTING.pt.md), [architecture](docs/ARCHITECTURE.pt.md), [protocol](docs/PROTOCOL.pt.md), [dedicated server](docs/DEPLOY.pt.md) and [third-party notices](THIRD_PARTY_NOTICES.pt.md).
+Every doc has a Portuguese version: [README](README.pt.md), [changelog](CHANGELOG.pt.md), [contributing](CONTRIBUTING.pt.md), [architecture](docs/ARCHITECTURE.pt.md), [protocol](docs/PROTOCOL.pt.md), [dedicated server](docs/DEPLOY.pt.md), [connection guide](docs/CONNECTING.pt.md) and [third-party notices](THIRD_PARTY_NOTICES.pt.md).
 
 ## License
 

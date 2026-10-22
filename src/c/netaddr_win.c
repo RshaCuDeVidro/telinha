@@ -39,3 +39,14 @@ int local_ip6(unsigned char out[][16], int max) {
     for (int i = 0; n == 0 && i < temp_n && n < max; i++) memcpy(out[n++], temps[i], 16);
     return n;
 }
+
+// O gateway padrão (o roteador) em IPv4: a rota que o Windows usaria pra
+// chegar na internet. 0 = achou.
+int default_gateway4(unsigned char out[4]) {
+    MIB_IPFORWARDROW row;
+    // 8.8.8.8 só escolhe a rota: nada é mandado
+    if (GetBestRoute(htonl(0x08080808), 0, &row) != NO_ERROR) return -1;
+    if (row.dwForwardNextHop == 0) return -1;
+    memcpy(out, &row.dwForwardNextHop, 4);
+    return 0;
+}

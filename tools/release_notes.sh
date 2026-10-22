@@ -30,6 +30,8 @@ curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | sh
 
 > The Windows \`.exe\` isn't code-signed: on first launch, SmartScreen asks; choose **More info → Run anyway**.
 
+**Already have telinha 3.2 or newer?** It updates itself: it shows what changes and installs after checking the signature (\`SHA256SUMS.sig\`). Coming from 3.1 or older, download it by hand once.
+
 NOTES
 
 printf '%s\n' "$section" | awk '

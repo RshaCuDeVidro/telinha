@@ -2,12 +2,14 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
-## Ainda não lançada
+## 3.2.0
 
 Conversa com a 3.1 (as mensagens novas são ignoradas por app e servidor antigos).
 
 ### Destaques
 
+- 🔄 **Atualiza sozinho** (Windows e Linux): saiu versão nova, o telinha mostra o que muda e instala com um clique (ou sozinho, se você quiser), depois de conferir a assinatura da release. As notas das versões antigas ficam no novo **histórico de versões** (Configurações → Sobre), e logo depois de atualizar aparecem as novidades.
+- 🌐 **Mais jeitos de entrar de fora, sem serviço de terceiros**: além do UPnP, a porta no roteador abre também por NAT-PMP e PCP, e tem um guia de conexão, docs/CONNECTING.pt.md (abrir porta na mão, CGNAT, IPv6, VPN de jogo, túnel por SSH sem conta).
 - 💬 **Canais, como no IRC**: um servidor, várias salas. Cada canal com o seu chat, e a **call** (voz e transmissões) é separada: dá pra ler um canal e continuar na call de outro. Canal pode ter senha, trava e tópico; os fixos sobrevivem a reiniciar.
 - 🔐 **Identidade do servidor conferida**: o convite leva a impressão do servidor e o app confere antes de mandar qualquer coisa.
 - 📝 **Markdown no chat**: blocos de código com botão de copiar, `código`, **negrito**, *itálico*, links; Shift+Enter quebra linha. Emoji colorido.
@@ -25,6 +27,34 @@ Conversa com a 3.1 (as mensagens novas são ignoradas por app e servidor antigos
 
 ### Todas as mudanças
 
+- **Atualização sozinha**: a release traz o `SHA256SUMS` assinado com Ed25519
+  (`SHA256SUMS.sig`, a chave fica com o CI); o app confere a assinatura com a
+  chave pública que vem nele, baixa o executável da plataforma, confere o sha256
+  e só então troca o próprio executável (Linux: rename atômico; Windows: o `.exe`
+  em uso vira `.old`, apagado na próxima vez que abrir). "Reiniciar agora" abre
+  de novo com os mesmos argumentos, depois que o antigo fecha (sala hospedada
+  solta a porta antes). Se a pasta não deixa gravar (instalado como
+  administrador), fica só o botão da página da release. Com o app aberto, checa
+  de novo a cada 6 h. Opções: *Instalar as versões novas sozinho*, *Pular esta
+  versão*.
+- **O que muda, no seu idioma**: o aviso mostra todas as seções do changelog
+  entre a sua versão e a nova (o `CHANGELOG` anexado à release, conferido pelo
+  mesmo `SHA256SUMS`). Depois de atualizar, as *Novidades*; o histórico inteiro
+  fica em Configurações → Sobre (os changelogs vão dentro do app).
+- **Configurações na tela inicial** (engrenagem no canto): não precisa entrar
+  numa sala pra trocar o idioma, a atualização etc.
+- **NAT-PMP e PCP** (RFC 6886/6887) quando o roteador não responde ao UPnP: TCP e
+  UDP, renovados na metade do prazo, devolvidos ao fechar; roteador que só fala
+  PCP é reconhecido pelo erro de versão.
+- **Guia de conexão** (`docs/CONNECTING.pt.md`, com link no app): IPv6, abrir a
+  porta na mão passo a passo, como saber se é CGNAT e pedir IP público à
+  operadora, Radmin/ZeroTier/Tailscale, túnel por SSH sem conta (Pinggy) e túnel
+  reverso pra sua própria VPS. O comando do Pinggy entrou na lista do túnel
+  próprio.
+- **Texto desenhado no tamanho em que foi medido**: o ImGui arredonda o tamanho
+  da fonte ao medir e o desenho não arredondava. O texto com markdown (chat,
+  changelog) ficava com espaço sobrando entre as palavras e o sublinhado do link
+  passava do texto.
 - **A call é separada do canal de texto** (como no Discord): `/join` e o clique no
   nome do canal trocam só o chat; o fone de cada canal, `/call nome` ou o botão
   da cápsula entram/saem da call dele — onde ficam a voz e as transmissões (a

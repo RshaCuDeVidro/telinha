@@ -2221,3 +2221,100 @@ test "nome: convite colado no campo do nome não vira o nome (a senha ia aparece
     try std.testing.expectEqualStrings("Ana", Server.safeName(" Ana "));
     try std.testing.expectEqualStrings("a" ** 32, Server.safeName("a" ** 40));
 }
+
+// ------------------------------------------------------- NAT-PMP / PCP
+
+const natpmp = @import("natpmp.zig");
+
+/// Roteador de mentira do NAT-PMP/PCP em 127.0.0.1 (nunca o de verdade).
+/// `pcp_only`: responde ao NAT-PMP com "versão não suportada" (só fala PCP).
+const MockPmp = struct {
+    s: net.Socket = undefined,
+    port: u16 = 0,
+    pcp_only: bool,
+    stop: std.atomic.Value(bool) = .init(false),
+    maps: std.atomic.Value(u32) = .init(0), // pedidos de mapear (com prazo)
+    deletes: std.atomic.Value(u32) = .init(0), // pedidos com prazo zero
+    thread: ?std.Thread = null,
+
+    fn start(m: *MockPmp) !void {
+        m.port = freshPort();
+        m.s = try net.udpBindLocal(m.port);
+        net.setRecvTimeout(m.s, 50);
+        m.thread = try std.Thread.spawn(.{}, loop, .{m});
+    }
+
+    fn deinit(m: *MockPmp) void {
+        m.stop.store(true, .release);
+        if (m.thread) |t| t.join();
+        net.close(m.s);
+    }
+
+    fn loop(m: *MockPmp) void {
+        var buf: [1100]u8 = undefined;
+        while (!m.stop.load(.acquire)) {
+            var from: net.UdpAddr = .{};
+            const n = net.udpRecvFrom(m.s, &buf, &from) orelse continue;
+            const b = buf[0..n];
+            if (n >= 2 and b[0] == 0) {
+                if (m.pcp_only) {
+                    _ = net.udpSend(m.s, &from, &.{ 2, 0x80 | b[1], 0, 1 }); // versão errada
+                    continue;
+                }
+                if (b[1] == 0) {
+                    _ = net.udpSend(m.s, &from, &.{ 0, 128, 0, 0, 0, 0, 0, 9, 203, 0, 113, 7 });
+                } else if (n >= 12) {
+                    const life = std.mem.readInt(u32, b[8..12], .big);
+                    _ = (if (life == 0) &m.deletes else &m.maps).fetchAdd(1, .monotonic);
+                    var r: [16]u8 = .{0} ** 16;
+                    r[1] = b[1] + 128;
+                    @memcpy(r[8..10], b[4..6]); // porta de dentro
+                    @memcpy(r[10..12], b[6..8]); // a de fora: a pedida
+                    std.mem.writeInt(u32, r[12..16], life, .big);
+                    _ = net.udpSend(m.s, &from, &r);
+                }
+            } else if (n >= 60 and b[0] == 2 and b[1] == 1) {
+                const life = std.mem.readInt(u32, b[4..8], .big);
+                _ = (if (life == 0) &m.deletes else &m.maps).fetchAdd(1, .monotonic);
+                var r = b[0..60].*;
+                r[1] = 0x81;
+                r[3] = 0;
+                r[56..60].* = .{ 198, 51, 100, 4 };
+                _ = net.udpSend(m.s, &from, &r);
+            }
+        }
+    }
+};
+
+test "NAT-PMP: abre TCP e UDP, renova e devolve (roteador de mentira)" {
+    net.init();
+    var gw: MockPmp = .{ .pcp_only = false };
+    try gw.start();
+    defer gw.deinit();
+    var m = try natpmp.open(.{ 127, 0, 0, 1 }, gw.port, 7777);
+    try testing.expect(!m.pcp);
+    try testing.expectEqualSlices(u8, &.{ 203, 0, 113, 7 }, &m.ext_ip);
+    try testing.expectEqual(@as(u16, 7777), m.ext_port);
+    try testing.expect(m.udp);
+    try testing.expectEqual(@as(u32, 2), gw.maps.load(.monotonic));
+    try testing.expect(natpmp.renew(&m));
+    natpmp.close(&m);
+    try testing.expectEqual(@as(u32, 2), gw.deletes.load(.monotonic));
+}
+
+test "PCP: roteador que só fala PCP (o NAT-PMP volta com erro de versão)" {
+    net.init();
+    var gw: MockPmp = .{ .pcp_only = true };
+    try gw.start();
+    defer gw.deinit();
+    var m = try natpmp.open(.{ 127, 0, 0, 1 }, gw.port, 7777);
+    try testing.expect(m.pcp);
+    try testing.expectEqualSlices(u8, &.{ 198, 51, 100, 4 }, &m.ext_ip);
+    try testing.expect(m.udp);
+    natpmp.close(&m);
+    try testing.expectEqual(@as(u32, 2), gw.deletes.load(.monotonic));
+}
+
+test "NAT-PMP: nos testes, sem roteador de mentira, nunca acha o de verdade" {
+    try testing.expect(natpmp.gateway() == null);
+}

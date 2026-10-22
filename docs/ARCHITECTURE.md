@@ -42,7 +42,9 @@ same rate control and separate acknowledgements.
 | `src/clip.zig` | last ~30 s of each stream (clip) and recording in progress; videos folder |
 | `src/mp4.zig` | MP4 writer (H.264 in avc1 or HEVC in hvc1, + Opus, without re-encoding): clip with `moov` at the start, fragmented recording |
 | `src/udp.zig` | video/sound/voice over UDP: encrypted datagrams, pieces, reassembly, NACK, per-stream ordering, pacing |
-| `src/update.zig` | new version: version comparison and last release check on GitHub (curl / WinHTTP) |
+| `src/update.zig` | new version: last release check on GitHub (curl / WinHTTP), signed `SHA256SUMS` (Ed25519, public key here), the "what changes" and the install |
+| `src/c/selfupdate.c` | update: own executable path, download to a file, swap the executable (atomic rename on Linux; `.old` on Windows) and reopen |
+| `src/changelog.zig` | the CHANGELOG in sections (update dialog, what's new, history in About; the changelogs are built in) |
 | `src/chatimg.zig`, `src/chatsend.zig` | image in the chat: shrinks and becomes an H.264 frame (and back); reads file/clipboard on a thread |
 | `src/c/image.c` | stb_image (local files/clipboard only) and the image copied on Windows (PNG/DIB) |
 | `src/c/audio_apps_win.c` | Windows: programs playing sound (audio sessions) |
@@ -51,7 +53,8 @@ same rate control and separate acknowledgements.
 | `src/server.zig` | room server (embedded in the app or in `telinha-server`) |
 | `src/server_main.zig` | dedicated server executable |
 | `src/tunnel.zig` | public link: bore protocol client; each visitor becomes a room connection |
-| `src/upnp.zig` | port opened on the router (UPnP IGD: SSDP + SOAP), with a CGNAT warning |
+| `src/upnp.zig` | port opened on the router (UPnP IGD: SSDP + SOAP), with a CGNAT warning; without UPnP, falls back to `natpmp.zig` |
+| `src/natpmp.zig` | port opened through NAT-PMP (RFC 6886) or PCP (RFC 6887) on the default gateway |
 | `src/codec.zig` | openh264 and hardware encoder wrapper + vectorized color conversions |
 | `src/c/hwenc.c` | picks the hardware encoder: NVENC → Media Foundation (Windows) or VA-API (Linux) → none (openh264) |
 | `src/c/hwenc_nvenc.c` | NVIDIA hardware encoder, H.264 and HEVC (NVENC API 11.1, loaded at runtime) |

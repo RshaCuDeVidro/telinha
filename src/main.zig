@@ -9,6 +9,7 @@ const client_mod = @import("client.zig");
 const qa = @import("qa.zig");
 const crash = @import("crash.zig");
 const config = @import("config.zig");
+const update = @import("update.zig");
 const debuglog = @import("debuglog.zig");
 
 /// Panic do Zig: anota no relatório de travamento antes do padrão (que
@@ -75,6 +76,8 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     config.initDir();
     crash.install();
+    // reiniciou depois de atualizar: espera a versão anterior fechar e apaga as sobras
+    update.startup();
     teste_minimizado = std.c.getenv("TELINHA_TESTE_MINIMIZADO") != null;
     // Windows: a thread da interface com nome no log (no Linux isso renomearia o processo)
     if (sync.is_windows) sync.nameThread("interface");

@@ -42,7 +42,9 @@ pipeline, o mesmo controle de taxa e confirmações separadas.
 | `src/clip.zig` | últimos ~30 s de cada transmissão (clipe) e gravação em andamento; pasta dos vídeos |
 | `src/mp4.zig` | escritor de MP4 (H.264 em avc1 ou HEVC em hvc1, + Opus, sem recodificar): clipe com `moov` no começo, gravação fragmentada |
 | `src/udp.zig` | vídeo/som/voz por UDP: datagramas cifrados, pedaços, remontagem, NACK, ordem por transmissão, cadência |
-| `src/update.zig` | versão nova: comparação de versões e checagem da última release no GitHub (curl / WinHTTP) |
+| `src/update.zig` | versão nova: checagem da última release no GitHub (curl / WinHTTP), `SHA256SUMS` assinado (Ed25519, chave pública aqui), o "o que muda" e a instalação |
+| `src/c/selfupdate.c` | atualização: caminho do executável, baixar pra arquivo, trocar o executável (rename atômico no Linux; `.old` no Windows) e abrir de novo |
+| `src/changelog.zig` | o CHANGELOG em seções (o aviso de atualização, as novidades, o histórico em Sobre; os changelogs vão embutidos) |
 | `src/chatimg.zig`, `src/chatsend.zig` | imagem no chat: reduz e vira um quadro H.264 (e volta); lê arquivo/área de transferência numa thread |
 | `src/c/image.c` | stb_image (só arquivos/área de transferência locais) e a imagem copiada no Windows (PNG/DIB) |
 | `src/c/audio_apps_win.c` | Windows: programas tocando som (sessões de áudio) |
@@ -51,7 +53,8 @@ pipeline, o mesmo controle de taxa e confirmações separadas.
 | `src/server.zig` | servidor da sala (embutido no app ou no `telinha-server`) |
 | `src/server_main.zig` | executável do servidor dedicado |
 | `src/tunnel.zig` | link público: cliente do protocolo do bore; cada visitante vira uma conexão da sala |
-| `src/upnp.zig` | porta aberta no roteador (UPnP IGD: SSDP + SOAP), com aviso de CGNAT |
+| `src/upnp.zig` | porta aberta no roteador (UPnP IGD: SSDP + SOAP), com aviso de CGNAT; sem UPnP, cai pro `natpmp.zig` |
+| `src/natpmp.zig` | porta aberta pelo NAT-PMP (RFC 6886) ou PCP (RFC 6887) no gateway padrão |
 | `src/codec.zig` | wrapper do openh264 e do encoder em hardware + conversões de cor vetorizadas |
 | `src/c/hwenc.c` | escolhe o encoder em hardware: NVENC → Media Foundation (Windows) ou VA-API (Linux) → nenhum (openh264) |
 | `src/c/hwenc_nvenc.c` | encoder em hardware NVIDIA, H.264 e HEVC (API NVENC 11.1, carregada em runtime) |

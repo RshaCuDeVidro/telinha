@@ -1,12 +1,20 @@
 // GET simples por WinHTTP (Windows): usa os certificados e o proxy do
-// sistema, sem TLS próprio no .exe. Só pra checagem de versão nova.
+// sistema, sem TLS próprio no .exe. Checagem de versão nova e os arquivos
+// pequenos da release (SHA256SUMS, assinatura, CHANGELOG).
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winhttp.h>
 #include <string.h>
 
+int http_get_h(const char *url, const char *headers, char *out, int cap);
+
 // Retorna quantos bytes escreveu em out (corpo da resposta 200), ou -1.
 int http_get(const char *url, char *out, int cap) {
+    return http_get_h(url, "Accept: application/vnd.github+json\r\n", out, cap);
+}
+
+// Igual, com outros cabeçalhos ("" = nenhum).
+int http_get_h(const char *url, const char *headers, char *out, int cap) {
     WCHAR wurl[512];
     if (MultiByteToWideChar(CP_UTF8, 0, url, -1, wurl, 512) == 0) return -1;
     URL_COMPONENTS uc;
@@ -28,7 +36,9 @@ int http_get(const char *url, char *out, int cap) {
     r = WinHttpOpenRequest(c, L"GET", path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
                            uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
     if (!r) goto done;
-    if (!WinHttpSendRequest(r, L"Accept: application/vnd.github+json\r\n", (DWORD)-1L, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) goto done;
+    WCHAR wh[256];
+    if (MultiByteToWideChar(CP_UTF8, 0, headers ? headers : "", -1, wh, 256) == 0) goto done;
+    if (!WinHttpSendRequest(r, wh[0] ? wh : WINHTTP_NO_ADDITIONAL_HEADERS, wh[0] ? (DWORD)-1L : 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) goto done;
     if (!WinHttpReceiveResponse(r, NULL)) goto done;
     DWORD status = 0, sz = sizeof status;
     if (!WinHttpQueryHeaders(r, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &sz, WINHTTP_NO_HEADER_INDEX) || status != 200) goto done;

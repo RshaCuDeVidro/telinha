@@ -102,14 +102,14 @@ on Windows); just run it again.
 
 ## Cutting a release
 
-1. Bump the version in `build.zig.zon` (`.version`) and write the section in both changelogs (`CHANGELOG.md` and the Portuguese `CHANGELOG.pt.md`).
+1. Bump the version in `build.zig.zon` (`.version`) and `src/proto.zig` (`app_version`), and write the section in both changelogs (`CHANGELOG.md` and the Portuguese `CHANGELOG.pt.md`).
    The release notes come from that `CHANGELOG.md` section (`tools/release_notes.sh`): whatever is
    before `<!-- detalhes -->` is shown open (the highlights), the rest goes into a collapsible "Full changelog".
 2. Commit, then tag with the same number:
 
    ```sh
-   git tag v3.1.0
-   git push origin main v3.1.0
+   git tag v3.2.0
+   git push origin main v3.2.0
    ```
 
 3. CI (`.github/workflows/ci.yml`) runs the tests, builds and publishes to Releases:
@@ -117,6 +117,16 @@ on Windows); just run it again.
    x86_64 and aarch64 server, symbols (`telinha-simbolos.tar.gz`) and `SHA256SUMS`.
    If the tag doesn't match `build.zig.zon`, or the Linux binary requires a glibc
    newer than 2.31, CI fails before publishing.
+4. **Signature**: CI signs `SHA256SUMS` (`SHA256SUMS.sig`) with the key in the
+   `TELINHA_ASSINATURA` secret (Ed25519, PEM). The app's updater only installs what
+   carries that signature, checked against the public key in `src/update.zig`
+   (`release_key`). A tag without the secret, or with another key, fails CI. Keep a
+   copy of the private key outside GitHub: lose it and installed versions can no
+   longer update themselves (people would download once by hand, with the new key
+   in the app). To rotate: `openssl genpkey -algorithm ed25519 -out key.pem`, the
+   public key (`openssl pkey -in key.pem -pubout -outform DER | tail -c 32 | od -An
+   -tx1 | tr -d ' \n'`) into `release_key`, and
+   `gh secret set TELINHA_ASSINATURA < key.pem`.
 
 You can reproduce the Linux release build locally:
 

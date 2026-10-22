@@ -14,6 +14,8 @@ test {
     _ = @import("config.zig");
     _ = @import("hotkey.zig");
     _ = @import("update.zig");
+    _ = @import("changelog.zig");
+    _ = @import("natpmp.zig");
     _ = @import("chatimg.zig");
     _ = @import("i18n.zig");
     _ = @import("udp.zig");

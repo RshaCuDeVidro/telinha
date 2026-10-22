@@ -23,6 +23,9 @@ const pip = @import("pip.zig");
 const connect_mod = @import("connect.zig");
 const net = @import("net.zig");
 const update = @import("update.zig");
+const changelog = @import("changelog.zig");
+const changelog_pt = @embedFile("changelog_pt");
+const changelog_en = @embedFile("changelog_en");
 const chatimg = @import("chatimg.zig");
 const chatsend = @import("chatsend.zig");
 const markdown = @import("markdown.zig");
@@ -214,12 +217,19 @@ fn drawText(d: *c.ImDrawList, pos: c.ImVec2_c, color: u32, s: []const u8) void {
     c.ImDrawList_AddText_Vec2(d, pos, color, s.ptr, s.ptr + s.len);
 }
 fn drawTextF(d: *c.ImDrawList, f: *c.ImFont, size: f32, pos: c.ImVec2_c, color: u32, s: []const u8) void {
-    c.ImDrawList_AddText_FontPtr(d, f, S(size) * font_k, pos, color, s.ptr, s.ptr + s.len, 0, null);
+    c.ImDrawList_AddText_FontPtr(d, f, drawSize(size), pos, color, s.ptr, s.ptr + s.len, 0, null);
 }
 
 /// Igual, quebrando linha em `wrap` pixels.
 fn drawTextWrapF(d: *c.ImDrawList, f: *c.ImFont, size: f32, pos: c.ImVec2_c, color: u32, s: []const u8, wrap: f32) void {
-    c.ImDrawList_AddText_FontPtr(d, f, S(size) * font_k, pos, color, s.ptr, s.ptr + s.len, wrap, null);
+    c.ImDrawList_AddText_FontPtr(d, f, drawSize(size), pos, color, s.ptr, s.ptr + s.len, wrap, null);
+}
+
+/// O tamanho em que o texto é desenhado: arredondado, como o PushFont do
+/// ImGui faz (o textSizeF mede com ele). Sem arredondar, 13,5 media como 14 e
+/// desenhava 13,5: cada palavra do texto com markdown sobrava um pedaço.
+fn drawSize(size: f32) f32 {
+    return @max(1, @round(S(size) * font_k));
 }
 fn textSizeF(f: *c.ImFont, size: f32, s: []const u8) c.ImVec2_c {
     pushFont(f, size);
@@ -816,6 +826,13 @@ pub const App = struct {
     share_restart_window: f64 = 0,
     pctest_logged: bool = true, // resultado do teste do PC já foi pro log
     crash_prompt: bool = false, // travou da última vez: pergunta se manda o relatório
+    update_modal: bool = false, // versão nova: o que muda + atualizar
+    update_seen: [32]u8 = undefined, // a versão nova que já apareceu nesta sessão
+    update_seen_len: usize = 0,
+    update_auto_started: bool = false, // instalou sozinho: avisa quando terminar
+    whatsnew: bool = false, // acabou de atualizar: as novidades
+    whatsnew_after: [24]u8 = undefined, // a versão de antes ("" = só a seção da atual)
+    whatsnew_after_len: usize = 0,
     crash_sending: bool = false, // mandando o relatório pelo aviso (avisa quando acabar)
     ptt_capture: bool = false, // esperando a tecla nova do apertar pra falar
     key_capture: ?config.HotkeyId = null, // esperando a tecla nova desse atalho
@@ -905,7 +922,8 @@ pub const App = struct {
         if (a.cfg.ui_zoom != 100) setZoom(@as(f32, @floatFromInt(a.cfg.ui_zoom)) / 100);
         a.crash_prompt = crash.pending();
         _ = std.fmt.bufPrintZ(&a.port_buf, "{d}", .{a.cfg.host_port}) catch {};
-        if (a.cfg.check_updates) update.checkAsync(build_options.repo, version_string);
+        if (a.cfg.check_updates) update.checkAsync(build_options.repo, version_string, i18n.english());
+        a.noteVersion();
         voice.on_speaking_change = wakeUi;
         if (a.cfg.debug_log) {
             debuglog.start();
@@ -2481,6 +2499,9 @@ pub const App = struct {
             .room => a.drawRoom(vp.*.Size),
         }
         if (a.crash_prompt and !a.settings_modal and !a.share_modal and !a.leave_confirm) a.drawCrashPrompt();
+        a.updateTick();
+        const busy = a.settings_modal or a.share_modal or a.leave_confirm or a.crash_prompt;
+        if (a.update_modal and !busy) a.drawUpdateModal() else if (a.whatsnew and !busy and !a.update_modal) a.drawWhatsNew();
         a.watchCrashSend();
         a.drawToasts(vp.*.Size);
         a.drawCrt(vp.*.Size);
@@ -2597,6 +2618,11 @@ pub const App = struct {
         c.igDummy(v2(card_w, S(28)));
         c.igEndChild();
         c.igPopStyleColor(2);
+        // configurações também antes de entrar numa sala (atualização, histórico, idioma...)
+        const gs = S(34);
+        c.igSetCursorScreenPos(v2(size.x - gs - S(14), S(12)));
+        if (iconButton("##homegear", ic.gear, gs, col.muted, col.hover, tr("Configurações"))) a.openSettings();
+        if (a.settings_modal) a.drawSettingsModal();
     }
 
     /// A vitrine da esquerda: marca, uma tela "ao vivo" com código rolando,
@@ -3333,6 +3359,295 @@ pub const App = struct {
         if (primaryButton(fmtZ("{s}  Mandar###travoumandar", .{ic.send}), v2(bw, S(40)), col.blurple, col.blurple_hover, col.blurple_active)) {
             a.sendCrashReport();
             a.crash_prompt = false;
+            c.igCloseCurrentPopup();
+        }
+    }
+
+    // ------------------------------------------------------ atualização
+
+    /// O app abriu numa versão diferente da última vez: mostra as novidades.
+    /// Primeira vez na máquina: nada (só anota a versão).
+    fn noteVersion(a: *App) void {
+        const last = config.getStr(&a.cfg.last_version);
+        if (std.mem.eql(u8, last, version_string)) return;
+        if (!config.fresh and (last.len == 0 or update.isNewer(version_string, last))) {
+            a.whatsnew = true;
+            a.whatsnew_after_len = @min(last.len, a.whatsnew_after.len);
+            @memcpy(a.whatsnew_after[0..a.whatsnew_after_len], last[0..a.whatsnew_after_len]);
+        }
+        config.setStr(&a.cfg.last_version, version_string);
+        config.save(&a.cfg);
+    }
+
+    /// A cada quadro: checa de novo de vez em quando, abre o aviso quando
+    /// aparece versão nova (ou instala sozinho, se a pessoa quis).
+    fn updateTick(a: *App) void {
+        if (!a.cfg.check_updates) return;
+        update.recheckIfStale(build_options.repo, version_string, i18n.english());
+        const st = update.getState();
+        if (st == .newer) {
+            var vb: [32]u8 = undefined;
+            const v = update.latest(&vb);
+            if (!std.mem.eql(u8, v, a.update_seen[0..a.update_seen_len])) {
+                @memcpy(a.update_seen[0..v.len], v);
+                a.update_seen_len = v.len;
+                if (a.cfg.update_auto and update.canInstall()) {
+                    debuglog.line("versão nova {s}: instalando sozinho", .{v});
+                    update.installAsync();
+                    a.update_auto_started = true;
+                } else if (!std.mem.eql(u8, v, config.getStr(&a.cfg.update_skip))) {
+                    debuglog.line("versão nova {s}: avisando", .{v});
+                    a.update_modal = true;
+                }
+            }
+        }
+        if (a.update_auto_started and (st == .installed or st == .install_failed)) {
+            a.update_auto_started = false;
+            a.update_modal = true;
+        }
+        if (st == .downloading or st == .checking) redrawIn(0.25);
+    }
+
+    fn ownChangelog() []const u8 {
+        return if (i18n.english()) changelog_en else changelog_pt;
+    }
+
+    /// Seções do CHANGELOG (markdown) desenhadas: título da versão, subtítulos,
+    /// itens. `collapse`: cada versão abre e fecha (o histórico inteiro).
+    fn drawChangelog(text: []const u8, w: f32, comptime id: []const u8, collapse: bool) void {
+        var it: changelog.Iter = .{ .text = text };
+        var k: u32 = 0;
+        var scratch: [4096]u8 = undefined;
+        // sem "## versão" (as notas da release, quando o CHANGELOG não veio): as linhas direto
+        noteEmoji(text); // os Destaques têm emoji: carrega a fonte deles
+        if (!changelog.hasSections(text)) {
+            drawChangelogLines(text, w, &scratch);
+            return;
+        }
+        while (it.next()) |sec| : (k += 1) {
+            if (collapse) {
+                const flags: c.ImGuiTreeNodeFlags = if (k == 0) c.ImGuiTreeNodeFlags_DefaultOpen else 0;
+                pushFont(font_semibold, 15);
+                const open = c.igCollapsingHeader_TreeNodeFlags(fmtZ("{s}###" ++ id ++ "{d}", .{ i18n.dynamic(sec.title, &scratch), k }), flags);
+                popFont();
+                if (!open) continue;
+            } else {
+                pushFont(font_bold, 17);
+                textColored(col.header, sec.title);
+                popFont();
+            }
+            drawChangelogLines(sec.body, w, &scratch);
+            c.igDummy(v2(0, S(10)));
+        }
+    }
+
+    fn drawChangelogLines(body: []const u8, w: f32, scratch: []u8) void {
+        var li: changelog.LineIter = .{ .body = body, .scratch = scratch };
+        while (li.next()) |l| switch (l) {
+            .gap => c.igDummy(v2(0, S(3))),
+            .sub => |t| {
+                pushFont(font_semibold, 14);
+                textColored(col.muted, t);
+                popFont();
+            },
+            .bullet => |t| richParagraph(t, w, true),
+            .para => |t| richParagraph(t, w, false),
+        };
+    }
+
+    fn richParagraph(t: []const u8, w: f32, bullet: bool) void {
+        const d = drawList();
+        const p0 = c.igGetCursorScreenPos();
+        const fs: f32 = 13.5;
+        const lh = textSizeF(font_regular, fs, "Ag").y;
+        const indent: f32 = if (bullet) S(16) else 0;
+        if (bullet) drawTextF(d, font_regular, fs, v2(p0.x + S(4), p0.y), col.muted, "•");
+        const bottom = richInline(d, t, p0.x + indent, p0.x + w, p0.y, fs, lh);
+        c.igSetCursorScreenPos(p0);
+        c.igDummy(v2(w, @max(lh, bottom - p0.y) + S(2)));
+    }
+
+    /// Versão nova: o que muda (todas as versões entre a sua e a nova) e o botão
+    /// de atualizar (ou de abrir a página, quando não dá pra instalar sozinho).
+    fn drawUpdateModal(a: *App) void {
+        const st = update.getState();
+        if (st != .newer and st != .downloading and st != .installed and st != .install_failed) {
+            a.update_modal = false;
+            return;
+        }
+        _ = c.igOpenPopup_Str(tr("Versão nova###atualizar"), 0);
+        const vp = c.igGetMainViewport();
+        const mw = @min(S(600), vp.*.Size.x - S(40));
+        const mh = @min(S(640), vp.*.Size.y - S(40));
+        c.igSetNextWindowPos(v2(vp.*.Pos.x + vp.*.Size.x / 2, vp.*.Pos.y + vp.*.Size.y / 2), c.ImGuiCond_Always, v2(0.5, 0.5));
+        c.igSetNextWindowSize(v2(mw, mh), c.ImGuiCond_Always);
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(24), S(22)));
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, S(10) * col.round);
+        c.igPushStyleColor_U32(c.ImGuiCol_PopupBg, col.bg_main);
+        c.igPushStyleColor_U32(c.ImGuiCol_ModalWindowDimBg, rgba(0x000000, 170));
+        defer {
+            c.igPopStyleColor(2);
+            c.igPopStyleVar(2);
+        }
+        if (!c.igBeginPopupModal(tr("Versão nova###atualizar"), null, c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoResize | c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_NoScrollbar)) return;
+        defer c.igEndPopup();
+        const w = mw - S(48);
+        var vb: [32]u8 = undefined;
+        const v = update.latest(&vb);
+        pushFont(font_bold, 20);
+        if (st == .installed)
+            textColored(col.header, fmtZ("telinha {s} instalado", .{v}))
+        else
+            textColored(col.header, fmtZ("telinha {s} saiu", .{v}));
+        popFont();
+        pushFont(font_regular, 13.5);
+        textColored(col.muted, fmtZ("Você está na {s}. O que muda:", .{version_string}));
+        popFont();
+        c.igDummy(v2(0, S(6)));
+
+        // o que muda (rola)
+        const footer_h = S(118);
+        const notes_h = @max(S(80), c.igGetContentRegionAvail().y - footer_h);
+        c.igPushStyleColor_U32(c.ImGuiCol_ChildBg, col.bg_side);
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(14), S(12)));
+        if (c.igBeginChild_Str("##updnotes", v2(w, notes_h), c.ImGuiChildFlags_AlwaysUseWindowPadding, 0)) {
+            const nt = update.notes();
+            if (nt.len == 0) {
+                pushFont(font_regular, 13.5);
+                textColored(col.muted, tr("As novidades estão na página da versão."));
+                popFont();
+            } else drawChangelog(nt, w - S(40), "upd", false);
+        }
+        c.igEndChild();
+        c.igPopStyleVar(1);
+        c.igPopStyleColor(1);
+        c.igDummy(v2(0, S(8)));
+
+        // situação + botões
+        pushFont(font_regular, 13);
+        c.igPushTextWrapPos(c.igGetCursorPosX() + w);
+        switch (st) {
+            .downloading => {
+                const p = update.progress();
+                const pp = c.igGetCursorScreenPos();
+                const d = c.igGetWindowDrawList();
+                rectFill(d, pp.x, pp.y + S(4), pp.x + w, pp.y + S(10), withAlpha(col.text, 30), S(3));
+                rectFill(d, pp.x, pp.y + S(4), pp.x + w * p, pp.y + S(10), col.green, S(3));
+                c.igDummy(v2(w, S(14)));
+                textColored(col.muted, fmtZ("Baixando... {d}%", .{@as(u32, @intFromFloat(p * 100))}));
+            },
+            .installed => textColored(col.green, tr("Pronto. A versão nova abre quando o telinha reiniciar.")),
+            .install_failed => {
+                var eb: [300]u8 = undefined;
+                textColored(col.red, fmtZ("Não deu pra atualizar: {s}", .{i18n.dynamic(update.installError(), &eb)}));
+            },
+            else => if (!update.canInstall()) {
+                var eb: [300]u8 = undefined;
+                textColored(col.muted, fmtZ("Atualizar daqui não dá ({s}): é só baixar pela página.", .{i18n.dynamic(update.whyNot(), &eb)}));
+            } else c.igDummy(v2(0, 0)),
+        }
+        c.igPopTextWrapPos();
+        popFont();
+        c.igSetCursorPosY(mh - S(22) - S(40) - S(30));
+        c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
+        if (c.igCheckbox(tr("Instalar as próximas versões sozinho###updauto2"), &a.cfg.update_auto)) config.save(&a.cfg);
+        c.igPopStyleColor(1);
+        c.igSetCursorPosY(mh - S(22) - S(40));
+        const bw = (w - S(20)) / 3;
+        var close = c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false);
+        switch (st) {
+            .installed => {
+                if (secondaryButton(tr("Depois###updlater"), v2(bw, S(40)))) close = true;
+                c.igSameLine(0, S(10));
+                if (primaryButton(fmtZ("{s}  Reiniciar agora###updrestart", .{ic.arrow_right}), v2(bw * 2 + S(10), S(40)), col.green, col.green_hover, col.green_active)) {
+                    debuglog.line("reiniciando na versão nova", .{});
+                    if (update.restart()) {
+                        c.glfwSetWindowShouldClose(a.window, 1);
+                    } else a.toast("Não consegui abrir a versão nova: feche e abra o telinha.", .{}, true);
+                    close = true;
+                }
+            },
+            .downloading => {
+                if (secondaryButton(tr("Continuar usando###updbg"), v2(w, S(40)))) close = true;
+            },
+            else => {
+                if (secondaryButton(tr("Pular esta versão###updskip"), v2(bw, S(40)))) {
+                    config.setStr(&a.cfg.update_skip, v);
+                    config.save(&a.cfg);
+                    close = true;
+                }
+                c.igSameLine(0, S(10));
+                if (secondaryButton(tr("Depois###updlater"), v2(bw, S(40)))) close = true;
+                c.igSameLine(0, S(10));
+                if (update.canInstall()) {
+                    const label = if (st == .install_failed) fmtZ("{s}  Tentar de novo###updgo", .{ic.arrow_right}) else fmtZ("{s}  Atualizar agora###updgo", .{ic.arrow_right});
+                    if (primaryButton(label, v2(bw, S(40)), col.green, col.green_hover, col.green_active)) {
+                        debuglog.line("atualizando pra {s}", .{v});
+                        update.installAsync();
+                    }
+                } else if (primaryButton(tr("Abrir a página###updpage"), v2(bw, S(40)), col.blurple, col.blurple_hover, col.blurple_active)) {
+                    openReleases();
+                    close = true;
+                }
+            },
+        }
+        if (close) {
+            a.update_modal = false;
+            config.save(&a.cfg);
+            c.igCloseCurrentPopup();
+        }
+    }
+
+    /// Acabou de atualizar: o que mudou desde a versão de antes.
+    fn drawWhatsNew(a: *App) void {
+        const text = if (a.whatsnew_after_len > 0)
+            changelog.between(ownChangelog(), a.whatsnew_after[0..a.whatsnew_after_len], version_string)
+        else
+            changelog.section(ownChangelog(), version_string);
+        if (text.len == 0) {
+            a.whatsnew = false;
+            return;
+        }
+        _ = c.igOpenPopup_Str(tr("Novidades###novidades"), 0);
+        const vp = c.igGetMainViewport();
+        const mw = @min(S(600), vp.*.Size.x - S(40));
+        const mh = @min(S(600), vp.*.Size.y - S(40));
+        c.igSetNextWindowPos(v2(vp.*.Pos.x + vp.*.Size.x / 2, vp.*.Pos.y + vp.*.Size.y / 2), c.ImGuiCond_Always, v2(0.5, 0.5));
+        c.igSetNextWindowSize(v2(mw, mh), c.ImGuiCond_Always);
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(24), S(22)));
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, S(10) * col.round);
+        c.igPushStyleColor_U32(c.ImGuiCol_PopupBg, col.bg_main);
+        c.igPushStyleColor_U32(c.ImGuiCol_ModalWindowDimBg, rgba(0x000000, 170));
+        defer {
+            c.igPopStyleColor(2);
+            c.igPopStyleVar(2);
+        }
+        if (!c.igBeginPopupModal(tr("Novidades###novidades"), null, c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoResize | c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_NoScrollbar)) return;
+        defer c.igEndPopup();
+        const w = mw - S(48);
+        pushFont(font_bold, 20);
+        textColored(col.header, fmtZ("Novidades do telinha {s}", .{version_string}));
+        popFont();
+        c.igDummy(v2(0, S(6)));
+        const notes_h = @max(S(80), c.igGetContentRegionAvail().y - S(56));
+        c.igPushStyleColor_U32(c.ImGuiCol_ChildBg, col.bg_side);
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(14), S(12)));
+        if (c.igBeginChild_Str("##newnotes", v2(w, notes_h), c.ImGuiChildFlags_AlwaysUseWindowPadding, 0)) drawChangelog(text, w - S(40), "new", false);
+        c.igEndChild();
+        c.igPopStyleVar(1);
+        c.igPopStyleColor(1);
+        c.igSetCursorPosY(mh - S(22) - S(40));
+        const bw = (w - S(10)) / 2;
+        var close = c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false);
+        if (secondaryButton(tr("Histórico de versões###newhist"), v2(bw, S(40)))) {
+            close = true;
+            a.settings_page = .sobre;
+            a.openSettings();
+        }
+        c.igSameLine(0, S(10));
+        if (primaryButton(tr("Valeu###newok"), v2(bw, S(40)), col.blurple, col.blurple_hover, col.blurple_active)) close = true;
+        if (close) {
+            a.whatsnew = false;
             c.igCloseCurrentPopup();
         }
     }
@@ -5408,8 +5723,8 @@ pub const App = struct {
     /// Abre a pasta dos clipes no gerenciador de arquivos.
     /// "Versão nova disponível" (checagem no GitHub), com o botão de baixar.
     fn drawUpdateBanner(a: *App, w: f32) void {
-        _ = a;
-        if (update.getState() != .newer) return;
+        const ust = update.getState();
+        if (ust != .newer and ust != .downloading and ust != .installed and ust != .install_failed) return;
         var vb: [32]u8 = undefined;
         const v = update.latest(&vb);
         const d = drawList();
@@ -5419,7 +5734,7 @@ pub const App = struct {
         drawTextF(d, font_semibold, 14, v2(p.x + S(12), p.y + S(11)), col.header, fmtZ("{s}  telinha {s} saiu (você tem o {s})", .{ ic.arrow_right, v, version_string }));
         const bw = S(78);
         c.igSetCursorScreenPos(v2(p.x + w - bw - S(6), p.y + S(6)));
-        if (primaryButton(tr("Baixar##update"), v2(bw, h - S(12)), col.green, col.green_hover, col.green_active)) openReleases();
+        if (primaryButton(tr("Ver##update"), v2(bw, h - S(12)), col.green, col.green_hover, col.green_active)) a.update_modal = true;
         c.igSetCursorScreenPos(v2(p.x, p.y + h));
         c.igDummy(v2(w, S(12)));
     }
@@ -5916,7 +6231,7 @@ pub const App = struct {
             if (side) c.igSetCursorScreenPos(v2(x0 + cwid + S(12), row_y)) else c.igDummy(v2(0, S(4)));
             card = Card.begin(d, cwid);
             cardTitle(d, ic.tower, col.green, tr("Porta no roteador"));
-            wrapText(col.muted, 13, tr("Conexão direta (UPnP): menos atraso. Nem todo roteador ou operadora deixa."), inner);
+            wrapText(col.muted, 13, tr("Conexão direta (UPnP ou NAT-PMP): menos atraso. Nem todo roteador ou operadora deixa."), inner);
             c.igDummy(v2(0, S(2)));
             const extra2 = @max(0, a.tips_card_h - a.tips_body_h[1]);
             if (side and extra2 > 0) c.igDummy(v2(0, extra2));
@@ -5990,7 +6305,8 @@ pub const App = struct {
         const cmds = [_][:0]const u8{
             fmtCmd(0, "ngrok tcp {d}", s.port),
             fmtCmd(1, "bore local {d} --to bore.pub", s.port),
-            fmtCmd(2, "ssh -R 0:localhost:{d} serveo.net", s.port),
+            fmtCmd(2, "ssh -p 443 -R0:localhost:{d} tcp@a.pinggy.io", s.port),
+            fmtCmd(3, "ssh -R 0:localhost:{d} serveo.net", s.port),
         };
         for (cmds, 0..) |cmd, i| {
             const p = c.igGetCursorScreenPos();
@@ -6013,6 +6329,9 @@ pub const App = struct {
             a.stopTunnel(); // vale o endereço digitado
             a.copyInvite();
         }
+        // os outros jeitos (VPN de jogo, abrir porta na mão, CGNAT...): o guia
+        c.igDummy(v2(0, S(4)));
+        if (c.igSmallButton(fmtZ("{s}  Mais jeitos de conectar (sem conta, VPN, porta na mão)###guia", .{ic.link}))) openGuide();
         _ = card.end(d, 0, null);
         if (a.own_scroll) {
             a.own_scroll = false;
@@ -6034,7 +6353,7 @@ pub const App = struct {
         redrawIn(0.05);
     }
 
-    var cmd_bufs: [3][80]u8 = undefined;
+    var cmd_bufs: [4][80]u8 = undefined;
     fn fmtCmd(i: usize, comptime f: []const u8, port: u16) [:0]const u8 {
         return std.fmt.bufPrintZ(&cmd_bufs[i], f, .{port}) catch "";
     }
@@ -7187,11 +7506,16 @@ pub const App = struct {
         _ = c.igCheckbox(tr("Notificações com o telinha em segundo plano (chat, ao vivo, quem entrou)###notif"), &a.cfg.notifications);
         if (build_options.repo.len > 0 or update.getState() != .idle) {
             if (c.igCheckbox(tr("Avisar quando sair versão nova (pergunta ao GitHub ao abrir)###updates"), &a.cfg.check_updates) and a.cfg.check_updates)
-                update.checkAsync(build_options.repo, version_string);
+                update.checkAsync(build_options.repo, version_string, i18n.english());
             if (update.getState() == .newer) {
                 c.igSameLine(0, S(8));
-                if (c.igSmallButton(tr("Baixar a nova##upd"))) openReleases();
+                if (c.igSmallButton(tr("Ver a nova##upd"))) {
+                    a.update_modal = true;
+                    a.settings_modal = false;
+                    c.igCloseCurrentPopup();
+                }
             }
+            if (a.cfg.check_updates) _ = c.igCheckbox(tr("Instalar as versões novas sozinho (confere a assinatura antes)###updauto"), &a.cfg.update_auto);
         }
         if (c.igCheckbox(tr("Clipes: guardar o finalzinho do que você assiste (pra salvar um clipe na hora)###clips"), &a.cfg.clips)) a.applyClips();
         // do lado se couber, senão embaixo
@@ -7951,6 +8275,9 @@ pub const App = struct {
         textColored(col.faint, tr("Atalhos: Ctrl+M microfone · Ctrl+D surdo · F11 tela cheia · duplo clique = modo cinema · Esc sai"));
         popFont();
         c.igPopTextWrapPos();
+        c.igDummy(v2(0, S(14)));
+        fieldLabel("HISTÓRICO DE VERSÕES");
+        drawChangelog(ownChangelog(), w, "hist", true);
     }
 
     /// Log de depuração: grava tudo num arquivo e manda (gofile.io ou webhook).
@@ -8378,6 +8705,10 @@ pub const App = struct {
         try w.writeAll("]");
         var ub: [32]u8 = undefined;
         try w.print(",\"opened\":{f},\"update\":{f},\"update_latest\":{f}", .{ s(qa_opened[0..qa_opened_len]), s(@tagName(update.getState())), s(update.latest(&ub)) });
+        const un = update.notes();
+        try w.print(",\"pid\":{d},\"update_modal\":{},\"update_can\":{},\"update_why\":{f},\"update_err\":{f},\"update_notes\":{f},\"whatsnew\":{}", .{
+            qaPid(), a.update_modal, update.canInstall(), s(update.whyNot()), s(update.installError()), s(un[0..@min(un.len, 600)]), a.whatsnew,
+        });
         try w.print(",\"speaking\":{}", .{if (a.mic) |m| m.speaking.load(.monotonic) else false});
         try w.print(",\"crop\":[{d:.3},{d:.3},{d:.3},{d:.3}],\"strokes\":[", .{ a.crop[0], a.crop[1], a.crop[2], a.crop[3] });
         if (a.client) |cl| {
@@ -8574,6 +8905,20 @@ extern "c" var environ: [*:null]const ?[*:0]const u8;
 
 /// Abre uma pasta/arquivo no programa padrão (xdg-open / Explorer).
 /// Página da release nova (a que veio do GitHub; senão a última do repositório).
+/// O guia de conexão (docs/CONNECTING) no GitHub, no idioma da interface.
+fn openGuide() void {
+    const repo = if (build_options.repo.len > 0) build_options.repo else "RshaCuDeVidro/telinha";
+    var b: [200]u8 = undefined;
+    const url = std.fmt.bufPrint(&b, "https://github.com/{s}/blob/main/docs/{s}", .{ repo, if (i18n.english()) "CONNECTING.md" else "CONNECTING.pt.md" }) catch return;
+    _ = openPath(url);
+}
+
+fn qaPid() u32 {
+    if (sync.is_windows) return GetCurrentProcessId();
+    return @intCast(std.c.getpid());
+}
+extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
+
 fn openReleases() void {
     var b: [256]u8 = undefined;
     const page = update.page(&b);

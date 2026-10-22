@@ -14,6 +14,7 @@ const std = @import("std");
 const tr = @import("i18n.zig").tr;
 const net = @import("net.zig");
 const sync = @import("sync.zig");
+const natpmp = @import("natpmp.zig");
 const gpa = std.heap.c_allocator;
 
 pub const ssdp_multicast = [4]u8{ 239, 255, 255, 250 };
@@ -370,6 +371,7 @@ pub const Mapper = struct {
     err: [200]u8 = undefined,
     err_len: usize = 0,
     mapping: ?Mapping = null,
+    pmp: ?natpmp.Mapping = null, // abriu pelo NAT-PMP/PCP (o roteador não fala UPnP)
     port: u16,
     to: [4]u8,
     to_port: u16,
@@ -408,6 +410,7 @@ pub const Mapper = struct {
     pub fn address(m: *Mapper, buf: []u8) []const u8 {
         m.mutex.lock();
         defer m.mutex.unlock();
+        if (m.pmp) |p| return std.fmt.bufPrint(buf, "{d}.{d}.{d}.{d}:{d}", .{ p.ext_ip[0], p.ext_ip[1], p.ext_ip[2], p.ext_ip[3], p.ext_port }) catch buf[0..0];
         const mp = m.mapping orelse return buf[0..0];
         return std.fmt.bufPrint(buf, "{d}.{d}.{d}.{d}:{d}", .{ mp.ext_ip[0], mp.ext_ip[1], mp.ext_ip[2], mp.ext_ip[3], mp.ext_port }) catch buf[0..0];
     }
@@ -423,19 +426,18 @@ pub const Mapper = struct {
     fn run(m: *Mapper) void {
         defer m.release();
         const router = discover(m.to, m.to_port, 3000) catch |e| {
-            m.fail(switch (e) {
-                error.NoRouter => tr("Nenhum roteador respondeu ao UPnP (ele pode estar desligado nas configurações do roteador)."),
-                else => tr("O roteador respondeu, mas não deixa abrir portas por UPnP."),
+            // sem UPnP: o outro jeito de pedir porta (NAT-PMP/PCP)
+            return m.tryPmp(switch (e) {
+                error.NoRouter => tr("Nenhum roteador respondeu ao UPnP nem ao NAT-PMP/PCP (pode estar desligado nas configurações do roteador)."),
+                else => tr("O roteador respondeu, mas não deixa abrir portas por UPnP nem por NAT-PMP/PCP."),
             });
-            return;
         };
         var mp = open(router, m.port) catch |e| {
-            m.fail(switch (e) {
-                error.Cgnat => tr("Sua operadora usa CGNAT (o roteador não tem IP próprio na internet): porta aberta lá não chega aqui. Use o link público."),
+            if (e == error.Cgnat) return m.fail(cgnat_msg());
+            return m.tryPmp(switch (e) {
                 error.Refused => tr("O roteador recusou abrir a porta."),
                 else => tr("O roteador não respondeu direito."),
             });
-            return;
         };
         m.mutex.lock();
         m.mapping = mp;
@@ -451,6 +453,35 @@ pub const Mapper = struct {
             }
         }
         close(&mp);
+    }
+
+    fn cgnat_msg() []const u8 {
+        return tr("Sua operadora usa CGNAT (o roteador não tem IP próprio na internet): porta aberta lá não chega aqui. Use o link público.");
+    }
+
+    /// O UPnP não deu: tenta o NAT-PMP/PCP no gateway. `upnp_msg` = o erro se
+    /// esse também não responder.
+    fn tryPmp(m: *Mapper, upnp_msg: []const u8) void {
+        const gw = natpmp.gateway() orelse return m.fail(upnp_msg);
+        var pm = natpmp.open(gw[0], gw[1], m.port) catch |e| return m.fail(switch (e) {
+            error.Cgnat => cgnat_msg(),
+            error.Refused => tr("O roteador recusou abrir a porta (NAT-PMP/PCP)."),
+            else => upnp_msg,
+        });
+        m.mutex.lock();
+        m.pmp = pm;
+        m.state = .ready;
+        m.mutex.unlock();
+        var since = sync.nowMs();
+        while (!m.stopping.load(.acquire)) {
+            sync.sleepMs(500);
+            // renova na metade do prazo que o roteador deu
+            if (sync.nowMs() - since >= @as(u64, pm.lifetime) * 500) {
+                _ = natpmp.renew(&pm);
+                since = sync.nowMs();
+            }
+        }
+        natpmp.close(&pm);
     }
 };
 

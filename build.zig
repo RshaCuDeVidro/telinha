@@ -98,6 +98,8 @@ pub fn build(b: *std.Build) void {
     addHwenc(b, deps, tests_mod);
     addAudio(b, deps, tests_mod, host, .ReleaseFast);
     tests_mod.addCSourceFile(.{ .file = b.path("src/c/debugsys.c"), .flags = &.{"-O2"} });
+    tests_mod.addCSourceFile(.{ .file = b.path("src/c/selfupdate.c"), .flags = &.{"-O2"} });
+    addChangelogs(b, tests_mod);
     tests_mod.addOptions("build_options", deps.options);
     const tests = b.addTest(.{ .root_module = tests_mod });
     const run_tests = b.addRunArtifact(tests);
@@ -603,6 +605,13 @@ fn installApp(b: *std.Build, exe: *std.Build.Step.Compile) void {
     b.getInstallStep().dependOn(&b.addInstallBinFile(dbg, b.fmt("{s}.debug", .{exe.name})).step);
 }
 
+/// Os CHANGELOGs dentro do app (histórico de versões e as novidades depois de
+/// atualizar): @embedFile("changelog_pt") / ("changelog_en").
+fn addChangelogs(b: *std.Build, mod: *std.Build.Module) void {
+    mod.addAnonymousImport("changelog_pt", .{ .root_source_file = b.path("CHANGELOG.pt.md") });
+    mod.addAnonymousImport("changelog_en", .{ .root_source_file = b.path("CHANGELOG.md") });
+}
+
 fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
     const is_windows = target.result.os.tag == .windows;
     const mod = b.createModule(.{
@@ -622,6 +631,9 @@ fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: st
     // log de depuração (desvio da saída de erro, CPU/memória, envio do arquivo)
     mod.addCSourceFile(.{ .file = b.path("src/c/debugsys.c"), .flags = &.{"-O2"} });
     mod.addCSourceFile(.{ .file = b.path("src/c/crash.c"), .flags = &.{"-O2"} });
+    // atualização sozinha (baixar, trocar o executável, abrir de novo)
+    mod.addCSourceFile(.{ .file = b.path("src/c/selfupdate.c"), .flags = &.{"-O2"} });
+    addChangelogs(b, mod);
     addImgui(b, deps, mod, target);
     linkOpenh264(b, deps, mod, target, optimize);
     addHwenc(b, deps, mod);

@@ -12,7 +12,7 @@
 <p align="center">
   <img alt="Plataformas" src="https://img.shields.io/badge/plataformas-Linux%20%7C%20Windows-5865f2?style=flat-square">
   <img alt="Zig 0.16" src="https://img.shields.io/badge/zig-0.16-f7a41d?style=flat-square">
-  <img alt="Versão 3.1.0" src="https://img.shields.io/badge/vers%C3%A3o-3.1.0-9333ea?style=flat-square">
+  <img alt="Versão 3.2.0" src="https://img.shields.io/badge/vers%C3%A3o-3.2.0-9333ea?style=flat-square">
   <img alt="Licença MIT" src="https://img.shields.io/badge/licen%C3%A7a-MIT-22c55e?style=flat-square">
 </p>
 
@@ -78,7 +78,7 @@ sudo dnf install libportal pipewire-libs
 ## Começando
 
 1. **Crie uma sala.** Abra o telinha e clique em **Criar sala**. A porta padrão é 7777 e a senha é opcional.
-2. **Chame a galera de fora.** No card *Chamando a galera de fora*, clique em **Abrir porta no roteador** pra uma conexão direta, com o menor atraso. Se a operadora usa CGNAT, clique em **Criar link público**. Depois é só **Copiar convite** e mandar.
+2. **Chame a galera de fora.** No card *Chamando a galera de fora*, clique em **Abrir porta no roteador** pra uma conexão direta, com o menor atraso. Se a operadora usa CGNAT, clique em **Criar link público**. Depois é só **Copiar convite** e mandar. Não deu? O [guia de conexão](docs/CONNECTING.pt.md) tem todos os outros jeitos (abrir a porta na mão, IPv6, VPN de jogo, túnel por SSH), nenhum com chave de API.
 3. **Entre.** Cole o convite `telinha://…` na tela inicial. Se ele já estiver copiado, o telinha cola sozinho.
 4. **Transmita.** Clique em **Compartilhar tela**, escolha resolução, fps, qualidade e tipo de conteúdo, e clique em **Ao vivo**. Dá pra mudar tudo com a transmissão rolando.
 5. **Assista.** Clique em quem está ao vivo. **F11** é tela cheia, **duplo clique** é modo cinema e **Esc** sai.
@@ -132,6 +132,7 @@ No Wayland o sistema pergunta qual tela ou janela compartilhar na primeira vez e
 - Quem cria a sala ganha a coroa e pode expulsar, banir, silenciar, parar uma transmissão, dar ou tirar o admin e trancar a sala.
 - **Estatísticas do servidor pro admin**: CPU, memória, banda chegando e saindo, quem está atrasando e um palpite em português claro de qual é o gargalo.
 - **Reconexão automática**, que retoma a sua transmissão e as que você estava assistindo.
+- **Atualiza sozinho** no Windows e no Linux: mostra o que muda, confere a assinatura da release e troca o executável. O histórico de versões fica em Configurações → Sobre.
 - Estatísticas ao vivo: resolução, fps, banda e atraso de ponta a ponta medido.
 - **Atalhos globais configuráveis** pra clipe, microfone, surdo, transmitir, print e um que liga e desliga todos.
 - Temas: escuro, claro, pwnd (neon), pwnd claro, Nord, Drácula, ou o seu próprio CSS.
@@ -256,6 +257,7 @@ Pra traduzir a pilha de um relatório de travamento em linhas do código, use `t
 - [Arquitetura](docs/ARCHITECTURE.pt.md): threads, pipeline de vídeo, controle de banda e decisões de desempenho.
 - [Protocolo](docs/PROTOCOL.pt.md): handshake, criptografia e cada tipo de mensagem.
 - [Servidor dedicado](docs/DEPLOY.pt.md): binário estático, Docker e systemd.
+- [Guia de conexão](docs/CONNECTING.pt.md): todos os jeitos de a galera de fora entrar (porta, CGNAT, IPv6, VPN, túneis).
 - [Contribuindo](CONTRIBUTING.pt.md) e o [changelog](CHANGELOG.pt.md).
 
 ## Licença
