@@ -49,6 +49,37 @@ const TestClient = struct {
         return connectFeats(port, name, "", token, key, proto.codecs_h264, chan, proto.feat_calls);
     }
 
+    /// Um bot (sdk/python): feat_bot e, se tiver, o token de bot no fim do hello.
+    fn connectBot(port: u16, name: []const u8, password: []const u8, admin_token: []const u8, bot_token: []const u8) !TestClient {
+        var c = try connectRaw(port, password);
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.hello);
+        try b.str(name);
+        try b.str(admin_token);
+        try b.u64_(0x5eed);
+        try b.str("bot-teste");
+        try b.u8_(proto.codecs_h264);
+        try b.u8_(proto.feat_bot | proto.feat_dm | proto.feat_calls);
+        try b.str("");
+        try b.str(bot_token);
+        try c.send(try b.finish());
+        return c;
+    }
+
+    /// Só o handshake (quem chama manda o hello).
+    fn connectRaw(port: u16, password: []const u8) !TestClient {
+        const s = try net.connect("127.0.0.1", port);
+        errdefer net.close(s);
+        net.setRecvTimeout(s, 5000);
+        const hs = try crypto.Handshake.init();
+        try net.sendAll(s, &hs.helloBytes(proto.version));
+        var hb: [crypto.hello_len]u8 = undefined;
+        try net.recvAll(s, &hb);
+        const peer = try crypto.parseHello(&hb);
+        return .{ .sock = s, .ch = try crypto.Channel.derive(&hs, peer, true, password), .transcript = crypto.transcript(crypto.myHello(&hs, proto.version), peer) };
+    }
+
     fn connectFull(port: u16, name: []const u8, password: []const u8, token: []const u8, key: u64, codecs: u8, chan: ?[]const u8) !TestClient {
         return connectFeats(port, name, password, token, key, codecs, chan, 0);
     }
@@ -286,7 +317,7 @@ const ChanList = struct {
     }
 };
 
-const MemberInfo = struct { id: u32, flags: u8, route: u8, owner: bool, cam_w: u16, in_chan: bool = true, in_call: bool = true };
+const MemberInfo = struct { id: u32, flags: u8, route: u8, owner: bool, cam_w: u16, in_chan: bool = true, in_call: bool = true, bot: bool = false };
 const MemberList = struct {
     room_flags: u8,
     n: usize,
@@ -317,10 +348,17 @@ fn parseMembers(payload: []const u8) !MemberList {
         _ = try r.take(2 + 1);
         const k = try r.u16_();
         _ = try r.take(@as(usize, k) * 4);
+        m.bot = false;
         if (l.n < l.items.len) {
             l.items[l.n] = m;
             l.n += 1;
         }
+    }
+    // no fim: a versão do app de cada um e o que cada um é (bot ou gente)
+    for (0..n) |_| _ = r.str() catch return l;
+    for (0..n) |i| {
+        const kind = r.u8_() catch return l;
+        if (i < l.n) l.items[i].bot = kind & proto.member_kind_bot != 0;
     }
     return l;
 }
@@ -2792,5 +2830,64 @@ test "navegador: a página e os arquivos dela (e nada além)" {
         }
         try testing.expect(std.mem.indexOf(u8, resp[0..n], want[1]) != null);
         if (!std.mem.eql(u8, want[1], "404")) try testing.expect(std.mem.indexOf(u8, resp[0..n], "Content-Security-Policy") != null);
+    }
+}
+
+test "bots: marcados na lista, nunca admin, --sem-bots e --token-bots" {
+    net.init();
+    {
+        const port = freshPort();
+        const srv = try Server.start(.{ .port = port, .admin_token = "dono", .bot_token = "robo" });
+        defer srv.stop();
+        var a = try TestClient.connect(port, "Ana", "", "dono");
+        defer a.close();
+        try a.welcome();
+        // bot com o token certo entra; mandando o token de dono, não vira admin
+        var bot = try TestClient.connectBot(port, "Dado", "", "dono", "robo");
+        defer bot.close();
+        var r: proto.Reader = .{ .data = try bot.expect(.welcome) };
+        bot.id = try r.u32_();
+        _ = try r.str();
+        try testing.expectEqual(@as(u8, 0), try r.u8_()); // sou_admin
+        while (true) {
+            const l = try a.members();
+            const m = l.get(bot.id) orelse continue;
+            try testing.expect(m.bot and !m.owner and m.flags & proto.member_admin == 0);
+            try testing.expect(!l.get(a.id).?.bot);
+            break;
+        }
+        // o dono tenta dar admin pro bot: nada muda
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.admin);
+        try b.u8_(proto.admin_set_admin);
+        try b.u32_(bot.id);
+        try b.u8_(1);
+        try a.send(try b.finish());
+        try a.chat("depois");
+        while (true) {
+            var cr: proto.Reader = .{ .data = try bot.expect(.chat) };
+            _ = try cr.u32_();
+            _ = try cr.u32_();
+            _ = try cr.str();
+            if (std.mem.eql(u8, try cr.str(), "depois")) break;
+        }
+        try testing.expect(!bot.seen[@intFromEnum(proto.Type.notice)]);
+        // token de bot errado (ou nenhum): recusado
+        var bad = try TestClient.connectBot(port, "Intruso", "", "", "errado");
+        defer bad.close();
+        try testing.expectEqual(proto.deny_bots, try bad.denied());
+        // gente comum não precisa de token de bot
+        var c = try TestClient.connect(port, "Bia", "", "");
+        defer c.close();
+        try c.welcome();
+    }
+    {
+        const port = freshPort();
+        const srv = try Server.start(.{ .port = port, .no_bots = true });
+        defer srv.stop();
+        var bot = try TestClient.connectBot(port, "Dado", "", "", "");
+        defer bot.close();
+        try testing.expectEqual(proto.deny_bots, try bot.denied());
     }
 }

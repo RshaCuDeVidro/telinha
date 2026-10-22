@@ -32,6 +32,10 @@ const usage =
     \\                         Quem entra num nome que não existe cria o canal
     \\                         (some quando esvazia)
     \\  --sem-canais-novos     ninguém cria canal: só os da lista
+    \\  --sem-bots             recusa bots (o sdk/python e afins; $TELINHA_SEM_BOTS=1)
+    \\  --token-bots TXT       só aceita bots que mandarem esse token
+    \\                         ($TELINHA_TOKEN_BOTS); sem isso, qualquer bot com
+    \\                         a senha da sala entra. Bot nunca vira admin
     \\  -e, --estado ARQUIVO   onde guardar o que sobrevive a reiniciar: canais
     \\                         fixos (senha, trava, tópico), banidos, silenciados
     \\                         ($TELINHA_ESTADO; padrão: do lado da --chave)
@@ -283,6 +287,8 @@ pub fn main(init: std.process.Init) !void {
     var max: u32 = 32;
     var channels: []const u8 = env("TELINHA_CANAIS") orelse "";
     var new_channels = true;
+    var no_bots = if (env("TELINHA_SEM_BOTS")) |v| std.mem.eql(u8, v, "1") else false;
+    var bot_token: []const u8 = env("TELINHA_TOKEN_BOTS") orelse "";
     var key_path: []const u8 = env("TELINHA_CHAVE") orelse "";
     var state_path: []const u8 = env("TELINHA_ESTADO") orelse "";
     var files_dir: []const u8 = env("TELINHA_ARQUIVOS") orelse "";
@@ -314,6 +320,10 @@ pub fn main(init: std.process.Init) !void {
             new_channels = false;
             continue;
         }
+        if (std.mem.eql(u8, a, "--sem-bots")) {
+            no_bots = true;
+            continue;
+        }
         if (std.mem.eql(u8, a, "--publico")) {
             public_host = tunnel.default_host;
             if (i + 1 < args.len and !std.mem.startsWith(u8, args[i + 1], "-")) {
@@ -337,6 +347,8 @@ pub fn main(init: std.process.Init) !void {
             logs_dir = v;
         } else if (std.mem.eql(u8, a, "-e") or std.mem.eql(u8, a, "--estado")) {
             state_path = v;
+        } else if (std.mem.eql(u8, a, "--token-bots")) {
+            bot_token = v;
         } else if (std.mem.eql(u8, a, "--arquivos")) {
             files_dir = v;
         } else if (std.mem.eql(u8, a, "--web")) {
@@ -369,7 +381,7 @@ pub fn main(init: std.process.Init) !void {
         const z = std.fmt.bufPrintZ(&lb, "{s}", .{logs_dir}) catch die("pasta de logs longa demais", .{});
         _ = mkdir(z.ptr, 0o750);
     }
-    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir, .channels = channels, .new_channels = new_channels, .identity_seed = loadKey(key_path, &key_used), .state_path = statePath(state_path, key_used[0..key_used_len]), .files_dir = filesDir(files_dir, statePath(state_path, key_used[0..key_used_len])) }) catch
+    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir, .channels = channels, .new_channels = new_channels, .identity_seed = loadKey(key_path, &key_used), .state_path = statePath(state_path, key_used[0..key_used_len]), .files_dir = filesDir(files_dir, statePath(state_path, key_used[0..key_used_len])), .no_bots = no_bots, .bot_token = bot_token }) catch
         die("não consegui abrir a porta {d} (já está em uso?)", .{port});
 
     var buf: [256]u8 = undefined;

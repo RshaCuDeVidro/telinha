@@ -113,10 +113,10 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 
 | type | name | direction | payload |
 |---|---|---|---|
-| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (what it decodes, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (channel to join; empty or missing = the default) |
+| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (what it decodes, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (channel to join; empty or missing = the default), `str token_bot` (bots only; see `feat_bot`) |
 | 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1), `u8 recursos_do_servidor` (`srv_*`: 1 = private messages and quoted replies, 2 = files; an older server doesn't send it = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (the server closes right after) |
-| 4 | members | S→C | `u8 sala` (1 = locked), `u16 n`, n × member (below), n × `str versão_do_app` (same order) |
+| 4 | members | S→C | `u8 sala` (1 = locked), `u16 n`, n × member (below), n × `str versão_do_app` (same order), n × `u8 tipo` (1 = bot; an older server doesn't send it) |
 | 5 | chat | C→S | `str texto`, image (optional, below), `u32 resposta` (id of the message replied to; 0 = none), `u32 pra` (private to this member; 0 = the channel) |
 | 5 | chat | S→C | `u32 id`, `u32 de` (0 = system), `str nome`, `str texto`, `u64 hora` (room clock, µs), `u8 flags` (1 = history), image, `u8 n`, n × (`u8 reação`, `u32 de`), `u32 resposta` (if ≠ 0: `u32 de`, `str nome`, `str trecho`), `u32 pra` (if ≠ 0: `str nome`), `u32 arquivo` (if ≠ 0: `str nome`, `u64 tamanho`) |
 | 6 | stream_start | C→S | `u8 tipo`, `u16 w`, `u16 h`, `u8 fps`, `u8 flags` (1 = with audio; screen only) |
@@ -197,7 +197,8 @@ starts (if it changed, the server restarted and the chat ids started over).
 
 **denied:** `código` 0 = generic, 1 = kicked, 2 = banned, 3 = the owner closed
 the room, 4 = the public link you came in through was turned off, 5 = room
-locked, 6 = room full. With any of them the client doesn't try to reconnect.
+locked, 6 = room full, 7 = the room doesn't accept bots (or the bot token doesn't
+match). With any of them the client doesn't try to reconnect.
 
 **Image in the chat:** `u8 tipo` — 0 = none; 1 = `u16 w`, `u16 h`, `u32 tamanho`,
 bytes; 2 = it was an image, but the server no longer keeps it (history). The
@@ -265,6 +266,13 @@ doesn't send it and it counts as 0, everything as before):
   screen generates no frame. Someone who doesn't understand joined: the cursor
   goes back into the video right away. Recording your own screen too (the
   recording carries the cursor).
+- `feat_bot` (16): whoever connected is a **bot** (the SDK in `sdk/python`).
+  It's marked in the list (`members`, the kind byte at the end) and the app
+  shows a BOT tag; it never becomes admin (the server ignores its
+  `token_admin` and refuses to promote it); the server can refuse them all
+  (`--sem-bots`) or require the `token_bot` (`--token-bots`), answering
+  `denied` 7. It's an honest label, not a lock: whoever doesn't label itself
+  joins as a person, with the same powers.
 - `feat_dm` (8): understands private messages. The server refuses a private
   message to someone who doesn't (telling the sender with `notice` 10): an older
   app would show it as if it were for everyone.
@@ -460,7 +468,7 @@ The sender uploads once to the server; everyone downloads when they click, at
 their own pace. `file_put` reserves the slot (up to 256 MB per file, 3
 uploading per person); `file_data` goes up in order, in 32 KB pieces, each one
 getting a `file_ack`. Once complete it becomes a chat message in the channel (or
-a private one) carrying the `arquivo`; its text is "📎 name (size)", for older
+a private one) carrying the `arquivo`; its text is `"📎 name (size)"`, for older
 apps. Downloaders ask for pieces with `file_get`; only people in the channel the
 file was posted to (or the two in a private conversation) can download. The id
 is random.

@@ -15,7 +15,7 @@ const udp = @import("udp.zig");
 
 pub const version: u16 = 6;
 /// Versão do app (vai no hello/welcome/members pra avisar quem está desatualizado).
-pub const app_version = "3.2.0";
+pub const app_version = "3.3.0";
 pub const max_msg = 32 * 1024 * 1024;
 /// Marcador em claro no lugar do tamanho: "senha errada" (o servidor não
 /// conseguiu decifrar a primeira mensagem).
@@ -135,6 +135,10 @@ pub const member_muted: u8 = 32; // microfone silenciado pelo admin
 pub const member_camera: u8 = 64; // câmera ligada
 pub const member_no_draw: u8 = 128; // o admin tirou o pincel
 
+/// members: depois das versões, um byte por pessoa (mesma ordem): o que ela é.
+/// Servidor antigo não manda (ninguém é bot).
+pub const member_kind_bot: u8 = 1;
+
 /// members: estado da sala
 pub const room_locked: u8 = 1; // ninguém novo entra
 
@@ -173,6 +177,7 @@ pub const deny_closed: u8 = 3; // o dono fechou a sala
 pub const deny_link_closed: u8 = 4; // o link público por onde a pessoa entrou foi desligado
 pub const deny_locked: u8 = 5;
 pub const deny_full: u8 = 6;
+pub const deny_bots: u8 = 7; // bot numa sala que não aceita bots (ou com o token de bot errado)
 
 /// admin: ações
 pub const admin_kick: u8 = 1;
@@ -243,6 +248,10 @@ pub const feat_calls: u8 = 4;
 /// feat_dm: entende mensagem privada (o servidor não manda privada pra app
 /// antigo: ele mostraria como se fosse pra todo mundo).
 pub const feat_dm: u8 = 8;
+/// feat_bot: quem conectou é um bot (sdk/python). Aparece marcado na lista,
+/// nunca vira admin (nem com o token do dono) e o servidor pode recusar bots
+/// ou pedir um token só deles (o último campo do hello).
+pub const feat_bot: u8 = 16;
 pub const features_mine: u8 = feat_cursor | feat_view_size | feat_calls | feat_dm;
 
 /// O que o servidor sabe fazer (último campo do welcome; servidor antigo: 0).

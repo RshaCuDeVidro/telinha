@@ -109,10 +109,10 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 
 | tipo | nome | direção | payload |
 |---|---|---|---|
-| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (o que decodifica, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (canal pra entrar; vazio ou sem o campo = o padrão) |
+| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (o que decodifica, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (canal pra entrar; vazio ou sem o campo = o padrão), `str token_bot` (só bot; ver `feat_bot`) |
 | 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1), `u8 recursos_do_servidor` (`srv_*`: 1 = mensagem privada e resposta citada, 2 = arquivos; servidor antigo não manda = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (servidor fecha em seguida) |
-| 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo), n × `str versão_do_app` (mesma ordem) |
+| 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo), n × `str versão_do_app` (mesma ordem), n × `u8 tipo` (1 = bot; servidor antigo não manda) |
 | 5 | chat | C→S | `str texto`, imagem (opcional, abaixo), `u32 resposta` (id da mensagem respondida; 0 = nenhuma), `u32 pra` (privada pra esse membro; 0 = o canal) |
 | 5 | chat | S→C | `u32 id`, `u32 de` (0 = sistema), `str nome`, `str texto`, `u64 hora` (relógio da sala, µs), `u8 flags` (1 = histórico), imagem, `u8 n`, n × (`u8 reação`, `u32 de`), `u32 resposta` (se ≠ 0: `u32 de`, `str nome`, `str trecho`), `u32 pra` (se ≠ 0: `str nome`), `u32 arquivo` (se ≠ 0: `str nome`, `u64 tamanho`) |
 | 6 | stream_start | C→S | `u8 tipo`, `u16 w`, `u16 h`, `u8 fps`, `u8 flags` (1 = com áudio; só vale pra tela) |
@@ -194,7 +194,8 @@ servidor sobe (se mudou, o servidor reiniciou e os ids do chat recomeçaram).
 
 **denied:** `código` 0 = genérico, 1 = expulso, 2 = banido, 3 = o dono fechou
 a sala, 4 = o link público por onde você entrou foi desligado, 5 = sala
-trancada, 6 = sala cheia. Com qualquer um o cliente não tenta reconectar.
+trancada, 6 = sala cheia, 7 = a sala não aceita bots (ou o token de bot não bate).
+Com qualquer um o cliente não tenta reconectar.
 
 **Imagem no chat:** `u8 tipo` — 0 = nenhuma; 1 = `u16 w`, `u16 h`, `u32 tamanho`,
 bytes; 2 = era uma imagem, mas o servidor já não guarda (histórico). Os bytes
@@ -260,6 +261,12 @@ manda e vale 0, tudo como antes):
   segundo; o servidor corta acima de 130). Mexer o mouse com a tela parada
   não gera quadro. Entrou alguém que não entende: o cursor volta pro vídeo
   na hora. Gravando a própria tela, também (a gravação leva o cursor).
+- `feat_bot` (16): quem conectou é um **bot** (o SDK em `sdk/python`). Vai
+  marcado na lista (`members`, o byte de tipo no fim) e o app mostra a
+  etiqueta BOT; nunca vira admin (o servidor ignora o `token_admin` dele e
+  recusa promover); o servidor pode recusar todos (`--sem-bots`) ou pedir o
+  `token_bot` (`--token-bots`), respondendo `denied` 7. É uma marca honesta,
+  não uma trava: quem não se marca entra como pessoa, com os mesmos poderes.
 - `feat_dm` (8): entende mensagem privada. O servidor recusa privada pra quem
   não entende (avisa quem mandou com `notice` 10): o app antigo mostraria como
   se fosse pra todo mundo.
@@ -451,7 +458,7 @@ Quem manda sobe uma vez pro servidor; cada um baixa quando clicar, no ritmo
 dele. `file_put` reserva o lugar (até 256 MB por arquivo, 3 subindo por
 pessoa); `file_data` sobe em ordem, em pedaços de 32 KB, e cada um ganha um
 `file_ack`. Completo, vira uma mensagem de chat do canal (ou privada) com o
-`arquivo`; o texto dela é "📎 nome (tamanho)", pra app antigo. Quem baixa pede
+`arquivo`; o texto dela é `"📎 nome (tamanho)"`, pra app antigo. Quem baixa pede
 pedaços com `file_get`; só baixa quem está no canal onde o arquivo foi postado
 (ou os dois da privada). O id é sorteado.
 

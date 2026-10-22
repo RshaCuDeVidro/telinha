@@ -94,6 +94,7 @@ const Conn = struct {
     app_version: [16]u8 = [_]u8{0} ** 16, // "3.0.0" (vazio = app que não conta)
     decode_codecs: u8 = proto.codecs_h264, // o que essa pessoa decodifica (H.264 sempre)
     features: u8 = 0, // o que o app dela entende (feat_*; app antigo: 0)
+    bot: bool = false, // conectou como bot (feat_bot): marcado na lista, nunca admin
     view_sizes: std.ArrayList(ViewSize) = .empty, // em que tamanho ela mostra cada transmissão
     cursor_sec: u64 = 0, // limite do cursor (como o do ponteiro)
     cursor_count: u32 = 0,
@@ -482,6 +483,9 @@ pub const Options = struct {
     /// Onde guardar os arquivos mandados na sala (cifrados; ver files.zig).
     /// Vazio = uma pasta temporária do sistema.
     files_dir: []const u8 = "",
+    /// Bots (feat_bot): recusar todos, ou só aceitar quem mandar esse token.
+    no_bots: bool = false,
+    bot_token: []const u8 = "",
 };
 
 const StatsPrev = struct {
@@ -507,6 +511,9 @@ pub const Server = struct {
     logs_dir_len: usize = 0,
     admin_token: [64]u8 = undefined,
     admin_token_len: usize = 0,
+    no_bots: bool = false,
+    bot_token: [64]u8 = undefined,
+    bot_token_len: usize = 0,
     max_members: u32,
     clip_key_ms: u64 = clip_key_interval_ms,
     log_fn: ?*const fn ([]const u8) void,
@@ -588,6 +595,8 @@ pub const Server = struct {
         copyInto(&s.room_name, &s.room_name_len, opts.room_name);
         copyInto(&s.logs_dir, &s.logs_dir_len, opts.logs_dir);
         copyInto(&s.admin_token, &s.admin_token_len, opts.admin_token);
+        copyInto(&s.bot_token, &s.bot_token_len, opts.bot_token);
+        s.no_bots = opts.no_bots;
         sync.hiresTimer(true); // o repasse por UDP cadencia em ms (solto no release)
         s.retain();
         sync.spawn(acceptLoop, .{s}) catch |e| {
@@ -1123,8 +1132,26 @@ pub const Server = struct {
         cn.decode_codecs = (r.u8_() catch 0) | proto.codecs_h264;
         cn.features = r.u8_() catch 0;
         cn.calls_aware = cn.features & proto.feat_calls != 0;
+        cn.bot = cn.features & proto.feat_bot != 0;
         const want_chan = r.str() catch ""; // app antigo não manda: o canal padrão
-        try s.join(cn, name, token, want_chan);
+        const bot_token = r.str() catch ""; // só bot manda
+        if (cn.bot) try s.admitBot(cn, name, bot_token);
+        // bot nunca vira dono/admin, nem mandando o token
+        try s.join(cn, name, if (cn.bot) "" else token, want_chan);
+    }
+
+    /// A sala aceita esse bot? (--sem-bots recusa todos; --token-bots pede o token)
+    fn admitBot(s: *Server, cn: *Conn, name: []const u8, token: []const u8) !void {
+        if (s.no_bots) {
+            s.log("bot {s} recusado (a sala não aceita bots)", .{safeName(name)});
+            refuse(cn, proto.deny_bots, "Essa sala não aceita bots.");
+            return error.BotsRefused;
+        }
+        if (s.bot_token_len > 0 and !constEql(token, s.bot_token[0..s.bot_token_len])) {
+            s.log("bot {s} recusado (token de bot errado)", .{safeName(name)});
+            refuse(cn, proto.deny_bots, "Token de bot errado: essa sala só aceita bots com o token dela.");
+            return error.BotsRefused;
+        }
     }
 
     fn readerLoop(cn: *Conn) void {
@@ -1504,6 +1531,7 @@ pub const Server = struct {
             proto.admin_set_admin => {
                 if (!cn.owner) return; // só o dono promove/rebaixa
                 const on = value != 0;
+                if (on and t.bot) return; // bot não vira admin
                 if (t.admin == on) return;
                 t.admin = on;
                 s.log("{s} {s} {s}", .{ cn.nameSlice(), if (on) "deu admin pra" else "tirou o admin de", t.nameSlice() });
@@ -2302,6 +2330,8 @@ pub const Server = struct {
         }
         // versão do app de cada um, na mesma ordem (no fim: quem não lê ignora)
         for (s.conns.items) |o| if (shown(o, ch, call)) try b.str(std.mem.sliceTo(&o.app_version, 0));
+        // e o que cada um é (bot ou gente)
+        for (s.conns.items) |o| if (shown(o, ch, call)) try b.u8_(if (o.bot) proto.member_kind_bot else 0);
         const m = try b.finish();
         defer m.release();
         for (s.conns.items) |o| if (o.chan == ch and o.call == call) o.queue.push(m);

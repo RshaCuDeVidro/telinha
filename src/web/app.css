@@ -66,6 +66,7 @@ input:focus { border-color: var(--accent); }
 .people .tag { margin-left: auto; font-size: 10px; font-weight: 800; color: #fff; background: var(--red);
   border-radius: 4px; padding: 1px 5px; }
 .people .web { margin-left: auto; color: var(--faint); font-size: 12px; }
+.people .bot { font-size: 9px; font-weight: 800; color: #fff; background: var(--accent); border-radius: 3px; padding: 1px 4px; }
 .chat { flex: 1; overflow: auto; min-height: 0; display: flex; flex-direction: column; gap: 6px; padding-right: 4px; }
 .msg { word-wrap: break-word; }
 .msg .who { font-weight: 600; margin-right: 6px; }

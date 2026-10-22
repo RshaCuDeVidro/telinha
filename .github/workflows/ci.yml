@@ -82,6 +82,15 @@ jobs:
         # escolhem AVX2 em tempo de execução)
         run: zig build -Dcpu=x86_64_v2 -Drepo=${{ github.repository }} --summary all
 
+      - name: SDK Python (bots) contra o servidor recém-compilado
+        # cada teste sobe uma sala própria em 127.0.0.1 com o telinha-server do zig-out
+        run: |
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          python3 -m venv "$RUNNER_TEMP/sdk"
+          "$RUNNER_TEMP/sdk/bin/pip" install --quiet "cryptography>=42"
+          "$RUNNER_TEMP/sdk/bin/python" -m unittest discover -s sdk/python/tests -v
+          "$RUNNER_TEMP/sdk/bin/python" -m py_compile bots/musica/musica.py sdk/python/examples/*.py
+
       - name: Build (Linux, glibc 2.31)
         # glibc fixada numa versão velha: roda no Ubuntu/Pop!_OS 20.04 em diante,
         # Debian 11+, Mint 20+, Fedora, Arch... (a glibc só é compatível pra frente)

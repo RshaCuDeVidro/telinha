@@ -120,6 +120,17 @@ so the web port stays on `127.0.0.1` and needs HTTPS in front:
 Under systemd, add it to the `ExecStart` options (e.g. `--web 7778 --web-tunel`)
 with `cloudflared` in `/usr/local/bin`.
 
+## Bots
+
+[Bots](BOTS.md) (the Python SDK, the [music bot](BOTS_MUSIC.md)) join with the
+room password and show up with a BOT tag; they never become admin. To decide
+who gets in:
+
+- `--sem-bots` (`TELINHA_SEM_BOTS=1`): refuses every bot.
+- `--token-bots SECRET` (`TELINHA_TOKEN_BOTS`): only bots sending this token
+  (`Bot(..., bot_token="SECRET")`, `--token-bots` in the music bot). People
+  still join with just the password.
+
 ## Files
 
 People in the room send files (up to 256 MB) and everyone downloads when they

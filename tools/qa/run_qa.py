@@ -670,6 +670,37 @@ def navegador_som():
 
 
 @test
+def bot_de_musica():
+    """Bot de música (bots/musica, feito com o sdk/python) num servidor dedicado: aparece na lista com a etiqueta BOT, a Bia pede `!tocar tom` pelo chat do app, o bot responde citando e o app dela toca a voz do bot (som de verdade decodificado no PipeWire privado)."""
+    if not shutil.which("ffmpeg"):
+        log("sem ffmpeg: pulado")
+        return
+    with Session("botmusica", audio=True) as s:
+        p = port()
+        s.spawn("srv", [SERVER, "--porta", str(p), "--senha", "pw", "--chave", os.path.join(s.base, "srv.key")], {k: os.environ[k] for k in ("HOME", "PATH")})
+        time.sleep(0.6)
+        musicas = os.path.join(s.base, "musicas")
+        os.makedirs(musicas)
+        subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=330:duration=8", os.path.join(musicas, "Tom de teste.flac")], check=True)
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+        s.spawn("bot", [sys.executable, os.path.join(root, "bots", "musica", "musica.py"), f"telinha://127.0.0.1:{p}#pw", "--pasta", musicas, "--volume", "100"],
+                {"HOME": s.base, "PATH": os.environ["PATH"]})
+        # QA_IDIOMA=en: o print sai em inglês (o da página de bots do site)
+        lang_env = {"TELINHA_IDIOMA": os.environ["QA_IDIOMA"]} if os.environ.get("QA_IDIOMA") else None
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--senha", "pw"], extra_env=lang_env)
+        st = b.wait(lambda st: st["status"] == "connected" and any(m["name"] == "Música" for m in st["members"]), 20, "o bot entrar na sala")
+        bot = next(m for m in st["members"] if m["name"] == "Música")
+        expect(bot["bot"] and not bot["admin"], f"o bot devia vir marcado como bot: {bot}")
+        b.click("##chatin")
+        b.type("!tocar tom\n")
+        st = b.wait(lambda st: any(l["name"] == "Música" and "Tocando" in l["text"] for l in st["chat"]), 10, "o bot responder")
+        b.wait(lambda st: any(m["id"] == bot["id"] and m["speaking"] for m in st["members"]), 10, "o app da Bia tocar a voz do bot")
+        b.wait(lambda st: any(m["id"] == bot["id"] and m["flags"] & 8 for m in st["members"]), 5, "o microfone do bot aparecer ligado")
+        b.screenshot(os.path.join(s.base, "bot_musica.png"))
+        log("o app tocando a música do bot; print em bot_musica.png")
+
+
+@test
 def identidade_servidor():
     """Identidade do servidor: o convite leva a impressão e quem entra por ele confere; convite com impressão errada não entra; num servidor dedicado, a primeira vez é lembrada e, se a chave mudar, o app avisa e só entra depois de confiar na nova."""
     with Session("identidade") as s:

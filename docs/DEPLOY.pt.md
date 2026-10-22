@@ -119,6 +119,17 @@ porta web fica em `127.0.0.1` e precisa de um HTTPS na frente:
 No systemd, junte às opções do `ExecStart` (ex.: `--web 7778 --web-tunel`) com o
 `cloudflared` em `/usr/local/bin`.
 
+## Bots
+
+[Bots](BOTS.pt.md) (o SDK em Python, o [bot de música](BOTS_MUSIC.pt.md))
+entram com a senha da sala e aparecem com a etiqueta BOT; nunca viram admin.
+Pra decidir quem entra:
+
+- `--sem-bots` (`TELINHA_SEM_BOTS=1`): recusa todos os bots.
+- `--token-bots SEGREDO` (`TELINHA_TOKEN_BOTS`): só bot que mandar esse token
+  (`Bot(..., bot_token="SEGREDO")`, `--token-bots` no bot de música). Gente
+  comum continua entrando só com a senha.
+
 ## Arquivos
 
 Quem está na sala manda arquivos (até 256 MB) e cada um baixa quando quiser. O

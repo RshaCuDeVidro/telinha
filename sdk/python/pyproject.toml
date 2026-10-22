@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telinha"
+dynamic = ["version"]
+description = "Bots pro telinha: chat, comandos, música na call e arquivos"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "telinha" }]
+dependencies = ["cryptography>=42"]
+keywords = ["telinha", "bot", "screen sharing", "voice"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Framework :: AsyncIO",
+    "Topic :: Communications :: Chat",
+]
+
+[project.urls]
+Homepage = "https://rshacudevidro.github.io/telinha/"
+Documentation = "https://rshacudevidro.github.io/telinha/docs/bots/"
+Source = "https://github.com/RshaCuDeVidro/telinha/tree/main/sdk/python"
+
+[tool.setuptools]
+packages = ["telinha"]
+
+[tool.setuptools.dynamic]
+version = { attr = "telinha.client.SDK_VERSION" }

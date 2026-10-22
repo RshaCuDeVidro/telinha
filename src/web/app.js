@@ -156,6 +156,8 @@ function onMembers(r) {
     const k = r.u16(); for (let j = 0; j < k; j++) r.u32();
     list.push(m);
   }
+  // depois: a versão do app de cada um e o que cada um é (1 = bot); servidor antigo não manda
+  try { for (const m of list) r.str(); for (const m of list) m.bot = (r.u8() & 1) !== 0; } catch (e) { /* sem */ }
   st.members = new Map(list.map((m) => [m.id, m]));
   // transmissões que dá pra ver: de quem está na minha call
   const streams = [];
@@ -178,6 +180,7 @@ function renderPeople(list) {
     const av = document.createElement('span'); av.className = 'av'; av.style.background = color(m.id); av.textContent = (m.name[0] || '?').toUpperCase();
     const nm = document.createElement('span'); nm.textContent = m.name + (m.id === st.me ? ' ' + L.you : '');
     li.append(av, nm);
+    if (m.bot) { const t = document.createElement('span'); t.className = 'bot'; t.textContent = 'BOT'; li.append(t); }
     if (m.flags & 1) { const t = document.createElement('span'); t.className = 'tag'; t.textContent = L.live; li.append(t); }
     else if ((m.route & 0x1f) === 6) { const t = document.createElement('span'); t.className = 'web'; t.textContent = '🌐'; li.append(t); }
     ul.append(li);

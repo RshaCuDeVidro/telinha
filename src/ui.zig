@@ -75,7 +75,8 @@ fn hasEmoji(text: []const u8) bool {
         const b0 = text[i];
         const b1 = text[i + 1];
         if (b0 == 0xF0 and b1 == 0x9F) return true;
-        if (b0 == 0xE2 and ((b1 >= 0x98 and b1 <= 0x9E) or b1 == 0xAD)) return true;
+        // ☀..➿, ⭐; e os de mídia/setas que o emoji colorido também tem: ⏩⏸ (U+23xx), ▶◀ (U+25xx), ⬆⬛ (U+2Bxx)
+        if (b0 == 0xE2 and ((b1 >= 0x98 and b1 <= 0x9E) or (b1 >= 0x8C and b1 <= 0x8F) or b1 == 0x96 or b1 == 0x97 or b1 == 0xAC or b1 == 0xAD)) return true;
     }
     return false;
 }
@@ -551,6 +552,16 @@ fn liveBadge(d: *c.ImDrawList, pos: c.ImVec2_c) f32 {
     const pad = S(5);
     rectFill(d, pos.x, pos.y, pos.x + ts.x + pad * 2, pos.y + ts.y + S(2), col.red, S(3));
     drawTextF(d, font_bold, 10, v2(pos.x + pad, pos.y + S(1)), col.white, t);
+    return ts.x + pad * 2;
+}
+
+/// Etiqueta "BOT" do lado do nome (como no Discord). Devolve a largura.
+fn botBadge(d: *c.ImDrawList, pos: c.ImVec2_c) f32 {
+    const t = "BOT";
+    const ts = textSizeF(font_bold, 9.5, t);
+    const pad = S(4);
+    rectFill(d, pos.x, pos.y, pos.x + ts.x + pad * 2, pos.y + ts.y + S(2), col.blurple, S(3));
+    drawTextF(d, font_bold, 9.5, v2(pos.x + pad, pos.y + S(1)), theme.textOn(col.blurple), t);
     return ts.x + pad * 2;
 }
 
@@ -4551,6 +4562,7 @@ pub const App = struct {
         drawTextF(d, font_semibold, 14.5, v2(p.x + S(46), p.y + (h - S(18)) / 2), name_col, m.nameSlice());
         const ns = textSizeF(font_semibold, 14.5, m.nameSlice());
         var tx = p.x + S(50) + ns.x;
+        if (m.bot) tx += botBadge(d, v2(tx, p.y + (h - S(14)) / 2)) + S(6);
         if (m.owner) {
             drawTextF(d, font_regular, 11, v2(tx, p.y + (h - S(13)) / 2), col.yellow, ic.crown);
             tx += S(18);
@@ -6922,6 +6934,15 @@ pub const App = struct {
                 my_name = my_name_buf[0..n];
             }
         }
+        // quem é bot (etiqueta do lado do nome nas mensagens)
+        var bots: [32]u32 = undefined;
+        var n_bots: usize = 0;
+        for ([_][]const Member{ cl.members.items, cl.chan_members.items }) |list| for (list) |*m| {
+            if (m.bot and n_bots < bots.len) {
+                bots[n_bots] = m.id;
+                n_bots += 1;
+            }
+        };
         var last_from: u32 = 0xffffffff;
         var in_history = false;
         const view_top = c.igGetScrollY();
@@ -6990,7 +7011,9 @@ pub const App = struct {
                 const dl = drawList();
                 drawAvatar(dl, v2(p.x + S(18), p.y + S(18)), S(18), line.from, line.nameSlice(), false);
                 drawTextF(dl, font_semibold, 14.5, v2(p.x + S(48), p.y), avatarColor(line.from), line.nameSlice());
-                const ns = textSizeF(font_semibold, 14.5, line.nameSlice());
+                var ns = textSizeF(font_semibold, 14.5, line.nameSlice());
+                if (line.from != 0 and std.mem.indexOfScalar(u32, bots[0..n_bots], line.from) != null)
+                    ns.x += botBadge(dl, v2(p.x + S(54) + ns.x, p.y + S(3))) + S(6);
                 const time_z = fmtZ("{d:0>2}:{d:0>2}", .{ line.hour, line.minute });
                 drawTextF(dl, font_regular, 11.5, v2(p.x + S(54) + ns.x, p.y + S(3)), col.faint, time_z);
                 if (line.to != 0) {
@@ -9230,8 +9253,13 @@ pub const App = struct {
             for (cl.members.items, 0..) |*m, i| {
                 if (i > 0) try w.writeByte(',');
                 const vv = cl.voice_volumes.get(m.id) orelse 1.0;
-                try w.print("{{\"id\":{d},\"name\":{f},\"flags\":{d},\"streaming\":{},\"camera\":{},\"admin\":{},\"owner\":{},\"muted\":{},\"route\":{d},\"audio\":{},\"w\":{d},\"h\":{d},\"voice_volume\":{d:.2},\"watching\":[", .{
-                    m.id, s(m.nameSlice()), m.flags, m.streaming, m.camera(), m.admin, m.owner, m.muted(), m.route, m.audio, m.w, m.h, vv,
+                // tocando voz agora (o mutex já está travado: sem o cl.speaking)
+                var spk = false;
+                for (cl.voice_peers.items) |p| if (p.id == m.id) {
+                    spk = p.speaking(sync.nowUs());
+                };
+                try w.print("{{\"id\":{d},\"name\":{f},\"speaking\":{},\"flags\":{d},\"streaming\":{},\"camera\":{},\"admin\":{},\"owner\":{},\"bot\":{},\"muted\":{},\"route\":{d},\"audio\":{},\"w\":{d},\"h\":{d},\"voice_volume\":{d:.2},\"watching\":[", .{
+                    m.id, s(m.nameSlice()), spk, m.flags, m.streaming, m.camera(), m.admin, m.owner, m.bot, m.muted(), m.route, m.audio, m.w, m.h, vv,
                 });
                 for (m.watching[0..m.n_watching], 0..) |id, k| {
                     if (k > 0) try w.writeByte(',');
