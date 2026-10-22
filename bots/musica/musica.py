@@ -212,33 +212,57 @@ class MusicBot(Bot):
         await self._refresh_card()
 
     # ---------------------------------------------------------------- resolver um pedido
-    async def _resolve(self, ctx: Context, query: str) -> list[Track]:
+    async def _searching(self, ctx: Context, query: str) -> Message | None:
+        """Busca na internet leva uns segundos: um cartão na hora (que vira o
+        resultado), pra ninguém achar que o bot travou e pedir de novo."""
+        return await ctx.reply_card(Embed(kicker="SEARCHING", title=query[:200], color=ACCENT_INFO, description="One moment…"),
+                                    f"Searching: {query[:200]}")
+
+    async def _resolve(self, ctx: Context, query: str) -> tuple[list[Track], Message | None]:
+        """As músicas pedidas e o cartão "SEARCHING" (se precisou da internet).
+        Sem resultado: o cartão vira o aviso e volta lista vazia."""
         who = ctx.message.author
         msg = ctx.message
         if not query and msg.quote and msg.quote.id in self.recent_files:
             f = self.recent_files[msg.quote.id]
             path = await self.download(f, Path(self.tmp.name) / f"{f.id}-{Path(f.name).name}")
-            return [Track(Path(f.name).stem, "room", str(path), requested_by=who, temp=True)]
+            return [Track(Path(f.name).stem, "room", str(path), requested_by=who, temp=True)], None
         if not query:
             raise CommandError(f"Usage: `{self.prefix}play song name`, a link, or reply to an audio file with `{self.prefix}play`.")
-        if query.startswith(("http://", "https://")):
-            tracks = await self.src.from_url(query)
-        elif r := self.src.radio(query):
+        pending = None
+        if r := self.src.radio(query):
             tracks = [r]
-        elif local := self.src.search_library(query):
+        elif not query.startswith(("http://", "https://")) and (local := self.src.search_library(query)):
             tracks = [self.src.file_track(local[0])]
         else:
-            tracks = await self.src.find(query)
-        if not tracks:
-            raise CommandError(f'Nothing found for "{query}".')
+            pending = await self._searching(ctx, query)
+            try:
+                tracks = await (self.src.from_url(query) if query.startswith(("http://", "https://")) else self.src.find(query))
+            except Exception as e:  # noqa: BLE001 (link quebrado, site fora, bloqueio...)
+                log.info("couldn't resolve %r: %s", query, e)
+                tracks, why = [], str(e)[:300]
+            else:
+                why = f'Nothing found for "{query[:200]}".'
+            if not tracks:
+                if pending:
+                    await pending.edit(f"Nothing found: {query[:200]}", embed=Embed(kicker="NOT FOUND", title=query[:200], color=ACCENT_PAUSED, description=why))
+                    return [], None
+                raise CommandError(why)
         for t in tracks:
             t.requested_by = who
-        return tracks
+        return tracks, pending
 
-    async def _added(self, ctx: Context, tracks: list[Track]) -> None:
+    async def _added(self, ctx: Context, tracks: list[Track], pending: Message | None = None) -> None:
+        if not tracks:
+            return
         was_idle = self.current is None and not self.queue
         pos = self.enqueue(tracks)
         if was_idle and len(tracks) == 1:
+            if pending:  # o cartão do "now playing" vem logo atrás
+                t = tracks[0]
+                await pending.edit(f"Found: {t.title}", embed=Embed(kicker="FOUND", title=t.title[:200], color=ACCENT_INFO,
+                                                                     url=t.page if t.page.startswith("http") else "",
+                                                                     description=f"{nice_source(t)} · starting…"))
             return  # o cartão do "now playing" já responde
         t = tracks[0]
         e = Embed(kicker="ADDED TO QUEUE", color=ACCENT_INFO, title=t.title[:200] if len(tracks) == 1 else f"{len(tracks)} tracks",
@@ -248,7 +272,10 @@ class MusicBot(Bot):
         if len(tracks) == 1 and t.duration_ms:
             e.add_field("Length", human(t.duration_ms))
         e.add_field("Source", nice_source(t))
-        await ctx.reply_card(e, f"Queued: {t.title}")
+        if pending:
+            await pending.edit(f"Queued: {t.title}", embed=e)
+        else:
+            await ctx.reply_card(e, f"Queued: {t.title}")
 
     # ---------------------------------------------------------------- comandos
     def _register(self) -> None:
@@ -260,12 +287,17 @@ class MusicBot(Bot):
                 self.player.resume()
                 await self._refresh_card()
                 return
-            await self._added(ctx, await self._resolve(ctx, query))
+            await self._added(ctx, *await self._resolve(ctx, query))
 
         @cmd("search", aliases=["find", "busca", "buscar"], help="shows 5 results to pick with the buttons")
         async def search(ctx: Context, query: str):
+            pending = await self._searching(ctx, query)
             found = await self.src.search(query, 5)
             if not found:
+                if pending:
+                    await pending.edit(f"Nothing found: {query[:200]}", embed=Embed(kicker="NOT FOUND", title=query[:200], color=ACCENT_PAUSED,
+                                                                                  description=f'Nothing found for "{query[:200]}".'))
+                    return
                 raise CommandError(f'Nothing found for "{query}".')
             e = Embed(kicker="SEARCH", title=query[:120], color=ACCENT_INFO, footer="pick with the buttons · the card expires in 2 minutes")
             for i, t in enumerate(found, 1):
@@ -286,7 +318,12 @@ class MusicBot(Bot):
                 return go
             for i, t in enumerate(found, 1):
                 e.add_button(str(i), icon=Icon.PLAY, style="primary" if i == 1 else "neutral", on_click=pick(t))
-            m = await ctx.reply_card(e, "Results for " + query)
+            # o cartão "SEARCHING" vira os resultados (os botões passam a valer na edição)
+            m = pending
+            if m:
+                await m.edit("Results for " + query, embed=e)
+            else:
+                m = await ctx.reply_card(e, "Results for " + query)
             if m:
                 sent.append(m)
 

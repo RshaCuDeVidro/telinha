@@ -49,6 +49,9 @@ class MusicBotTest(unittest.IsolatedAsyncioTestCase):
 
         async def on_edit(mid, text, emb):
             self.edits.append((mid, text, emb))
+            for m in self.got:  # como o app: a mensagem muda no lugar
+                if m.id == mid:
+                    m.text, m.embed = text, emb
 
         async def on_voice(frm, seq, opus):
             self.voice.append(time.monotonic())
@@ -106,6 +109,18 @@ class MusicBotTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: self.card("NOW PLAYING"), 10, "tocar pelo alias")
         await self.ana.send("!buscar")
         await until(lambda: any(m.author_id == self.bot.me and "Usage" in m.text for m in self.got), 5, "o uso do comando")
+
+    async def test_busca_responde_na_hora_e_vira_o_resultado(self):
+        async def nada(query, n=5):
+            await asyncio.sleep(0.5)
+            return []
+        self.bot.src.search = nada
+        await self.ana.send("!search musica que nao existe")
+        await until(lambda: self.card("SEARCHING") or self.card("NOT FOUND"), 5, "o cartão de buscando")
+        await until(lambda: self.card("NOT FOUND"), 5, "o cartão virar o aviso")
+        self.assertEqual(len([m for m in self.got if m.author_id == self.bot.me]), 1)  # um cartão só, editado
+        await self.ana.send("!play outra que nao existe")
+        await until(lambda: len([m for m in self.got if m.author_id == self.bot.me and m.embed and m.embed.kicker == "NOT FOUND"]) == 2, 5, "o play avisar no cartão")
 
     async def test_join_de_qualquer_canal(self):
         await self.ana.send("!join jogos")

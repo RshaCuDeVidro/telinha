@@ -9,10 +9,13 @@ import asyncio
 import json
 import os
 import shutil
+import tempfile
+import urllib.request
 from dataclasses import dataclass
 
 MAX_SIDE = 1920
 MAX_BYTES = 1_500_000
+MAX_DOWNLOAD = 10_000_000  # link de imagem: até 10 MB
 
 
 class ImageError(RuntimeError):
@@ -39,6 +42,15 @@ async def _run(*args: str, timeout: float = 30) -> bytes:
     return out
 
 
+def _download(url: str, dest: str) -> None:
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (telinha-sdk)"})
+    with urllib.request.urlopen(req, timeout=15) as r, open(dest, "wb") as f:  # noqa: S310 (só http/https)
+        data = r.read(MAX_DOWNLOAD + 1)
+        if len(data) > MAX_DOWNLOAD:
+            raise ImageError("a imagem do link passa de 10 MB")
+        f.write(data)
+
+
 async def encode(source: "str | os.PathLike", *, max_side: int = 640, square: int | None = None,
                  ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe") -> ChatImage:
     """Arquivo ou link (http/https) → ChatImage. `square=320` corta o centro
@@ -46,6 +58,16 @@ async def encode(source: "str | os.PathLike", *, max_side: int = 640, square: in
     if not shutil.which(ffmpeg):
         raise ImageError("precisa do ffmpeg pra mandar imagem")
     src = os.fspath(source)
+    if src.startswith(("http://", "https://")):
+        # o ffmpeg lendo JPEG direto por http às vezes não acha o tamanho
+        # ("Output file does not contain any stream"): baixa antes
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "imagem")
+            try:
+                await asyncio.to_thread(_download, src, path)
+            except OSError as e:
+                raise ImageError(f"não deu pra baixar a imagem: {e}") from None
+            return await encode(path, max_side=max_side, square=square, ffmpeg=ffmpeg, ffprobe=ffprobe)
     if square:
         side = max(16, min(int(square), MAX_SIDE)) // 2 * 2
         w = h = side

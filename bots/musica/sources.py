@@ -165,7 +165,7 @@ class Resolver:
         if not thumb and source == "youtube" and info.get("id"):
             thumb = f"https://i.ytimg.com/vi/{info['id']}/hqdefault.jpg"
         return Track(info.get("track") or info.get("title") or "?", source, page, page=page,
-                     artist=info.get("artist") or info.get("uploader") or info.get("channel") or "",
+                     artist=info.get("artist") or (info.get("artists") or [""])[0] or info.get("uploader") or info.get("channel") or "",
                      duration_ms=int((info.get("duration") or 0) * 1000), thumbnail=thumb, requested_by=requested_by,
                      needs_resolve=True)
 
@@ -173,7 +173,8 @@ class Resolver:
     def _is_preview(info: dict) -> bool:
         # SoundCloud Go+: só 30 s de prévia
         url = info.get("url") or ""
-        return "/preview/" in url or (0 < (info.get("duration") or 0) <= 31 and "soundcloud" in (info.get("extractor_key") or "").lower())
+        extractor = (info.get("extractor_key") or info.get("ie_key") or "").lower()
+        return "/preview/" in url or (0 < (info.get("duration") or 0) <= 31 and "soundcloud" in extractor)
 
     async def search(self, query: str, n: int = 5) -> list[Track]:
         """Busca por texto: YouTube, e SoundCloud se o YouTube não deixar."""
@@ -200,7 +201,9 @@ class Resolver:
             with self._ydl(extract_flat="in_playlist") as y:
                 info = y.extract_info(f"ytsearch{n}:{query}", download=False)
             return [self._from_info(e) for e in (info.get("entries") or []) if e]
-        with self._ydl() as y:
+        # a lista rasa já traz duração (as prévias de 30 s saem por ela), artista,
+        # capa e a página: abrir cada faixa custava ~1,5 s cada
+        with self._ydl(extract_flat="in_playlist") as y:
             info = y.extract_info(f"scsearch{n + 3}:{query}", download=False)
         return [self._from_info(e) for e in (info.get("entries") or []) if e and not self._is_preview(e)][:n]
 
@@ -240,14 +243,17 @@ class Resolver:
     async def _fallback(self, t: Track) -> Track:
         """YouTube recusou: a mesma música pelo nome no SoundCloud (só se achar
         ela mesma; outra da banda, não)."""
-        title = re.sub(r"\((official|lyric|lyrics|audio|video|official video|official audio|music video|visualizer|hd|4k)[^)]*\)|\[[^\]]*\]", "", t.title, flags=re.I)
+        title = re.sub(r"\((official|lyric|lyrics|audio|video|official video|official audio|music video|visualizer|hd|4k|feat\.?|ft\.?)[^)]*\)|\[[^\]]*\]", "", t.title, flags=re.I)
+        title = re.sub(r"\s+(feat\.?|ft\.?)\s.*$", "", title, flags=re.I)  # "Música ft. Fulano"
         artist = re.sub(r"\s*(vevo|- topic|official|records)\s*$", "", t.artist, flags=re.I).strip()
         # o título do YouTube quase sempre já tem "Banda - Música"; o canal só entra se não tiver
         q = title if " - " in title or not artist or fold(artist) in fold(title) else f"{artist} {title}"
         q = " ".join(re.sub(r"[\"“”'‘’]|\s+-\s+", " ", q).split())  # Banda - "Música" → Banda Música
         alt = best_match(q, await self.search_provider("soundcloud", q, 4))
         name = _words(title.split(" - ", 1)[-1]) - _words(artist)  # as palavras da música, sem a banda
-        if not alt or (name and len(name & _words(f"{alt.artist} {alt.title}")) < 0.6 * len(name)):
+        got = _words(f"{alt.artist} {alt.title}") if alt else set()
+        # outra música da banda, ou um remix/cover dela: melhor avisar do que tocar outra coisa
+        if not alt or (name and len(name & got) < 0.6 * len(name)) or (got & _NOISE) - _words(t.title):
             raise RuntimeError(f"YouTube refused it and \"{q}\" isn't on SoundCloud either")
         alt = replace(alt, requested_by=t.requested_by)
         log.info("YouTube recusou %r: tocando %r do SoundCloud", t.title, alt.title)
