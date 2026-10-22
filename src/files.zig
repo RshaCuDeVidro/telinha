@@ -81,6 +81,9 @@ pub const Store = struct {
         for (st.items.items) |e| destroy(e);
         st.items.deinit(gpa);
         st.total = 0;
+        // a pasta vazia também sai (a da sala do app é uma por processo; a do
+        // servidor dedicado é criada de novo na próxima vez)
+        if (st.dir_len > 0) removeDir(st.dir[0..st.dir_len :0]);
     }
 
     fn destroy(e: *Entry) void {
@@ -227,6 +230,8 @@ extern "c" fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
 extern "c" fn unlink(path: [*:0]const u8) c_int;
 extern "kernel32" fn CreateDirectoryW(path: [*:0]const u16, attrs: ?*anyopaque) callconv(.winapi) c_int;
 extern "kernel32" fn DeleteFileW(path: [*:0]const u16) callconv(.winapi) c_int;
+extern "c" fn rmdir(path: [*:0]const u8) c_int;
+extern "kernel32" fn RemoveDirectoryW(path: [*:0]const u16) callconv(.winapi) c_int;
 extern "c" fn _wfopen(path: [*:0]const u16, mode: [*:0]const u16) ?*cio.FILE;
 extern "c" fn _fseeki64(f: *cio.FILE, off: i64, whence: c_int) c_int;
 extern "c" fn fseeko(f: *cio.FILE, off: i64, whence: c_int) c_int;
@@ -267,6 +272,14 @@ pub fn removeFile(path: [:0]const u8) void {
         var w: [1024:0]u16 = undefined;
         if (wide(path, &w)) _ = DeleteFileW(&w);
     } else _ = unlink(path.ptr);
+}
+
+/// Só sai se estiver vazia (outra coisa que alguém pôs lá fica).
+fn removeDir(path: [:0]const u8) void {
+    if (builtin.os.tag == .windows) {
+        var w: [1024:0]u16 = undefined;
+        if (wide(path, &w)) _ = RemoveDirectoryW(&w);
+    } else _ = rmdir(path.ptr);
 }
 
 /// Apaga o que sobrou de outra vez (a chave daquela vez já não existe).

@@ -2,6 +2,46 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## Unreleased
+
+Talks to 3.2 and 3.1 (the new messages are ignored by older apps and servers; private messages and files only go to those who understand them).
+
+### Highlights
+
+- 🌍 **Watch from a browser**: the dedicated server serves a page that plays the stream, its sound and the call's voices, with nothing to install. It only relays the same frames (nothing is re-encoded), so the streamer pays nothing extra. With `--web-tunel` the server gets an HTTPS link through a Cloudflare quick tunnel, no account; in the app, a button copies the link with the password.
+- 📎 **Files in the room**: any file up to 256 MB, through the paperclip, dragging it onto the window or with `/arquivo`. It's uploaded once to the server and each person downloads it when they click, in the background, without hurting video, voice or chat.
+- ↩️ **Reply quoting** a message and **private messages** (from the message's menu, the person's menu or `/msg name text`).
+- 🧪 **Experimental AV1** (NVIDIA RTX 40 and newer): sharper at the same bandwidth, when everyone watching can decode it. Off by default, under Settings → Performance.
+
+<!-- detalhes -->
+
+### All changes
+
+- **Browser**: `--web PORT` serves the page (WebCodecs: video decoded on the
+  GPU; sound and voice through an AudioWorklet with a short buffer; the cursor
+  drawn by the page) and a WebSocket that speaks the same protocol. Whoever
+  joins from a browser is a regular member (route "browser"): it acknowledges
+  every frame (latency control works the same), says the size it's watching at
+  and chats. The password is checked in constant time; a browser never becomes
+  admin. `--web-tunel` starts the Cloudflare quick tunnel (restarting it if it
+  drops) and announces the link to the room; `--web-link URL` for your own
+  domain. See docs/DEPLOY.md.
+- **Files**: on the server they sit on disk encrypted with ChaCha20 (the key
+  only exists in memory), under a random id; only people in the channel (or
+  the two in a private conversation) can download; they're gone after 2 h; 2 GB
+  in total (`--arquivos`). Uploads back off when acknowledgement delay rises
+  (like LEDBAT). In the app: a progress bar, a card in the chat with
+  download/open/folder (executables only open the folder), downloads in the
+  Downloads folder with `.parte` until finished.
+- **Quoted replies**: the quoted text comes from the server's history (nobody
+  can forge a quote) and the person replied to is notified like a mention.
+- **Private messages**: only the two of you see them, in any channel, outside
+  the history; an old app (which would show it to everyone) doesn't get them.
+- **AV1**: NVENC through API 12 (H.264/HEVC stays on 11.1, which runs on older
+  drivers); viewers decode with NVDEC (RTX 30 and newer) or in the browser. If
+  AV1 doesn't open, the stream carries on in HEVC/H.264. Clips and recordings
+  in AV1 come out as MP4 (av01).
+
 ## 3.2.0
 
 Talks to 3.1 (the new messages are ignored by older apps and servers).

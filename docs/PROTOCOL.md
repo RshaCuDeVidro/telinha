@@ -235,8 +235,10 @@ their chat plus everyone in their call).
 | w, h | u16, u16 | |
 | cursor_x, cursor_y | u16, u16 | the streamer's cursor tip, relative to the frame (0..65534); `0xFFFF` = no cursor |
 
-and the Annex B bitstream (H.264 or HEVC, see flags) until the end. Every IDR
-carries SPS/PPS (and VPS for HEVC as well). The server figures out the stream
+and the bitstream until the end: Annex B for H.264 and HEVC, AV1 OBUs in the
+"low overhead" format (each with its size, a temporal unit per frame, starting
+with the temporal delimiter) — see flags. Every IDR carries SPS/PPS (and VPS for
+HEVC as well); every AV1 key frame carries the sequence header. The server figures out the stream
 from the camera bit. "Skippable" = nobody uses that frame as reference (all
 slices with `nal_ref_idc = 0`; the streamer encodes with two temporal layers, one
 frame yes, one no): the server may stop sending it to whoever can't keep up
@@ -244,11 +246,12 @@ without breaking the decoding of the following ones. Whoever doesn't know the bi
 ignores it. A frame resent with the screen still carries the resend time (it is
 the current state of the screen).
 
-**Codec:** everyone decodes H.264 (openh264 in software, if needed); HEVC only
-those with a GPU decoder (today NVDEC). In `hello` each one says what it
-decodes; the server sends the streamer, on every change in who is watching, the
-intersection (`codec`), and the streamer picks the best its encoder can do — HEVC
-if it can, otherwise H.264. Someone with only H.264 joined: the stream goes back
+**Codec:** everyone decodes H.264 (openh264 in software, if needed); HEVC and
+AV1 only those with a GPU decoder (today NVDEC) or a browser that has them
+(WebCodecs). In `hello` each one says what it decodes; the server sends the
+streamer, on every change in who is watching, the intersection (`codec`), and
+the streamer picks the best its encoder can do — AV1 (experimental, opt-in,
+NVENC on RTX 40 and newer), then HEVC, otherwise H.264. Someone with only H.264 joined: the stream goes back
 to H.264 right away (new encoder, starting on an IDR); those already watching
 switch decoders when they see the codec change in the flags.
 

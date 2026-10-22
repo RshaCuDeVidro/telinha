@@ -148,6 +148,10 @@ static int CUDAAPI on_display(void *ud, CUVIDPARSERDISPINFO *di) {
     return 1;
 }
 
+static cudaVideoCodec cuda_codec(int codec) {
+    return codec == HW_CODEC_AV1 ? cudaVideoCodec_AV1 : codec == HW_CODEC_HEVC ? cudaVideoCodec_HEVC : cudaVideoCodec_H264;
+}
+
 // Só pergunta à placa se ela decodifica esse codec (sem criar decoder nem
 // parser: abrir um de verdade só pra testar custava ~26 MB e uma thread).
 int nvdec_probe(int codec) {
@@ -162,7 +166,7 @@ int nvdec_probe(int codec) {
     if (cu->cuCtxPushCurrent(ctx) == CUDA_SUCCESS) {
         CUVIDDECODECAPS caps;
         memset(&caps, 0, sizeof caps);
-        caps.eCodecType = codec == HW_CODEC_HEVC ? cudaVideoCodec_HEVC : cudaVideoCodec_H264;
+        caps.eCodecType = cuda_codec(codec);
         caps.eChromaFormat = cudaVideoChromaFormat_420;
         caps.nBitDepthMinus8 = 0;
         ok = cv->cuvidGetDecoderCaps && cv->cuvidGetDecoderCaps(&caps) == CUDA_SUCCESS && caps.bIsSupported;
@@ -195,13 +199,13 @@ void nvdec_close(nvdec *d) {
 }
 
 nvdec *nvdec_open(int codec, char *err, int errlen) {
-    if (codec != HW_CODEC_H264 && codec != HW_CODEC_HEVC) {
+    if (codec != HW_CODEC_H264 && codec != HW_CODEC_HEVC && codec != HW_CODEC_AV1) {
         set_err(err, errlen, "NVDEC: codec não suportado", codec);
         return NULL;
     }
     struct nvdec *d = calloc(1, sizeof *d);
     if (!d) return NULL;
-    d->codec = codec == HW_CODEC_HEVC ? cudaVideoCodec_HEVC : cudaVideoCodec_H264;
+    d->codec = cuda_codec(codec);
     if (cuda_load_functions(&d->cu, NULL) < 0 || cuvid_load_functions(&d->cv, NULL) < 0) {
         set_err(err, errlen, "driver NVIDIA (CUDA/NVDEC) não encontrado", 0);
         nvdec_close(d);
@@ -234,7 +238,7 @@ nvdec *nvdec_open(int codec, char *err, int errlen) {
         if (d->cv->cuvidGetDecoderCaps(&caps) != CUDA_SUCCESS || !caps.bIsSupported) {
             CUcontext dummy;
             d->cu->cuCtxPopCurrent(&dummy);
-            set_err(err, errlen, d->codec == cudaVideoCodec_HEVC ? "a placa não decodifica HEVC" : "a placa não decodifica H.264", 0);
+            set_err(err, errlen, d->codec == cudaVideoCodec_AV1 ? "a placa não decodifica AV1" : d->codec == cudaVideoCodec_HEVC ? "a placa não decodifica HEVC" : "a placa não decodifica H.264", 0);
             nvdec_close(d);
             return NULL;
         }

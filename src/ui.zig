@@ -987,6 +987,7 @@ pub const App = struct {
         clip.keep_secs.store(@intCast(std.math.clamp(a.cfg.clip_secs, 5, 600)), .release);
         frame_cap_fps = @intCast(@max(0, a.cfg.ui_fps_cap));
         codec.setHwEffort(@intCast(a.cfg.hw_effort));
+        codec.av1_enabled.store(a.cfg.av1, .release);
         if (a.cfg.ui_zoom != 100) setZoom(@as(f32, @floatFromInt(a.cfg.ui_zoom)) / 100);
         a.crash_prompt = crash.pending();
         _ = std.fmt.bufPrintZ(&a.port_buf, "{d}", .{a.cfg.host_port}) catch {};
@@ -8589,6 +8590,14 @@ pub const App = struct {
         }
         pushFont(font_regular, 12.5);
         textColored(col.faint, tr("Leve: menos trabalho na placa (bom pra jogar e transmitir junto), um pouco menos nítido. Qualidade: mais nítido, mais placa."));
+        popFont();
+        c.igDummy(v2(0, S(10)));
+        if (c.igCheckbox(tr("AV1 (experimental, NVIDIA RTX 40 em diante)###av1"), &a.cfg.av1)) {
+            codec.av1_enabled.store(a.cfg.av1, .release);
+            config.save(&a.cfg);
+        }
+        pushFont(font_regular, 12.5);
+        textColored(col.faint, tr("Mais nítido com a mesma banda. Só entra quando todo mundo que assiste decodifica AV1 (senão fica no HEVC/H.264); vale na próxima transmissão."));
         popFont();
         c.igDummy(v2(0, S(18)));
 

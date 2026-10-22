@@ -44,6 +44,7 @@ pub fn build(b: *std.Build) void {
     const oh264 = b.lazyDependency("openh264", .{});
     const glfw = b.lazyDependency("glfw", .{});
     const nvh = b.lazyDependency("nv_codec_headers", .{});
+    const nvh12 = b.lazyDependency("nv_codec_headers12", .{});
     const libva = b.lazyDependency("libva", .{});
     const opus = b.lazyDependency("opus", .{});
     const miniaudio = b.lazyDependency("miniaudio", .{});
@@ -60,6 +61,7 @@ pub fn build(b: *std.Build) void {
         .openh264 = oh264 orelse return,
         .glfw = glfw orelse return,
         .nv_headers = nvh orelse return,
+        .nv_headers12 = nvh12 orelse return,
         .libva = libva orelse return,
         .opus = opus orelse return,
         .miniaudio = miniaudio orelse return,
@@ -196,6 +198,7 @@ const Deps = struct {
     openh264: *std.Build.Dependency,
     glfw: *std.Build.Dependency,
     nv_headers: *std.Build.Dependency,
+    nv_headers12: *std.Build.Dependency,
     libva: *std.Build.Dependency,
     opus: *std.Build.Dependency,
     miniaudio: *std.Build.Dependency,
@@ -307,6 +310,15 @@ fn addHwenc(b: *std.Build, deps: Deps, mod: *std.Build.Module) void {
     mod.addCSourceFile(.{ .file = b.path("src/c/hwenc.c"), .flags = &.{ "-O2", "-Wno-everything" } });
     mod.addCSourceFile(.{ .file = b.path("src/c/cudagl.c"), .flags = &.{ "-O2", "-Wno-everything" } });
     mod.addCSourceFile(.{ .file = b.path("src/c/hwenc_nvenc.c"), .flags = &.{ "-O2", "-Wno-everything" } });
+    {
+        // AV1 (experimental): o mesmo arquivo com a API 12 do NVENC, à parte
+        // (os headers 11.1 e 12 têm os mesmos nomes; cada um no seu módulo)
+        const am = b.createModule(.{ .target = mod.resolved_target.?, .optimize = mod.optimize, .link_libc = true });
+        am.addIncludePath(deps.nv_headers12.path("include"));
+        am.addIncludePath(b.path("src/c"));
+        am.addCSourceFile(.{ .file = b.path("src/c/hwenc_nvenc.c"), .flags = &.{ "-O2", "-Wno-everything", "-DNVENC_AV1" } });
+        mod.linkLibrary(b.addLibrary(.{ .name = "nvenc_av1", .root_module = am, .linkage = .static }));
+    }
     if (mod.resolved_target.?.result.os.tag == .windows)
         mod.addCSourceFile(.{ .file = b.path("src/c/hwenc_mf.c"), .flags = &.{ "-O2", "-Wno-everything" } });
     mod.addCSourceFile(.{ .file = b.path("src/c/hwdec_nvdec.c"), .flags = &.{ "-O2", "-Wno-everything" } });

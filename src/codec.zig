@@ -4,6 +4,7 @@
 //! no pool de threads; em 1080p levam ~1 ms.
 const std = @import("std");
 const sync = @import("sync.zig");
+const mp4 = @import("mp4.zig");
 const oh = @cImport(@cInclude("wels/codec_api.h"));
 const hw = @cImport({
     @cInclude("hwenc.h");
@@ -509,6 +510,9 @@ pub const Encoder = struct {
 // ---------------------------------------------------------------------------
 // Encoder em hardware (NVENC): recebe BGRX/RGBX direto, sem conversão na CPU
 
+/// AV1 experimental ligado nas configurações (vale na próxima transmissão).
+pub var av1_enabled = std.atomic.Value(bool).init(false);
+
 /// Peso do encoder da placa (0 = leve, 1 = equilibrado, 2 = qualidade); vale no próximo que abrir.
 pub fn setHwEffort(effort: u8) void {
     hw.hwenc_set_effort(effort);
@@ -605,9 +609,11 @@ pub fn isDroppable(bits: []const u8) bool {
     return slices > 0;
 }
 
-/// Quadro-chave nesse codec? (H.264: IDR; HEVC: IRAP, tipos 16–21)
+/// Quadro-chave nesse codec? (H.264: IDR; HEVC: IRAP, tipos 16–21; AV1:
+/// traz o cabeçalho de sequência, que o encoder repete em todo quadro-chave)
 pub fn hasKeyNal(cd: Codec, bits: []const u8) bool {
     if (cd == .h264) return hasIdrNal(bits);
+    if (cd == .av1) return mp4.av1HasSeqHeader(bits);
     if (cd != .hevc) return false;
     var i: usize = 0;
     while (i + 3 < bits.len) : (i += 1) {

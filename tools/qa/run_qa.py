@@ -460,7 +460,7 @@ def chat_markdown():
         # copiar o bloco
         b.click(f"##cpcode{mid}_1")
         b.wait(lambda st: st["clipboard"] == "const x = 1;", 3, "o código copiado")
-        # clique direito numa mensagem: copiar o texto e responder (@nome na caixa)
+        # clique direito numa mensagem: copiar o texto e responder (barra da citação em cima da caixa)
         mid2 = next(l["id"] for l in b.state()["chat"] if l["text"] == "de novo")
         for y in range(90, 740, 10):
             b.move(1150, y)
@@ -472,7 +472,7 @@ def chat_markdown():
         b.wait(lambda st: st["clipboard"] == "de novo", 3, "o texto da mensagem copiado")
         b.click_at(1150, y, button=3)
         b.click("###mreply")
-        b.wait(lambda st: st["chat_input"] == "@Ana ", 3, "o @nome na caixa pra responder")
+        b.wait(lambda st: st["reply_to"] == mid2, 3, "a barra de resposta")
         # link: clicar abre (no teste só registra)
         b.screenshot(os.path.join(s.base, "markdown.png"))
 
@@ -2371,7 +2371,7 @@ def testar_pc():
         a.click("##gear")
         a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
         a.click("##cfg-desempenho")
-        a.click("##pctest")
+        settings_click(a, "##pctest")  # mais pra baixo na página (rola até ele)
         a.wait(lambda st: st["pctest"] == "done", 60, "o teste do PC terminar")
         settings_click(a, "##pcuse")
         st = a.wait(lambda st: st["cfg"]["resolution_idx"] != 0, 3, "usar a sugestão")

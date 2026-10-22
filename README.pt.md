@@ -109,6 +109,7 @@ No Wayland o sistema pergunta qual tela ou janela compartilhar na primeira vez e
 - **Clipe** dos últimos 5 s a 10 min num clique ou num atalho global.
 - **Gravação em MP4** sem recodificar, com o som. A gravação sobrevive a mudança de resolução.
 - Print em PNG na resolução da transmissão.
+- **Assistir pelo navegador**: o servidor dedicado com `--web` serve uma página que toca a transmissão (vídeo, som e voz) sem instalar nada. O servidor só repassa os mesmos quadros, então quem transmite não gasta nada a mais; com `--web-tunel` ele ganha um link HTTPS por um túnel rápido da Cloudflare, sem conta.
 
 </td>
 </tr>
@@ -121,6 +122,8 @@ No Wayland o sistema pergunta qual tela ou janela compartilhar na primeira vez e
 - Ativação por voz ou **apertar pra falar**, valendo com o jogo em foco.
 - Opus com FEC, e a voz fura a fila: nunca espera atrás do vídeo.
 - Chat com imagens, reações, @menções, histórico pra quem chega depois e Markdown: blocos de código com botão de copiar, `código`, **negrito**, *itálico* e links clicáveis (Shift+Enter quebra a linha). Emoji colorido, e clique direito copia ou responde uma mensagem.
+- **Respostas citando** a mensagem original e **mensagens privadas** (`/msg nome texto`), que só os dois veem.
+- **Arquivos na sala**, até 256 MB: anexar, arrastar pra janela ou `/arquivo`. Sobe uma vez pro servidor (cifrado no disco, some depois de 2 h) e cada um baixa quando clicar, em segundo plano, sem atrapalhar vídeo e voz.
 - Notificações do sistema com o telinha em segundo plano.
 
 </td>
@@ -145,7 +148,7 @@ No Wayland o sistema pergunta qual tela ou janela compartilhar na primeira vez e
 
 | | |
 |---|---|
-| **Codecs** | H.264, e HEVC na NVIDIA quando todo mundo que assiste consegue decodificar: menos banda pela mesma qualidade. |
+| **Codecs** | H.264, e HEVC na NVIDIA quando todo mundo que assiste consegue decodificar: menos banda pela mesma qualidade. AV1 como opção experimental (NVENC das RTX 40 em diante). |
 | **Placa de vídeo** | NVIDIA NVENC/NVDEC em todo lugar. Intel e AMD pelo Media Foundation no Windows e pelo VA-API no Linux. Sem placa, openh264 com SIMD em várias threads. |
 | **Sem cópias** | No Linux, o DMA-BUF do compositor vai direto pro encoder, pelo CUDA na NVIDIA e pelo VPP do VA-API na Intel/AMD. No Windows, a textura do DXGI passa por um kernel CUDA até o NVENC. Quem assiste decodifica com o NVDEC direto numa textura OpenGL. Qualquer falha volta pro caminho da CPU. |
 | **Cursor fora do vídeo** | Quem assiste desenha a seta. Mexer o mouse com a tela parada não manda nenhum quadro. |

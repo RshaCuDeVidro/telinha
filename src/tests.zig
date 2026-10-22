@@ -205,6 +205,41 @@ test "HEVC: NVENC codifica, NVDEC decodifica na hora, e rende mais que o H.264" 
     try testing.expect(hevc.psnr > avc.psnr - 0.3);
 }
 
+test "AV1 (experimental): abre na RTX 40+; nas outras falha com o motivo e o HEVC/H.264 seguem" {
+    initPool();
+    var err: [256]u8 = undefined;
+    if (codec.HwEncoder.init(.{ .codec = .av1, .width = 1280, .height = 720, .fps = 30, .bitrate = 2_000_000 }, &err)) |e| {
+        var enc = e;
+        defer enc.deinit();
+        try testing.expectEqualStrings("NVENC (AV1)", enc.name());
+        const gpa = std.heap.c_allocator;
+        const img = try gpa.alloc(u8, 1280 * 720 * 4);
+        defer gpa.free(img);
+        @memset(img, 90);
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(gpa);
+        try testing.expect(try enc.encode(img.ptr, 1280 * 4, .bgrx, true, &out));
+        // OBUs com o cabeçalho de sequência no quadro-chave (quem entra depois decodifica)
+        try testing.expectEqual(mp4.Kind.av1, mp4.kindOf(out.items));
+        try testing.expect(mp4.av1SeqInfo(mp4.paramSets(out.items).sps) != null);
+        out.clearRetainingCapacity();
+        try testing.expect(!try enc.encode(img.ptr, 1280 * 4, .bgrx, false, &out));
+        if (codec.HwDecoder.supports(.av1)) {
+            const r = try hwRoundTrip(.av1, 1280, 720);
+            std.debug.print("AV1 720p, 2 Mbit/s: {d:.1} dB ({d} KB)\n", .{ r.psnr, r.bytes / 1024 });
+        }
+    } else |_| {
+        const msg = std.mem.sliceTo(&err, 0);
+        std.debug.print("(sem AV1 aqui: {s})\n", .{msg});
+        try testing.expect(msg.len > 0);
+    }
+    // a API 12 (AV1) e a 11.1 (H.264/HEVC) no mesmo processo: o NVENC de sempre continua abrindo
+    if (codec.HwEncoder.init(.{ .codec = .h264, .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000 }, &err)) |e| {
+        var enc = e;
+        enc.deinit();
+    } else |_| {}
+}
+
 test "Opus: codifica e decodifica 10 ms de áudio" {
     var err: c_int = 0;
     const enc = audio.c.opus_encoder_create(audio.rate, audio.channels, audio.c.OPUS_APPLICATION_RESTRICTED_LOWDELAY, &err) orelse return error.OpusInit;
@@ -1112,7 +1147,7 @@ test "mp4: HEVC (NVENC) vira hvc1 que o ffmpeg abre e decodifica, clipe e grava�
     }
     try testing.expect(mp4.isHevc(video.items[0].data));
     const ps = mp4.paramSets(video.items[0].data);
-    try testing.expect(ps.hevc and ps.vps.len > 0 and ps.sps.len > 0 and ps.pps.len > 0);
+    try testing.expect(ps.kind == .hevc and ps.vps.len > 0 and ps.sps.len > 0 and ps.pps.len > 0);
     var path_buf: [96]u8 = undefined;
     const clip_path = try std.fmt.bufPrintZ(&path_buf, "/tmp/telinha-teste-hevc-{d}.mp4", .{getpid()});
     defer _ = unlink(clip_path.ptr);
@@ -1134,6 +1169,76 @@ test "mp4: HEVC (NVENC) vira hvc1 que o ffmpeg abre e decodifica, clipe e grava�
     }
 }
 
+test "mp4: AV1 (OBUs) vira av01 + av1C que o ffmpeg abre e decodifica, clipe e gravação" {
+    // sem placa com AV1 aqui: os OBUs vêm do libaom do ffmpeg (tempo real, um quadro por unidade)
+    if (access("/usr/bin/ffmpeg", 0) != 0) return error.SkipZigTest;
+    const gpa = std.heap.c_allocator;
+    var cmd_buf: [512]u8 = undefined;
+    var res: [4096]u8 = undefined;
+    var obu_buf: [96]u8 = undefined;
+    const obu_path = try std.fmt.bufPrintZ(&obu_buf, "/tmp/telinha-teste-av1-{d}.obu", .{getpid()});
+    defer _ = unlink(obu_path.ptr);
+    _ = run(try std.fmt.bufPrintZ(&cmd_buf, "ffmpeg -v error -y -f lavfi -i testsrc2=s=640x360:r=30 -frames:v 40 -pix_fmt yuv420p -c:v libaom-av1 -usage realtime -cpu-used 8 -g 25 -lag-in-frames 0 -f obu {s} 2>&1", .{obu_path}), &res);
+    const f = mp4.openFile(obu_path, "rb") orelse return error.SkipZigTest; // ffmpeg sem libaom
+    var raw: std.ArrayList(u8) = .empty;
+    defer raw.deinit(gpa);
+    var chunk: [65536]u8 = undefined;
+    while (true) {
+        const n = fread(&chunk, 1, chunk.len, f);
+        if (n == 0) break;
+        try raw.appendSlice(gpa, chunk[0..n]);
+    }
+    _ = mp4.cio.fclose(f);
+    if (raw.items.len == 0) return error.SkipZigTest;
+    try testing.expectEqual(mp4.Kind.av1, mp4.kindOf(raw.items));
+    // quebra em unidades temporais (cada uma começa no delimitador)
+    var video: std.ArrayList(mp4.VideoSample) = .empty;
+    defer video.deinit(gpa);
+    var it: mp4.ObuIter = .{ .data = raw.items };
+    var start: usize = 0;
+    while (true) {
+        const at = it.pos;
+        const o = it.next();
+        if (o == null or (o.?.typ == 2 and at > start)) {
+            const tu = raw.items[start..at];
+            try video.append(gpa, .{ .data = tu, .ts_us = 1_000_000 + @as(u64, video.items.len) * 33_333, .key = mp4.av1HasSeqHeader(tu) });
+            start = at;
+        }
+        if (o == null) break;
+    }
+    try testing.expectEqual(raw.items.len, it.pos); // leu tudo (nenhum OBU quebrado)
+    try testing.expectEqual(@as(usize, 40), video.items.len);
+    try testing.expect(video.items[0].key and video.items[25].key and !video.items[1].key);
+    try testing.expect(codec.hasKeyNal(.av1, video.items[25].data) and !codec.hasKeyNal(.av1, video.items[2].data));
+    const ps = mp4.paramSets(video.items[0].data);
+    const info = mp4.av1SeqInfo(ps.sps) orelse return error.BadSeqHeader;
+    try testing.expect(info.profile == 0 and info.mono == 0 and info.sub_x == 1 and info.sub_y == 1 and info.high_bitdepth == 0);
+    // sem o delimitador temporal na amostra
+    var sample: std.ArrayList(u8) = .empty;
+    defer sample.deinit(gpa);
+    try mp4.toSample(&sample, video.items[1].data, .av1);
+    try testing.expect(sample.items.len > 0 and sample.items.len < video.items[1].data.len and sample.items[0] != 0x12);
+
+    var path_buf: [96]u8 = undefined;
+    const clip_path = try std.fmt.bufPrintZ(&path_buf, "/tmp/telinha-teste-av1-{d}.mp4", .{getpid()});
+    defer _ = unlink(clip_path.ptr);
+    try mp4.writeClip(clip_path, 640, 360, video.items, &.{});
+    var rec_buf: [96]u8 = undefined;
+    const rec_path = try std.fmt.bufPrintZ(&rec_buf, "/tmp/telinha-teste-av1-grav-{d}.mp4", .{getpid()});
+    defer _ = unlink(rec_path.ptr);
+    const r = try mp4.Recorder.start(rec_path, 640, 360, video.items[0], false);
+    for (video.items[1..]) |v| try r.addVideo(v);
+    r.finish();
+    if (access("/usr/bin/ffprobe", 0) != 0) return;
+    for ([_][:0]const u8{ clip_path, rec_path }) |path| {
+        const probe = run(try std.fmt.bufPrintZ(&cmd_buf, "ffprobe -v error -count_frames -show_entries stream=codec_name,codec_tag_string,width,height,nb_read_frames -of csv=p=0 {s} 2>&1", .{path}), &res);
+        if (std.mem.find(u8, probe, "av1,av01,640,360,40") == null) std.debug.print("ffprobe: {s}\n", .{probe});
+        try testing.expect(std.mem.find(u8, probe, "av1,av01,640,360,40") != null);
+        const errs = run(try std.fmt.bufPrintZ(&cmd_buf, "ffmpeg -v error -i {s} -f null - 2>&1", .{path}), &res);
+        try testing.expectEqualStrings("", errs);
+    }
+}
+
 test "mp4: NAL units do Annex B, SPS/PPS e conversão pra tamanho+NAL" {
     const bs = [_]u8{ 0, 0, 0, 1, 0x67, 0x64, 0, 0x1f, 0xAA, 0, 0, 1, 0x68, 0xEE, 0, 0, 0, 1, 0x65, 0x88, 0x84, 0, 0, 1, 0x09, 0x10 };
     const ps = mp4.paramSets(&bs);
@@ -1141,7 +1246,7 @@ test "mp4: NAL units do Annex B, SPS/PPS e conversão pra tamanho+NAL" {
     try testing.expectEqualSlices(u8, &.{ 0x68, 0xEE }, ps.pps);
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(std.heap.c_allocator);
-    try mp4.toAvcc(&out, &bs, false);
+    try mp4.toSample(&out, &bs, .h264);
     // só a fatia IDR (SPS/PPS vão no avcC; AUD sai)
     try testing.expectEqualSlices(u8, &.{ 0, 0, 0, 3, 0x65, 0x88, 0x84 }, out.items);
 }

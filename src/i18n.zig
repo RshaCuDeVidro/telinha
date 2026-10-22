@@ -907,6 +907,8 @@ const table = [_][2][]const u8{
     .{ "Equilibrado", "Balanced" },
     .{ "Qualidade", "Quality" },
     .{ "Leve: menos trabalho na placa (bom pra jogar e transmitir junto), um pouco menos nítido. Qualidade: mais nítido, mais placa.", "Light: less GPU work (good for gaming while streaming), a bit less sharp. Quality: sharper, more GPU." },
+    .{ "AV1 (experimental, NVIDIA RTX 40 em diante)", "AV1 (experimental, NVIDIA RTX 40 and newer)" },
+    .{ "Mais nítido com a mesma banda. Só entra quando todo mundo que assiste decodifica AV1 (senão fica no HEVC/H.264); vale na próxima transmissão.", "Sharper at the same bandwidth. Only kicks in when everyone watching can decode AV1 (otherwise it stays on HEVC/H.264); applies to the next stream." },
 
     .{ "Ainda não chegou imagem dessa transmissão.", "No image from this stream yet." },
     .{ "print", "screenshot" },

@@ -34,6 +34,12 @@
             .hash = "N-V-__8AAHnKBQD2coquOXXuAjl2p5EEQ5IH36AWJTOUDbP5",
             .lazy = true,
         },
+        .nv_codec_headers12 = .{
+            // só pro AV1 (NVENC API 12; o resto continua na 11.1, que roda em driver mais antigo)
+            .url = "https://github.com/FFmpeg/nv-codec-headers/archive/refs/tags/n12.2.72.0.tar.gz",
+            .hash = "N-V-__8AABG5BgC7Z9HtF98CEqVkcgvg_0c2FqEe9MGxytdG",
+            .lazy = true,
+        },
         .glfw = .{
             .url = "https://github.com/glfw/glfw/archive/refs/tags/3.5.1.tar.gz",
             .hash = "N-V-__8AAFAoSgCaIXvRyU85vZ0bKDcZLaUHWrojNKxEio2r",

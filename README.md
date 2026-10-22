@@ -109,6 +109,7 @@ On Wayland, the system asks which screen or window to share the first time and r
 - **Clips** of the last 5 s to 10 min with one click or a global hotkey.
 - **MP4 recording** without re-encoding, including audio. Recordings survive resolution changes.
 - PNG screenshots at the stream's native resolution.
+- **Watch from a browser**: a dedicated server with `--web` serves a page that plays the stream (video, sound and voice) with nothing to install. The server only relays the same frames, so the streamer pays nothing extra; with `--web-tunel` it gets an HTTPS link through a Cloudflare quick tunnel, no account.
 
 </td>
 </tr>
@@ -121,6 +122,8 @@ On Wayland, the system asks which screen or window to share the first time and r
 - Voice activation or **push-to-talk** that works while a game is focused.
 - Opus with FEC, sent ahead of video so it never waits behind a frame.
 - Chat with images, reactions, @mentions, history for late joiners, and Markdown: code blocks with a copy button, `inline code`, **bold**, *italic* and clickable links (Shift+Enter for a new line). Color emoji, and right-click a message to copy or reply.
+- **Replies that quote** the original message and **private messages** (`/msg name text`), visible only to the two of you.
+- **Files in the room**, up to 256 MB: attach, drag onto the window or `/arquivo`. Uploaded once to the server (encrypted on disk, gone after 2 h) and each person downloads it when they click, in the background so video and voice don't suffer.
 - Desktop notifications while telinha is in the background.
 
 </td>
@@ -145,7 +148,7 @@ On Wayland, the system asks which screen or window to share the first time and r
 
 | | |
 |---|---|
-| **Codecs** | H.264, plus HEVC on NVIDIA when every viewer can decode it, for less bandwidth at the same quality. |
+| **Codecs** | H.264, plus HEVC on NVIDIA when every viewer can decode it, for less bandwidth at the same quality. AV1 as an experimental option (NVENC on RTX 40 and newer). |
 | **GPU encode and decode** | NVIDIA NVENC/NVDEC everywhere. Intel and AMD through Media Foundation on Windows and VA-API on Linux. Otherwise openh264 with SIMD across threads. |
 | **Zero-copy pipeline** | On Linux, the compositor's DMA-BUF goes straight to the encoder, through CUDA on NVIDIA and through VA-API VPP on Intel/AMD. On Windows, DXGI textures go through a CUDA kernel into NVENC. Viewers decode with NVDEC straight into an OpenGL texture. Any failure falls back to the CPU path. |
 | **Cursor outside the video** | Viewers draw the arrow themselves, so moving the mouse over a still screen sends no frames at all. |

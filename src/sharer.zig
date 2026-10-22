@@ -482,6 +482,7 @@ const Pipeline = struct {
     d3d_dev: ?*anyopaque = null,
     gpu_on: bool = false,
     hevc_ok: bool = false, // a placa codifica HEVC (testado no começo)
+    av1_ok: bool = false, // AV1 experimental ligado e a placa codifica (RTX 40+)
     audio_sender: ?*audio.Sender = null,
     audio_live: std.atomic.Value(bool) = .init(false), // tem som saindo (vai no anúncio)
     reannounce: std.atomic.Value(bool) = .init(false), // o som mudou: anunciar de novo
@@ -731,6 +732,14 @@ const Pipeline = struct {
                         hh.deinit();
                         p.hevc_ok = true;
                     } else |_| {}
+                }
+                // AV1 só testa se ligou a opção (abrir o encoder custa uns ms e memória da placa)
+                if (codec.av1_enabled.load(.acquire) and getenv("TELINHA_SEM_AV1") == null) {
+                    if (codec.HwEncoder.init(.{ .codec = .av1, .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000 }, &err)) |ap| {
+                        var aa = ap;
+                        aa.deinit();
+                        p.av1_ok = true;
+                    } else |_| if (debugEnabled()) std.debug.print("[telinha] sem AV1: {s}\n", .{std.mem.sliceTo(&err, 0)});
                 }
             } else |_| {
                 if (debugEnabled()) std.debug.print("[telinha] sem encoder em hardware: {s}\n", .{std.mem.sliceTo(&err, 0)});
@@ -1336,10 +1345,10 @@ const Pipeline = struct {
 
             // (re)cria o encoder se mudou resolução ou configuração
             const renew = key and hw_ignores_idr and enc != null and enc.?.isHw();
-            // HEVC só se a placa codifica e todo mundo que assiste decodifica
+            // AV1/HEVC só se a placa codifica e todo mundo que assiste decodifica
             // (a sala avisa: mensagem `codec`); senão H.264
             const allowed = s.client.codecs_allowed[kind].load(.acquire);
-            const want_codec: codec.Codec = if (want_hw and p.hevc_ok and allowed & codec.Codec.hevc.bit() != 0) .hevc else .h264;
+            const want_codec: codec.Codec = if (!want_hw) .h264 else if (p.av1_ok and allowed & codec.Codec.av1.bit() != 0) .av1 else if (p.hevc_ok and allowed & codec.Codec.hevc.bit() != 0) .hevc else .h264;
             if (enc == null or enc.?.width() != sl.w or enc.?.height() != sl.h or gen != enc_gen or enc.?.isHw() != want_hw or enc.?.codecOf() != want_codec or renew) {
                 if (enc) |*e| e.deinit();
                 enc = null;
@@ -1359,9 +1368,9 @@ const Pipeline = struct {
                         // encoder novo: buffers da placa de tamanho antigo podem ir embora
                         if (p.cap) |src| if (src == .screen) c.cap_gpu_gc(src.screen);
                     } else |_| if (want_codec != .h264) {
-                        // HEVC não abriu nessa resolução: H.264 daqui pra frente
-                        if (debugEnabled()) std.debug.print("[telinha] HEVC falhou ({s}), voltando pro H.264\n", .{std.mem.sliceTo(&err, 0)});
-                        p.hevc_ok = false;
+                        // AV1/HEVC não abriu nessa resolução: o próximo da lista daqui pra frente
+                        if (debugEnabled()) std.debug.print("[telinha] {s} falhou ({s}), voltando pro próximo codec\n", .{ want_codec.name(), std.mem.sliceTo(&err, 0) });
+                        if (want_codec == .av1) p.av1_ok = false else p.hevc_ok = false;
                         p.doneWith(i, false);
                         s.client.keyreq[kind].store(true, .release);
                         continue;

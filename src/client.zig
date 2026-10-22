@@ -62,7 +62,7 @@ pub var gpu_interop = std.atomic.Value(bool).init(false);
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 
-/// Codecs que esse PC decodifica (H.264 sempre; HEVC se a placa decodifica).
+/// Codecs que esse PC decodifica (H.264 sempre; HEVC/AV1 se a placa decodifica).
 /// Testado uma vez por processo (abrir o decoder da placa leva ~100 ms).
 var decode_codecs: std.atomic.Value(u8) = .init(0);
 
@@ -71,6 +71,7 @@ pub fn decodeCodecs() u8 {
     if (known != 0) return known;
     var mask: u8 = proto.codecs_h264;
     if (getenv("TELINHA_SEM_HEVC") == null and codec.HwDecoder.supports(.hevc)) mask |= codec.Codec.hevc.bit();
+    if (getenv("TELINHA_SEM_AV1") == null and codec.HwDecoder.supports(.av1)) mask |= codec.Codec.av1.bit();
     decode_codecs.store(mask, .release);
     return mask;
 }

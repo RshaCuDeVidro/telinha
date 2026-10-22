@@ -40,7 +40,7 @@ same rate control and separate acknowledgements.
 | `src/connect.zig` | invite with several addresses and the race between them (the first that answers as a room wins) |
 | `src/sharer.zig` | streaming thread (screen or camera): capture → scale → encode → send |
 | `src/clip.zig` | last ~30 s of each stream (clip) and recording in progress; videos folder |
-| `src/mp4.zig` | MP4 writer (H.264 in avc1 or HEVC in hvc1, + Opus, without re-encoding): clip with `moov` at the start, fragmented recording |
+| `src/mp4.zig` | MP4 writer (H.264 in avc1, HEVC in hvc1 or AV1 in av01, + Opus, without re-encoding): clip with `moov` at the start, fragmented recording |
 | `src/udp.zig` | video/sound/voice over UDP: encrypted datagrams, pieces, reassembly, NACK, per-stream ordering, pacing |
 | `src/update.zig` | new version: last release check on GitHub (curl / WinHTTP), signed `SHA256SUMS` (Ed25519, public key here), the "what changes" and the install |
 | `src/c/selfupdate.c` | update: own executable path, download to a file, swap the executable (atomic rename on Linux; `.old` on Windows) and reopen |
@@ -57,10 +57,10 @@ same rate control and separate acknowledgements.
 | `src/natpmp.zig` | port opened through NAT-PMP (RFC 6886) or PCP (RFC 6887) on the default gateway |
 | `src/codec.zig` | openh264 and hardware encoder wrapper + vectorized color conversions |
 | `src/c/hwenc.c` | picks the hardware encoder: NVENC → Media Foundation (Windows) or VA-API (Linux) → none (openh264) |
-| `src/c/hwenc_nvenc.c` | NVIDIA hardware encoder, H.264 and HEVC (NVENC API 11.1, loaded at runtime) |
+| `src/c/hwenc_nvenc.c` | NVIDIA hardware encoder, H.264 and HEVC (NVENC API 11.1, loaded at runtime); compiled a second time with `NVENC_AV1` against API 12 for AV1 (experimental, RTX 40+) |
 | `src/c/hwenc_mf.c` | Windows: hardware H.264 encoder on any card (Media Foundation MFT: Intel, AMD, NVIDIA) |
 | `src/c/hwdec.c` | picks the hardware decoder: NVDEC → Media Foundation (Windows) or VA-API (Linux) |
-| `src/c/hwdec_nvdec.c` | NVIDIA hardware decoder, H.264 and HEVC (NVDEC/nvcuvid, loaded at runtime) |
+| `src/c/hwdec_nvdec.c` | NVIDIA hardware decoder, H.264, HEVC and AV1 (NVDEC/nvcuvid, loaded at runtime) |
 | `src/c/hwdec_mf.c` | Windows: Media Foundation H.264 decoder with DXVA (any card), texture copied to memory |
 | `src/c/hwva.c` | Linux: H.264 encoder and decoder through VA-API (Intel/AMD; libva loaded at runtime). The decoder does the "software" part of H.264 (SPS/PPS, POC, references, MMCO); the encoder tests itself on startup (3 frames decoded by openh264) |
 | `src/gl.zig` | textures and YUV→RGB conversion in a shader |
@@ -102,7 +102,7 @@ arrives damaged. Tested with 5% loss in both directions
 (`TELINHA_UDP_PERDA=5`, `run_qa.py udp_com_perda`): no message lost for good,
 ~50 ms of delay.
 
-## Codec: H.264 always, HEVC when everyone can
+## Codec: H.264 always, HEVC (or AV1) when everyone can
 
 openh264 guarantees that anyone can decode H.264. HEVC does much better per bit
 on text (in the NVENC/NVDEC test, 720p at 2 Mbit/s: +4 dB), but it only comes out
@@ -111,7 +111,13 @@ person says in `hello` what they can decode (tested once per process), the serve
 sends the streamer the intersection of those watching, and the encoder is
 recreated in the new codec when it changes (starting on an IDR). The codec goes
 in each frame's flags; viewers switch decoders when they see it change. Clips and
-recordings stay in the codec that arrived (hvc1/hvcC in the MP4).
+recordings stay in the codec that arrived (hvc1/hvcC or av01/av1C in the MP4).
+
+AV1 is experimental and off by default (Settings → Performance): only NVENC on
+RTX 40 and newer encodes it, through the NVENC API 12 (the H.264/HEVC encoder
+stays on 11.1, which runs on older drivers). It goes first when everyone
+watching decodes it (NVDEC on RTX 30+, or a browser); if it fails to open,
+the streamer falls back to HEVC/H.264 for the rest of the stream.
 
 ## Performance decisions
 

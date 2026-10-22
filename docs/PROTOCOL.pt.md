@@ -231,8 +231,10 @@ recebe a sua lista: todo mundo do seu chat mais todo mundo da sua call).
 | w, h | u16, u16 | |
 | cursor_x, cursor_y | u16, u16 | ponta do cursor de quem transmite, relativa ao quadro (0..65534); `0xFFFF` = sem cursor |
 
-e o bitstream Annex B (H.264 ou HEVC, ver flags) até o fim. Todo IDR leva
-SPS/PPS (no HEVC também o VPS). O servidor
+e o bitstream até o fim: Annex B no H.264 e no HEVC, OBUs do AV1 no formato
+"low overhead" (cada um com o tamanho, uma unidade temporal por quadro,
+começando pelo delimitador temporal) — ver flags. Todo IDR leva SPS/PPS (no
+HEVC também o VPS); todo quadro-chave AV1 leva o cabeçalho de sequência. O servidor
 descobre o stream pelo bit de câmera. "Pulável" = ninguém usa esse quadro de
 referência (todas as fatias com `nal_ref_idc = 0`; o transmissor codifica com
 duas camadas temporais, um quadro sim, um não): o servidor pode deixar de
@@ -241,10 +243,11 @@ não conhece o bit ignora. Um quadro reenviado com a tela parada leva a hora do
 reenvio (ele é o estado atual da tela).
 
 **Codec:** H.264 todo mundo decodifica (openh264 em software, se preciso);
-HEVC só quem tem decoder na placa (hoje NVDEC). No `hello` cada um diz o que
-decodifica; o servidor manda pro transmissor, a cada mudança de quem assiste,
-a interseção (`codec`), e ele escolhe o melhor que o encoder dele faz — HEVC
-se puder, senão H.264. Entrou alguém que só tem H.264: a transmissão volta pro
+HEVC e AV1 só quem tem decoder na placa (hoje NVDEC) ou navegador que tenha
+(WebCodecs). No `hello` cada um diz o que decodifica; o servidor manda pro
+transmissor, a cada mudança de quem assiste, a interseção (`codec`), e ele
+escolhe o melhor que o encoder dele faz — AV1 (experimental, ligado nas
+opções, NVENC das RTX 40 em diante), depois HEVC, senão H.264. Entrou alguém que só tem H.264: a transmissão volta pro
 H.264 na hora (encoder novo, começando num IDR); quem já assistia troca de
 decoder ao ver o codec mudar nas flags.
 

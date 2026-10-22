@@ -40,7 +40,7 @@ pipeline, o mesmo controle de taxa e confirmações separadas.
 | `src/connect.zig` | convite com vários endereços e a corrida entre eles (o primeiro que responder como sala ganha) |
 | `src/sharer.zig` | thread de transmissão (tela ou câmera): captura → escala → encode → envio |
 | `src/clip.zig` | últimos ~30 s de cada transmissão (clipe) e gravação em andamento; pasta dos vídeos |
-| `src/mp4.zig` | escritor de MP4 (H.264 em avc1 ou HEVC em hvc1, + Opus, sem recodificar): clipe com `moov` no começo, gravação fragmentada |
+| `src/mp4.zig` | escritor de MP4 (H.264 em avc1, HEVC em hvc1 ou AV1 em av01, + Opus, sem recodificar): clipe com `moov` no começo, gravação fragmentada |
 | `src/udp.zig` | vídeo/som/voz por UDP: datagramas cifrados, pedaços, remontagem, NACK, ordem por transmissão, cadência |
 | `src/update.zig` | versão nova: checagem da última release no GitHub (curl / WinHTTP), `SHA256SUMS` assinado (Ed25519, chave pública aqui), o "o que muda" e a instalação |
 | `src/c/selfupdate.c` | atualização: caminho do executável, baixar pra arquivo, trocar o executável (rename atômico no Linux; `.old` no Windows) e abrir de novo |
@@ -57,10 +57,10 @@ pipeline, o mesmo controle de taxa e confirmações separadas.
 | `src/natpmp.zig` | porta aberta pelo NAT-PMP (RFC 6886) ou PCP (RFC 6887) no gateway padrão |
 | `src/codec.zig` | wrapper do openh264 e do encoder em hardware + conversões de cor vetorizadas |
 | `src/c/hwenc.c` | escolhe o encoder em hardware: NVENC → Media Foundation (Windows) ou VA-API (Linux) → nenhum (openh264) |
-| `src/c/hwenc_nvenc.c` | encoder em hardware NVIDIA, H.264 e HEVC (API NVENC 11.1, carregada em runtime) |
+| `src/c/hwenc_nvenc.c` | encoder em hardware NVIDIA, H.264 e HEVC (API NVENC 11.1, carregada em runtime); compilado de novo com `NVENC_AV1` na API 12 pro AV1 (experimental, RTX 40+) |
 | `src/c/hwenc_mf.c` | Windows: encoder H.264 em hardware de qualquer placa (MFT do Media Foundation: Intel, AMD, NVIDIA) |
 | `src/c/hwdec.c` | escolhe o decoder em hardware: NVDEC → Media Foundation (Windows) ou VA-API (Linux) |
-| `src/c/hwdec_nvdec.c` | decoder em hardware NVIDIA, H.264 e HEVC (NVDEC/nvcuvid, carregado em runtime) |
+| `src/c/hwdec_nvdec.c` | decoder em hardware NVIDIA, H.264, HEVC e AV1 (NVDEC/nvcuvid, carregado em runtime) |
 | `src/c/hwdec_mf.c` | Windows: decoder H.264 do Media Foundation com DXVA (qualquer placa), textura copiada pra memória |
 | `src/c/hwva.c` | Linux: encoder e decoder H.264 pelo VA-API (Intel/AMD; libva carregada em runtime). O decoder faz a parte "de software" do H.264 (SPS/PPS, POC, referências, MMCO); o encoder se testa ao abrir (3 quadros decodificados pelo openh264) |
 | `src/gl.zig` | texturas e conversão YUV→RGB num shader |
@@ -101,7 +101,7 @@ perdeu de vez: o decoder pede IDR, como no TCP quando um quadro chega
 estragado. Teste com 5% de perda nos dois sentidos (`TELINHA_UDP_PERDA=5`,
 `run_qa.py udp_com_perda`): nenhuma mensagem perdida de vez, ~50 ms de atraso.
 
-## Codec: H.264 sempre, HEVC quando todo mundo pode
+## Codec: H.264 sempre, HEVC (ou AV1) quando todo mundo pode
 
 O openh264 garante que qualquer um decodifica H.264. HEVC rende bem mais por
 bit em texto (no teste com NVENC/NVDEC, 720p a 2 Mbit/s: +4 dB), mas só sai
@@ -110,7 +110,13 @@ transmissão: cada um diz no `hello` o que decodifica (testado uma vez por
 processo), o servidor manda pro transmissor a interseção de quem assiste, e
 o encoder é recriado no codec novo quando ela muda (começa num IDR). O codec
 vai nas flags de cada quadro; quem assiste troca de decoder ao ver mudar.
-Clipes e gravações ficam no codec que chegou (hvc1/hvcC no MP4).
+Clipes e gravações ficam no codec que chegou (hvc1/hvcC ou av01/av1C no MP4).
+
+O AV1 é experimental e vem desligado (Configurações → Desempenho): só o NVENC
+das RTX 40 em diante codifica, pela API 12 do NVENC (o encoder de H.264/HEVC
+continua na 11.1, que roda em driver mais antigo). Ele vem primeiro quando todo
+mundo que assiste decodifica (NVDEC das RTX 30+, ou navegador); se não abrir,
+quem transmite volta pro HEVC/H.264 pelo resto da transmissão.
 
 ## Decisões de desempenho
 

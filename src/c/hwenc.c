@@ -20,6 +20,15 @@ void nvenc_set_bitrate(nvenc *e, int bitrate);
 const char *nvenc_name(nvenc *e);
 void nvenc_close(nvenc *e);
 
+// AV1 (hwenc_nvenc.c de novo com NVENC_AV1 e a API 12): RTX 40 em diante
+typedef struct nvenc_av1 nvenc_av1;
+nvenc_av1 *nvenc_av1_open(int codec, int width, int height, int fps, int bitrate, int screen_mode, int temporal_layers, char *err, int errlen);
+int nvenc_av1_encode(nvenc_av1 *e, const uint8_t *pixels, int stride, int format, int force_idr, const uint8_t **out, int *out_len, int *is_idr);
+int nvenc_av1_encode_dev(nvenc_av1 *e, uint64_t dev, int pitch, int format, int force_idr, const uint8_t **out, int *out_len, int *is_idr);
+void nvenc_av1_set_bitrate(nvenc_av1 *e, int bitrate);
+const char *nvenc_av1_name(nvenc_av1 *e);
+void nvenc_av1_close(nvenc_av1 *e);
+
 #ifdef _WIN32
 typedef struct mfenc mfenc;
 mfenc *mfenc_open(int codec, int width, int height, int fps, int bitrate, int screen_mode, char *err, int errlen);
@@ -39,7 +48,7 @@ const char *vaenc_name(vaenc *e);
 void vaenc_close(vaenc *e);
 #endif
 
-enum { KIND_NV = 1, KIND_MF = 2, KIND_VA = 3 };
+enum { KIND_NV = 1, KIND_MF = 2, KIND_VA = 3, KIND_NV_AV1 = 4 };
 
 struct hwenc {
     int kind;
@@ -59,6 +68,16 @@ int hwenc_effort(void) {
 hwenc *hwenc_open(int codec, int width, int height, int fps, int bitrate, int screen_mode, int temporal_layers, char *err, int errlen) {
     hwenc *h = calloc(1, sizeof *h);
     if (!h) return NULL;
+    // AV1 (experimental): só o NVENC das RTX 40+; não deu, quem chama volta pro HEVC/H.264
+    if (codec == HW_CODEC_AV1) {
+        h->impl = getenv("TELINHA_SEM_NVENC") ? NULL : nvenc_av1_open(codec, width, height, fps, bitrate, screen_mode, temporal_layers, err, errlen);
+        if (h->impl) {
+            h->kind = KIND_NV_AV1;
+            return h;
+        }
+        free(h);
+        return NULL;
+    }
     char nv_err[256] = "";
     if (!getenv("TELINHA_SEM_NVENC")) {
         h->impl = nvenc_open(codec, width, height, fps, bitrate, screen_mode, temporal_layers, nv_err, sizeof nv_err);
@@ -107,11 +126,12 @@ int hwenc_encode(hwenc *h, const uint8_t *pixels, int stride, int format, int fo
 #else
     if (h->kind == KIND_VA) return vaenc_encode(h->impl, pixels, stride, format, force_idr, out, out_len, is_idr);
 #endif
+    if (h->kind == KIND_NV_AV1) return nvenc_av1_encode(h->impl, pixels, stride, format, force_idr, out, out_len, is_idr);
     return nvenc_encode(h->impl, pixels, stride, format, force_idr, out, out_len, is_idr);
 }
 
 int hwenc_accepts_cuda(hwenc *h) {
-    return h->kind == KIND_NV;
+    return h->kind == KIND_NV || h->kind == KIND_NV_AV1;
 }
 
 int hwenc_is_va(hwenc *h) {
@@ -136,6 +156,7 @@ int hwenc_encode_dev(hwenc *h, uint64_t dev, int pitch, int format, int force_id
     // VA-API: `dev` é a superfície NV12 do conversor (mesmo dispositivo)
     if (h->kind == KIND_VA) return vaenc_encode_surface(h->impl, (uint32_t)dev, force_idr, out, out_len, is_idr);
 #endif
+    if (h->kind == KIND_NV_AV1) return nvenc_av1_encode_dev(h->impl, dev, pitch, format, force_idr, out, out_len, is_idr);
     if (h->kind != KIND_NV) return -1;
     return nvenc_encode_dev(h->impl, dev, pitch, format, force_idr, out, out_len, is_idr);
 }
@@ -152,6 +173,7 @@ void hwenc_set_bitrate(hwenc *h, int bitrate) {
         return;
     }
 #endif
+    if (h->kind == KIND_NV_AV1) return nvenc_av1_set_bitrate(h->impl, bitrate);
     nvenc_set_bitrate(h->impl, bitrate);
 }
 
@@ -161,6 +183,7 @@ const char *hwenc_name(hwenc *h) {
 #else
     if (h->kind == KIND_VA) return vaenc_name(h->impl);
 #endif
+    if (h->kind == KIND_NV_AV1) return nvenc_av1_name(h->impl);
     return nvenc_name(h->impl);
 }
 
@@ -173,6 +196,8 @@ void hwenc_close(hwenc *h) {
     if (h->kind == KIND_VA) vaenc_close(h->impl);
     else
 #endif
+    if (h->kind == KIND_NV_AV1) nvenc_av1_close(h->impl);
+    else
         nvenc_close(h->impl);
     free(h);
 }

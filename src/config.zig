@@ -74,6 +74,7 @@ pub const Config = struct {
     hk: [n_hotkeys]Hotkey = [_]Hotkey{.{}} ** n_hotkeys, // atalhos (HotkeyId)
     ui_fps_cap: i32 = 60, // limite de quadros da interface (0 = o do monitor)
     hw_effort: i32 = 1, // encoder da placa: 0 = leve, 1 = equilibrado, 2 = qualidade
+    av1: bool = false, // AV1 experimental (NVENC das RTX 40+): só quando todo mundo decodifica
     voice_ptt: bool = false, // voz: apertar pra falar (em vez da detecção de voz)
     ptt_key: i32 = 86, // tecla do GLFW (86 = V); 0 = é botão do mouse
     ptt_scancode: i32 = 0, // scancode da tecla (0 = descobre pela tecla)
@@ -298,6 +299,8 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         cfg.camera_res = std.math.clamp(int, 0, 2);
     } else if (std.mem.eql(u8, k, "language")) {
         setStr(&cfg.language, v);
+    } else if (std.mem.eql(u8, k, "av1")) {
+        cfg.av1 = int != 0;
     } else if (std.mem.eql(u8, k, "hw_effort")) {
         cfg.hw_effort = std.math.clamp(int, 0, 2);
     } else if (std.mem.eql(u8, k, "ui_fps_cap")) {
@@ -405,9 +408,9 @@ pub fn save(cfg: *const Config) void {
     _ = c.fwrite(m.ptr, 1, m.len, f);
     // (um format só aceita 32 valores: o resto vai aqui)
     var more2: [700]u8 = undefined;
-    const m2 = std.fmt.bufPrint(&more2, "animations={d}\njoin_channel={s}\ndraw_color={d}\ndraw_size={d}\nshow_drawings={d}\njoin_fp={s}\njoin_fp_for={s}\nupdate_auto={d}\nupdate_skip={s}\nlast_version={s}\n", .{
+    const m2 = std.fmt.bufPrint(&more2, "animations={d}\njoin_channel={s}\ndraw_color={d}\ndraw_size={d}\nshow_drawings={d}\njoin_fp={s}\njoin_fp_for={s}\nupdate_auto={d}\nupdate_skip={s}\nlast_version={s}\nav1={d}\n", .{
         @intFromBool(cfg.animations), getStr(&cfg.join_channel), cfg.draw_color, cfg.draw_size, @intFromBool(cfg.show_drawings), getStr(&cfg.join_fp), getStr(&cfg.join_fp_for),
-        @intFromBool(cfg.update_auto), getStr(&cfg.update_skip), getStr(&cfg.last_version),
+        @intFromBool(cfg.update_auto), getStr(&cfg.update_skip), getStr(&cfg.last_version), @intFromBool(cfg.av1),
     }) catch return;
     _ = c.fwrite(m2.ptr, 1, m2.len, f);
     inline for (@typeInfo(HotkeyId).@"enum".fields) |fl| {

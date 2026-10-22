@@ -2,6 +2,45 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## Ainda não lançada
+
+Conversa com a 3.2 e a 3.1 (as mensagens novas são ignoradas por app e servidor antigos; mensagem privada e arquivo só vão pra quem entende).
+
+### Destaques
+
+- 🌍 **Assistir pelo navegador**: o servidor dedicado serve uma página que toca a transmissão, o som e a voz da call, sem instalar nada. Ele só repassa os mesmos quadros (nada é recodificado), então quem transmite não gasta nada a mais. Com `--web-tunel` o servidor ganha um link HTTPS por um túnel rápido da Cloudflare, sem conta; no app, um botão copia o link com a senha.
+- 📎 **Arquivos na sala**: qualquer arquivo de até 256 MB, pelo clipe, arrastando pra janela ou com `/arquivo`. Sobe uma vez pro servidor e cada um baixa quando clicar, em segundo plano, sem atrapalhar vídeo, voz e chat.
+- ↩️ **Responder citando** uma mensagem e **mensagem privada** (pelo menu da mensagem, da pessoa ou `/msg nome texto`).
+- 🧪 **AV1 experimental** (NVIDIA RTX 40 em diante): mais nítido com a mesma banda, quando todo mundo que assiste decodifica. Desligado por padrão, em Configurações → Desempenho.
+
+<!-- detalhes -->
+
+### Todas as mudanças
+
+- **Navegador**: `--web PORTA` sobe a página (WebCodecs: vídeo decodificado
+  na placa; som e voz por um AudioWorklet com buffer curto; cursor desenhado
+  na página) e um WebSocket que fala o mesmo protocolo. Quem entra pelo
+  navegador é um membro normal (rota "navegador"): confirma cada quadro (o
+  controle de atraso vale igual), diz o tamanho em que assiste e conversa no
+  chat. Senha conferida em tempo constante; o navegador nunca vira admin.
+  `--web-tunel` sobe o túnel rápido da Cloudflare (reinicia sozinho se cair)
+  e divulga o link pra sala; `--web-link URL` pra quem tem domínio próprio.
+  Ver docs/DEPLOY.pt.md.
+- **Arquivos**: no servidor ficam no disco cifrados com ChaCha20 (a chave só
+  existe na memória), com id sorteado; só baixa quem está no canal (ou os dois
+  da conversa privada); somem depois de 2 h; 2 GB no total (`--arquivos`). O
+  envio recua quando o atraso das confirmações sobe (como o LEDBAT). No app:
+  barra de progresso, cartão no chat com baixar/abrir/pasta (executável só
+  abre a pasta), downloads na pasta Downloads com `.parte` até terminar.
+- **Resposta citando**: o trecho citado vem do histórico do servidor (ninguém
+  forja citação) e quem foi respondido é avisado como numa menção.
+- **Mensagem privada**: só os dois veem, em qualquer canal, fora do
+  histórico; um app antigo (que mostraria pra todo mundo) não recebe.
+- **AV1**: o NVENC na API 12 (o H.264/HEVC continua na 11.1, que roda em
+  driver mais antigo); quem assiste decodifica pelo NVDEC (RTX 30 em diante)
+  ou no navegador. Se o AV1 não abrir, a transmissão segue em HEVC/H.264.
+  Clipes e gravações em AV1 saem em MP4 (av01).
+
 ## 3.2.0
 
 Conversa com a 3.1 (as mensagens novas são ignoradas por app e servidor antigos).
