@@ -32,6 +32,7 @@ const chatsend = @import("chatsend.zig");
 const filexfer = @import("filexfer.zig");
 const files_mod = @import("files.zig");
 const markdown = @import("markdown.zig");
+const fold = @import("fold.zig");
 const known = @import("known.zig");
 const crypto = @import("crypto.zig");
 const debuglog = @import("debuglog.zig");
@@ -884,6 +885,7 @@ pub const App = struct {
     open_member_menu: bool = false,
 
     audio_err_shown: bool = false,
+    clear_armed_at: f64 = -10, // "limpar o chat" pede um segundo clique
     self_mute_shown: bool = false,
     // notificações do sistema
     notified_at: f64 = -100,
@@ -4046,6 +4048,18 @@ pub const App = struct {
             c.igSetCursorScreenPos(v2(rx, by));
             if (iconButton("##lockroom", if (locked) ic.lock else ic.lock_open, bs, if (locked) col.yellow else col.muted, col.hover, if (locked) tr("Sala trancada: ninguém novo entra. Clique pra destrancar.") else tr("Trancar a sala (ninguém novo entra)")))
                 cl.admin(proto.admin_lock, 0, @intFromBool(!locked));
+            // limpar o chat da sala (todos os canais e os arquivos): dois cliques, sem reiniciar o servidor
+            rx -= bs + S(4);
+            c.igSetCursorScreenPos(v2(rx, by));
+            const now = c.igGetTime();
+            const armed = now - a.clear_armed_at < 4;
+            if (armed) redrawIn(4 - (now - a.clear_armed_at));
+            if (iconButton("##clearchat", ic.eraser, bs, if (armed) col.red else col.muted, col.hover, if (armed) tr("Clique de novo pra apagar o chat de todos os canais (e os arquivos) pra todo mundo") else tr("Limpar o chat da sala"))) {
+                if (armed) {
+                    cl.admin(proto.admin_clear_chat, 0, 0);
+                    a.clear_armed_at = -10;
+                } else a.clear_armed_at = now;
+            }
         } else if (locked) {
             rx -= bs + S(4);
             const ls = textSizeF(font_regular, 15, ic.lock);
@@ -4656,6 +4670,13 @@ pub const App = struct {
             a.startDm(target.id, name);
             a.cfg.show_chat = true;
             a.focus_chat = true;
+            c.igCloseCurrentPopup();
+        }
+        // bot fora da minha call: chama ele pra cá (o "/msg Bot !join" sem precisar saber)
+        if (target.bot and !target.in_call and cl.server_features & proto.srv_dm != 0 and cl.chans_supported and cl.inCall() and
+            c.igSelectable_Bool(fmtZ("{s}  Chamar pra minha call###mbotjoin", .{ic.phone}), false, 0, v2(S(220), 0)))
+        {
+            cl.sendChat("!join", 0, target.id);
             c.igCloseCurrentPopup();
         }
         const route = routeText(target.route);
@@ -7808,16 +7829,20 @@ pub const App = struct {
                 a.toast("Esse servidor não tem mensagem privada (é de uma versão mais velha do telinha).", .{}, true);
                 return true;
             }
+            // sem ligar pra maiúscula nem acento: "/msg musica !join" acha o "Música"
             var best_id: u32 = 0;
-            var best_len: usize = 0;
+            var best_len: usize = 0; // tamanho do nome (o maior que bate ganha)
+            var best_used: usize = 0; // quanto do texto o nome ocupou
             var best_name: [48]u8 = undefined;
             cl.mutex.lock();
             for (cl.members.items) |*m| {
                 const n = m.nameSlice();
-                if (m.id == cl.my_id or n.len <= best_len or arg.len < n.len or !std.ascii.eqlIgnoreCase(arg[0..n.len], n)) continue;
-                if (arg.len > n.len and arg[n.len] != ' ') continue;
+                if (m.id == cl.my_id or n.len <= best_len) continue;
+                const used = fold.prefix(arg, n) orelse continue;
+                if (arg.len > used and arg[used] != ' ') continue;
                 best_id = m.id;
                 best_len = n.len;
+                best_used = used;
                 @memcpy(best_name[0..n.len], n);
             }
             cl.mutex.unlock();
@@ -7825,7 +7850,7 @@ pub const App = struct {
                 a.toast("Use /msg nome mensagem (o nome de alguém da sala).", .{}, false);
                 return true;
             }
-            const body = std.mem.trim(u8, arg[best_len..], " ");
+            const body = std.mem.trim(u8, arg[best_used..], " ");
             if (body.len == 0) {
                 // só o nome: a caixa passa a ir em privado pra essa pessoa
                 a.startDm(best_id, best_name[0..best_len]);

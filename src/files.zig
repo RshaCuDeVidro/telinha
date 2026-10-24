@@ -145,6 +145,19 @@ pub const Store = struct {
         destroy(e);
     }
 
+    /// Todos os que já terminaram de subir (a sala foi limpa). Devolve quantos saíram.
+    pub fn removeComplete(st: *Store) usize {
+        var n: usize = 0;
+        var i: usize = 0;
+        while (i < st.items.items.len) {
+            if (st.items.items[i].complete) {
+                st.removeAt(i);
+                n += 1;
+            } else i += 1;
+        }
+        return n;
+    }
+
     /// Expirados (2 h depois de completos) e subidas paradas. Devolve quantos saíram.
     pub fn expire(st: *Store, now_ms: u64) usize {
         var n: usize = 0;

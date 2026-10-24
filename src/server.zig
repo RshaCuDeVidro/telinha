@@ -1511,6 +1511,21 @@ pub const Server = struct {
             try s.broadcastMembers();
             return;
         }
+        if (action == proto.admin_clear_chat) {
+            // "zerar" a sala sem reiniciar o servidor: o histórico de todos os
+            // canais (privadas inclusive) e os arquivos que ficaram
+            for (s.chans.items) |ch| {
+                for (0..ch.chat_len) |i| ch.chat_log[(ch.chat_head + i) % chat_history_len].free();
+                ch.chat_len = 0;
+                ch.chat_head = 0;
+            }
+            const gone = s.files.removeComplete();
+            var tmp: [96]u8 = undefined;
+            const text = std.fmt.bufPrint(&tmp, "{s} limpou o chat da sala", .{cn.nameSlice()}) catch "";
+            for (s.conns.items) |o| if (o.authed) pushNotice(o, proto.notice_chat_cleared, text, 0) catch {};
+            s.log("{s} limpou o chat da sala ({d} arquivos)", .{ cn.nameSlice(), gone });
+            return;
+        }
         if (target_id == cn.id) return;
         const t = s.findConn(target_id) orelse return;
         if (t.admin and !cn.owner) return;

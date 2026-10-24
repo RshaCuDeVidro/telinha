@@ -1748,6 +1748,12 @@ pub const Client = struct {
                 n.extra = r.u8_() catch 0;
                 cl.mutex.lock();
                 defer cl.mutex.unlock();
+                if (n.kind == proto.notice_chat_cleared) {
+                    for (cl.chat.items) |*l| l.free();
+                    cl.chat.clearRetainingCapacity();
+                    cl.chat_last_id = 0;
+                    cl.chat_count += 1;
+                }
                 if (cl.notices.items.len < 32) try cl.notices.append(gpa, n);
             },
             .draw => {

@@ -190,6 +190,7 @@ pub const admin_stop_stream: u8 = 4; // valor = tipo da transmissão
 pub const admin_set_admin: u8 = 5; // valor 1 = vira admin, 0 = deixa de ser
 pub const admin_lock: u8 = 6; // valor 1 = tranca a sala (alvo ignorado)
 pub const admin_draw: u8 = 7; // valor 1 = devolve o pincel, 0 = tira (os desenhos dela somem)
+pub const admin_clear_chat: u8 = 8; // apaga o chat de todos os canais e os arquivos da sala (alvo ignorado)
 
 /// notice
 pub const notice_muted: u8 = 1;
@@ -203,6 +204,7 @@ pub const notice_draw_on: u8 = 8; // devolveu
 pub const notice_moved: u8 = 9; // um admin te levou pra outro canal
 pub const notice_dm: u8 = 10; // a mensagem privada não foi (o texto diz por quê)
 pub const notice_file_gone: u8 = 11; // o arquivo pedido não está mais na sala
+pub const notice_chat_cleared: u8 = 12; // um admin limpou o chat da sala (o app apaga o que mostra)
 /// notice_channel com extra = 1: o canal pede senha (o app pergunta)
 pub const notice_channel_needs_password: u8 = 1;
 /// Só no app (não vem do servidor): chegou um log mandado pela sala (texto = nome + caminho).
