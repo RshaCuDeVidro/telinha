@@ -97,8 +97,11 @@ class MusicBotTest(unittest.IsolatedAsyncioTestCase):
         await self.ana.send("!queue")
         await until(lambda: self.card("QUEUE"), 5, "o cartão da fila")
         self.assertIn("Outro tom", self.card("QUEUE").embed.fields[0].value)
+        await asyncio.sleep(1.5)  # toca um pouco: a posição tem que voltar a zero na seguinte
         await self.ana.send("!skip")
         await until(lambda: self.card("NOW PLAYING") and self.card("NOW PLAYING").embed.title == "Outro tom", 10, "pular pra próxima")
+        # o cartão da seguinte começa do zero (não do ponto em que a anterior parou)
+        self.assertLess(self.card("NOW PLAYING").embed.progress[0], 1000)
         await until(lambda: any(e[0] == np.id and e[2] and e[2].kicker == "STOPPED" for e in self.edits), 5, "o cartão anterior fechar")
 
     async def test_ajuda_e_comandos_em_portugues(self):
@@ -131,6 +134,15 @@ class MusicBotTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: self.ana.call == "filmes", 5, "a Ana na call do #filmes")
         await self.ana.send("!join", to=self.bot.me)
         await until(lambda: self.bot.call == "filmes", 5, "o bot ir pra call da Ana")
+
+    async def test_play_em_privado_traz_o_bot(self):
+        # sem !join antes: o !play em privado de quem está numa call leva o bot pra lá
+        await self.ana.join_channel("series")
+        await self.ana.join_call("series")
+        await until(lambda: self.ana.call == "series", 5, "a Ana na call do #series")
+        await self.ana.send("!play tom de teste", to=self.bot.me)
+        await until(lambda: self.bot.call == "series", 5, "o bot ir pra call da Ana")
+        await until(lambda: len(self.voice) > 10, 5, "o som chegar na Ana")
 
     @unittest.skipUnless(REDE, "TELINHA_TESTE_REDE=1 pra buscar na internet")
     async def test_busca_com_botoes_e_soundcloud_quando_o_youtube_recusa(self):

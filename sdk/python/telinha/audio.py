@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+from array import array
 
 from .client import Client
 
@@ -107,16 +108,21 @@ class Player:
                     continue
                 if self._restart_at is None:
                     return done and not self._stop
-                self.position = self._restart_at  # mudou o volume: continua de onde estava
+                self.position = self._restart_at  # a fonte soluçou: continua de onde estava
         finally:
             self.source = None
             self._proc = None
+            self.position = 0.0  # a próxima começa do zero (e quem lê entre uma e outra não vê o fim da anterior)
             try:
                 await self.client.set_voice(mic=False)
             except Exception:  # a conexão pode ter caído
                 pass
 
     async def _run(self, source: str, start: float) -> bool:
+        # dois ffmpeg: um decodifica a fonte em PCM, o outro faz o Opus. O
+        # volume é aplicado aqui no meio, nas amostras: mudar o volume não
+        # reinicia nada (antes recomeçava o ffmpeg com -ss, e rádio/link sem
+        # busca voltava pro começo, com um engasgo)
         args = [self.ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error"]
         if source.startswith(("http://", "https://")):
             args += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
@@ -124,16 +130,22 @@ class Player:
                 args += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in self.headers.items())]
         if start > 0:
             args += ["-ss", f"{start:.2f}"]
-        args += ["-i", source, "-vn", "-af", f"volume={self.volume:.3f}", "-ac", "2" if self.stereo else "1", "-ar", "48000",
-                 "-c:a", "libopus", "-b:a", str(self.bitrate), "-frame_duration", "20", "-application", "audio",
-                 "-f", "ogg", "pipe:1"]
-        proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        self._proc = proc
+        channels = 2 if self.stereo else 1
+        args += ["-i", source, "-vn", "-ac", str(channels), "-ar", "48000", "-f", "f32le", "pipe:1"]
+        enc_args = [self.ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error",
+                    "-f", "f32le", "-ac", str(channels), "-ar", "48000", "-i", "pipe:0",
+                    "-c:a", "libopus", "-b:a", str(self.bitrate), "-frame_duration", "20", "-application", "audio",
+                    "-f", "ogg", "pipe:1"]
+        dec = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        enc = await asyncio.create_subprocess_exec(*enc_args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                                                   stderr=asyncio.subprocess.DEVNULL)
+        self._proc = dec
+        pump = asyncio.create_task(self._pump(dec.stdout, enc.stdin, channels))
         loop = asyncio.get_running_loop()
         n = 0
         clock = loop.time()
         try:
-            async for pkt in ogg_packets(proc.stdout):
+            async for pkt in ogg_packets(enc.stdout):
                 n += 1
                 if n <= 2:
                     continue  # OpusHead, OpusTags
@@ -154,15 +166,49 @@ class Player:
                     clock = loop.time()
                 await self.client.send_voice(pkt)
                 self.position += FRAME_S
-            await proc.wait()
-            if proc.returncode not in (0, None) and not self._stop and self._restart_at is None:
-                err = (await proc.stderr.read()).decode(errors="replace").strip()
-                raise RuntimeError(f"o ffmpeg não conseguiu tocar {source!r}: {err[-300:] or proc.returncode}")
+            await dec.wait()
+            if dec.returncode not in (0, None) and not self._stop and self._restart_at is None:
+                err = (await dec.stderr.read()).decode(errors="replace").strip()
+                raise RuntimeError(f"o ffmpeg não conseguiu tocar {source!r}: {err[-300:] or dec.returncode}")
             return True
         finally:
-            if proc.returncode is None:
-                proc.kill()
-                await proc.wait()
+            pump.cancel()
+            for proc in (dec, enc):
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+
+    async def _pump(self, src: asyncio.StreamReader, dst: asyncio.StreamWriter, channels: int) -> None:
+        """PCM do decodificador → codificador, com o volume de agora."""
+        chunk = 960 * channels * 4  # 20 ms de float32
+        try:
+            while True:
+                try:
+                    data = await src.readexactly(chunk)
+                except asyncio.IncompleteReadError as e:
+                    data = e.partial[:len(e.partial) // 4 * 4]
+                    if data:
+                        dst.write(self._gain(data))
+                    break
+                dst.write(self._gain(data))
+                await dst.drain()  # o codificador anda no ritmo de quem manda os pacotes
+        except (ConnectionResetError, BrokenPipeError):
+            pass
+        finally:
+            try:
+                dst.close()  # fim da fonte: o codificador termina o Ogg e sai
+            except Exception:
+                pass
+
+    def _gain(self, data: bytes) -> bytes:
+        g = self.volume
+        if g == 1.0:
+            return data
+        a = array("f")
+        a.frombytes(data)
+        for i in range(len(a)):
+            a[i] *= g
+        return a.tobytes()
 
     def pause(self) -> None:
         self._resume.clear()
@@ -179,13 +225,5 @@ class Player:
             await asyncio.sleep(0.02)
 
     def set_volume(self, volume: float) -> None:
-        """0.0 a 2.0. Vale em ~meio segundo (o ffmpeg recomeça de onde estava)."""
+        """0.0 a 2.0. Vale em ~meio segundo (o que já estava no cano sai no volume antigo)."""
         self.volume = max(0.0, min(2.0, volume))
-        if self.playing and not (self.source or "").startswith(("http://", "https://")):
-            self._restart_at = self.position
-            if self._proc and self._proc.returncode is None:
-                self._proc.kill()
-        elif self.playing:
-            self._restart_at = 0.0  # rádio: recomeça a transmissão com o volume novo
-            if self._proc and self._proc.returncode is None:
-                self._proc.kill()

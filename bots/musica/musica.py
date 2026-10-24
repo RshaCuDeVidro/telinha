@@ -140,10 +140,12 @@ class MusicBot(Bot):
             color=ACCENT_RADIO if t.live else ACCENT_PAUSED if paused or closing else ACCENT,
             description=(f"by **{t.artist}**" if t.artist else ""),
             thumbnail=bool(t.thumbnail),
-            footer=f"{nice_source(t)} · volume {round(self.player.volume * 100)}%" + (" · shuffle" if self.shuffle else "") + (f" · loop {self.loop}" if self.loop != "off" else ""),
+            footer=f"{nice_source(t)}" + (f" · {t.note}" if t.note else "") + f" · volume {round(self.player.volume * 100)}%" + (" · shuffle" if self.shuffle else "") + (f" · loop {self.loop}" if self.loop != "off" else ""),
         )
         if not closing:
-            e.progress = (int(self.player.position * 1000), 0 if t.live else t.duration_ms)
+            # o cartão sai antes do player começar: aí a posição ainda é a do fim da anterior
+            pos = self.player.position if self.player.playing else 0.0
+            e.progress = (int(pos * 1000), 0 if t.live else t.duration_ms)
             e.paused = paused
         e.add_field("Requested by", t.requested_by or "—")
         nxt = self.queue[0].title if self.queue and not self.shuffle else (f"{len(self.queue)} in the queue (shuffle)" if self.queue else "—")
@@ -277,6 +279,28 @@ class MusicBot(Bot):
         else:
             await ctx.reply_card(e, f"Queued: {t.title}")
 
+    async def _go(self, target: str) -> bool:
+        """Entra na call do canal `target` (True = entrou)."""
+        await self.join_channel(target)
+        await self.join_call(target)
+        for _ in range(30):
+            if self.call == target:
+                return True
+            await asyncio.sleep(0.1)
+        return self.call == target
+
+    async def _follow(self, ctx: Context) -> None:
+        """!play em privado de quem está numa call: o bot vai pra lá (sem
+        precisar do !join antes). Tocando pra outra call, fica onde está."""
+        m = ctx.message
+        target = m.author_call
+        if not m.private or not target or target == self.call:
+            return
+        if self.call and (self.current or self.queue):
+            await ctx.send(f"I'm playing in #{self.call} right now; it goes to the queue there. `{self.prefix}join` brings me to your call.")
+            return
+        await self._go(target)
+
     # ---------------------------------------------------------------- comandos
     def _register(self) -> None:
         cmd = self.command
@@ -287,6 +311,7 @@ class MusicBot(Bot):
                 self.player.resume()
                 await self._refresh_card()
                 return
+            await self._follow(ctx)
             await self._added(ctx, *await self._resolve(ctx, query))
 
         @cmd("search", aliases=["find", "busca", "buscar"], help="shows 5 results to pick with the buttons")
@@ -452,13 +477,7 @@ class MusicBot(Bot):
         @cmd("join", aliases=["vem", "entra", "come"], help="joins a channel's call: !join name, or from any channel /msg the bot !join")
         async def join(ctx: Context, channel: str = ""):
             target = channel.lstrip("#") or ctx.message.author_call or ctx.message.author_channel or self.channel
-            await self.join_channel(target)
-            await self.join_call(target)
-            for _ in range(30):
-                if self.call == target:
-                    break
-                await asyncio.sleep(0.1)
-            if self.call != target:
+            if not await self._go(target):
                 raise CommandError(f"Couldn't join #{target} (it may have a password or be locked).")
             await ctx.send(f"Joined the call in #{target}.")
 

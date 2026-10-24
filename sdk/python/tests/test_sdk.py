@@ -263,6 +263,38 @@ class SdkTest(unittest.IsolatedAsyncioTestCase):
         span = packets[-1][3] - packets[0][3]
         self.assertGreater(span, 0.7)
 
+    @unittest.skipUnless(shutil.which("ffmpeg"), "sem ffmpeg")
+    async def test_volume_muda_sem_recomecar(self):
+        dj = await self.join(Client(self.room.invite(), "DJ"))
+        ana = await self.join(Client(self.room.invite(), "Ana"))
+        packets = []
+
+        async def on_voice(frm, seq, opus):
+            packets.append(seq)
+        ana.on("voice")(on_voice)
+        with tempfile.TemporaryDirectory() as d:
+            tone = Path(d) / "tom.wav"
+            subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", str(tone)], check=True)
+            player = Player(dj)
+            task = asyncio.create_task(player.play(str(tone)))
+            await until(lambda: player.position > 0.6, 3, "começar a tocar")
+            proc = player._proc
+            player.set_volume(0.5)
+            await asyncio.sleep(0.3)
+            # o mesmo ffmpeg, e a posição seguiu (antes o volume matava o ffmpeg e recomeçava)
+            self.assertIs(player._proc, proc)
+            self.assertGreater(player.position, 0.8)
+            self.assertTrue(await task)
+        await until(lambda: len(packets) >= 95, 3, "a voz chegar")
+        self.assertLess(len(packets), 110)  # nada repetido
+        # o ganho nas amostras
+        from array import array
+        p2 = Player(dj)
+        p2.volume = 0.5
+        out = array("f")
+        out.frombytes(p2._gain(array("f", [1.0, -0.5, 0.25]).tobytes()))
+        self.assertEqual(list(out), [0.5, -0.25, 0.125])
+
     async def test_mic_ligado_aparece_pra_sala(self):
         dj = await self.join(Client(self.room.invite(), "DJ"))
         ana = await self.join(Client(self.room.invite(), "Ana"))

@@ -46,6 +46,7 @@ class Track:
     temp: bool = False  # arquivo baixado da sala: apagar depois
     needs_resolve: bool = False  # `play` é uma página: pegar o stream na hora (o link expira)
     headers: dict = field(default_factory=dict)
+    note: str = ""  # vai no rodapé do cartão ("closest version...")
 
     @property
     def live(self) -> bool:
@@ -63,7 +64,8 @@ _NOISE = {"cover", "remix", "live", "karaoke", "instrumental", "nightcore", "spe
 
 
 def _words(s: str) -> set[str]:
-    return set(re.sub(r"[^a-z0-9]+", " ", fold(s)).split())
+    # "$" no meio do nome é "s": Ke$ha = Kesha, A$AP = ASAP
+    return set(re.sub(r"[^a-z0-9]+", " ", fold(s.replace("$", "s"))).split())
 
 
 def best_match(query: str, found: list[Track]) -> Track | None:
@@ -241,21 +243,23 @@ class Resolver:
         return [best] if best else []
 
     async def _fallback(self, t: Track) -> Track:
-        """YouTube recusou: a mesma música pelo nome no SoundCloud (só se achar
-        ela mesma; outra da banda, não)."""
+        """YouTube recusou: a mesma música pelo nome no SoundCloud. Outra da
+        banda, nunca; se só tiver remix/edit/cover dela, toca o mais próximo e
+        avisa no cartão (a oficial lá costuma ser só a prévia de 30 s)."""
         title = re.sub(r"\((official|lyric|lyrics|audio|video|official video|official audio|music video|visualizer|hd|4k|feat\.?|ft\.?)[^)]*\)|\[[^\]]*\]", "", t.title, flags=re.I)
         title = re.sub(r"\s+(feat\.?|ft\.?)\s.*$", "", title, flags=re.I)  # "Música ft. Fulano"
         artist = re.sub(r"\s*(vevo|- topic|official|records)\s*$", "", t.artist, flags=re.I).strip()
         # o título do YouTube quase sempre já tem "Banda - Música"; o canal só entra se não tiver
         q = title if " - " in title or not artist or fold(artist) in fold(title) else f"{artist} {title}"
         q = " ".join(re.sub(r"[\"“”'‘’]|\s+-\s+", " ", q).split())  # Banda - "Música" → Banda Música
-        alt = best_match(q, await self.search_provider("soundcloud", q, 4))
+        found = await self.search_provider("soundcloud", q, 6)
         name = _words(title.split(" - ", 1)[-1]) - _words(artist)  # as palavras da música, sem a banda
-        got = _words(f"{alt.artist} {alt.title}") if alt else set()
-        # outra música da banda, ou um remix/cover dela: melhor avisar do que tocar outra coisa
-        if not alt or (name and len(name & got) < 0.6 * len(name)) or (got & _NOISE) - _words(t.title):
+        same = [c for c in found if not name or len(name & _words(f"{c.artist} {c.title}")) >= 0.6 * len(name)]
+        clean = [c for c in same if not (_words(f"{c.artist} {c.title}") & _NOISE) - _words(t.title)]
+        alt = best_match(q, clean) or best_match(q, same)
+        if not alt:
             raise RuntimeError(f"YouTube refused it and \"{q}\" isn't on SoundCloud either")
-        alt = replace(alt, requested_by=t.requested_by)
+        alt = replace(alt, requested_by=t.requested_by, note="" if clean else "closest version on SoundCloud")
         log.info("YouTube recusou %r: tocando %r do SoundCloud", t.title, alt.title)
         return await self.stream(alt)
 
