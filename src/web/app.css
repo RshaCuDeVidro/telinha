@@ -45,7 +45,8 @@ input:focus { border-color: var(--accent); }
   padding: 1px 5px; margin-right: 6px; }
 .stage { position: relative; flex: 1; min-height: 0; background: #000; border-radius: var(--radius);
   overflow: hidden; display: grid; place-items: center; }
-#video, .cursor-layer { max-width: 100%; max-height: 100%; grid-area: 1 / 1; }
+#video, #mvideo, .cursor-layer { max-width: 100%; max-height: 100%; grid-area: 1 / 1; }
+#mvideo { width: 100%; height: 100%; object-fit: contain; background: #000; }
 .cursor-layer { pointer-events: none; }
 .empty { grid-area: 1 / 1; color: var(--muted); text-align: center; padding: 16px; }
 .controls { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 10px;
@@ -79,10 +80,37 @@ input:focus { border-color: var(--accent); }
   opacity: 0; transition: opacity .25s; pointer-events: none; max-width: calc(100% - 32px); }
 .toast.show { opacity: 1; }
 
+/* altura de verdade da tela no celular (a barra do navegador some e volta) */
+@supports (height: 100dvh) {
+  html, body { height: 100dvh; }
+}
+/* toque: sem "mouse em cima"; um toque no vídeo mostra os controles */
+.touch .stage.show-ctl .controls { opacity: 1; }
+.touch .ctl { padding: 10px 14px; min-height: 40px; }
+.touch #vol { display: none; } /* o volume do celular é o dos botões do aparelho */
+
 @media (max-width: 760px) {
-  .room-layout { grid-template-columns: 1fr; grid-template-rows: minmax(240px, 55%) 1fr; }
-  .side { min-height: 0; }
-  .people { max-height: 25%; }
+  .top { padding: 8px 12px; gap: 10px; }
+  .brand { font-size: 15px; }
+  .status #status-text { display: none; } /* fica só a bolinha */
+  .room-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); height: calc(100% - 44px); }
+  .stage-col { padding: 0; gap: 0; }
+  .streams { padding: 8px 10px; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+  .pill { flex: none; }
+  /* o vídeo em 16:9 na largura toda, sem bordas */
+  .stage { flex: none; aspect-ratio: 16 / 9; width: 100%; max-height: 60dvh; border-radius: 0; }
+  .side { min-height: 0; padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); }
+  .people { max-height: 72px; display: flex; flex-wrap: wrap; gap: 4px 10px; }
+  .people li { padding: 2px 0; }
+  .chat-form input { font-size: 16px; } /* menos que 16px e o iPhone dá zoom no campo */
+  .ce-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+/* celular deitado: só o vídeo */
+@media (max-width: 960px) and (orientation: landscape) and (pointer: coarse) {
+  .top, .side, .streams { display: none; }
+  .room-layout { display: block; height: 100%; }
+  .stage-col { padding: 0; height: 100%; }
+  .stage { height: 100%; max-height: none; aspect-ratio: auto; border-radius: 0; }
 }
 
 /* mensagens: citação, etiqueta de bot, imagem */

@@ -640,6 +640,51 @@ def navegador_assiste():
 
 
 @test
+def navegador_sem_webcodecs():
+    """Navegador sem WebCodecs (o Firefox do Android): a página monta MP4 fragmentado e toca num <video> pelo MSE. Firefox headless (perfil descartável, sem janela, mudo) com #mse=1 força esse caminho; o vídeo tem que tocar de verdade (imagem com tamanho, tempo andando) e com pouco atraso."""
+    if not shutil.which("firefox"):
+        log("sem firefox: pulado")
+        return
+    with Session("navegador-mse") as s:
+        p, wp = port(), port()
+        s.spawn("srv", [SERVER, "--porta", str(p), "--senha", "pw", "--web", str(wp)], {k: os.environ[k] for k in ("HOME", "PATH")})
+        time.sleep(0.6)
+        s.display(91, "1600x900")
+        s.spawn("xterm", ["xterm", "-geometry", "120x40+0+0", "-e", "sh", "-c", "while :; do head -c 600 /dev/urandom | base64; sleep 0.05; done"], dict(os.environ, DISPLAY=":91"))
+        time.sleep(1.0)
+        a = s.app("a", 91, ["--nome", "Ana", "--entrar", f"127.0.0.1:{p}", "--senha", "pw", "--transmitir", "--software", "--janela", "1240,620,360,280"], size=(1600, 900))
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--senha", "pw"])
+        a.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 20, "a Ana transmitir")
+        home = os.path.join(s.base, "ff-home")
+        prof = os.path.join(home, "perfil")
+        os.makedirs(prof)
+        with open(os.path.join(prof, "user.js"), "w") as f:
+            f.write('user_pref("media.autoplay.default", 0);\nuser_pref("browser.shell.checkDefaultBrowser", false);\n'
+                    'user_pref("datareporting.policy.dataSubmissionEnabled", false);\nuser_pref("toolkit.telemetry.enabled", false);\n'
+                    'user_pref("app.update.enabled", false);\nuser_pref("media.volume_scale", "0.0");\n')
+        env = {"HOME": home, "PATH": os.environ["PATH"], "XDG_CONFIG_HOME": os.path.join(home, ".config"), "XDG_CACHE_HOME": os.path.join(home, ".cache"),
+               "MOZ_HEADLESS": "1", "LANG": "pt_BR.UTF-8"}
+        ff = s.spawn("firefox", ["firefox", "--headless", "--no-remote", "--profile", prof, f"http://127.0.0.1:{wp}/#s=pw&n=Navegador&qa=1&mse=1"], env)
+        try:
+            try:
+                st = b.wait(lambda st: any(l["text"].startswith("[qa]") and "pelo MSE" in l["text"] for l in st["chat"]), 40, "o navegador tocar pelo MSE")
+            except QAError:
+                for l in b.state()["chat"]:
+                    if l["text"].startswith("[qa"):
+                        log(f"navegador: {l['text']}")
+                raise
+            line = next(l for l in st["chat"] if "pelo MSE" in l["text"])
+            log(f"navegador: {line['text']}")
+            late = float(line["text"].rsplit(" ", 1)[1])
+            expect(0 <= late < 0.6, f"atraso demais no <video>: {line['text']}")
+        finally:
+            try:
+                os.killpg(ff.pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+
+@test
 def navegador_som():
     """Som no navegador: a Ana transmite com som (um tom no áudio privado do teste); o Chromium headless (tocando no PipeWire privado, mudo) decodifica o Opus pelo WebCodecs e o pico do sinal confere que não é silêncio."""
     with Session("navegador-som", audio=True) as s:

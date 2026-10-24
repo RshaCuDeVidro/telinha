@@ -30,6 +30,7 @@ const EN = {
 };
 const L = (navigator.language || 'pt').toLowerCase().startsWith('pt') ? PT : EN;
 const $ = (id) => document.getElementById(id);
+const TOUCH = matchMedia('(pointer: coarse)').matches;
 
 // ----------------------------------------------------------- protocolo
 const T = { hello: 1, welcome: 2, denied: 3, members: 4, chat: 5, frame: 8, watch: 9, keyreq: 10, ping: 11, pong: 12,
@@ -64,6 +65,156 @@ const STEPS = [360, 480, 540, 720, 900, 1080, 1440, 2160];
 const CODECS = [ // o que pedir ao WebCodecs pra cada codec do protocolo (0 H.264, 1 HEVC, 2 AV1)
   'avc1.640034', 'hvc1.1.6.L153.B0', 'av01.0.15M.08'];
 
+// --------------------------------------------- vídeo sem WebCodecs (MSE)
+// Navegador sem VideoDecoder (Firefox do Android, por exemplo): o H.264
+// vira MP4 fragmentado, um pedaço por quadro, e toca num <video> comum. Atraso
+// um pouco maior, e o som da transmissão só onde tiver AudioDecoder.
+const MS = window.ManagedMediaSource || window.MediaSource;
+const USE_MSE = !!MS && (!('VideoDecoder' in window) || new URLSearchParams(location.hash.slice(1)).get('mse') === '1');
+
+function box(type, ...parts) {
+  let n = 8;
+  for (const p of parts) n += p.length;
+  const out = new Uint8Array(n);
+  new DataView(out.buffer).setUint32(0, n);
+  for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+  let o = 8;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+function bytes(...vals) { // [bits, valor]: 8/16/32 bits, big-endian
+  const out = [];
+  for (const [b, v] of vals) for (let s = b - 8; s >= 0; s -= 8) out.push(Math.floor(v / 2 ** s) & 255);
+  return new Uint8Array(out);
+}
+const MATRIX = bytes([32, 0x10000], [32, 0], [32, 0], [32, 0], [32, 0x10000], [32, 0], [32, 0], [32, 0], [32, 0x40000000]);
+
+// NALs de um quadro Annex-B (00 00 01 / 00 00 00 01)
+function nals(d) {
+  const out = [];
+  let i = 0, start = -1;
+  while (i + 2 < d.length) {
+    if (d[i] === 0 && d[i + 1] === 0 && d[i + 2] === 1) {
+      if (start >= 0) out.push(d.subarray(start, i > 0 && d[i - 1] === 0 ? i - 1 : i));
+      i += 3; start = i;
+    } else i++;
+  }
+  if (start >= 0) out.push(d.subarray(start));
+  return out.filter((n) => n.length);
+}
+
+class Mp4Feed {
+  constructor(video) {
+    this.video = video; this.ms = null; this.sb = null; this.queue = []; this.seq = 1; this.t0 = -1; this.last = -1;
+    this.dur = 16667; this.sps = null; this.pps = null; this.w = 0; this.h = 0; this.trimAt = 0;
+  }
+  close() {
+    this.queue = []; this.sb = null; this.sps = null;
+    if (this.ms && this.ms.readyState === 'open') { try { this.ms.endOfStream(); } catch (e) { /* já fechado */ } }
+    this.ms = null;
+    if (this.video.src) { URL.revokeObjectURL(this.video.src); this.video.removeAttribute('src'); this.video.load(); }
+  }
+  // um quadro: true se entrou (false = espera um IDR)
+  push(key, time, data, w, h) {
+    const list = nals(data);
+    let sps = null, pps = null;
+    const keep = [];
+    for (const n of list) {
+      const t = n[0] & 31;
+      if (t === 7) sps = n; else if (t === 8) pps = n; else if (t !== 9) keep.push(n);
+    }
+    if (key && sps && pps && (!this.sps || w !== this.w || h !== this.h || !same(sps, this.sps))) this.open(sps, pps, w, h);
+    if (!this.ms) return false;
+    if (this.t0 < 0) { if (!key) return false; this.t0 = time; }
+    if (this.last >= 0 && time > this.last) this.dur = Math.min(200000, time - this.last);
+    this.last = time;
+    let size = 0;
+    for (const n of keep) size += 4 + n.length;
+    const mdat = new Uint8Array(size);
+    let o = 0;
+    for (const n of keep) { new DataView(mdat.buffer).setUint32(o, n.length); mdat.set(n, o + 4); o += 4 + n.length; }
+    this.append(this.fragment(Math.max(0, time - this.t0), this.dur, mdat, key));
+    return true;
+  }
+  open(sps, pps, w, h) {
+    this.close();
+    this.sps = sps; this.pps = pps; this.w = w; this.h = h; this.t0 = -1; this.last = -1; this.seq = 1;
+    const hex = (b) => b.toString(16).padStart(2, '0');
+    const mime = `video/mp4; codecs="avc1.${hex(sps[1])}${hex(sps[2])}${hex(sps[3])}"`;
+    if (!MS.isTypeSupported(mime)) { toast(L.nosupport); return; }
+    const ms = new MS();
+    this.ms = ms;
+    this.video.disableRemotePlayback = true;
+    this.video.src = URL.createObjectURL(ms);
+    ms.addEventListener('sourceopen', () => {
+      if (this.ms !== ms) return;
+      this.sb = ms.addSourceBuffer(mime);
+      this.sb.mode = 'segments';
+      this.sb.addEventListener('updateend', () => this.flush());
+      this.queue.unshift(this.init());
+      this.flush();
+    }, { once: true });
+  }
+  init() {
+    const { sps, pps, w, h } = this;
+    const avcc = box('avcC', bytes([8, 1], [8, sps[1]], [8, sps[2]], [8, sps[3]], [8, 0xff], [8, 0xe1], [16, sps.length]), sps, bytes([8, 1], [16, pps.length]), pps);
+    const avc1 = box('avc1', bytes([32, 0], [16, 0], [16, 1], [32, 0], [32, 0], [32, 0], [32, 0], [16, w], [16, h], [32, 0x480000], [32, 0x480000], [32, 0], [16, 1]),
+      new Uint8Array(32), bytes([16, 0x18], [16, 0xffff]), avcc);
+    const stbl = box('stbl', box('stsd', bytes([32, 0], [32, 1]), avc1), box('stts', bytes([32, 0], [32, 0])), box('stsc', bytes([32, 0], [32, 0])),
+      box('stsz', bytes([32, 0], [32, 0], [32, 0])), box('stco', bytes([32, 0], [32, 0])));
+    const minf = box('minf', box('vmhd', bytes([32, 1], [32, 0], [32, 0])), box('dinf', box('dref', bytes([32, 0], [32, 1]), box('url ', bytes([32, 1])))), stbl);
+    const mdia = box('mdia', box('mdhd', bytes([32, 0], [32, 0], [32, 0], [32, 1000000], [32, 0], [16, 0x55c4], [16, 0])),
+      box('hdlr', bytes([32, 0], [32, 0]), new TextEncoder().encode('vide'), new Uint8Array(12), new TextEncoder().encode('telinha\0')), minf);
+    const tkhd = box('tkhd', bytes([32, 3], [32, 0], [32, 0], [32, 1], [32, 0], [32, 0], [32, 0], [32, 0], [16, 0], [16, 0], [16, 0], [16, 0]), MATRIX, bytes([32, w * 65536], [32, h * 65536]));
+    const mvhd = box('mvhd', bytes([32, 0], [32, 0], [32, 0], [32, 1000000], [32, 0], [32, 0x10000], [16, 0x100], [16, 0], [32, 0], [32, 0]), MATRIX, new Uint8Array(24), bytes([32, 2]));
+    const mvex = box('mvex', box('trex', bytes([32, 0], [32, 1], [32, 1], [32, 0], [32, 0], [32, 0x10001])));
+    const ftyp = box('ftyp', new TextEncoder().encode('isom'), bytes([32, 0]), new TextEncoder().encode('isomiso2avc1mp41'));
+    const moov = box('moov', mvhd, box('trak', tkhd, mdia), mvex);
+    const out = new Uint8Array(ftyp.length + moov.length); out.set(ftyp); out.set(moov, ftyp.length);
+    return out;
+  }
+  fragment(t, dur, mdat, key) {
+    const trunLen = 8 + 4 + 4 + 4 + 3 * 4; // caixa, versão/flags, quantas, data_offset, 1 amostra (duração, tamanho, flags)
+    const tfdt = box('tfdt', bytes([32, 0x01000000], [32, Math.floor(t / 2 ** 32)], [32, t % 2 ** 32]));
+    const tfhd = box('tfhd', bytes([32, 0x020000], [32, 1]));
+    const mfhd = box('mfhd', bytes([32, 0], [32, this.seq++]));
+    const moofLen = 8 + mfhd.length + 8 + tfhd.length + tfdt.length + trunLen;
+    const trun = box('trun', bytes([32, 0x000701], [32, 1], [32, moofLen + 8], [32, dur], [32, mdat.length], [32, key ? 0x02000000 : 0x01010000]));
+    const moof = box('moof', mfhd, box('traf', tfhd, tfdt, trun));
+    const md = box('mdat', mdat);
+    const out = new Uint8Array(moof.length + md.length); out.set(moof); out.set(md, moof.length);
+    return out;
+  }
+  append(seg) { this.queue.push(seg); this.flush(); }
+  flush() {
+    const sb = this.sb;
+    if (!sb || sb.updating || !this.queue.length) return;
+    // junta o que acumulou num append só
+    let n = 0;
+    for (const q of this.queue) n += q.length;
+    const all = new Uint8Array(n);
+    let o = 0;
+    for (const q of this.queue) { all.set(q, o); o += q.length; }
+    this.queue = [];
+    try { sb.appendBuffer(all); } catch (e) { requestKey(); return; }
+    const v = this.video;
+    if (v.paused) v.play().catch(() => {});
+    // ao vivo: sempre perto do fim do que chegou (atrasou, pula pra frente)
+    const b = v.buffered;
+    if (b.length) {
+      const end = b.end(b.length - 1);
+      if (end - v.currentTime > 0.5) v.currentTime = Math.max(b.start(b.length - 1), end - 0.08);
+      // o que já passou sai do buffer (a memória do celular agradece)
+      const now = performance.now();
+      if (now > this.trimAt && v.currentTime > 15) {
+        this.trimAt = now + 10000;
+        this.queue.length === 0 && setTimeout(() => { try { if (!sb.updating) sb.remove(0, v.currentTime - 10); } catch (e) { /* tanto faz */ } }, 0);
+      }
+    }
+  }
+}
+function same(a, b) { if (a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; }
+
 // ------------------------------------------------------------- estado
 const hash = new URLSearchParams(location.hash.slice(1));
 const QA = hash.get('qa') === '1';
@@ -72,7 +223,7 @@ const st = {
   dec: null, decCodec: -1, waitKey: true, decoded: 0, qaSent: false, lastFrameAt: 0, fps: 0, fpsCount: 0, fpsAt: 0,
   cursor: null, frameW: 0, frameH: 0, sentH: -1,
   audio: null, node: null, gain: null, soundOn: false, adec: null, vdec: new Map(), audioPkts: 0, qaAudioSent: false,
-  qaPcm: 0, qaPeak: 0, qaPcmSent: false,
+  qaPcm: 0, qaPeak: 0, qaPcmSent: false, pending: [], mp4: null,
 };
 let key = localStorage.getItem('telinha-key');
 if (!key) { key = String(Math.floor(Math.random() * 2 ** 52) + 1); localStorage.setItem('telinha-key', key); }
@@ -88,7 +239,7 @@ function color(id) { const c = ['#e5484d', '#f76b15', '#ffc53d', '#30a46c', '#12
 // ---------------------------------------------------------- conexão
 async function decodable() {
   let bits = 0;
-  if (!('VideoDecoder' in window)) return 0;
+  if (USE_MSE || !('VideoDecoder' in window)) return 1; // MP4 pelo <video>: só H.264
   for (let i = 0; i < CODECS.length; i++) {
     try { const r = await VideoDecoder.isConfigSupported({ codec: CODECS[i], optimizeForLatency: true }); if (r.supported) bits |= 1 << i; } catch (e) { /* não tem */ }
   }
@@ -142,7 +293,11 @@ function onMessage(u8) {
     case T.audio: onAudio(r); break;
     case T.voice: onVoice(r); break;
     case T.cursor: { const s = r.u32(), x = r.u16(), y = r.u16(); if (s === st.watching) { st.cursor = x === 0xffff ? null : [x, y]; drawCursor(); } break; }
-    case T.notice: { r.u8(); toast(r.str()); break; }
+    case T.notice: {
+      const kind = r.u8(); toast(r.str());
+      if (kind === 12) { $('chat').textContent = ''; msgEls.clear(); } // um admin limpou o chat da sala
+      break;
+    }
     default: break; // o resto o navegador não usa
   }
 }
@@ -218,7 +373,8 @@ function watch(id) {
 
 function stopVideo() {
   if (st.dec) { try { st.dec.close(); } catch (e) { /* já fechado */ } }
-  st.dec = null; st.decCodec = -1; st.waitKey = true; st.decoded = 0; st.cursor = null;
+  if (st.mp4) st.mp4.close();
+  st.dec = null; st.decCodec = -1; st.waitKey = true; st.decoded = 0; st.cursor = null; st.pending = [];
 }
 
 function clearCanvas() {
@@ -229,9 +385,11 @@ function clearCanvas() {
 function newDecoder(codec) {
   stopVideo();
   const c = $('video');
-  const ctx = c.getContext('2d', { alpha: false, desynchronized: true });
+  // "desynchronized" (menos atraso) pisca no Chrome do Android: só no PC
+  const ctx = c.getContext('2d', { alpha: false, desynchronized: !TOUCH });
   st.dec = new VideoDecoder({
     output: (frame) => {
+      st.pending.shift();
       if (c.width !== frame.displayWidth || c.height !== frame.displayHeight) {
         c.width = frame.displayWidth; c.height = frame.displayHeight;
         const cc = $('cursor'); cc.width = c.width; cc.height = c.height;
@@ -271,14 +429,40 @@ function onFrame(r) {
   const key = (flags & 1) !== 0;
   const codec = (flags >> 2) & 3;
   if (flags & 0x10) { st.cursor = cx === 0xffff ? null : [cx, cy]; }
+  if (USE_MSE) {
+    if (codec !== 0) return; // só H.264 (o servidor sabe: a página disse)
+    if (!st.mp4) st.mp4 = new Mp4Feed($('mvideo'));
+    if (st.mp4.push(key, time, r.rest(), w, h)) {
+      if (++st.decoded === 1) { $('empty').hidden = true; sizeCursor(w, h); }
+      st.fpsCount++;
+      // teste: o <video> tocando de verdade (imagem com tamanho, o tempo andando)
+      const v = $('mvideo');
+      if (QA && !st.qaSent && v.videoWidth > 0 && v.currentTime > 1) {
+        st.qaSent = true;
+        const late = v.buffered.length ? v.buffered.end(v.buffered.length - 1) - v.currentTime : -1;
+        send(new W(T.chat).str(`[qa] ${st.decoded} quadros tocando pelo MSE ${v.videoWidth}x${v.videoHeight} atraso ${late.toFixed(2)}`).done());
+      }
+    } else if (key) requestKey();
+    drawCursor();
+    return;
+  }
   if (!st.dec || st.decCodec !== codec) { if (!key) return; newDecoder(codec); }
   if (st.waitKey) { if (!key) return; st.waitKey = false; }
-  // decoder atrasado (máquina fraca, aba em segundo plano): recomeça de um IDR
-  if (st.dec.decodeQueueSize > 6) { requestKey(); return; }
+  // decoder atrasado (máquina fraca, aba em segundo plano): recomeça de um IDR.
+  // Pelo tempo, não pela fila: o decoder da placa do celular segura vários
+  // quadros de propósito, e "fila > 6" pedia IDR sem parar (o vídeo engasgava)
+  const now = performance.now();
+  if (st.dec.decodeQueueSize > 60 || (st.pending.length > 2 && now - st.pending[0] > 700)) { requestKey(); return; }
   try {
     st.dec.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: time, data: r.rest() }));
+    st.pending.push(now);
   } catch (e) { requestKey(); return; }
   drawCursor();
+}
+
+function sizeCursor(w, h) {
+  const cc = $('cursor');
+  if (cc.width !== w || cc.height !== h) { cc.width = w; cc.height = h; }
 }
 
 // a seta de quem transmite, desenhada aqui (o vídeo vai sem ela: quem
@@ -552,7 +736,9 @@ function start() {
   $('t-people').textContent = L.people; $('t-chat').textContent = L.chat; $('chat-in').placeholder = L.send_ph;
   soundButton();
   if (!window.isSecureContext) { $('t-nosupport').textContent = L.insecure; $('t-nosupport').hidden = false; }
-  else if (!('VideoDecoder' in window)) { $('t-nosupport').textContent = L.nosupport; $('t-nosupport').hidden = false; }
+  else if (!('VideoDecoder' in window) && !USE_MSE) { $('t-nosupport').textContent = L.nosupport; $('t-nosupport').hidden = false; }
+  if (USE_MSE) { $('video').hidden = true; $('mvideo').hidden = false; }
+  if (TOUCH) document.body.classList.add('touch');
   const pass = hash.get('s') || '';
   $('in-name').value = hash.get('n') || localStorage.getItem('telinha-nome') || '';
   $('in-pass').value = pass;
@@ -573,7 +759,14 @@ function start() {
   };
   $('btn-sound').onclick = () => enableSound();
   $('vol').oninput = () => { if (st.gain && st.soundOn) st.gain.gain.value = $('vol').value / 100; };
-  $('btn-full').onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); else $('stage').requestFullscreen(); };
+  $('btn-full').onclick = () => {
+    if (document.fullscreenElement) { document.exitFullscreen(); return; }
+    const stage = $('stage');
+    if (stage.requestFullscreen) stage.requestFullscreen().then(() => { try { screen.orientation.lock('landscape'); } catch (e) { /* sem */ } }).catch(() => {});
+    else if (stage.webkitRequestFullscreen) stage.webkitRequestFullscreen();
+  };
+  // celular: um toque mostra/esconde os controles (não tem "mouse em cima")
+  $('stage').addEventListener('click', (e) => { if (TOUCH && e.target.closest('.controls') == null) $('stage').classList.toggle('show-ctl'); });
   $('stage').ondblclick = () => $('btn-full').onclick();
   // vivo: ping a cada 5 s (o túnel fecha conexão parada) e o fps no canto
   setInterval(() => send(new W(T.ping).u64(Date.now()).done()), 5000);
@@ -586,3 +779,14 @@ function start() {
   if (QA || (hash.has('s') && $('in-name').value)) $('join-form').requestSubmit();
 }
 start();
+// teste: se o vídeo não andou, conta no chat onde parou (o navegador headless não tem console à mão)
+if (QA) {
+  window.addEventListener('error', (e) => send(new W(T.chat).str(`[qa-dbg] erro ${e.message}`).done()));
+  setTimeout(() => {
+    if (st.qaSent) return;
+    const v = $('mvideo'); const f = st.mp4;
+    const b = v.buffered.length ? `${v.buffered.start(0).toFixed(2)}-${v.buffered.end(v.buffered.length - 1).toFixed(2)}` : 'vazio';
+    send(new W(T.chat).str(`[qa-dbg] mse=${USE_MSE} decoded=${st.decoded} ms=${f && f.ms ? f.ms.readyState : '-'} sb=${!!(f && f.sb)} fila=${f ? f.queue.length : '-'} ` +
+      `ready=${v.readyState} paused=${v.paused} t=${v.currentTime.toFixed(2)} buf=${b} err=${v.error ? v.error.code + ' ' + v.error.message : '-'} w=${v.videoWidth}`).done());
+  }, 15000);
+}

@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="dark">
 <title>telinha</title>
@@ -32,6 +32,7 @@
     <div id="streams" class="streams" role="tablist"></div>
     <div id="stage" class="stage">
       <canvas id="video" aria-label="vídeo"></canvas>
+      <video id="mvideo" muted playsinline autoplay disablepictureinpicture hidden></video>
       <canvas id="cursor" class="cursor-layer" aria-hidden="true"></canvas>
       <div id="empty" class="empty"></div>
       <div class="controls">
