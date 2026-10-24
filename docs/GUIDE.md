@@ -48,7 +48,7 @@ Click **Share screen** and choose:
 
 | Option | What it does |
 |---|---|
-| **What to show** | The whole screen, a single window, or a rectangle you drag over your own preview. The webcam can go along or instead of the screen. |
+| **What to show** | The whole screen, a single window (on Windows, as cards with live thumbnails), or just part of it: tick *Just part of the screen* and drag a rectangle as soon as it starts (or later, with the crop button on your preview). The webcam can go along or instead of the screen. |
 | **Sound** | No sound, all computer sound (except telinha), just one program's sound, or everything except some programs (e.g. Discord). telinha's own sound never goes in, so there's no echo. |
 | **Content type** | *Screen and text* keeps letters sharp (code, documents, a browser). *Game and video* favors smooth motion. |
 | **Resolution, frame rate and quality** | The bitrate drops on its own if someone's internet can't keep up, and goes back up when it improves. |
@@ -69,6 +69,13 @@ scales back up the moment someone enlarges it.
 
 Click anyone who is live. Several streams sit in a grid that keeps every video
 as large as possible.
+If nobody in your call is streaming but someone is live in another channel, a
+*Someone is live in #channel: go and watch* button shows up: one click and
+you're there, watching.
+
+The dot next to the streamer's name tells how the stream is arriving: green
+flows fine, yellow stuttering, red bad, and why (*your internet*, *your PC*,
+*so-and-so's PC or internet*).
 
 | Action | How |
 |---|---|
@@ -110,7 +117,8 @@ headphones); automatic gain for quiet microphones and a mic volume.
 - **Enter** sends, **Shift+Enter** adds a new line.
 - Markdown: `**bold**`, `*italic*`, `` `code` ``, code blocks with a copy
   button and clickable links. Color emoji.
-- Images: paste (Ctrl+V) into the box.
+- Images: paste (Ctrl+V, anywhere in the room) or drag them onto the window. A
+  preview asks before sending: **Enter** sends, **Esc** cancels.
 - Reactions, @mentions (the person mentioned is notified) and history for late
   joiners.
 - **Right-click a message**: copy, reply quoting it, or send its author a
@@ -136,10 +144,13 @@ while staying in another's call.
 
 - Click a channel in the panel to read its chat.
 - Click a channel's headphones icon to join its call. Your stream comes along.
-- **+** creates a channel. An empty channel disappears on its own, except the
-  server's pinned ones.
-- Admins can set a password, lock it and change the topic (right-click the
-  channel).
+- **+** creates a channel. It stays in the list even when empty (and if the
+  server restarts); it only goes away after 3 days without anyone. Channels
+  pinned by an admin stay forever.
+- **Whoever created a channel runs it** (right-click the channel): password,
+  lock, topic, make it **invisible** (left out of the list; whoever knows the
+  name and password gets in) and **remove someone** from it for good
+  (right-click the person). Room admins can do all of that too.
 
 ## Chat commands
 
@@ -172,7 +183,9 @@ microphone, deafen, share, screenshot and a master toggle. In
 
 Whoever creates the room (or joins a dedicated server with the admin token) can,
 by right-clicking a person: kick, ban, mute, stop their stream, take their pen
-away, give or remove admin. They can also lock the room and manage channels.
+away, give or remove admin. They can also lock the room, manage channels and
+**clear the room's chat** (the eraser at the top, two clicks): every channel's
+history and the files are gone for everyone, without restarting the server.
 
 On a dedicated server, the admin sees the **server stats**: CPU, memory,
 bandwidth in and out, people per channel, who is lagging and a plain-language
@@ -194,11 +207,11 @@ The gear button opens the settings, in a room or on the home screen.
 | Page | What's there |
 |---|---|
 | **General** | Name, language, notifications, stats always visible, new-version alerts (and installing on its own), clips and how long they are |
-| **Appearance** | Themes: dark, light, pwnd (neon), pwnd light, Nord, Dracula or your own CSS (reloads when you save the file); interface size; CRT effect; home screen animations; show or hide other people's drawings |
+| **Appearance** | Themes: dark, light, pwnd (neon), pwnd light, Nord, Dracula or your own CSS (reloads when you save the file); interface size; CRT effect; **room mood** (the background shifts tone with the room's energy, with no constant animation); home screen animations; show or hide other people's drawings. Drag the chat panel's edge to make it wider or narrower |
 | **Voice** | Voice activation or push-to-talk, microphone, sensitivity, volume, automatic gain, noise suppression, echo cancellation, joining with the mic on, notification sounds |
 | **Shortcuts** | Global hotkeys (and a master switch) |
 | **Camera** | Which camera and its resolution |
-| **Performance** | Automatic quality, cursor outside the video, viewer-sized streams, interface frame cap, GPU encoder effort, AV1 (experimental) and **Test my PC** |
+| **Performance** | **Economy mode** (weak PC: interface at 30 fps, no animations or effects), automatic quality, cursor outside the video, viewer-sized streams, interface frame cap, GPU encoder effort, AV1 (experimental) and **Test my PC** |
 | **Debugging** | Debug log, sending the log to the room owner, crash reports |
 | **About** | Version and version history |
 

@@ -12,7 +12,7 @@
 <p align="center">
   <img alt="Platforms" src="https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-5865f2?style=flat-square">
   <img alt="Zig 0.16" src="https://img.shields.io/badge/zig-0.16-f7a41d?style=flat-square">
-  <img alt="Version 3.4.0" src="https://img.shields.io/badge/version-3.4.0-9333ea?style=flat-square">
+  <img alt="Version 3.5.0" src="https://img.shields.io/badge/version-3.5.0-9333ea?style=flat-square">
   <img alt="MIT license" src="https://img.shields.io/badge/license-MIT-22c55e?style=flat-square">
 </p>
 

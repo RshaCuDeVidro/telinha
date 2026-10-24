@@ -403,6 +403,7 @@ def canais_admin():
         a.click("##chanedit")
         a.type("abc\n")
         a.click(f"#vip###ch{idx}", button=3)
+        time.sleep(0.5)  # o menu reabre no quadro seguinte (com a máquina carregada demora)
         a.click(contains="###ctopic")
         a.click("##chanedit")
         a.type("bem-vindos\n")
@@ -620,6 +621,9 @@ def arquivo_na_sala():
 @test
 def navegador_assiste():
     """Assistir pelo navegador: servidor dedicado com --web; um Chromium headless (perfil descartável, sem janela) abre a página com a senha no link, entra como membro, assiste a tela da Ana e decodifica os quadros de verdade pelo WebCodecs (avisa no chat); aparece na lista com a rota 'navegador'."""
+    if not shutil.which("chromium"):
+        log("sem chromium: pulado")
+        return
     with Session("navegador") as s:
         p, wp = port(), port()
         s.spawn("srv", [SERVER, "--porta", str(p), "--senha", "pw", "--web", str(wp), "--web-link", "https://sala-teste.trycloudflare.com"], {k: os.environ[k] for k in ("HOME", "PATH")})
@@ -708,6 +712,9 @@ def navegador_sem_webcodecs():
 @test
 def navegador_som():
     """Som no navegador: a Ana transmite com som (um tom no áudio privado do teste); o Chromium headless (tocando no PipeWire privado, mudo) decodifica o Opus pelo WebCodecs e o pico do sinal confere que não é silêncio."""
+    if not shutil.which("chromium"):
+        log("sem chromium: pulado")
+        return
     with Session("navegador-som", audio=True) as s:
         s.play_tone()
         p, wp = port(), port()
@@ -929,6 +936,10 @@ def sala_controles():
         a.drag("##q", 0.5, 0.95)
         a.wait(lambda st: st["cfg"]["quality"] > 85, 3, "a qualidade subir")
         c0 = a.state()["cfg"]
+        # as opções rolam (os botões ficam fixos embaixo): desce até as caixas de marcar
+        q = a.find("##q")
+        a.scroll(*a._abs(q, 0.5, 0.5), -8)
+        time.sleep(0.3)
         a.click(contains="Mostrar o cursor")
         a.click("##audio")
         a.click("Sem som", window="##Combo")
@@ -2077,6 +2088,9 @@ def idioma_ingles():
         a.wait(lambda st: st["share_modal"], 3, "abrir o compartilhar tela")
         for label in ["Game and video", "Original"]:
             a.find(label, window="Share screen")
+        o = a.find("Original", window="Share screen")
+        a.scroll(*a._abs(o, 0.5, 0.5), -8)
+        time.sleep(0.3)
         a.find(contains="Show the mouse cursor", window="Share screen")
         a.click("Cancel", window="Share screen")
         a.wait(lambda st: not st["share_modal"], 3, "fechar o compartilhar tela")

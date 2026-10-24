@@ -2,6 +2,75 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.5.0
+
+Conversa com a 3.4, a 3.3, a 3.2 e a 3.1 (app antigo mostra "limpou o chat" como aviso e não conhece canal invisível nem dono de canal).
+
+### Destaques
+
+- 🔇 **Windows: o som sem o próprio telinha, de verdade**. A captura por programa nunca tinha funcionado no Windows (a biblioteca de áudio procurava o dispositivo no lugar errado): agora "todo o som menos o telinha", "só esse programa" e "tudo menos o Discord" funcionam no Windows 10 2004 em diante, e o som da sala não fica mais mudo enquanto você transmite.
+- 📱 **Assistir pelo celular**: no Firefox do Android (sem WebCodecs) o vídeo toca por outro caminho; no Chrome não pisca nem engasga mais; layout de celular, com o vídeo na largura toda e só o vídeo com o celular deitado.
+- 🏠 **Canais que ficam**: o canal que você cria continua na lista mesmo vazio (e se o servidor reiniciar), e **quem criou manda nele**: senha, trancar, tópico, **canal invisível** e tirar alguém sem volta.
+- 🖼️ **Imagem com prévia**: colar (Ctrl+V em qualquer lugar da sala) ou arrastar mostra a imagem antes de mandar; Enter manda, Esc desiste.
+- 🟢 **Saúde da transmissão**: uma bolinha verde/amarela/vermelha no nome de quem transmite, com o porquê (sua internet, seu PC, o PC ou a internet de quem transmite).
+- 🧭 **Quem chega no canal errado**: se tem gente ao vivo em outro canal, um botão leva pra lá e já começa a assistir.
+- 🪶 **Modo econômico** pra PC fraco, **clima da sala** (o fundo muda de tom com a energia da sala, sem animação contínua), **painel do chat com largura ajustável** e **limpar o chat da sala** sem reiniciar o servidor.
+
+<!-- detalhes -->
+
+### Todas as mudanças
+
+- **Som no Windows**: captura por processo pelo caminho da Microsoft
+  (`ActivateAudioInterfaceAsync` no `VAD\Process_Loopback`, formato escolhido
+  por nós, thread própria lendo os pacotes). O miniaudio 0.11.25 tentava
+  achar o dispositivo virtual na lista comum e falhava em qualquer Windows.
+  Antes do 10 2004 continua o jeito antigo (captura tudo e silencia a sala
+  enquanto transmite), e o aviso "Transmitindo sem áudio" não aparece mais
+  quando o som está indo.
+- **Página do navegador**: sem `VideoDecoder`, o H.264 vira MP4 fragmentado (um
+  pedaço por quadro) e toca num `<video>` pelo MSE, sempre perto do ao vivo; o
+  atraso do decoder passou a ser medido pelo tempo (o decoder da placa do
+  celular segura quadros de propósito, e o "fila maior que 6" pedia quadro
+  completo sem parar); no toque, o canvas não usa mais o modo de baixa
+  latência que pisca no Android; 100dvh, controles que aparecem no toque,
+  campo do chat de 16 px (o iPhone dava zoom). A página também limpa o chat
+  quando o admin limpa.
+- **Canais**: criado por alguém, fica na lista vazio por 3 dias (ou até
+  precisar da vaga) e vai pro arquivo de estado; o servidor guarda a chave do
+  app de quem criou. Quem criou (ou o admin da sala) põe senha, tranca (e
+  entra mesmo trancado), muda o tópico, deixa invisível (fora da lista de quem
+  não está nele) e tira alguém sem volta (pela chave). Protocolo:
+  `chan_mine`, `chan_hidden`, `chan_act_hide` e `chan_act_ban`.
+- **Admin**: limpar o chat da sala (`admin` 8): o histórico de todos os
+  canais, privadas inclusive, e os arquivos da sala; quem está na sala recebe
+  o aviso 12 e o app apaga o que mostra.
+- **Compartilhar**: no Windows as fontes viram cartões com miniatura ao vivo
+  (monitor pelo BitBlt, janela pelo PrintWindow, uma por vez a cada 120 ms e
+  só com o modal aberto); "só um pedaço da tela" abre o recorte assim que a
+  transmissão começa; as opções rolam e os botões ficam sempre à vista.
+- **Saúde da transmissão**: quem assiste olha o decoder daqui, a perda de
+  pacotes da própria conexão e o atraso; quem transmite, a rede de subida, o
+  encoder e quem assiste devagar. O porquê aparece do lado da bolinha.
+- **Chat**: `/msg` sem ligar pra acento nem maiúscula; no menu de um bot,
+  "Chamar pra minha call". A imagem colada ou arrastada é preparada numa
+  thread e espera a confirmação.
+- **Bot de música**: `!volume` não recomeça mais a música (o SDK 0.2.1 aplica o
+  ganho nas amostras, entre dois ffmpeg, em vez de reiniciar com `-ss`: rádio
+  e link voltavam pro começo); `!play` em privado de quem está numa call traz
+  o bot pra lá; a barra do cartão começa do zero na música seguinte; "Ke$ha"
+  acha "Kesha"; quando o YouTube recusa e o SoundCloud só tem remix ou cover,
+  toca o mais próximo e avisa no rodapé.
+- **Seta do mouse** (a da tela inicial e a de quem transmite) sem a lasca
+  branca embaixo.
+- **Modo econômico**: interface a 30 q/s, sem animações, sem efeito CRT, sem
+  clima da sala. **Clima da sala**: a cor de baixo do palco é olhada a cada
+  3 s e troca em meio segundo; parada o resto do tempo.
+- **Log de depuração**: no Windows, thread sem nome aparece com a DLL onde
+  começou (driver de vídeo, Media Foundation...), pra achar quem gasta CPU;
+  as threads do pool têm nome.
+- **Build**: as ferramentas que rodam durante o build usam a glibc do zig (o
+  `crt1.o` do gcc 16 tem `.sframe`, que o zig 0.16 não linka).
+
 ## 3.4.0
 
 Conversa com a 3.3, a 3.2 e a 3.1 (app antigo mostra o cartão como texto, sem botões).

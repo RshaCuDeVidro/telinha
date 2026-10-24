@@ -442,7 +442,11 @@ function onFrame(r) {
         const late = v.buffered.length ? v.buffered.end(v.buffered.length - 1) - v.currentTime : -1;
         send(new W(T.chat).str(`[qa] ${st.decoded} quadros tocando pelo MSE ${v.videoWidth}x${v.videoHeight} atraso ${late.toFixed(2)}`).done());
       }
-    } else if (key) requestKey();
+    } else if (key && performance.now() - (st.mseKeyAt || 0) > 2000) {
+      // quadro completo que não abriu o MP4 (sem SPS/PPS junto): pede outro, sem martelar
+      st.mseKeyAt = performance.now();
+      requestKey();
+    }
     drawCursor();
     return;
   }

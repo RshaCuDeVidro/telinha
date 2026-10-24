@@ -96,7 +96,13 @@ outro lugar mande em privado:
 
 Mensagem privada chega no bot de qualquer canal, e ele vem pra call em que
 você está (ou pro seu canal, se você não estiver em call). `!join jogos`
-também funciona de onde o bot estiver.
+também funciona de onde o bot estiver. O nome não precisa de acento nem de
+maiúscula (`/msg musica !join` acha o Música), e no app tem o atalho: clique
+direito no bot → **Chamar pra minha call**.
+
+Nem precisa do `!join`: `/msg Música !play nome da música` de quem está numa
+call traz o bot pra lá e já toca (se ele estiver tocando pra outra call, a
+música vai pra fila de lá e ele avisa).
 
 ## Rádios
 

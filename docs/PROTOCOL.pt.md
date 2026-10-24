@@ -305,17 +305,26 @@ ignora os bits de estilo.
 | 5 | dar/tirar admin (só o dono) | 1 = dá, 0 = tira |
 | 6 | trancar a sala (alvo ignorado) | 1 = tranca, 0 = destranca |
 | 7 | pincel | 1 = devolve, 0 = tira (os desenhos dela somem; lembrado pela chave) |
+| 8 | limpar o chat da sala: o histórico de todos os canais (privadas inclusive) e os arquivos da sala (alvo ignorado) | — |
 
-**chan_admin** — ações: 1 = fixar (`valor` "1"/"0": canal fixo fica vazio e
-depois de reiniciar), 2 = trancar (só admin entra), 3 = senha (`valor`; vazio
-tira), 4 = tópico (`valor`, até 120 bytes), 5 = levar `alvo` pro canal (chat e
-call, mesmo trancado).
+**chan_admin** — ações: 1 = fixar (`valor` "1"/"0": canal fixo fica vazio pra
+sempre e depois de reiniciar), 2 = trancar (só admin e quem criou entram), 3 =
+senha (`valor`; vazio tira), 4 = tópico (`valor`, até 120 bytes), 5 = levar
+`alvo` pro canal (chat e call, mesmo trancado), 6 = invisível (`valor`
+"1"/"0": fora da lista de quem não está nele; entra quem sabe o nome), 7 =
+tirar `alvo` do canal e não deixar voltar (pela chave). Fixar e levar: só admin
+da sala; o resto, quem criou o canal também (o servidor guarda a chave do app
+de quem criou, e a lista de canais marca pra essa pessoa com `chan_mine` = 16;
+`chan_hidden` = 32 marca um invisível). Canal criado por alguém continua na
+lista quando esvazia (e no arquivo de estado, reiniciando) por 3 dias sem
+ninguém; fixo, pra sempre.
 
 **notice** — tipos: 1 = microfone silenciado, 2 = microfone liberado, 3 =
 transmissão parada (`extra` = tipo dela), 4 = virou admin, 5 = deixou de ser
 admin, 7/8 = pincel tirado/devolvido, 9 = um admin te levou pra outro canal, 10 =
 a mensagem privada não foi (a pessoa saiu ou o app dela não recebe), 11 = o
-arquivo pedido não está mais na sala. O
+arquivo pedido não está mais na sala, 12 = um admin limpou o chat da sala (o
+app apaga o que mostra; app antigo só mostra o texto). O
 `texto` já vem pronto ("Ana silenciou seu microfone."). 6 = não deu pra
 trocar de canal (nome inválido, trocando rápido demais, o servidor não deixa
 criar canal ou já tem canais demais).

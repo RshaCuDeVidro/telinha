@@ -2,6 +2,76 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.5.0
+
+Talks to 3.4, 3.3, 3.2 and 3.1 (an older app shows "cleared the chat" as a notice and doesn't know invisible channels or channel owners).
+
+### Highlights
+
+- 🔇 **Windows: sound without telinha itself, for real**. Per-program capture had never worked on Windows (the audio library looked for the device in the wrong place): now "all sound except telinha", "just this program" and "everything except Discord" work on Windows 10 2004 and later, and the room's sound is no longer muted while you stream.
+- 📱 **Watching on a phone**: on Firefox for Android (no WebCodecs) the video plays through another path; on Chrome it no longer flickers or stutters; a phone layout, with the video at full width and only the video when the phone is sideways.
+- 🏠 **Channels that stay**: a channel you create stays in the list even when empty (and if the server restarts), and **whoever created it runs it**: password, lock, topic, **invisible channel** and removing someone for good.
+- 🖼️ **Image preview**: pasting (Ctrl+V anywhere in the room) or dragging shows the image before sending; Enter sends, Esc cancels.
+- 🟢 **Stream health**: a green/yellow/red dot on the streamer's name, with the reason (your internet, your PC, the streamer's PC or internet).
+- 🧭 **Landed in the wrong channel**: if someone is live in another channel, a button takes you there and starts watching.
+- 🪶 **Economy mode** for weak PCs, **room mood** (the background shifts tone with the room's energy, no constant animation), **adjustable chat panel width** and **clear the room's chat** without restarting the server.
+
+<!-- detalhes -->
+
+### All changes
+
+- **Sound on Windows**: per-process capture the way Microsoft does it
+  (`ActivateAudioInterfaceAsync` on `VAD\Process_Loopback`, a format we pick,
+  its own thread reading the packets). miniaudio 0.11.25 tried to find the
+  virtual device in the regular list and failed on every Windows. Before 10
+  2004 the old way stays (captures everything and mutes the room while you
+  stream), and the "Streaming without audio" notice no longer shows up when the
+  sound is going.
+- **Browser page**: without `VideoDecoder`, H.264 becomes fragmented MP4 (one
+  piece per frame) and plays in a `<video>` through MSE, always near live;
+  decoder lag is now measured by time (a phone's hardware decoder holds frames
+  on purpose, and "queue over 6" kept asking for a full frame); on touch, the
+  canvas no longer uses the low-latency mode that flickers on Android; 100dvh,
+  controls that show on tap, a 16 px chat field (the iPhone zoomed in). The
+  page also clears the chat when an admin does.
+- **Channels**: one created by someone stays in the list empty for 3 days (or
+  until its slot is needed) and goes into the state file; the server keeps the
+  creator's app key. The creator (or a room admin) sets a password, locks it
+  (and still gets in), changes the topic, makes it invisible (left out of the
+  list for whoever isn't in it) and removes someone for good (by key).
+  Protocol: `chan_mine`, `chan_hidden`, `chan_act_hide` and `chan_act_ban`.
+- **Admin**: clear the room's chat (`admin` 8): every channel's history,
+  private messages included, and the room's files; everyone in the room gets
+  notice 12 and the app erases what it shows.
+- **Sharing**: on Windows the sources become cards with live thumbnails
+  (monitors through BitBlt, windows through PrintWindow, one at a time every
+  120 ms and only with the dialog open); "just part of the screen" opens the
+  crop tool as soon as the stream starts; the options scroll and the buttons
+  always stay in view.
+- **Stream health**: a viewer looks at the local decoder, packet loss on their
+  own connection and latency; a streamer, the upload, the encoder and slow
+  viewers. The reason shows next to the dot.
+- **Chat**: `/msg` ignores accents and capitals; a bot's menu has "Bring to my
+  call". A pasted or dragged image is prepared on a thread and waits for
+  confirmation.
+- **Music bot**: `!volume` no longer restarts the song (SDK 0.2.1 applies the
+  gain to the samples, between two ffmpeg processes, instead of restarting
+  with `-ss`: radios and links went back to the start); `!play` in private
+  from someone in a call brings the bot there; the card's progress bar starts
+  at zero on the next song; "Ke$ha" finds "Kesha"; when YouTube refuses and
+  SoundCloud only has a remix or cover, it plays the closest one and says so
+  in the footer.
+- **Mouse arrow** (the home screen's and the streamer's) without the white
+  sliver at the bottom.
+- **Economy mode**: interface at 30 fps, no animations, no CRT effect, no room
+  mood. **Room mood**: the stage's bottom color is checked every 3 s and
+  changes over half a second; still the rest of the time.
+- **Debug log**: on Windows, an unnamed thread shows the DLL it started in
+  (video driver, Media Foundation...), to find who's using CPU; the pool
+  threads have names.
+- **Build**: the tools that run during the build use zig's glibc (gcc 16's
+  `crt1.o` has `.sframe`, which zig 0.16 can't link).
+
 ## 3.4.0
 
 Talks to 3.3, 3.2 and 3.1 (older apps show a card as text, without buttons).

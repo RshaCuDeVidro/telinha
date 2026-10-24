@@ -2913,6 +2913,7 @@ pub const Server = struct {
         }
         if (action == proto.chan_act_ban) {
             const ch = s.findChan(name) orelse return;
+            if (ch == s.chans.items[0]) return; // do padrão ninguém é tirado (é pra onde vai quem sai)
             const t = s.findConn(target_id) orelse return;
             if (t == cn or t.owner or (t.admin and !cn.owner)) return;
             ch.ban(t.client_key);

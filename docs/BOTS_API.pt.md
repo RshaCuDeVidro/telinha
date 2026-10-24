@@ -177,7 +177,7 @@ Player(client, *, bitrate=128_000, stereo=True, ffmpeg="ffmpeg")
 | `await play(fonte, *, volume=None, start=0.0, headers=None)` | toca um arquivo ou link até o fim; retorna `True` se acabou, `False` se foi parado. Liga o microfone do bot enquanto toca. `headers`: cabeçalhos HTTP pro link (os que o yt-dlp manda usar) |
 | `pause()` / `resume()` | |
 | `await stop()` | para (o `play` retorna `False`) |
-| `set_volume(0.0–2.0)` | vale em ~meio segundo |
+| `set_volume(0.0–2.0)` | vale em ~meio segundo, sem recomeçar a música (o ganho é aplicado nas amostras) |
 | `playing`, `paused`, `position`, `source`, `volume` | |
 
 Precisa do ffmpeg (`FFmpegMissing` se não tiver).

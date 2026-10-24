@@ -313,17 +313,26 @@ the person's own color; `proto.draw_colors`). An old app ignores the style bits.
 | 5 | give/remove admin (owner only) | 1 = gives, 0 = removes |
 | 6 | lock the room (target ignored) | 1 = locks, 0 = unlocks |
 | 7 | pen | 1 = gives it back, 0 = takes it away (their drawings disappear; remembered by key) |
+| 8 | clear the room's chat: every channel's history (private messages too) and the room's files (target ignored) | — |
 
 **chan_admin** — actions: 1 = pin (`value` "1"/"0": a pinned channel stays empty
-and across restarts), 2 = lock (only admins get in), 3 = password (`value`; empty
-removes it), 4 = topic (`value`, up to 120 bytes), 5 = move `target` to the
-channel (chat and call, even if locked).
+forever and across restarts), 2 = lock (only admins and the creator get in), 3 =
+password (`value`; empty removes it), 4 = topic (`value`, up to 120 bytes), 5 =
+move `target` to the channel (chat and call, even if locked), 6 = invisible
+(`value` "1"/"0": left out of the list of whoever isn't in it; you join by
+knowing the name), 7 = remove `target` from the channel and don't let them back
+(by key). Pin and move: room admins only; the rest, also whoever created the
+channel (the server remembers the creator's app key, and the channel list
+marks it for them with `chan_mine` = 16; `chan_hidden` = 32 marks an invisible
+one). A channel someone created stays in the list when it empties (and in the
+state file across restarts) for 3 days without anyone; a pinned one, forever.
 
 **notice** — types: 1 = microphone muted, 2 = microphone released, 3 = stream
 stopped (`extra` = its type), 4 = became admin, 5 = is no longer admin, 7/8 = pen
 taken away/given back, 9 = an admin moved you to another channel, 10 = the
 private message didn't go (the person left or their app can't receive it), 11 =
-the requested file isn't in the room anymore. The
+the requested file isn't in the room anymore, 12 = an admin cleared the room's
+chat (the app erases what it shows; an older app just shows the text). The
 `texto` already comes ready ("Ana muted your microphone."). 6 = couldn't switch
 channel (invalid name, switching too fast, the server doesn't allow new
 channels or has too many).

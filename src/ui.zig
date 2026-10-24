@@ -4883,10 +4883,11 @@ pub const App = struct {
             if (std.mem.eql(u8, ch.nameSlice(), cl.chan_name[0..cl.chan_name_len])) break ch.flags & proto.chan_mine != 0;
         } else false;
         var my_chan_buf: [proto.channel_name_max]u8 = undefined;
-        const my_chan_len = cl.chan_name_len;
+        // do canal padrão (o primeiro) ninguém é tirado: é pra onde vai quem sai
+        const my_chan_len = if (cl.n_chans > 0 and std.mem.eql(u8, cl.chans[0].nameSlice(), cl.chan_name[0..cl.chan_name_len])) 0 else cl.chan_name_len;
         @memcpy(my_chan_buf[0..my_chan_len], cl.chan_name[0..my_chan_len]);
         cl.mutex.unlock();
-        if (!i_am_admin and chan_boss and target.id != my_id and !target.owner and !target.admin) {
+        if (!i_am_admin and chan_boss and my_chan_len > 0 and target.id != my_id and !target.owner and !target.admin) {
             c.igDummy(v2(0, S(4)));
             c.igSeparator();
             c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);

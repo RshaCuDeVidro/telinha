@@ -96,7 +96,13 @@ anywhere else send it in private:
 
 Private messages reach the bot from any channel, and it comes to the call
 you're in (or to your channel, if you're not in a call). `!join games` also
-works from wherever the bot is.
+works from wherever the bot is. The name doesn't need the accent or the
+capital letter (`/msg musica !join` finds Música), and the app has a shortcut:
+right-click the bot → **Bring to my call**.
+
+You don't even need `!join`: `/msg Música !play song name` from someone in a
+call brings the bot there and plays it (if it's playing for another call, the
+song goes to that queue and it tells you).
 
 ## Radios
 

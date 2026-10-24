@@ -48,7 +48,7 @@ Clique em **Compartilhar tela** e escolha:
 
 | Opção | O que faz |
 |---|---|
-| **O que mostrar** | A tela inteira, uma janela só, ou um retângulo que você arrasta em cima da própria prévia. A câmera pode ir junto ou no lugar da tela. |
+| **O que mostrar** | A tela inteira, uma janela só (no Windows, em cartões com miniatura ao vivo), ou só um pedaço: marque *Só um pedaço da tela* e arraste um retângulo assim que começar (ou depois, pelo botão de recorte na sua prévia). A câmera pode ir junto ou no lugar da tela. |
 | **Som** | Sem som, todo o som do computador (menos o telinha), só o som de um programa, ou tudo menos alguns programas (ex.: o Discord). O som do próprio telinha nunca entra, então não tem eco. |
 | **Tipo de conteúdo** | *Tela e texto* deixa letra nítida (código, documento, navegador). *Jogo e vídeo* prioriza movimento suave. |
 | **Resolução, quadros e qualidade** | A taxa cai sozinha se a internet de alguém não aguentar e volta a subir quando melhora. |
@@ -68,7 +68,13 @@ menos rede pra todos) e volta a subir na hora em que alguém amplia.
 ## Assistir
 
 Clique em quem está ao vivo. Várias transmissões ficam numa grade que deixa
-cada vídeo o maior possível.
+cada vídeo o maior possível. Se ninguém da sua call está transmitindo mas tem
+gente ao vivo em outro canal, aparece o botão *Tem gente ao vivo no #canal: ir
+e assistir*: um clique e você já está lá, assistindo.
+
+A bolinha do lado do nome de quem transmite diz como a transmissão está
+chegando: verde flui bem, amarela engasgando, vermelha ruim, e o porquê (*sua
+internet*, *seu PC*, *o PC ou a internet de Fulano*).
 
 | Ação | Como |
 |---|---|
@@ -111,7 +117,8 @@ do microfone.
 - **Enter** manda, **Shift+Enter** quebra a linha.
 - Markdown: `**negrito**`, `*itálico*`, `` `código` ``, blocos de código com
   botão de copiar e links clicáveis. Emoji colorido.
-- Imagens: cole (Ctrl+V) na caixa.
+- Imagens: cole (Ctrl+V, em qualquer lugar da sala) ou arraste pra janela. Uma
+  prévia pergunta antes de mandar: **Enter** manda, **Esc** desiste.
 - Reações, @menções (quem é mencionado é avisado) e histórico pra quem chega
   depois.
 - **Clique direito numa mensagem**: copiar, responder citando ou mandar
@@ -138,9 +145,13 @@ e continuar na call de outro.
 - Clique num canal no painel pra ler o chat dele.
 - Clique no ícone de fone do canal pra entrar na call dele. A sua transmissão vai
   junto.
-- O **+** cria um canal. Canal vazio some sozinho, a não ser os fixos do
-  servidor.
-- O admin pode pôr senha, trancar e mudar o tópico (clique direito no canal).
+- O **+** cria um canal. Ele continua na lista mesmo vazio (e se o servidor
+  reiniciar); só some depois de 3 dias sem ninguém. Os fixados pelo admin ficam
+  pra sempre.
+- **Quem criou o canal manda nele** (clique direito no canal): senha, trancar,
+  tópico, deixar **invisível** (fora da lista; entra quem sabe o nome e a
+  senha) e **tirar alguém** do canal sem volta (clique direito na pessoa). O
+  admin da sala também pode tudo isso.
 
 ## Comandos do chat
 
@@ -173,8 +184,10 @@ clipe, microfone, surdo, transmitir, print e um que liga e desliga todos. Em
 
 Quem cria a sala (ou entra num servidor dedicado com o token de admin) pode,
 com o clique direito na pessoa: expulsar, banir, silenciar, parar a
-transmissão, tirar o pincel, dar ou tirar o admin. Também pode trancar a sala
-e cuidar dos canais.
+transmissão, tirar o pincel, dar ou tirar o admin. Também pode trancar a sala,
+cuidar dos canais e **limpar o chat da sala** (a borracha no topo, com dois
+cliques): o histórico de todos os canais e os arquivos somem pra todo mundo,
+sem reiniciar o servidor.
 
 Num servidor dedicado, o admin vê as **estatísticas do servidor**: CPU,
 memória, banda chegando e saindo, gente por canal, quem está atrasando e um
@@ -197,11 +210,11 @@ O botão da engrenagem abre as configurações, na sala ou na tela inicial.
 | Página | O que tem |
 |---|---|
 | **Geral** | Nome, idioma, notificações, estatísticas sempre à mostra, aviso de versão nova (e instalar sozinho), clipes e a duração deles |
-| **Aparência** | Temas: escuro, claro, pwnd (neon), pwnd claro, Nord, Drácula ou o seu próprio CSS (atualiza sozinho quando você salva o arquivo); tamanho da interface; efeito CRT; animações da tela inicial; mostrar ou esconder os desenhos dos outros |
+| **Aparência** | Temas: escuro, claro, pwnd (neon), pwnd claro, Nord, Drácula ou o seu próprio CSS (atualiza sozinho quando você salva o arquivo); tamanho da interface; efeito CRT; **clima da sala** (o fundo muda de tom com a energia da sala, sem animação contínua); animações da tela inicial; mostrar ou esconder os desenhos dos outros. O painel do chat fica mais largo ou estreito arrastando a borda dele |
 | **Voz** | Ativação por voz ou apertar pra falar, microfone, sensibilidade, volume, ganho automático, supressão de ruído, cancelamento de eco, entrar com o microfone ligado, sons de aviso |
 | **Atalhos** | Atalhos globais (e um interruptor geral) |
 | **Câmera** | Qual câmera e a resolução |
-| **Desempenho** | Qualidade automática, cursor fora do vídeo, mandar no tamanho de quem assiste, limite de quadros da interface, peso do encoder da placa, AV1 (experimental) e o **Testar meu PC** |
+| **Desempenho** | **Modo econômico** (PC fraco: interface a 30 q/s, sem animações nem efeitos), qualidade automática, cursor fora do vídeo, mandar no tamanho de quem assiste, limite de quadros da interface, peso do encoder da placa, AV1 (experimental) e o **Testar meu PC** |
 | **Depuração** | Log de depuração, mandar o log pro dono da sala, relatório de travamento |
 | **Sobre** | Versão e histórico de versões |
 
