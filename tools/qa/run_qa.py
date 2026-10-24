@@ -2630,8 +2630,10 @@ def windows_exe():
         names = [x["name"] for x in st["sources"]]
         log(f"fontes no .exe: {names}")
         expect(not any("telinha" in n.lower() for n in names if n.startswith("Janela:")), "a lista mostrou a janela do próprio telinha")
-        w.click("##src")
-        w.click(contains="Janela:", window="##Combo")
+        # no Windows as fontes são cartões com miniatura (ao vivo)
+        time.sleep(2.0)
+        w.screenshot(os.path.join(s.base, "miniaturas.png"))
+        w.click(contains="Janela:", window="srcgrid")
         w.wait(lambda st: st["sources"][st["source_idx"]]["name"].startswith("Janela:"), 5, "escolher a janela")
         w.click(contains="Ao vivo", window="Compartilhar")
         st = w.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 30, "o .exe transmitir a janela")
@@ -2667,8 +2669,7 @@ def windows_janela_minimizada():
         st = w.wait(lambda st: st["share_modal"] and any(x["name"].endswith("minimizada") for x in st["sources"]), 30, "a janela minimizada na lista")
         names = [x["name"] for x in st["sources"]]
         log(f"fontes: {names}")
-        w.click("##src")
-        w.click(contains="minimizada", window="##Combo")
+        w.click(contains="minimizada", window="srcgrid")
         w.wait(lambda st: st["sources"][st["source_idx"]]["name"].endswith("minimizada"), 5, "escolher a janela minimizada")
         w.click(contains="Ao vivo", window="Compartilhar")
         try:

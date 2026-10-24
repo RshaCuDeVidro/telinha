@@ -51,6 +51,11 @@ typedef struct cap_ctx cap_ctx;
 // Lista as fontes disponíveis (monitores). Retorna quantas escreveu.
 int cap_list_sources(cap_source *out, int max);
 
+// Miniatura de uma fonte da última lista (Windows; Linux: 0 = não tem). RGBA,
+// cabendo em max_w x max_h (proporção da fonte), em `rgba` (max_w*max_h*4).
+// 1 = escreveu (*w, *h); 0 = não deu (janela minimizada, fonte sumiu).
+int cap_thumb(int source_id, uint8_t *rgba, int max_w, int max_h, int *w, int *h);
+
 // Abre a captura. Pode bloquear (no Wayland o portal abre um seletor de tela).
 // fps = ritmo máximo desejado (o compositor não precisa copiar mais que isso).
 // Retorna NULL e escreve o motivo em err em caso de falha.

@@ -129,6 +129,17 @@ int cap_list_sources(cap_source *out, int max) {
     return 1;
 }
 
+// O seletor do portal (Wayland) já mostra as miniaturas; no X11 é uma tela só.
+int cap_thumb(int source_id, uint8_t *rgba, int max_w, int max_h, int *w, int *h) {
+    (void)source_id;
+    (void)rgba;
+    (void)max_w;
+    (void)max_h;
+    (void)w;
+    (void)h;
+    return 0;
+}
+
 // ===========================================================================
 // DMA-BUF: o compositor copia a tela pra um buffer da GPU — sem travar o
 // próprio loop de renderização lendo a imagem de volta pra RAM, que é o que a

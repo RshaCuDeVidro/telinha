@@ -191,6 +191,77 @@ int cap_list_sources(cap_source *out, int max) {
 }
 
 // ---------------------------------------------------------------------------
+// Miniaturas pro modal de compartilhar: monitor pelo BitBlt da tela, janela
+// pelo PrintWindow (pega mesmo coberta por outras), reduzidas com HALFTONE.
+
+int cap_thumb(int source_id, uint8_t *rgba, int max_w, int max_h, int *w, int *h) {
+    RECT rc;
+    HWND hwnd = NULL;
+    if (source_id >= WINDOW_ID0) {
+        const int i = source_id - WINDOW_ID0;
+        if (i < 0 || i >= g_n_windows || !IsWindow(g_windows[i]) || IsIconic(g_windows[i])) return 0;
+        hwnd = g_windows[i];
+        if (!GetWindowRect(hwnd, &rc)) return 0;
+    } else {
+        monitor_info mons[16];
+        const int n = list_monitors(mons, 16);
+        if (source_id < 0 || source_id >= n) return 0;
+        rc = mons[source_id].rc;
+    }
+    const int sw = rc.right - rc.left, sh = rc.bottom - rc.top;
+    if (sw < 8 || sh < 8 || max_w < 8 || max_h < 8) return 0;
+    int tw = max_w, th = (int)((long long)sh * max_w / sw);
+    if (th > max_h) {
+        th = max_h;
+        tw = (int)((long long)sw * max_h / sh);
+    }
+    if (tw < 1 || th < 1) return 0;
+    HDC screen = GetDC(NULL);
+    HDC src = CreateCompatibleDC(screen);
+    HDC dst = CreateCompatibleDC(screen);
+    HBITMAP src_bmp = NULL, dst_bmp = NULL;
+    uint8_t *bits = NULL;
+    int ok = 0;
+    BITMAPINFO bi = {0};
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+    bi.bmiHeader.biWidth = tw;
+    bi.bmiHeader.biHeight = -th;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    dst_bmp = CreateDIBSection(dst, &bi, DIB_RGB_COLORS, (void **)&bits, NULL, 0);
+    if (!dst_bmp || !bits) goto out;
+    SelectObject(dst, dst_bmp);
+    SetStretchBltMode(dst, HALFTONE);
+    SetBrushOrgEx(dst, 0, 0, NULL);
+    if (hwnd) {
+        src_bmp = CreateCompatibleBitmap(screen, sw, sh);
+        if (!src_bmp) goto out;
+        SelectObject(src, src_bmp);
+        if (!PrintWindow(hwnd, src, 2 /* PW_RENDERFULLCONTENT */) && !PrintWindow(hwnd, src, 0)) goto out;
+        ok = StretchBlt(dst, 0, 0, tw, th, src, 0, 0, sw, sh, SRCCOPY);
+    } else {
+        ok = StretchBlt(dst, 0, 0, tw, th, screen, rc.left, rc.top, sw, sh, SRCCOPY | CAPTUREBLT);
+    }
+    if (!ok) goto out;
+    GdiFlush();
+    for (int i = 0; i < tw * th; i++) { // BGRX → RGBA
+        rgba[i * 4 + 0] = bits[i * 4 + 2];
+        rgba[i * 4 + 1] = bits[i * 4 + 1];
+        rgba[i * 4 + 2] = bits[i * 4 + 0];
+        rgba[i * 4 + 3] = 255;
+    }
+    *w = tw;
+    *h = th;
+out:
+    if (src_bmp) DeleteObject(src_bmp);
+    if (dst_bmp) DeleteObject(dst_bmp);
+    DeleteDC(src);
+    DeleteDC(dst);
+    ReleaseDC(NULL, screen);
+    return ok ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
 // Cursor: copia o pedaço da tela pra um DIB pequeno, DrawIconEx por cima e copia de volta.
 // Funciona com qualquer tipo de cursor (colorido, monocromático, animado).
 

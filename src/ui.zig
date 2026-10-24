@@ -913,6 +913,13 @@ pub const App = struct {
     net_loss_prev: u64 = 0,
     net_loss_level: u8 = 0,
     chan_menu_admin: bool = false, // o menu do canal aberto por admin da sala (senão: quem criou)
+    crop_pick: bool = false, // modal: "só um pedaço da tela"
+    crop_on_start: bool = false, // abre o recorte na primeira imagem da transmissão
+    thumbs: [48]Thumb = [_]Thumb{.{}} ** 48, // miniaturas das fontes (Windows)
+    thumbs_live: bool = false,
+    thumb_next_at: f64 = 0,
+    thumb_rr: usize = 0,
+    share_opts_h: f32 = 2000, // altura das opções do modal de compartilhar (medida no quadro anterior)
     clear_armed_at: f64 = -10, // "limpar o chat" pede um segundo clique
     self_mute_shown: bool = false,
     // notificações do sistema
@@ -3171,7 +3178,7 @@ pub const App = struct {
             // janela (e ela reabriria invisível, travando os cliques)
             a.closeModals();
         } else {
-            if (a.share_modal) a.drawShareModal();
+            if (a.share_modal) a.drawShareModal() else if (a.thumbs_live) a.freeThumbs();
             if (a.settings_modal) a.drawSettingsModal();
             if (a.leave_confirm) a.drawLeaveConfirm();
             if (a.img_ready != null) a.drawImageConfirm(cl);
@@ -5446,6 +5453,14 @@ pub const App = struct {
             const on_palette = mouse.x >= pr[0] and mouse.x < pr[2] and mouse.y >= pr[1] and mouse.y < pr[3];
             a.updateDraw(t, over and in_img and on_tile and !on_palette, ix, iy, iw, ih, uv0, uv1, mouse);
             if (a.client) |dcl| if (a.draw_tile != null) a.drawPalette(dcl, t, pr, w);
+        }
+        // pediu "só um pedaço" no modal: a ferramenta de recorte abre sozinha na primeira imagem
+        if (a.crop_on_start and t.view == null and proto.kindOf(t.stream) == proto.kind_screen and a.sharer != null and t.tex != 0) {
+            a.crop_on_start = false;
+            a.stopTools();
+            a.crop_tile = t.stream;
+            a.crop_seen_frame = a.frame_no;
+            if (a.sharer) |sh| sh.preview_full.store(true, .release);
         }
         const cropping = a.crop_tile != null and a.crop_tile.? == t.stream;
         if (cropping) a.updateCrop(over and in_img and on_tile, ix, iy, iw, ih, uv0, uv1, mouse);
@@ -8165,13 +8180,87 @@ pub const App = struct {
 
     // ---------------------------------------------------------- modal de tela
 
+    /// Windows: as fontes em miniaturas ao vivo (uma por vez, a cada ~120 ms:
+    /// com 10 janelas cada uma renova a cada ~1 s), clique escolhe.
+    fn drawSourceGrid(a: *App, w: f32) void {
+        a.thumbs_live = true;
+        const now = c.igGetTime();
+        if (now >= a.thumb_next_at and a.n_sources > 0) {
+            a.thumb_next_at = now + 0.12;
+            const i = a.thumb_rr % a.n_sources;
+            a.thumb_rr += 1;
+            var tw: c_int = 0;
+            var th: c_int = 0;
+            const t = &a.thumbs[i];
+            if (c.cap_thumb(a.sources[i].id, &thumb_px, thumb_max_w, thumb_max_h, &tw, &th) != 0) {
+                gl.upload(&t.tex, thumb_px[0..@intCast(tw * th * 4)], @intCast(tw), @intCast(th), gl.RGBA);
+                t.w = @intCast(tw);
+                t.h = @intCast(th);
+            }
+        }
+        redrawIn(0.12);
+        // uma fileira só, rolando pro lado (o modal não cresce e o "Ao vivo" continua à vista)
+        const gap = S(8);
+        const cw = S(138);
+        const ch_img = cw * 9 / 16;
+        const ch = ch_img + S(26);
+        const scroll_h = if (@as(f32, @floatFromInt(a.n_sources)) * (cw + gap) > w) S(12) else 0;
+        c.igPushStyleColor_U32(c.ImGuiCol_ChildBg, 0);
+        _ = c.igBeginChild_Str("##srcgrid", v2(w, ch + scroll_h + S(2)), 0, c.ImGuiWindowFlags_HorizontalScrollbar);
+        defer {
+            c.igEndChild();
+            c.igPopStyleColor(1);
+        }
+        const d = drawList();
+        var src_buf: [300]u8 = undefined;
+        for (a.sources[0..a.n_sources], 0..) |*src, i| {
+            if (i > 0) c.igSameLine(0, gap);
+            const p = c.igGetCursorScreenPos();
+            const name = sourceName(src, &src_buf);
+            // o nome no rótulo (escondido): os testes acham o cartão por ele
+            const clicked = c.igInvisibleButton(fmtZ("{s}##srccard{d}", .{ name, i }).ptr, v2(cw, ch), 0);
+            const hov = c.igIsItemHovered(0);
+            if (clicked) a.source_idx = @intCast(i);
+            const sel = a.source_idx == @as(i32, @intCast(i));
+            rectFill(d, p.x, p.y, p.x + cw, p.y + ch, if (sel) withAlpha(col.blurple, 50) else if (hov) col.hover else col.input, S(8));
+            if (sel) c.ImDrawList_AddRect(d, p, v2(p.x + cw, p.y + ch), col.blurple, S(8) * col.round, S(2), 0);
+            // a miniatura, inteira, centrada na área 16:9
+            const t = &a.thumbs[i];
+            const ax = p.x + S(6);
+            const ay = p.y + S(6);
+            const aw = cw - S(12);
+            const ah = ch_img - S(6);
+            if (t.tex != 0 and t.w > 0) {
+                const k = @min(aw / @as(f32, @floatFromInt(t.w)), ah / @as(f32, @floatFromInt(t.h)));
+                const iw = @as(f32, @floatFromInt(t.w)) * k;
+                const ih = @as(f32, @floatFromInt(t.h)) * k;
+                c.ImDrawList_AddImageRounded(d, texRef(t.tex), v2(ax + (aw - iw) / 2, ay + (ah - ih) / 2), v2(ax + (aw + iw) / 2, ay + (ah + ih) / 2), v2(0, 0), v2(1, 1), 0xFFFFFFFF, S(4), 0);
+            } else {
+                const glyph = if (src.id >= 1000) ic.window_restore else ic.desktop;
+                const gs = textSizeF(font_regular, 22, glyph);
+                drawTextF(d, font_regular, 22, v2(ax + (aw - gs.x) / 2, ay + (ah - gs.y) / 2), col.faint, glyph);
+            }
+            var nb: [300]u8 = undefined;
+            const shown = ellipsizeMiddle(font_semibold, 11.5, name, cw - S(12), &nb);
+            drawTextF(d, font_semibold, 11.5, v2(p.x + S(6), p.y + ch_img + S(4)), if (sel) col.header else col.text, shown);
+            if (hov and shown.len != name.len) tooltipText(name);
+        }
+    }
+
+    fn freeThumbs(a: *App) void {
+        for (&a.thumbs) |*t| if (t.tex != 0) {
+            gl.delete(&t.tex);
+            t.* = .{};
+        };
+        a.thumbs_live = false;
+        a.thumb_rr = 0;
+    }
+
     fn drawShareModal(a: *App) void {
         _ = c.igOpenPopup_Str(tr("Compartilhar tela###compartilhar"), 0);
         const vp = c.igGetMainViewport();
         c.igSetNextWindowPos(v2(vp.*.Pos.x + vp.*.Size.x / 2, vp.*.Pos.y + vp.*.Size.y / 2), c.ImGuiCond_Always, v2(0.5, 0.5));
-        c.igSetNextWindowSize(v2(S(480), 0), c.ImGuiCond_Always);
-        // janela baixa: rola em vez de cortar o botão de ir ao vivo
-        c.igSetNextWindowSizeConstraints(v2(S(480), 0), v2(S(480), @max(S(200), vp.*.Size.y - S(24))), null, null);
+        c.igSetNextWindowSize(v2(S(496), 0), c.ImGuiCond_Always);
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(24), S(22)));
         c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, S(10) * col.round);
         c.igPushStyleColor_U32(c.ImGuiCol_PopupBg, col.bg_main);
@@ -8191,6 +8280,11 @@ pub const App = struct {
         textColored(col.muted, tr("Todo mundo na sala vai poder assistir."));
         popFont();
         c.igDummy(v2(0, S(14)));
+        // as opções rolam; os botões ficam sempre à vista embaixo (janela baixa
+        // escondia o "Ao vivo" lá no fim)
+        const opts_max = @max(S(160), vp.*.Size.y - S(24) - S(44) - S(70) - S(78));
+        c.igPushStyleColor_U32(c.ImGuiCol_ChildBg, 0);
+        _ = c.igBeginChild_Str("##shareopts", v2(w + S(16), @min(a.share_opts_h, opts_max)), 0, 0);
 
         fieldLabel("O QUE MOSTRAR");
         c.igSetNextItemWidth(w);
@@ -8198,7 +8292,9 @@ pub const App = struct {
         c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, v2(S(10), S(9)));
         var src_buf: [300]u8 = undefined;
         const preview: [:0]const u8 = if (a.n_sources > 0) sourceName(&a.sources[@intCast(a.source_idx)], &src_buf) else tr("Tela");
-        if (beginCombo("##src", preview, 0)) {
+        if (sync.is_windows and a.n_sources > 1) {
+            a.drawSourceGrid(w);
+        } else if (beginCombo("##src", preview, 0)) {
             for (a.sources[0..a.n_sources], 0..) |*s, i| {
                 c.igPushID_Int(@intCast(i));
                 if (c.igSelectable_Bool(fmtZ("{s}###src", .{sourceName(s, &src_buf)}).ptr, a.source_idx == @as(i32, @intCast(i)), 0, v2(0, 0))) a.source_idx = @intCast(i);
@@ -8208,6 +8304,12 @@ pub const App = struct {
         }
         c.igPopStyleVar(1);
         c.igPopStyleColor(1);
+        if (a.sharer == null) {
+            c.igDummy(v2(0, S(4)));
+            c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
+            _ = c.igCheckbox(tr("Só um pedaço da tela (você arrasta um retângulo assim que começar)###croppick"), &a.crop_pick);
+            c.igPopStyleColor(1);
+        }
         c.igDummy(v2(0, S(9)));
 
         a.drawAudioChoice(w);
@@ -8273,7 +8375,10 @@ pub const App = struct {
             c.igPopTextWrapPos();
         }
 
-        c.igDummy(v2(0, S(18)));
+        a.share_opts_h = c.igGetCursorPosY() + S(2); // altura de tudo (o próximo quadro usa)
+        c.igEndChild();
+        c.igPopStyleColor(1);
+        c.igDummy(v2(0, S(14)));
         const bw = (w - S(10)) / 2;
         if (secondaryButton(tr("Cancelar###cancelshare"), v2(bw, S(42))) or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
             a.share_modal = false;
@@ -8299,6 +8404,7 @@ pub const App = struct {
                 a.share_modal = false;
                 c.igCloseCurrentPopup();
                 a.startSharing();
+                a.crop_on_start = a.crop_pick;
             }
         }
     }
@@ -9922,6 +10028,12 @@ pub var frame_work_max_us: u64 = 0;
 
 /// Limite de quadros por segundo da interface (0 = o do monitor).
 pub var frame_cap_fps: u64 = 60;
+
+/// Miniatura de uma fonte (modal de compartilhar, Windows).
+const thumb_max_w = 320;
+const thumb_max_h = 180;
+var thumb_px: [thumb_max_w * thumb_max_h * 4]u8 = undefined;
+const Thumb = struct { tex: u32 = 0, w: u32 = 0, h: u32 = 0 };
 
 /// Limite de quadros da interface valendo (o modo econômico segura em 30).
 fn uiCap(cfg: *const config.Config) u64 {
