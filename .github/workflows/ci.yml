@@ -84,6 +84,7 @@ jobs:
 
       - name: SDK Python e bot de música contra o servidor recém-compilado
         # cada teste sobe uma sala própria em 127.0.0.1 com o telinha-server do zig-out
+        timeout-minutes: 15 # um teste preso (ffmpeg, rede) segurou o job da tag v3.5.0 por 1h30
         run: |
           sudo apt-get install -y --no-install-recommends ffmpeg
           python3 -m venv "$RUNNER_TEMP/sdk"

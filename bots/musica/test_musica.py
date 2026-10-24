@@ -62,7 +62,11 @@ class MusicBotTest(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         for t in self.tasks:
             t.cancel()
-        await asyncio.gather(*self.tasks, return_exceptions=True)
+        # uma tarefa presa (ffmpeg, rede) não pode travar o CI pra sempre
+        try:
+            await asyncio.wait_for(asyncio.gather(*self.tasks, return_exceptions=True), 15)
+        except TimeoutError:
+            pass
         self.bot.tmp.cleanup()
         self.dir.cleanup()
         self.room.close()
