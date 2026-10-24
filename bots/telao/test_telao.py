@@ -71,6 +71,13 @@ class ScreenBotTest(unittest.IsolatedAsyncioTestCase):
         self.ana._dispatch = spy
 
     async def asyncTearDown(self):
+        self.bot.queue.clear()
+        try:
+            await asyncio.wait_for(self.bot.player.stop(), 5)
+        except TimeoutError:
+            pass
+        if self.bot._loop_task:
+            self.tasks.append(self.bot._loop_task)
         for t in self.tasks:
             t.cancel()
         try:

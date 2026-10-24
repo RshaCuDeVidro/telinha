@@ -35,7 +35,10 @@ async def _run(*args: str, timeout: float = 30) -> bytes:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
     except asyncio.TimeoutError:
         proc.kill()
-        await proc.wait()
+        try:
+            await asyncio.wait_for(proc.wait(), 3)
+        except asyncio.TimeoutError:
+            pass
         raise ImageError("o ffmpeg demorou demais com a imagem") from None
     if proc.returncode != 0:
         raise ImageError(err.decode(errors="replace").strip()[-300:] or f"ffmpeg saiu com {proc.returncode}")

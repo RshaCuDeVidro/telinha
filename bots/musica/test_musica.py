@@ -60,6 +60,15 @@ class MusicBotTest(unittest.IsolatedAsyncioTestCase):
         self.ana.on("voice")(on_voice)
 
     async def asyncTearDown(self):
+        # para a música antes de derrubar o resto (cancelar no meio deixava o
+        # ffmpeg e a conexão fechando juntos, e o fim do teste às vezes travava)
+        self.bot.queue.clear()
+        try:
+            await asyncio.wait_for(self.bot.player.stop(), 5)
+        except TimeoutError:
+            pass
+        if self.bot._loop_task:
+            self.tasks.append(self.bot._loop_task)
         for t in self.tasks:
             t.cancel()
         # uma tarefa presa (ffmpeg, rede) não pode travar o CI pra sempre

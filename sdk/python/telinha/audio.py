@@ -19,7 +19,7 @@ from .client import Client
 
 log = logging.getLogger("telinha")
 
-__all__ = ["Player", "FFmpegMissing", "ogg_packets"]
+__all__ = ["Player", "FFmpegMissing", "ogg_packets", "reap"]
 
 FRAME_S = 0.020  # 20 ms por pacote
 MAX_BEHIND = 0.2  # s: atrasou mais que isso (máquina engasgou), recomeça o relógio
@@ -28,6 +28,21 @@ MAX_BEHIND = 0.2  # s: atrasou mais que isso (máquina engasgou), recomeça o re
 class FFmpegMissing(RuntimeError):
     def __init__(self):
         super().__init__("precisa do ffmpeg pra tocar som (apt install ffmpeg / pacman -S ffmpeg / winget install ffmpeg)")
+
+
+async def reap(proc: asyncio.subprocess.Process, timeout: float = 3.0) -> None:
+    """Mata o processo (se ainda estiver vivo) e espera ele sair, com limite:
+    no Python 3.12 o aviso de que o filho saiu às vezes se perde, e esperar sem
+    limite travava quem estava parando o bot (um teste do CI ficou preso aí)."""
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout)
+    except asyncio.TimeoutError:
+        log.warning("o processo %s não saiu em %.0f s", proc.pid, timeout)
 
 
 async def ogg_packets(stream: asyncio.StreamReader):
@@ -113,8 +128,8 @@ class Player:
             self.source = None
             self._proc = None
             self.position = 0.0  # a próxima começa do zero (e quem lê entre uma e outra não vê o fim da anterior)
-            try:
-                await self.client.set_voice(mic=False)
+            try:  # com limite: parando o bot, a conexão pode estar fechando e o envio não sair nunca
+                await asyncio.wait_for(self.client.set_voice(mic=False), 2)
             except Exception:  # a conexão pode ter caído
                 pass
 
@@ -174,9 +189,7 @@ class Player:
         finally:
             pump.cancel()
             for proc in (dec, enc):
-                if proc.returncode is None:
-                    proc.kill()
-                    await proc.wait()
+                await reap(proc)
 
     async def _pump(self, src: asyncio.StreamReader, dst: asyncio.StreamWriter, channels: int) -> None:
         """PCM do decodificador → codificador, com o volume de agora."""

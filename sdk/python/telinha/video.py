@@ -27,7 +27,7 @@ import shutil
 import tempfile
 
 from . import wire
-from .audio import FFmpegMissing, ogg_packets
+from .audio import FFmpegMissing, ogg_packets, reap
 from .client import Client
 from .image import ChatImage, encode as encode_image
 
@@ -192,8 +192,7 @@ class VideoPlayer:
         try:
             out, err = await asyncio.wait_for(proc.communicate(), 30)
         except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+            await reap(proc)
             raise RuntimeError(f"o ffprobe demorou demais pra abrir {source!r}") from None
         if proc.returncode != 0:
             raise RuntimeError(f"o ffprobe não abriu {source!r}: {err.decode(errors='replace').strip()[-300:]}")
@@ -279,7 +278,10 @@ class VideoPlayer:
         try:
             await tasks[0]  # o vídeo manda: acabou a imagem, acabou
             if not self._stop:
-                await vproc.wait()
+                try:  # a imagem acabou: o ffmpeg está saindo (sem matar: o código de saída diz se deu erro)
+                    await asyncio.wait_for(vproc.wait(), 10)
+                except asyncio.TimeoutError:
+                    pass
             if vproc.returncode not in (0, None) and not self._stop:
                 err = (await vproc.stderr.read()).decode(errors="replace").strip()
                 raise RuntimeError(f"o ffmpeg não conseguiu abrir {video[:120]!r}: {err[-300:] or vproc.returncode}")
@@ -288,9 +290,7 @@ class VideoPlayer:
             for t in tasks:
                 t.cancel()
             for proc in self._procs:
-                if proc.returncode is None:
-                    proc.kill()
-                    await proc.wait()
+                await reap(proc)
 
     async def _wait_start(self, ready: dict, side: str) -> None:
         """Os dois lados esperam o primeiro pedaço um do outro: o relógio só
