@@ -90,6 +90,23 @@ backend for your desktop:
 
 After installing it, log out and back in.
 
+### "The portal refused the capture: CreateSession failed"
+
+Your desktop's portal backend didn't start. The most common case: the user
+systemd restarted with the compositor still open and lost the
+`WAYLAND_DISPLAY` the compositor had passed to it; without it, it doesn't even
+try to start `xdg-desktop-portal-hyprland` (or `-wlr`). telinha notices this,
+passes the session's variables to systemd and tries again on its own. If it
+still fails, run this in a terminal in the session:
+
+```sh
+systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP
+systemctl --user restart xdg-desktop-portal
+```
+
+and check that your compositor runs `import-environment` (or
+`dbus-update-activation-environment --systemd`) when it starts.
+
 ### My game stutters while I stream
 
 - In **Settings → Performance**, set the GPU encoder to **Light**.

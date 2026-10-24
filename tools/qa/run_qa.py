@@ -432,6 +432,54 @@ def canais_admin():
 
 
 @test
+def canal_do_dono():
+    """Quem criou o canal (sem ser admin): põe senha pelo menu e, pra voltar, digita a senha como todo mundo; apaga o canal pelo menu (com confirmação) e quem estava nele volta pro #geral avisado; quem não criou nem vê o menu."""
+    with Session("canaldono") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)])
+        a.wait(lambda st: st["status"] == "connected" and st["channels_supported"], 10, "a sala")
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}"])
+        b.wait(lambda st: st["status"] == "connected" and st["channels_supported"], 10, "a Bia entrar")
+        b.click("##chatin")
+        time.sleep(0.2)
+        b.type("/join zika\n")
+        b.wait(lambda st: st["channel"] == "zika", 5, "a Bia criar o zika")
+        idx = next(i for i, ch in enumerate(b.state()["channels"]) if ch["name"] == "zika")
+        b.click(f"#zika###ch{idx}", button=3)
+        b.click(contains="###cpw")
+        b.click("##chanedit")
+        b.type("abc\n")
+        a.wait(lambda st: any(ch["name"] == "zika" and ch["password"] for ch in st["channels"]), 5, "o zika com senha")
+        # sai e volta: o painel pede a senha (antes quem criou passava direto)
+        time.sleep(1.0)
+        b.click("#geral")
+        b.wait(lambda st: st["channel"] == "geral", 5, "a Bia no geral")
+        time.sleep(1.0)
+        b.click(f"#zika###ch{idx}")
+        b.wait(lambda st: st["chan_pw_for"] == "zika", 5, "pedir a senha pra quem criou")
+        expect(b.state()["channel"] == "geral", "entrou sem a senha")
+        b.click("##chanpw")
+        b.type("abc\n")
+        b.wait(lambda st: st["channel"] == "zika", 5, "a Bia entrar com a senha")
+        # a Ana (admin da sala) entra sem senha e fica lá
+        time.sleep(0.2)
+        aidx = next(i for i, ch in enumerate(a.state()["channels"]) if ch["name"] == "zika")
+        a.click(f"#zika###ch{aidx}")
+        a.wait(lambda st: st["channel"] == "zika", 5, "a Ana (admin) entrar sem senha")
+        # apagar: o primeiro clique só arma, o segundo apaga
+        b.click(f"#zika###ch{idx}", button=3)
+        b.click(contains="###cdel")
+        time.sleep(0.4)
+        expect(any(ch["name"] == "zika" for ch in a.state()["channels"]), "apagou no primeiro clique")
+        b.click(contains="###cdel")
+        a.wait(lambda st: st["channel"] == "geral" and not any(ch["name"] == "zika" for ch in st["channels"]) and any("apagou" in t for t in st["toasts"]), 5, "a Ana de volta no geral, avisada")
+        b.wait(lambda st: st["channel"] == "geral" and not any(ch["name"] == "zika" for ch in st["channels"]), 5, "a Bia no geral sem o zika")
+        # o geral: quem não é admin nem abre o menu dele
+        b.click("#geral###ch0", button=3)
+        expect(b.find(contains="###cdel", timeout=0.8, need=False) is None, "menu de apagar no geral pra quem não é admin")
+
+
+@test
 def estatisticas_servidor():
     """Estatísticas do servidor: o botão só aparece pra quem entrou com o token de admin; abre, chegam números (pessoas, canais, CPU), fecha e para de pedir."""
     with Session("estat") as s:

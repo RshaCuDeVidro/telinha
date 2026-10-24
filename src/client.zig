@@ -899,6 +899,11 @@ pub const Client = struct {
     calls_known: bool = false, // o servidor diz a call (separada do canal)
     want_chan: [proto.channel_name_max]u8 = undefined, // o canal pedido ao entrar (hello)
     want_chan_len: usize = 0,
+    // a última senha mandada pra entrar num canal (reconectando nele, vai no hello)
+    pw_chan: [proto.channel_name_max]u8 = undefined,
+    pw_chan_len: usize = 0,
+    pw: [64]u8 = undefined,
+    pw_len: usize = 0,
     stats: ServerStats = .{},
     // identidade do servidor (crypto.Identity)
     expect_fp: [crypto.fp_len]u8 = undefined,
@@ -1140,6 +1145,16 @@ pub const Client = struct {
         b.u8_(if (cl.hw_decode) decodeCodecs() else proto.codecs_h264) catch return;
         b.u8_(proto.features_mine) catch return;
         b.str(cl.want_chan[0..cl.want_chan_len]) catch return;
+        b.str("") catch return; // token de bot
+        var pw_buf: [64]u8 = undefined;
+        var pw_len: usize = 0;
+        cl.mutex.lock();
+        if (std.ascii.eqlIgnoreCase(std.mem.trimStart(u8, cl.want_chan[0..cl.want_chan_len], "#"), cl.pw_chan[0..cl.pw_chan_len])) {
+            pw_len = cl.pw_len;
+            @memcpy(pw_buf[0..pw_len], cl.pw[0..pw_len]);
+        }
+        cl.mutex.unlock();
+        b.str(pw_buf[0..pw_len]) catch return;
         cl.queue.pushOwned(b.finish() catch return);
 
         while (!cl.closing.load(.acquire)) {
@@ -1952,8 +1967,17 @@ pub const Client = struct {
         if (cl.stats_gen == 0) cl.stats_gen = 1;
     }
 
+    fn rememberPw(cl: *Client, name: []const u8, password: []const u8) void {
+        if (password.len == 0 or password.len > cl.pw.len) return;
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        copyInto(&cl.pw_chan, &cl.pw_chan_len, std.mem.trimStart(u8, name, "#"));
+        copyInto(&cl.pw, &cl.pw_len, password);
+    }
+
     /// Entra num canal de texto (cria se não existir, se o servidor deixar).
     pub fn joinChannel(cl: *Client, name: []const u8, password: []const u8) void {
+        cl.rememberPw(name, password);
         var b: proto.Builder = .{};
         defer b.deinit();
         b.begin(.channel) catch return;
@@ -1964,6 +1988,7 @@ pub const Client = struct {
 
     /// Entra na call de um canal (nome vazio = sai da call).
     pub fn joinCall(cl: *Client, name: []const u8, password: []const u8) void {
+        cl.rememberPw(name, password);
         var b: proto.Builder = .{};
         defer b.deinit();
         b.begin(.call) catch return;

@@ -2,6 +2,7 @@
 const std = @import("std");
 const c = @import("c.zig").c;
 const gl = @import("gl.zig");
+const arrow = @import("arrow.zig");
 const sync = @import("sync.zig");
 const config = @import("config.zig");
 const client_mod = @import("client.zig");
@@ -488,29 +489,30 @@ fn hash01(n: u32) f32 {
     return @as(f32, @floatFromInt(x & 0xFFFF)) / 65535.0;
 }
 
-/// Brilho redondo e suave: um leque de triângulos com a cor no meio sumindo
-/// até a borda (degradê de verdade, sem os degraus de círculos empilhados).
-/// A seta do mouse (ponta em `at`, k = escala; 1 ≈ 22 px). O miolo vai em
-/// pedaços convexos e sem a borda suavizada: o preenchimento côncavo do ImGui
-/// com antialiasing soltava uma lasca nos cantos de dentro (embaixo da seta);
-/// o contorno (suavizado) cobre a borda.
-fn arrowShape(d: *c.ImDrawList, at: c.ImVec2_c, k: f32, fill: u32, outline: u32, thickness: f32) void {
-    const pts = [_][2]f32{ .{ 0, 0 }, .{ 0, 17 }, .{ 4, 13 }, .{ 7.5, 20.5 }, .{ 10, 19.5 }, .{ 6.6, 12 }, .{ 12, 12 } };
-    var p: [pts.len]c.ImVec2_c = undefined;
-    for (pts, 0..) |q, i| p[i] = v2(at.x + q[0] * k * 1.05, at.y + q[1] * k * 1.05);
-    const flags = d.Flags;
-    d.Flags &= ~@as(c_int, 1 << 2); // ImDrawListFlags_AntiAliasedFill (o cimgui traduzido não traz os enums)
-    // cabeça: leque a partir da ponta (ela enxerga todos os cantos); cauda: um quadrilátero
-    for ([_][2]usize{ .{ 1, 2 }, .{ 2, 5 }, .{ 5, 6 } }) |t| {
-        var tri = [_]c.ImVec2_c{ p[0], p[t[0]], p[t[1]] };
-        c.ImDrawList_AddConvexPolyFilled(d, &tri, 3, fill, 0);
+/// A seta do mouse com a ponta em `at`, `k` pixels por unidade (1 ≈ 21 px de
+/// altura); `dark` = preta com borda branca. Pintada uma vez por tamanho (ver
+/// arrow.zig) e posta em pixel inteiro, como um cursor de verdade.
+const ArrowTex = struct { tex: u32 = 0, k: f32 = 0, size: arrow.Size = undefined };
+var arrow_texs = [2]ArrowTex{ .{}, .{} };
+fn arrowShape(d: *c.ImDrawList, at: c.ImVec2_c, k_in: f32, dark: bool, tint: u32) void {
+    const k = @round(k_in * 16) / 16; // vídeo mudando de tamanho não repinta a cada quadro
+    const t = &arrow_texs[@intFromBool(dark)];
+    if (t.tex == 0 or t.k != k) {
+        var buf: [arrow.max_side * arrow.max_side * 4]u8 = undefined;
+        t.size = arrow.paint(&buf, k, dark);
+        t.k = k;
+        gl.upload(&t.tex, buf[0 .. t.size.w * t.size.h * 4], t.size.w, t.size.h, gl.RGBA);
     }
-    var tail = [_]c.ImVec2_c{ p[2], p[3], p[4], p[5] };
-    c.ImDrawList_AddConvexPolyFilled(d, &tail, 4, fill, 0);
-    d.Flags = flags;
-    c.ImDrawList_AddPolyline(d, &p, p.len, outline, thickness, c.ImDrawFlags_Closed);
+    const tip: f32 = @floatFromInt(t.size.tip);
+    const x = @round(at.x) - tip;
+    const y = @round(at.y) - tip;
+    const w: f32 = @floatFromInt(t.size.w);
+    const h: f32 = @floatFromInt(t.size.h);
+    c.ImDrawList_AddImage(d, texRef(t.tex), v2(x, y), v2(x + w, y + h), v2(0, 0), v2(1, 1), tint);
 }
 
+/// Brilho redondo e suave: um leque de triângulos com a cor no meio sumindo
+/// até a borda (degradê de verdade, sem os degraus de círculos empilhados).
 fn glow(d: *c.ImDrawList, center: c.ImVec2_c, radius: f32, color: u32, strength: u8) void {
     const seg = 48;
     const uv = c.igGetFontTexUvWhitePixel();
@@ -964,6 +966,8 @@ pub const App = struct {
     net_loss_prev: u64 = 0,
     net_loss_level: u8 = 0,
     chan_menu_admin: bool = false, // o menu do canal aberto por admin da sala (senão: quem criou)
+    chan_menu_default: bool = false, // é o canal padrão (não some nem é apagado)
+    chan_menu_delete: bool = false, // clicou em "apagar": falta confirmar
     crop_pick: bool = false, // modal: "só um pedaço da tela"
     crop_on_start: bool = false, // abre o recorte na primeira imagem da transmissão
     thumbs: [48]Thumb = [_]Thumb{.{}} ** 48, // miniaturas das fontes (Windows)
@@ -2951,7 +2955,7 @@ pub const App = struct {
         {
             const px = ix0 + side + (ix1 - ix0 - side) * (0.5 + 0.32 * @sin(t * 0.55));
             const py = iy0 + (iy1 - iy0) * (0.5 + 0.3 * @sin(t * 0.83 + 1));
-            arrowShape(d, v2(px, py), S(1) / 1.05, fa(col.white, ak), fa(rgba(0x000000, 200), ak), S(1.2));
+            arrowShape(d, v2(px, py), S(1), false, fa(col.white, ak));
         }
         c.ImDrawList_PopClipRect(d);
         // AO VIVO piscando
@@ -4510,6 +4514,8 @@ pub const App = struct {
                 const hov = c.igIsItemHovered(0);
                 if ((i_am_admin or ch.flags & proto.chan_mine != 0) and c.igIsItemClicked(1)) {
                     a.chan_menu_admin = i_am_admin;
+                    a.chan_menu_default = i == 0;
+                    a.chan_menu_delete = false;
                     a.chan_menu_len = @min(name.len, a.chan_menu.len);
                     @memcpy(a.chan_menu[0..a.chan_menu_len], name[0..a.chan_menu_len]);
                     a.chan_menu_flags = ch.flags;
@@ -5877,7 +5883,7 @@ pub const App = struct {
 
     /// Seta de cursor clássica (preta com borda branca), ponta em `at`; `k` = escala (1 ≈ 22 px).
     fn drawArrow(d: *c.ImDrawList, at: c.ImVec2_c, k: f32) void {
-        arrowShape(d, at, k, rgba(0x000000, 235), rgba(0xffffff, 255), @max(1.0, 1.4 * k));
+        arrowShape(d, at, k * 1.05, true, col.white);
     }
 
     /// Seta com o nome de quem aponta (cor do avatar dela).
@@ -8248,6 +8254,24 @@ pub const App = struct {
             cl.chanAdmin(proto.chan_act_lock, name, if (fl & proto.chan_locked != 0) "0" else "1", 0);
         if (c.igSelectable_Bool(fmtZ("{s}  Senha do canal…###cpw", .{ic.shield}), false, 0, v2(w, 0))) a.startChanEdit(.password, name);
         if (c.igSelectable_Bool(fmtZ("{s}  Tópico…###ctopic", .{ic.pen}), false, 0, v2(w, 0))) a.startChanEdit(.topic, name);
+        // apagar: o padrão nunca; fixo, só o admin (foi ele que fixou)
+        if (a.chan_menu_default or cl.server_features & proto.srv_chan_delete == 0) return;
+        if (fl & proto.chan_fixed != 0 and !a.chan_menu_admin) return;
+        c.igSeparator();
+        if (fl & proto.chan_fixed == 0) {
+            pushFont(font_regular, 12);
+            textColored(col.faint, tr("Vazio, ele some sozinho em 3 dias."));
+            popFont();
+        }
+        c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);
+        defer c.igPopStyleColor(1);
+        if (!a.chan_menu_delete) {
+            if (c.igSelectable_Bool(fmtZ("{s}  Apagar o canal…###cdel", .{ic.trash}), false, c.ImGuiSelectableFlags_NoAutoClosePopups, v2(w, 0)))
+                a.chan_menu_delete = true;
+        } else if (c.igSelectable_Bool(fmtZ("{s}  Apagar #{s} de vez (o chat some)###cdel", .{ ic.trash, name }), false, 0, v2(w, 0))) {
+            cl.chanAdmin(proto.chan_act_delete, name, "", 0);
+            a.chan_menu_delete = false;
+        }
     }
 
     fn startChanEdit(a: *App, what: @TypeOf(a.chan_edit), name: []const u8) void {

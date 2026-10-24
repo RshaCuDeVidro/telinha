@@ -25,7 +25,9 @@ sys.path.insert(0, str(HERE.parent))
 from telinha import (Bot, Client, Denied, Deny, IdentityMismatch, Invite, Player, Reaction,  # noqa: E402
                      WrongPassword)
 from telinha.bot import TEXTS  # noqa: E402
+from telinha import wire  # noqa: E402
 from telinha.crypto import fingerprint  # noqa: E402
+from telinha.wire import MsgType, Writer  # noqa: E402
 
 TOP = HERE.parents[2]
 
@@ -482,6 +484,67 @@ class SdkTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("jogos", bot.channels)
         await bot.join_call("jogos")
         await until(lambda: bot.call == "jogos", what="entrar na call")
+
+    async def chan_admin(self, c: Client, action: int, name: str, value: str = "") -> None:
+        await c._send(Writer(MsgType.CHAN_ADMIN).u8(action).str(name).str(value).u32(0).done())
+
+    async def test_senha_do_canal_vale_ate_pra_outra_janela_de_quem_criou(self):
+        dono = await self.join(Client(self.room.invite(), "Dono", key=4242))
+        await dono.join_channel("zika")
+        await until(lambda: dono.channel == "zika", what="criar o canal")
+        await self.chan_admin(dono, 3, "zika", "abc")
+        await until(lambda: dono.channels["zika"].flags & wire.CHAN_PASSWORD, what="a senha valer")
+        # a mesma instalação (mesma chave) numa segunda janela: pede a senha
+        outra = await self.join(Client(self.room.invite(), "Dono", key=4242))
+        notes: list = []
+
+        async def on_notice(kind, text, extra):
+            notes.append(text)
+        outra.on("notice")(on_notice)
+        await asyncio.sleep(0.9)  # o servidor aceita uma troca a cada 800 ms
+        await outra.join_call("zika")
+        await outra.join_channel("zika")
+        await until(lambda: len(notes) >= 2, what="os dois avisos de senha")
+        self.assertEqual((outra.channel, outra.call), ("geral", "geral"))
+        self.assertTrue(all("senha" in n for n in notes))
+        # pelo convite direto no canal, sem senha: começa no padrão
+        sem = await self.join(Client(self.room.invite(), "Sem", channel="zika"))
+        self.assertEqual(sem.channel, "geral")
+        # com a senha certa entra, e voltando a conectar continua lá
+        com = await self.join(Client(self.room.invite(), "Com", channel="zika", channel_password="abc"))
+        await until(lambda: com.channel == "zika", what="entrar com a senha no hello")
+        old_id = com.me
+        com._conn.writer.transport.abort()  # cai a conexão: o SDK reconecta
+        await until(lambda: com.me != old_id and com.me in dono.members, 15, "reconectar")
+        await until(lambda: com.channel == "zika", what="voltar pro canal com senha")
+        await asyncio.sleep(0.9)
+        await outra.join_channel("zika", "abc")
+        await until(lambda: outra.channel == "zika", what="a outra janela entrar com a senha")
+        # quem criou continua mandando: tira a senha
+        await self.chan_admin(dono, 3, "zika", "")
+        await until(lambda: not dono.channels["zika"].flags & wire.CHAN_PASSWORD, what="tirar a senha")
+
+    async def test_apagar_canal(self):
+        dono = await self.join(Client(self.room.invite(), "Dono"))
+        ana = await self.join(Client(self.room.invite(), "Ana"))
+        await dono.join_channel("zika")
+        await until(lambda: dono.channel == "zika", what="criar o canal")
+        await ana.join_channel("zika")
+        await until(lambda: ana.channel == "zika", what="a Ana entrar")
+        await asyncio.sleep(0.9)
+        await ana.join_call("zika")
+        await until(lambda: ana.call == "zika", what="a Ana na call")
+        # quem não criou não apaga
+        await self.chan_admin(ana, 8, "zika")
+        await asyncio.sleep(0.5)
+        self.assertIn("zika", dono.channels)
+        # o padrão ninguém apaga
+        await self.chan_admin(dono, 8, "geral")
+        # quem criou apaga: todo mundo vai pro padrão e a call acaba
+        await self.chan_admin(dono, 8, "zika")
+        await until(lambda: "zika" not in ana.channels and "zika" not in dono.channels, what="o canal sumir")
+        await until(lambda: ana.channel == "geral" and dono.channel == "geral" and ana.call == "", what="todo mundo no padrão")
+        self.assertIn("geral", dono.channels)
 
 
 @unittest.skipUnless(os.path.exists(server_binary()), "sem telinha-server compilado (zig build server)")

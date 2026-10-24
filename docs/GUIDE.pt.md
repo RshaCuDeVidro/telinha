@@ -161,8 +161,12 @@ e continuar na call de outro.
   pra sempre.
 - **Quem criou o canal manda nele** (clique direito no canal): senha, trancar,
   tópico, deixar **invisível** (fora da lista; entra quem sabe o nome e a
-  senha) e **tirar alguém** do canal sem volta (clique direito na pessoa). O
-  admin da sala também pode tudo isso.
+  senha), **tirar alguém** do canal sem volta (clique direito na pessoa) e
+  **apagar** o canal (pede confirmação; quem estava nele volta pro canal
+  padrão). O admin da sala também pode tudo isso.
+- A **senha do canal vale pra todo mundo**, inclusive pra quem criou: pra
+  entrar, digita a senha (o app lembra dela e volta pro canal sozinho se a
+  internet cair). Só o admin da sala entra sem.
 
 ## Comandos do chat
 

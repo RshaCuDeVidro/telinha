@@ -91,6 +91,23 @@ pedaço certo pro seu ambiente:
 
 Depois de instalar, saia da sessão e entre de novo.
 
+### "O portal recusou a captura: CreateSession failed"
+
+O pedaço do portal do seu ambiente não subiu. O caso mais comum: o systemd do
+usuário reiniciou com o compositor aberto e perdeu o `WAYLAND_DISPLAY` que o
+compositor tinha passado pra ele; sem isso ele nem tenta subir o
+`xdg-desktop-portal-hyprland` (ou o `-wlr`). O telinha percebe isso, repassa
+as variáveis da sessão pro systemd e tenta de novo sozinho. Se ainda falhar,
+rode num terminal da sessão:
+
+```sh
+systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP
+systemctl --user restart xdg-desktop-portal
+```
+
+e confira se o seu compositor roda o `import-environment` (ou o
+`dbus-update-activation-environment --systemd`) ao abrir.
+
 ### O jogo fica travando enquanto eu transmito
 
 - Em **Configurações → Desempenho**, ponha o encoder da placa em **Leve**.

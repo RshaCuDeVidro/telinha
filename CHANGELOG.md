@@ -2,6 +2,39 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.6.1
+
+Talks to 3.6, 3.5, 3.4, 3.3, 3.2 and 3.1 (an older app doesn't show "delete channel", and on an older server a channel's creator still gets in without the password).
+
+### Highlights
+
+- 🔒 **A channel password applies to everyone**: whoever created the channel also types the password to get in (before, they walked straight in, and a second app window on the same PC counted as "the creator"). Only room admins get in without it.
+- 🗑️ **Delete a channel**: its creator (or an admin) deletes it by right-clicking the channel, with a confirmation; whoever was in it goes back to the default channel. Once empty, it still goes away on its own in 3 days.
+- 🖱️ **The arrow doesn't shimmer anymore**: the arrow on the start screen (and the streamer's, drawn over the video) is painted once with a smooth edge and placed on whole pixels. No more white tip poking out of the outline.
+- 🪟 **"The portal refused the capture: CreateSession failed"** on Hyprland/Sway: when the user systemd loses `WAYLAND_DISPLAY`, telinha passes the session's variables along and tries again on its own.
+
+<!-- detalhes -->
+
+### All changes
+
+- **Server**: the channel password is checked for anyone who isn't a room
+  admin, the creator included (they still run it: change and remove the
+  password, lock it, remove people, delete it). `hello` carries the password of
+  the requested channel (the app sends the last one it used there), so
+  dropping and coming back no longer throws anyone into the default channel.
+  New `chan_admin` action 8 = delete channel (never the default; a pinned one,
+  admins only); `srv_chan_delete` (8) feature in `welcome`.
+- **SDK 0.3.1**: `Client(channel_password=...)`, and the password from
+  `join_channel` and `join_call` goes along when the bot reconnects.
+- **Linux capture**: if the portal's `CreateSession` fails and the user
+  systemd has no `WAYLAND_DISPLAY` or `XDG_CURRENT_DESKTOP`, the app passes the
+  session's variables to systemd and D-Bus (like
+  `dbus-update-activation-environment --systemd`) and tries once more. FAQ
+  entry on what to do if it still fails.
+- **Interface**: the arrow the interface draws became an image painted from
+  the distance to the outline, at the scale's size, once (and again only if
+  the scale changes).
+
 ## 3.6.0
 
 Talks to 3.5, 3.4, 3.3, 3.2 and 3.1 (an older app shows a bot's panel only in the chat and doesn't list bots from other channels). 3.5.0 never made it to auto-update (packaging got stuck): whoever is on 3.4 gets both together.

@@ -15,7 +15,7 @@ const udp = @import("udp.zig");
 
 pub const version: u16 = 6;
 /// Versão do app (vai no hello/welcome/members pra avisar quem está desatualizado).
-pub const app_version = "3.6.0";
+pub const app_version = "3.6.1";
 pub const max_msg = 32 * 1024 * 1024;
 /// Marcador em claro no lugar do tamanho: "senha errada" (o servidor não
 /// conseguiu decifrar a primeira mensagem).
@@ -100,6 +100,7 @@ pub const chan_act_topic: u8 = 4; // valor = tópico (vazio = tira)
 pub const chan_act_move: u8 = 5; // leva `alvo` pro canal (o chat e a call)
 pub const chan_act_hide: u8 = 6; // valor "1" deixa invisível, "0" volta pra lista (quem criou também pode)
 pub const chan_act_ban: u8 = 7; // tira `alvo` do canal e não deixa voltar (quem criou também pode)
+pub const chan_act_delete: u8 = 8; // apaga o canal (quem criou também, se não for fixo); quem estava nele vai pro padrão
 /// Canal criado por alguém que ficou vazio continua existindo esse tempo (e
 /// sobrevive a reiniciar o servidor); fixado pelo admin, pra sempre.
 pub const chan_keep_empty_ms: u64 = 3 * 24 * 3600 * 1000;
@@ -272,7 +273,8 @@ pub const features_mine: u8 = feat_cursor | feat_view_size | feat_calls | feat_d
 pub const srv_dm: u8 = 1; // mensagem privada e resposta citada
 pub const srv_files: u8 = 2; // arquivos na sala (file_*)
 pub const srv_embed: u8 = 4; // cartões, edição e botões (chat_edit, embed_action)
-pub const server_features: u8 = srv_dm | srv_files | srv_embed;
+pub const srv_chan_delete: u8 = 8; // entende chan_act_delete
+pub const server_features: u8 = srv_dm | srv_files | srv_embed | srv_chan_delete;
 /// Cartão (embed): bloco opaco pro servidor, no fim do chat (u32 tamanho + bytes).
 /// Formato em docs/PROTOCOL.md; o primeiro byte é a versão.
 pub const embed_max = 8 * 1024;

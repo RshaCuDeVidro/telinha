@@ -18,7 +18,7 @@ A connection to the room, with its state and events. `Bot` is a `Client` with
 commands; use `Client` directly when you don't need commands.
 
 ```python
-Client(invite, name, *, password=None, channel=None, bot_token="", key=None, reconnect=True)
+Client(invite, name, *, password=None, channel=None, channel_password="", bot_token="", key=None, reconnect=True)
 ```
 
 | Parameter | |
@@ -27,6 +27,7 @@ Client(invite, name, *, password=None, channel=None, bot_token="", key=None, rec
 | `name` | the name in the room (up to 32 bytes; a repeated one gets ` (2)`) |
 | `password` | the room password, if the invite doesn't carry it |
 | `channel` | channel to join, if the invite doesn't carry one (otherwise the room's default) |
+| `channel_password` | that channel's password, if it has one (the SDK remembers the one from `join_channel`/`join_call` by itself, for reconnecting) |
 | `bot_token` | the bot token, if the room asks for one (`--token-bots`) |
 | `key` | a number identifying the bot for bans (default: drawn on every run) |
 | `reconnect` | reconnect by itself when the connection drops (default `True`) |

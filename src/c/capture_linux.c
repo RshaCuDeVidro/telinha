@@ -1591,6 +1591,76 @@ static void on_session_started(GObject *src, GAsyncResult *res, gpointer data) {
     w->done = 1;
 }
 
+// O systemd do usuário às vezes reinicia com o compositor ainda aberto (ou sobe antes dele) e perde o
+// WAYLAND_DISPLAY que o exec-once do compositor tinha passado: aí o backend do portal (hyprland, wlr...)
+// nem sobe ("skipped, unmet condition") e o CreateSession falha. Repassa pro systemd e pro D-Bus as
+// variáveis da sessão que faltam lá; devolve 1 se repassou alguma (vale tentar de novo).
+static int heal_portal_env(void) {
+    static const char *const names[] = {"WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE", "XDG_SESSION_DESKTOP",
+                                        "DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE", "SWAYSOCK"};
+    if (!getenv("WAYLAND_DISPLAY") || !*getenv("WAYLAND_DISPLAY")) return 0;
+    GDBusConnection *bus = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
+    if (!bus) return 0;
+    GVariant *r = g_dbus_connection_call_sync(bus, "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.DBus.Properties",
+                                              "Get", g_variant_new("(ss)", "org.freedesktop.systemd1.Manager", "Environment"),
+                                              G_VARIANT_TYPE("(v)"), G_DBUS_CALL_FLAGS_NO_AUTO_START, 1000, NULL, NULL);
+    if (!r) {  // sem systemd do usuário: o problema é outro
+        g_object_unref(bus);
+        return 0;
+    }
+    GVariant *v = NULL;
+    g_variant_get(r, "(v)", &v);
+    const gchar **have = g_variant_is_of_type(v, G_VARIANT_TYPE_STRING_ARRAY) ? g_variant_get_strv(v, NULL) : NULL;
+    GVariantBuilder sd, act;
+    g_variant_builder_init(&sd, G_VARIANT_TYPE("as"));
+    g_variant_builder_init(&act, G_VARIANT_TYPE("a{ss}"));
+    int missing = 0, key_missing = 0;
+    char line[600], names_log[200] = "";
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+        const char *val = getenv(names[i]);
+        if (!val || !*val) continue;
+        size_t len = strlen(names[i]);
+        int found = 0;
+        for (const gchar **h = have; h && *h && !found; h++) found = strncmp(*h, names[i], len) == 0 && (*h)[len] == '=';
+        if (found) continue;
+        snprintf(line, sizeof line, "%s=%s", names[i], val);
+        g_variant_builder_add(&sd, "s", line);
+        g_variant_builder_add(&act, "{ss}", names[i], val);
+        if (i < 2) key_missing = 1;
+        missing++;
+        if (i < 2) {
+            strncat(names_log, names_log[0] ? " " : "", sizeof names_log - strlen(names_log) - 1);
+            strncat(names_log, names[i], sizeof names_log - strlen(names_log) - 1);
+        }
+    }
+    g_free(have);
+    g_variant_unref(v);
+    g_variant_unref(r);
+    // só o que decide se o backend do portal sobe (o resto vai junto, mas sozinho não justifica mexer)
+    if (!key_missing) {
+        g_variant_builder_clear(&sd);
+        g_variant_builder_clear(&act);
+        g_object_unref(bus);
+        return 0;
+    }
+    GError *e1 = NULL, *e2 = NULL;
+    GVariant *a = g_dbus_connection_call_sync(bus, "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
+                                              "SetEnvironment", g_variant_new("(as)", &sd), NULL, G_DBUS_CALL_FLAGS_NO_AUTO_START, 2000,
+                                              NULL, &e1);
+    GVariant *b = g_dbus_connection_call_sync(bus, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                                              "UpdateActivationEnvironment", g_variant_new("(a{ss})", &act), NULL, G_DBUS_CALL_FLAGS_NONE,
+                                              2000, NULL, &e2);
+    fprintf(stderr, "[telinha] portal: faltava %s no systemd do usuário (o backend do portal não sobe sem); repassei %d variável(is): systemd %s, D-Bus %s\n",
+            names_log, missing, a ? "ok" : e1->message, b ? "ok" : e2->message);
+    int ok = a != NULL;
+    if (a) g_variant_unref(a);
+    if (b) g_variant_unref(b);
+    if (e1) g_error_free(e1);
+    if (e2) g_error_free(e2);
+    g_object_unref(bus);
+    return ok;
+}
+
 static void token_path(char *out, size_t n) {
     const char *xdg = getenv("XDG_CONFIG_HOME");
     const char *home = getenv("HOME");
@@ -1684,6 +1754,7 @@ static int open_pipewire(struct cap_ctx *c, char *err, int errlen) {
     }
 
     char *token = load_token();
+    int healed = 0;
     for (int attempt = 0; attempt < 2; attempt++) {
         portal_wait w = {0};
         xdp_portal_create_screencast_session(c->portal, XDP_OUTPUT_MONITOR | XDP_OUTPUT_WINDOW,
@@ -1691,6 +1762,13 @@ static int open_pipewire(struct cap_ctx *c, char *err, int errlen) {
                                              (c->show_cursor && !c->soft_cursor) ? XDP_CURSOR_MODE_EMBEDDED : XDP_CURSOR_MODE_HIDDEN,
                                              XDP_PERSIST_MODE_PERSISTENT, token, NULL, on_session_created, &w);
         while (!w.done) g_main_context_iteration(c->gctx, TRUE);
+        if (!w.session && !healed && heal_portal_env()) {
+            // o backend do portal não tinha subido por falta do ambiente da sessão: mais uma vez, já com ele
+            healed = 1;
+            if (w.error) g_error_free(w.error);
+            attempt--;
+            continue;
+        }
         if (!w.session) {
             set_err(err, errlen, "o portal recusou a captura: %s", w.error ? w.error->message : "?");
             if (w.error) g_error_free(w.error);

@@ -2,6 +2,38 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.6.1
+
+Conversa com a 3.6, a 3.5, a 3.4, a 3.3, a 3.2 e a 3.1 (app antigo não mostra o "apagar canal", e num servidor antigo quem criou o canal continua entrando sem a senha).
+
+### Destaques
+
+- 🔒 **A senha do canal vale pra todo mundo**: quem criou o canal também digita a senha pra entrar (antes passava direto, e uma segunda janela do app no mesmo PC contava como "quem criou"). Só o admin da sala entra sem.
+- 🗑️ **Apagar canal**: quem criou (ou o admin) apaga pelo clique direito no canal, com confirmação; quem estava nele volta pro canal padrão. Vazio, ele continua sumindo sozinho em 3 dias.
+- 🖱️ **A seta não treme mais**: a seta da tela de entrada (e a de quem transmite, que aparece por cima do vídeo) é pintada uma vez com a borda suavizada e vai na tela em pixel inteiro. Acabou a ponta branca vazando do contorno.
+- 🪟 **"O portal recusou a captura: CreateSession failed"** no Hyprland/Sway: quando o systemd do usuário perde o `WAYLAND_DISPLAY`, o telinha repassa as variáveis da sessão e tenta de novo sozinho.
+
+<!-- detalhes -->
+
+### Todas as mudanças
+
+- **Servidor**: a senha do canal é conferida pra quem não é admin da sala,
+  inclusive quem criou (ele continua mandando: troca e tira a senha, tranca,
+  tira gente, apaga). O `hello` leva a senha do canal pedido (o app manda a
+  última que usou nele), então cair e voltar não joga mais ninguém pro canal
+  padrão. Ação nova `chan_admin` 8 = apagar canal (o padrão nunca; um fixo,
+  só admin); recurso `srv_chan_delete` (8) no `welcome`.
+- **SDK 0.3.1**: `Client(channel_password=...)`, e a senha de `join_channel` e
+  `join_call` vai junto quando o bot reconecta.
+- **Captura no Linux**: se o `CreateSession` do portal falha e o systemd do
+  usuário não tem `WAYLAND_DISPLAY` ou `XDG_CURRENT_DESKTOP`, o app repassa
+  as variáveis da sessão pro systemd e pro D-Bus (como o
+  `dbus-update-activation-environment --systemd`) e tenta mais uma vez. FAQ
+  com o que fazer se ainda falhar.
+- **Interface**: a seta desenhada pela interface virou uma imagem pintada por
+  distância até o contorno, no tamanho da escala, uma vez só (e de novo só se a
+  escala mudar).
+
 ## 3.6.0
 
 Conversa com a 3.5, a 3.4, a 3.3, a 3.2 e a 3.1 (app antigo mostra o painel de bot só no chat e não lista bots de outros canais). A 3.5.0 não chegou a sair pra atualização automática (o empacotamento travou): quem está na 3.4 recebe as duas juntas.

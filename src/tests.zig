@@ -29,6 +29,7 @@ test {
     _ = @import("theme.zig");
     _ = @import("autoq.zig");
     _ = @import("pctest.zig");
+    _ = @import("arrow.zig");
 }
 
 fn initPool() void {

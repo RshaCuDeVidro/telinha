@@ -194,6 +194,7 @@ const server_infixes = [_]Suffix{
     .{ " foi pro #", "{s} went to #{s}" },
     .{ " te levou pro #", "{s} moved you to #{s}" },
     .{ " te tirou do #", "{s} removed you from #{s}" },
+    .{ " apagou o #", "{s} deleted #{s}" },
     .{ " tirou do canal: ", "{s} removed from the channel: {s}" },
     .{ " entrou no #", "{s} joined #{s}" },
 };
@@ -448,6 +449,9 @@ const table = [_][2][]const u8{
     .{ "Clima da sala: o fundo muda de tom com a energia da sala (quieta, conversa, festa)", "Room mood: the background shifts tone with the room's energy (quiet, talking, party)" },
     .{ "Só um pedaço da tela (você arrasta um retângulo assim que começar)", "Just part of the screen (you drag a rectangle as soon as it starts)" },
     .{ "Você criou esse canal: você manda nele.", "You created this channel: you run it." },
+    .{ "Vazio, ele some sozinho em 3 dias.", "Once empty, it goes away on its own in 3 days." },
+    .{ "{s}  Apagar o canal…", "{s}  Delete the channel…" },
+    .{ "{s}  Apagar #{s} de vez (o chat some)", "{s}  Delete #{s} for good (the chat goes too)" },
     .{ "{s}  Mostrar na lista", "{s}  Show in the list" },
     .{ "{s}  Invisível (só entra quem sabe o nome)", "{s}  Invisible (only people who know the name get in)" },
     .{ "{s}  Tirar do #{s} (não volta)", "{s}  Remove from #{s} (can't come back)" },

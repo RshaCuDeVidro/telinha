@@ -113,8 +113,8 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 
 | type | name | direction | payload |
 |---|---|---|---|
-| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (what it decodes, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (channel to join; empty or missing = the default), `str token_bot` (bots only; see `feat_bot`) |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1), `u8 recursos_do_servidor` (`srv_*`: 1 = private messages and quoted replies, 2 = files, 4 = cards; an older server doesn't send it = 0) |
+| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (what it decodes, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (channel to join; empty or missing = the default), `str token_bot` (bots only; see `feat_bot`), `str senha_do_canal` (if the channel has a password; the app sends the last one it used there, to get back to the channel when it reconnects) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1), `u8 recursos_do_servidor` (`srv_*`: 1 = private messages and quoted replies, 2 = files, 4 = cards, 8 = deleting channels; an older server doesn't send it = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (the server closes right after) |
 | 4 | members | S→C | `u8 sala` (1 = locked), `u16 n`, n × member (below), n × `str versão_do_app` (same order), n × `u8 tipo` (1 = bot; an older server doesn't send it) |
 | 5 | chat | C→S | `str texto`, image (optional, below), `u32 resposta` (id of the message replied to; 0 = none), `u32 pra` (private to this member; 0 = the channel), `u32 n` + n bytes of a [card](#cards) (0 = none) |
@@ -323,7 +323,10 @@ password (`value`; empty removes it), 4 = topic (`value`, up to 120 bytes), 5 =
 move `target` to the channel (chat and call, even if locked), 6 = invisible
 (`value` "1"/"0": left out of the list of whoever isn't in it; you join by
 knowing the name), 7 = remove `target` from the channel and don't let them back
-(by key). Pin and move: room admins only; the rest, also whoever created the
+(by key), 8 = delete the channel (whoever was in its chat goes to the default
+one, and whoever was in its call leaves it; never the default; a pinned one,
+admins only). The password applies even to the creator: only room admins get
+in without it. Pin and move: room admins only; the rest, also whoever created the
 channel (the server remembers the creator's app key, and the channel list
 marks it for them with `chan_mine` = 16; `chan_hidden` = 32 marks an invisible
 one). A channel someone created stays in the list when it empties (and in the

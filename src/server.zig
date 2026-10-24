@@ -1182,9 +1182,10 @@ pub const Server = struct {
         cn.bot = cn.features & proto.feat_bot != 0;
         const want_chan = r.str() catch ""; // app antigo não manda: o canal padrão
         const bot_token = r.str() catch ""; // só bot manda
+        const want_pw = r.str() catch ""; // a senha do canal (app reconectando num canal com senha)
         if (cn.bot) try s.admitBot(cn, name, bot_token);
         // bot nunca vira dono/admin, nem mandando o token
-        try s.join(cn, name, if (cn.bot) "" else token, want_chan);
+        try s.join(cn, name, if (cn.bot) "" else token, want_chan, want_pw);
     }
 
     /// A sala aceita esse bot? (--sem-bots recusa todos; --token-bots pede o token)
@@ -1830,7 +1831,7 @@ pub const Server = struct {
         return trimmed[0..@min(trimmed.len, 32)];
     }
 
-    fn join(s: *Server, cn: *Conn, raw_name: []const u8, token: []const u8, want_chan: []const u8) !void {
+    fn join(s: *Server, cn: *Conn, raw_name: []const u8, token: []const u8, want_chan: []const u8, want_pw: []const u8) !void {
         s.mutex.lock();
         defer s.mutex.unlock();
         // a sala fechou enquanto essa conexão fazia o handshake
@@ -1875,12 +1876,14 @@ pub const Server = struct {
         var needs_pw = false;
         if (normalizeChannel(want_chan, &nb)) |nm| {
             if (s.findChan(nm)) |ch| {
-                // trancado ou com senha: começa no padrão (o app pergunta a senha)
+                // trancado ou sem a senha certa: começa no padrão (o app pergunta a senha)
                 const boss = is_owner or (ch.creator_key != 0 and ch.creator_key == cn.client_key);
                 if (ch.isBanned(cn.client_key) and !is_owner) {
                     // tirado do canal: começa no padrão
-                } else if ((ch.locked or ch.has_password) and !boss) {
-                    needs_pw = ch.has_password and !ch.locked;
+                } else if (ch.locked and !boss) {
+                    // trancado: só admin e quem criou
+                } else if (!is_owner and !ch.passwordOk(want_pw)) {
+                    needs_pw = true;
                 } else cn.chan = ch;
             } else if (s.canCreateChan()) {
                 if (s.addChan(nm, false)) |ch| {
@@ -2143,7 +2146,7 @@ pub const Server = struct {
     }
 
     fn serverFeatures(s: *Server) u8 {
-        return proto.srv_dm | (if (s.files.ok) proto.srv_files else 0);
+        return proto.srv_dm | proto.srv_chan_delete | (if (s.files.ok) proto.srv_files else 0);
     }
 
     // ------------------------------------------------------------ arquivos
@@ -2813,15 +2816,15 @@ pub const Server = struct {
             try pushNotice(cn, proto.notice_channel, "Você foi tirado desse canal.", 0);
             return null;
         }
-        if (!ch.isBoss(cn)) {
-            if (ch.locked) {
-                try pushNotice(cn, proto.notice_channel, "Esse canal está trancado: só admin entra.", 0);
-                return null;
-            }
-            if (!ch.passwordOk(pw)) {
-                try pushNotice(cn, proto.notice_channel, if (pw.len == 0) "Esse canal tem senha." else "Senha do canal errada.", proto.notice_channel_needs_password);
-                return null;
-            }
+        if (ch.locked and !ch.isBoss(cn)) {
+            try pushNotice(cn, proto.notice_channel, "Esse canal está trancado: só admin entra.", 0);
+            return null;
+        }
+        // a senha vale até pra quem criou o canal (ele sabe qual é): quem criou é
+        // a instalação do app, e outra janela no mesmo PC também "criou"
+        if (!cn.admin and !ch.passwordOk(pw)) {
+            try pushNotice(cn, proto.notice_channel, if (pw.len == 0) "Esse canal tem senha." else "Senha do canal errada.", proto.notice_channel_needs_password);
+            return null;
         }
         return ch;
     }
@@ -2913,6 +2916,28 @@ pub const Server = struct {
         if (!cn.admin) {
             const ch = s.findChan(name) orelse return;
             if (action == proto.chan_act_fix or action == proto.chan_act_move or !ch.isBoss(cn)) return;
+            if (action == proto.chan_act_delete and ch.fixed) return; // fixo: quem fixou (admin) decide
+        }
+        if (action == proto.chan_act_delete) {
+            const ch = s.findChan(name) orelse return;
+            if (ch == s.chans.items[0]) return; // o padrão fica sempre (é pra onde vai quem sai)
+            const def = s.chans.items[0];
+            for (s.conns.items) |t| {
+                if (t.chan != ch and t.call != ch) continue;
+                if (t.call == ch) s.moveCall(t, null);
+                if (t.chan == ch) try s.moveText(t, def);
+                if (t != cn) try pushNotice(t, proto.notice_moved, std.fmt.bufPrint(&tmp, "{s} apagou o #{s}.", .{ cn.nameSlice(), ch.nameSlice() }) catch "", 0);
+            }
+            for (s.chans.items, 0..) |c0, i| if (c0 == ch) {
+                _ = s.chans.orderedRemove(i);
+                break;
+            };
+            s.log("{s} apagou o #{s}", .{ cn.nameSlice(), ch.nameSlice() });
+            ch.destroy();
+            s.saveState();
+            s.broadcastChannels();
+            try s.broadcastMembers();
+            return;
         }
         if (action == proto.chan_act_ban) {
             const ch = s.findChan(name) orelse return;

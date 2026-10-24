@@ -160,8 +160,13 @@ while staying in another's call.
   pinned by an admin stay forever.
 - **Whoever created a channel runs it** (right-click the channel): password,
   lock, topic, make it **invisible** (left out of the list; whoever knows the
-  name and password gets in) and **remove someone** from it for good
-  (right-click the person). Room admins can do all of that too.
+  name and password gets in), **remove someone** from it for good
+  (right-click the person) and **delete** the channel (it asks to confirm;
+  whoever was in it goes back to the default channel). Room admins can do all
+  of that too.
+- A **channel password applies to everyone**, the creator included: to get
+  in, type the password (the app remembers it and goes back to the channel on
+  its own if the internet drops). Only room admins get in without it.
 
 ## Chat commands
 

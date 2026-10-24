@@ -18,7 +18,7 @@ Uma conexão com a sala, com o estado dela e os eventos. O `Bot` é um `Client`
 com comandos; use o `Client` direto quando não precisar de comandos.
 
 ```python
-Client(invite, name, *, password=None, channel=None, bot_token="", key=None, reconnect=True)
+Client(invite, name, *, password=None, channel=None, channel_password="", bot_token="", key=None, reconnect=True)
 ```
 
 | Parâmetro | |
@@ -27,6 +27,7 @@ Client(invite, name, *, password=None, channel=None, bot_token="", key=None, rec
 | `name` | o nome na sala (até 32 bytes; repetido ganha ` (2)`) |
 | `password` | a senha da sala, se não vier no convite |
 | `channel` | canal pra entrar, se não vier no convite (senão o padrão da sala) |
+| `channel_password` | a senha desse canal, se ele tiver (a do `join_channel`/`join_call` o SDK lembra sozinho pra reconectar) |
 | `bot_token` | o token de bot, se a sala pede (`--token-bots`) |
 | `key` | número que identifica o bot pra banimento (padrão: sorteado a cada execução) |
 | `reconnect` | reconectar sozinho quando a conexão cai (padrão `True`) |

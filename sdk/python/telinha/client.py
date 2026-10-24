@@ -35,7 +35,7 @@ log = logging.getLogger("telinha")
 
 __all__ = ["Client", "Denied", "EVENTS"]
 
-SDK_VERSION = "0.3.0"
+SDK_VERSION = "0.3.1"
 PING_EVERY = 10.0  # s
 DEAD_AFTER = 45.0  # s sem nada chegando: a conexão morreu
 FILE_CHUNK = 32 * 1024
@@ -82,6 +82,7 @@ class Client:
         *,
         password: str | None = None,
         channel: str | None = None,
+        channel_password: str = "",
         bot_token: str = "",
         key: int | None = None,
         reconnect: bool = True,
@@ -91,6 +92,7 @@ class Client:
         name: o nome que aparece na sala (até 32 bytes).
         password: a senha da sala (se não vier no convite).
         channel: canal pra entrar (se não vier no convite; senão o padrão).
+        channel_password: a senha desse canal, se ele tiver.
         bot_token: se a sala pede um token de bot (telinha-server --token-bots).
         key: identifica o bot pra banimento (padrão: sorteada e fixa por nome
              durante o processo; passe uma fixa pra o ban valer entre execuções).
@@ -99,6 +101,8 @@ class Client:
         self.name = name
         self.password = password if password is not None else self.invite.password
         self.want_channel = channel if channel is not None else (self.invite.channel or "")
+        # senhas de canal já usadas (reconectando no canal, vai no hello)
+        self._channel_pw: dict[str, str] = {self.want_channel.lstrip("#").lower(): channel_password} if channel_password else {}
         self.bot_token = bot_token
         self.key = key or random.SystemRandom().randrange(1, 2**63)
         self.reconnect = reconnect
@@ -238,7 +242,8 @@ class Client:
             self.fingerprint = conn.fingerprint
             await conn.send(
                 Writer(MsgType.HELLO).str(self.name, 32).str("").u64(self.key).str(f"sdk-python/{SDK_VERSION}")
-                .u8(1).u8(wire.FEAT_BOT | wire.FEAT_DM | wire.FEAT_CALLS | wire.FEAT_EMBED).str(self.want_channel).str(self.bot_token).done()
+                .u8(1).u8(wire.FEAT_BOT | wire.FEAT_DM | wire.FEAT_CALLS | wire.FEAT_EMBED).str(self.want_channel).str(self.bot_token)
+                .str(self._channel_pw.get(self.want_channel.lstrip("#").lower(), "")).done()
             )
             self._last_rx = time.monotonic()
             pinger = asyncio.create_task(self._pinger(conn))
@@ -544,11 +549,15 @@ class Client:
 
     async def join_channel(self, name: str, password: str = "") -> None:
         """Troca o canal de texto (o chat). Cria se não existir e o servidor deixar."""
+        if password:
+            self._channel_pw[name.lstrip("#").lower()] = password
         await self._switch_pause()
         await self._send(Writer(MsgType.CHANNEL).str(name).str(password).done())
 
     async def join_call(self, name: str, password: str = "") -> None:
         """Entra na call (voz) de um canal. Vazio = sai da call."""
+        if password:
+            self._channel_pw[name.lstrip("#").lower()] = password
         await self._switch_pause()
         await self._send(Writer(MsgType.CALL).str(name).str(password).done())
 

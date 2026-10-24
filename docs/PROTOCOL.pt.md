@@ -109,8 +109,8 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 
 | tipo | nome | direção | payload |
 |---|---|---|---|
-| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (o que decodifica, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (canal pra entrar; vazio ou sem o campo = o padrão), `str token_bot` (só bot; ver `feat_bot`) |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1), `u8 recursos_do_servidor` (`srv_*`: 1 = mensagem privada e resposta citada, 2 = arquivos, 4 = cartões; servidor antigo não manda = 0) |
+| 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (o que decodifica, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (canal pra entrar; vazio ou sem o campo = o padrão), `str token_bot` (só bot; ver `feat_bot`), `str senha_do_canal` (se o canal tiver senha; o app manda a última que usou nele, pra voltar pro canal ao reconectar) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1), `u8 recursos_do_servidor` (`srv_*`: 1 = mensagem privada e resposta citada, 2 = arquivos, 4 = cartões, 8 = apagar canal; servidor antigo não manda = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (servidor fecha em seguida) |
 | 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo), n × `str versão_do_app` (mesma ordem), n × `u8 tipo` (1 = bot; servidor antigo não manda) |
 | 5 | chat | C→S | `str texto`, imagem (opcional, abaixo), `u32 resposta` (id da mensagem respondida; 0 = nenhuma), `u32 pra` (privada pra esse membro; 0 = o canal), `u32 n` + n bytes de um [cartão](#cartões) (0 = nenhum) |
@@ -314,7 +314,10 @@ sempre e depois de reiniciar), 2 = trancar (só admin e quem criou entram), 3 =
 senha (`valor`; vazio tira), 4 = tópico (`valor`, até 120 bytes), 5 = levar
 `alvo` pro canal (chat e call, mesmo trancado), 6 = invisível (`valor`
 "1"/"0": fora da lista de quem não está nele; entra quem sabe o nome), 7 =
-tirar `alvo` do canal e não deixar voltar (pela chave). Fixar e levar: só admin
+tirar `alvo` do canal e não deixar voltar (pela chave), 8 = apagar o canal
+(quem estava no chat dele vai pro padrão, e quem estava na call sai dela; o
+padrão nunca; um fixo, só admin). A senha vale até pra quem criou: só admin
+da sala entra sem. Fixar e levar: só admin
 da sala; o resto, quem criou o canal também (o servidor guarda a chave do app
 de quem criou, e a lista de canais marca pra essa pessoa com `chan_mine` = 16;
 `chan_hidden` = 32 marca um invisível). Canal criado por alguém continua na
