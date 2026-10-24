@@ -443,6 +443,7 @@ const table = [_][2][]const u8{
     .{ "Sala trancada: ninguém novo entra. Clique pra destrancar.", "Room locked: no one new can join. Click to unlock." },
     .{ "Trancar a sala (ninguém novo entra)", "Lock the room (no one new can join)" },
     .{ "Limpar o chat da sala", "Clear the room's chat" },
+    .{ "Clima da sala: o fundo muda de tom com a energia da sala (quieta, conversa, festa)", "Room mood: the background shifts tone with the room's energy (quiet, talking, party)" },
     .{ "Só um pedaço da tela (você arrasta um retângulo assim que começar)", "Just part of the screen (you drag a rectangle as soon as it starts)" },
     .{ "Você criou esse canal: você manda nele.", "You created this channel: you run it." },
     .{ "{s}  Mostrar na lista", "{s}  Show in the list" },

@@ -920,6 +920,12 @@ pub const App = struct {
     thumb_next_at: f64 = 0,
     thumb_rr: usize = 0,
     share_opts_h: f32 = 2000, // altura das opções do modal de compartilhar (medida no quadro anterior)
+    mood_level: u8 = 0, // clima da sala: 0 calma, 1 conversa, 2 festa
+    mood_from: u32 = 0,
+    mood_t0: f64 = -10,
+    mood_next: f64 = 0,
+    mood_react_gen: u32 = 0,
+    mood_chat_count: u64 = 0,
     clear_armed_at: f64 = -10, // "limpar o chat" pede um segundo clique
     self_mute_shown: bool = false,
     // notificações do sistema
@@ -2706,6 +2712,46 @@ pub const App = struct {
     /// gente assistindo) na esquerda e o cartão de entrar/criar na direita;
     /// em janela estreita, só o cartão. A animação só roda com o telinha em
     /// foco e as animações ligadas (Aparência); sem isso a tela fica parada.
+    /// "Clima da sala": a cor de baixo do palco. A cada 3 s olha a sala (quieta,
+    /// gente falando, música ou chuva de reações) e, se mudou, troca de tom em
+    /// 0,5 s; fora isso é uma cor parada (nada redesenha por causa dela).
+    fn moodColor(a: *App, cl: *Client) u32 {
+        if (!a.cfg.mood or a.cfg.eco) return col.bg_dark;
+        const now = c.igGetTime();
+        if (now >= a.mood_next) {
+            a.mood_next = now + 3;
+            const v = cl.recentVoices(3_000_000);
+            cl.mutex.lock();
+            const reacts = cl.chat_react_gen -% a.mood_react_gen;
+            const msgs = cl.chat_count -% a.mood_chat_count;
+            a.mood_react_gen = cl.chat_react_gen;
+            a.mood_chat_count = cl.chat_count;
+            cl.mutex.unlock();
+            // som de transmissão tocando conta como música
+            var stream_sound = false;
+            const now_us = sync.nowUs();
+            for (a.views.items) |vw| if (vw.audio_registered and vw.audio_ring.last_write_us != 0 and now_us -| vw.audio_ring.last_write_us < 3_000_000 and vw.audio_ring.level > 0.02) {
+                stream_sound = true;
+            };
+            const level: u8 = if (v.bot or stream_sound or reacts >= 3) 2 else if (v.people > 0 or msgs >= 3) 1 else 0;
+            if (level != a.mood_level) {
+                a.mood_from = a.moodNow(now);
+                a.mood_level = level;
+                a.mood_t0 = now;
+            }
+            redrawIn(3.0);
+        }
+        return a.moodNow(now);
+    }
+
+    fn moodNow(a: *App, now: f64) u32 {
+        const tints = [_]u32{ rgba(0x2563eb, 255), rgba(0x9333ea, 255), rgba(0xd946ef, 255) }; // calma, conversa, festa
+        const target = lerpColor(col.bg_dark, tints[a.mood_level], 0.16);
+        const k: f32 = @floatCast(std.math.clamp((now - a.mood_t0) / 0.5, 0, 1));
+        if (k < 1) redrawIn(1.0 / 30.0); // só durante a troca
+        return lerpColor(if (a.mood_from == 0) target else a.mood_from, target, k);
+    }
+
     /// Animações valendo (desligadas no modo econômico).
     fn animOn(a: *const App) bool {
         return a.cfg.animations and !a.cfg.eco;
@@ -3155,7 +3201,9 @@ pub const App = struct {
         const header_h = if (a.theater) 0 else S(58);
         const want_panel = !a.theater and a.cfg.show_chat;
         // janela estreita: o painel some (o botão do topo traz de volta)
-        const panel_w = if (want_panel and size.x - S(350) >= S(560)) S(350) else 0;
+        // largura do painel: arrastando a borda (guardada); a janela estreita aperta
+        const want_w = std.math.clamp(S(@floatFromInt(a.cfg.panel_w)), S(280), @max(S(280), size.x - S(560)));
+        const panel_w = if (want_panel and size.x - S(280) >= S(560)) want_w else 0;
         a.chat_visible = panel_w > 0;
         a.side_visible = panel_w > 0;
         const main_w = size.x - panel_w;
@@ -3168,6 +3216,20 @@ pub const App = struct {
         if (panel_w > 0) {
             c.igSetCursorPos(v2(main_w, header_h));
             a.drawPanel(cl, v2(panel_w, size.y - header_h));
+            // a borda entre o palco e o painel: arrastar muda a largura (só um
+            // botão invisível por quadro; nada roda sem o mouse em cima)
+            c.igSetCursorPos(v2(main_w - S(3), header_h + S(12)));
+            _ = c.igInvisibleButton("##panelsplit", v2(S(8), size.y - header_h - S(24)), 0);
+            if (c.igIsItemHovered(0) or c.igIsItemActive()) c.igSetMouseCursor(c.ImGuiMouseCursor_ResizeEW);
+            if (c.igIsItemActive()) {
+                const mx = c.igGetIO_Nil().*.MousePos.x;
+                a.cfg.panel_w = @intFromFloat(std.math.clamp((size.x - mx) / scale, 280, 900));
+            }
+            if (c.igIsItemDeactivated()) config.save(&a.cfg);
+            if (c.igIsItemHovered(0) and c.igIsMouseDoubleClicked_Nil(0)) {
+                a.cfg.panel_w = 350; // duplo clique: volta ao normal
+                config.save(&a.cfg);
+            }
         }
 
         const overlay = status == .connecting or (status == .failed and (a.was_connected or a.reconnect.attempt > 0));
@@ -5163,8 +5225,9 @@ pub const App = struct {
         const d = drawList();
         const o = c.igGetCursorScreenPos();
         if (!a.theater) {
-            // palco: um degradê leve (o fundo não é chapado)
-            c.ImDrawList_AddRectFilledMultiColor(d, o, v2(o.x + size.x, o.y + size.y), col.bg_main, col.bg_main, col.bg_dark, col.bg_dark);
+            // palco: um degradê leve (o fundo não é chapado), com o tom do clima da sala embaixo
+            const low = a.moodColor(cl);
+            c.ImDrawList_AddRectFilledMultiColor(d, o, v2(o.x + size.x, o.y + size.y), col.bg_main, col.bg_main, low, low);
         }
         // a cápsula de controles tem o espaço dela embaixo (nada fica por baixo)
         const dock_h: f32 = if (a.theater) 0 else S(86);
@@ -8592,6 +8655,7 @@ pub const App = struct {
         c.igDummy(v2(0, S(14)));
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         if (c.igCheckbox(tr("Efeito CRT (linhas de tela antiga; o vídeo fica de fora)###crt"), &a.cfg.crt)) config.save(&a.cfg);
+        if (c.igCheckbox(tr("Clima da sala: o fundo muda de tom com a energia da sala (quieta, conversa, festa)###mood"), &a.cfg.mood)) config.save(&a.cfg);
         if (c.igCheckbox(tr("Animações na tela inicial (param sozinhas com o telinha fora de foco)###anim"), &a.cfg.animations)) config.save(&a.cfg);
         if (c.igCheckbox(tr("Mostrar os desenhos dos outros por cima das transmissões###showdraw"), &a.cfg.show_drawings)) config.save(&a.cfg);
         c.igPopStyleColor(1);
@@ -10028,6 +10092,18 @@ pub var frame_work_max_us: u64 = 0;
 
 /// Limite de quadros por segundo da interface (0 = o do monitor).
 pub var frame_cap_fps: u64 = 60;
+
+/// Mistura duas cores RGBA (t = 0 → a, 1 → b).
+fn lerpColor(a: u32, b: u32, t: f32) u32 {
+    var out: u32 = 0;
+    inline for (0..4) |i| {
+        const sh: u5 = @intCast(i * 8);
+        const x: f32 = @floatFromInt((a >> sh) & 0xff);
+        const y: f32 = @floatFromInt((b >> sh) & 0xff);
+        out |= @as(u32, @intFromFloat(@round(x + (y - x) * t))) << sh;
+    }
+    return out;
+}
 
 /// Miniatura de uma fonte (modal de compartilhar, Windows).
 const thumb_max_w = 320;

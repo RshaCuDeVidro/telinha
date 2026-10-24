@@ -2173,6 +2173,27 @@ pub const Client = struct {
         cl.queue.pushUrgentOwned(m);
     }
 
+    /// Quantas pessoas falaram nos últimos `window_us`, e se um bot tocou som
+    /// nesse tempo (o "clima da sala" da interface).
+    pub fn recentVoices(cl: *Client, window_us: u64) struct { people: u32, bot: bool } {
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        const now = sync.nowUs();
+        var people: u32 = 0;
+        var bot = false;
+        for (cl.voice_peers.items) |p| {
+            p.ring.mutex.lock();
+            const recent = p.ring.last_write_us != 0 and now -| p.ring.last_write_us < window_us and p.ring.level > 0.01;
+            p.ring.mutex.unlock();
+            if (!recent) continue;
+            const is_bot = for (cl.members.items) |*m| {
+                if (m.id == p.id) break m.bot;
+            } else false;
+            if (is_bot) bot = true else people += 1;
+        }
+        return .{ .people = people, .bot = bot };
+    }
+
     /// Alguém falando agora (pra bolinha verde em volta do avatar).
     pub fn speaking(cl: *Client, id: u32) bool {
         cl.mutex.lock();
