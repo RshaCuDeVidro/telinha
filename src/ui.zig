@@ -926,6 +926,7 @@ pub const App = struct {
     mood_next: f64 = 0,
     mood_react_gen: u32 = 0,
     mood_chat_count: u64 = 0,
+    watch_first_live: bool = false, // "ir pro canal e assistir": assiste a primeira que aparecer
     clear_armed_at: f64 = -10, // "limpar o chat" pede um segundo clique
     self_mute_shown: bool = false,
     // notificações do sistema
@@ -6420,7 +6421,23 @@ pub const App = struct {
                 n_live += 1;
             }
         }
+        // ao vivo em outra call (quem chega no canal errado via "ninguém transmitindo")
+        var elsewhere: [8][proto.channel_name_max]u8 = undefined;
+        var elsewhere_len: [8]usize = undefined;
+        var n_elsewhere: usize = 0;
+        if (cl.chans_supported and cl.calls_known) for (cl.chans[0..cl.n_chans]) |*ch| {
+            if (ch.flags & proto.chan_live == 0 or n_elsewhere == elsewhere.len) continue;
+            if (std.mem.eql(u8, ch.nameSlice(), cl.call_name[0..cl.call_name_len])) continue;
+            elsewhere_len[n_elsewhere] = ch.name_len;
+            @memcpy(elsewhere[n_elsewhere][0..ch.name_len], ch.nameSlice());
+            n_elsewhere += 1;
+        };
         cl.mutex.unlock();
+        // pediu "ir pra lá e assistir": a primeira transmissão que aparecer começa sozinha
+        if (a.watch_first_live and n_live > 0) {
+            a.watch_first_live = false;
+            a.watch(live[0].id);
+        }
 
         // tudo numa área que rola: janela baixa não esconde mais nada
         c.igSetCursorScreenPos(o);
@@ -6486,7 +6503,7 @@ pub const App = struct {
         drawTextF(d, font_regular, ifs, v2(cx - its.x / 2, y + (isz - its.y) / 2), col.muted, ic.tv);
         y += isz + S(18);
 
-        const title = if (n_live > 0) tr("Tem gente ao vivo!") else tr("Ninguém está transmitindo");
+        const title = if (n_live > 0) tr("Tem gente ao vivo!") else if (n_elsewhere > 0) tr("Ninguém na sua call está transmitindo") else tr("Ninguém está transmitindo");
         const ts = textSizeF(font_bold, 20, title);
         drawTextF(d, font_bold, 20, v2(cx - ts.x / 2, y), col.header, title);
         y += ts.y + S(6);
@@ -6538,6 +6555,22 @@ pub const App = struct {
             c.igSetCursorScreenPos(v2(wo.x, bottom));
             c.igDummy(v2(1, S(20)));
         } else {
+            // gente ao vivo em outro canal: um botão leva pra call de lá e já assiste
+            if (n_elsewhere > 0) {
+                const ew = S(300);
+                for (elsewhere[0..n_elsewhere], 0..) |*nm, i| {
+                    const name = nm[0..elsewhere_len[i]];
+                    c.igSetCursorScreenPos(v2(cx - ew / 2, y));
+                    c.igPushStyleVar_Float(c.ImGuiStyleVar_FrameRounding, S(12) * col.round);
+                    if (primaryButton(fmtZ("{s}   Tem gente ao vivo no #{s}: ir e assistir###elsewhere{d}", .{ ic.eye, name, i }), v2(ew, S(40)), col.red, col.red_hover, col.red_hover)) {
+                        a.askChannel(cl, name, true);
+                        a.watch_first_live = true;
+                    }
+                    c.igPopStyleVar(1);
+                    y += S(48);
+                }
+                y += S(10);
+            }
             c.igSetCursorScreenPos(v2(cx - S(100), y));
             const lbl = fmtZ("{s}   Compartilhar tela###shareempty", .{ic.desktop});
             c.igPushStyleVar_Float(c.ImGuiStyleVar_FrameRounding, S(12) * col.round);

@@ -362,6 +362,27 @@ def canais():
 
 
 @test
+def ao_vivo_em_outro_canal():
+    """Quem chega no canal errado: o Bruno transmite na call do #jogos; a Ana, na call do #geral, vê 'tem gente ao vivo no #jogos', clica e já está na call de lá assistindo (sem procurar)."""
+    with Session("aovivooutro") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--senha", "pw"])
+        a.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}#pw", "--transmitir", "--software"])
+        b.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 20, "o Bruno ao vivo")
+        b.click("##chatin")
+        b.type("/join Jogos\n")
+        b.wait(lambda st: st["channel"] == "jogos", 5, "o Bruno no jogos")
+        time.sleep(1.0)
+        b.click("##call1")
+        b.wait(lambda st: st["call"] == "jogos", 5, "o Bruno na call do jogos")
+        a.wait(lambda st: any(c["name"] == "jogos" and c["live"] for c in st["channels"]) and not st["views"], 10, "a Ana ver o jogos ao vivo")
+        a.screenshot(os.path.join(s.base, "ao_vivo_em_outro.png"))
+        a.click(contains="ao vivo no #jogos")
+        a.wait(lambda st: st["call"] == "jogos" and any(v["shown"] for v in st["views"]), 20, "a Ana na call do jogos assistindo o Bruno")
+
+
+@test
 def canais_admin():
     """Canais pelo admin: senha (quem tenta entrar recebe o campo de senha), trancar, tópico (aparece no chat), levar alguém pro canal pelo menu da pessoa."""
     with Session("canaisadm") as s:
