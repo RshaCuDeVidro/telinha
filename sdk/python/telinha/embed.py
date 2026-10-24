@@ -111,6 +111,7 @@ class Embed:
     footer: str = ""
     thumbnail: bool = False  # a imagem da mensagem vai como capa (canto do cartão)
     big_image: bool = False  # a imagem da mensagem vai grande, embaixo
+    panel: bool = False  # painel da transmissão do bot: o app (3.6+) mostra encaixado embaixo da tela dele, pra quem assiste
     progress: tuple[int, int] | None = None  # (posição_ms, total_ms); total 0 = ao vivo
     paused: bool = False
     fields: list[Field] = field(default_factory=list)
@@ -131,6 +132,7 @@ class Embed:
 
     def encode(self) -> bytes:
         flags = (wire.EMBED_FLAG_THUMB if self.thumbnail else 0) | (wire.EMBED_FLAG_BIG_IMAGE if self.big_image else 0)
+        flags |= wire.EMBED_FLAG_PANEL if self.panel else 0
         if self.progress is not None:
             flags |= wire.EMBED_FLAG_PROGRESS
         w = Writer(wire.EMBED_VERSION).u32(self.color & 0xFFFFFF).u8(flags)
@@ -160,6 +162,7 @@ class Embed:
             e.kicker, e.title, e.url, e.description, e.footer = r.str(), r.str(), r.str(), r.str(), r.str()
             e.thumbnail = bool(flags & wire.EMBED_FLAG_THUMB)
             e.big_image = bool(flags & wire.EMBED_FLAG_BIG_IMAGE)
+            e.panel = bool(flags & wire.EMBED_FLAG_PANEL)
             if flags & wire.EMBED_FLAG_PROGRESS:
                 e.progress = (r.u32(), r.u32())
                 e.paused = r.u8() != 0

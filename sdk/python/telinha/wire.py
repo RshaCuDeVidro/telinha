@@ -81,6 +81,17 @@ EMBED_MAX_BUTTONS = 5
 EMBED_FLAG_THUMB = 1
 EMBED_FLAG_PROGRESS = 2
 EMBED_FLAG_BIG_IMAGE = 4
+EMBED_FLAG_PANEL = 8  # painel da transmissão do autor: o app mostra encaixado embaixo dela
+
+# transmissão (stream_start, frame, audio)
+KIND_SCREEN = 0
+KIND_CAMERA = 1
+STREAM_AUDIO = 1
+FRAME_KEY = 1
+FRAME_DROPPABLE = 2
+COORD_NONE = 0xFFFF
+POINTER_VISIBLE = 1
+POINTER_PING = 2  # clique
 
 # members: flags de cada pessoa
 MEMBER_STREAMING = 1

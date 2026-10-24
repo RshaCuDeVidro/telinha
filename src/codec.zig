@@ -626,6 +626,211 @@ pub fn hasKeyNal(cd: Codec, bits: []const u8) bool {
     return false;
 }
 
+/// Alguma fatia B (slice_type 1 ou 6) no bitstream H.264 Annex B? Lê só o
+/// começo do cabeçalho da fatia: first_mb_in_slice e slice_type, os dois ue(v).
+pub fn hasBSlice(bits: []const u8) bool {
+    var i: usize = 0;
+    while (i + 3 < bits.len) : (i += 1) {
+        if (bits[i] == 0 and bits[i + 1] == 0 and bits[i + 2] == 1) {
+            if (bits[i + 3] & 0x1f == 1) {
+                var r: UeReader = .{ .d = bits[i + 4 .. @min(bits.len, i + 12)] };
+                _ = r.ue() orelse return false;
+                const st = r.ue() orelse return false;
+                if (st % 5 == 1) return true;
+            }
+            i += 2;
+        }
+    }
+    return false;
+}
+
+/// O SPS desse bitstream diz que os quadros saem fora de ordem
+/// (max_num_reorder_frames > 0 no VUI)? É o que o x264 e o YouTube mandam
+/// quando usam quadros B: assim já se sabe no primeiro IDR, antes de o primeiro
+/// quadro B chegar (senão os primeiros saem fora de ordem e o decoder engasga).
+pub fn spsReorders(bits: []const u8) bool {
+    var i: usize = 0;
+    while (i + 3 < bits.len) : (i += 1) {
+        if (bits[i] == 0 and bits[i + 1] == 0 and bits[i + 2] == 1) {
+            if (bits[i + 3] & 0x1f == 7) {
+                // tira os bytes de prevenção (00 00 03)
+                var rbsp: [512]u8 = undefined;
+                var n: usize = 0;
+                var j = i + 4;
+                var zeros: u8 = 0;
+                while (j < bits.len and n < rbsp.len) : (j += 1) {
+                    const b = bits[j];
+                    if (zeros >= 2 and b == 3) {
+                        zeros = 0;
+                        continue;
+                    }
+                    if (zeros >= 2 and b <= 1) break; // começo do próximo NAL
+                    zeros = if (b == 0) zeros + 1 else 0;
+                    rbsp[n] = b;
+                    n += 1;
+                }
+                return (spsReorderFrames(rbsp[0..n]) orelse 0) > 0;
+            }
+            i += 2;
+        }
+    }
+    return false;
+}
+
+/// max_num_reorder_frames do VUI (H.264 7.3.2.1.1 e E.1.1), ou null se o SPS não diz.
+fn spsReorderFrames(rbsp: []const u8) ?u32 {
+    var r: UeReader = .{ .d = rbsp };
+    const profile = r.bits(8) orelse return null;
+    _ = r.bits(16) orelse return null; // restrições + nível
+    _ = r.ue() orelse return null; // seq_parameter_set_id
+    switch (profile) {
+        100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135 => {
+            const chroma = r.ue() orelse return null;
+            if (chroma == 3) _ = r.bits(1) orelse return null;
+            _ = r.ue() orelse return null; // bit_depth_luma
+            _ = r.ue() orelse return null; // bit_depth_chroma
+            _ = r.bits(1) orelse return null; // qpprime_y_zero_transform_bypass
+            if ((r.bits(1) orelse return null) == 1) { // seq_scaling_matrix_present
+                const lists: u32 = if (chroma != 3) 8 else 12;
+                for (0..lists) |li| {
+                    if ((r.bits(1) orelse return null) == 0) continue;
+                    const size: u32 = if (li < 6) 16 else 64;
+                    var last: i32 = 8;
+                    var next: i32 = 8;
+                    for (0..size) |_| {
+                        if (next != 0) {
+                            const delta = r.se() orelse return null;
+                            next = @mod(last + delta + 256, 256);
+                        }
+                        if (next != 0) last = next;
+                    }
+                }
+            }
+        },
+        else => {},
+    }
+    _ = r.ue() orelse return null; // log2_max_frame_num
+    const poc_type = r.ue() orelse return null;
+    if (poc_type == 0) {
+        _ = r.ue() orelse return null;
+    } else if (poc_type == 1) {
+        _ = r.bits(1) orelse return null;
+        _ = r.se() orelse return null;
+        _ = r.se() orelse return null;
+        const cycle = r.ue() orelse return null;
+        if (cycle > 255) return null;
+        for (0..cycle) |_| _ = r.se() orelse return null;
+    }
+    _ = r.ue() orelse return null; // max_num_ref_frames
+    _ = r.bits(1) orelse return null; // gaps
+    _ = r.ue() orelse return null; // largura
+    _ = r.ue() orelse return null; // altura
+    if ((r.bits(1) orelse return null) == 0) _ = r.bits(1) orelse return null; // frame_mbs_only / mb_adaptive
+    _ = r.bits(1) orelse return null; // direct_8x8
+    if ((r.bits(1) orelse return null) == 1) for (0..4) |_| {
+        _ = r.ue() orelse return null; // recorte
+    };
+    if ((r.bits(1) orelse return null) == 0) return null; // sem VUI
+    if ((r.bits(1) orelse return null) == 1) { // aspect_ratio_info
+        if ((r.bits(8) orelse return null) == 255) _ = r.bits(32) orelse return null;
+    }
+    if ((r.bits(1) orelse return null) == 1) _ = r.bits(1) orelse return null; // overscan
+    if ((r.bits(1) orelse return null) == 1) { // video_signal_type
+        _ = r.bits(4) orelse return null;
+        if ((r.bits(1) orelse return null) == 1) _ = r.bits(24) orelse return null;
+    }
+    if ((r.bits(1) orelse return null) == 1) {
+        _ = r.ue() orelse return null; // chroma_loc
+        _ = r.ue() orelse return null;
+    }
+    if ((r.bits(1) orelse return null) == 1) { // timing_info
+        _ = r.bits(32) orelse return null;
+        _ = r.bits(32) orelse return null;
+        _ = r.bits(1) orelse return null;
+    }
+    const nal_hrd = (r.bits(1) orelse return null) == 1;
+    if (nal_hrd) skipHrd(&r) orelse return null;
+    const vcl_hrd = (r.bits(1) orelse return null) == 1;
+    if (vcl_hrd) skipHrd(&r) orelse return null;
+    if (nal_hrd or vcl_hrd) _ = r.bits(1) orelse return null; // low_delay_hrd
+    _ = r.bits(1) orelse return null; // pic_struct_present
+    if ((r.bits(1) orelse return null) == 0) return null; // sem bitstream_restriction
+    _ = r.bits(1) orelse return null; // motion_vectors_over_pic_boundaries
+    for (0..4) |_| _ = r.ue() orelse return null; // bytes/pic, bits/mb, log2 mv h/v
+    return r.ue();
+}
+
+fn skipHrd(r: *UeReader) ?void {
+    const cpb_cnt = r.ue() orelse return null;
+    if (cpb_cnt > 31) return null;
+    _ = r.bits(8) orelse return null; // bit_rate_scale, cpb_size_scale
+    for (0..cpb_cnt + 1) |_| {
+        _ = r.ue() orelse return null;
+        _ = r.ue() orelse return null;
+        _ = r.bits(1) orelse return null;
+    }
+    _ = r.bits(20) orelse return null; // os quatro tamanhos de 5 bits
+}
+
+const UeReader = struct {
+    d: []const u8,
+    bit: usize = 0,
+
+    fn bits(r: *UeReader, n: u6) ?u32 {
+        var v: u32 = 0;
+        for (0..n) |_| {
+            if (r.bit >= r.d.len * 8) return null;
+            v = (v << 1) | ((r.d[r.bit / 8] >> @intCast(7 - r.bit % 8)) & 1);
+            r.bit += 1;
+        }
+        return v;
+    }
+
+    fn se(r: *UeReader) ?i32 {
+        const k = r.ue() orelse return null;
+        const m: i32 = @intCast((k + 1) / 2);
+        return if (k % 2 == 1) m else -m;
+    }
+
+    fn ue(r: *UeReader) ?u32 {
+        var zeros: u5 = 0;
+        while (true) {
+            if (r.bit >= r.d.len * 8) return null;
+            const b = (r.d[r.bit / 8] >> @intCast(7 - r.bit % 8)) & 1;
+            r.bit += 1;
+            if (b == 1) break;
+            zeros += 1;
+            if (zeros >= 31) return null;
+        }
+        var v: u32 = 0;
+        for (0..zeros) |_| {
+            if (r.bit >= r.d.len * 8) return null;
+            v = (v << 1) | ((r.d[r.bit / 8] >> @intCast(7 - r.bit % 8)) & 1);
+            r.bit += 1;
+        }
+        return v + (@as(u32, 1) << zeros) - 1;
+    }
+};
+
+test "spsReorders: o SPS do x264 com e sem quadros B" {
+    // x264 High 64x64: -bf 3 (max_num_reorder_frames = 2) e -bf 0 (= 0)
+    const com_b = [_]u8{ 0x00, 0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x0a, 0xac, 0xd9, 0x44, 0x26, 0xc0, 0x44, 0x00, 0x00, 0x03, 0x00, 0x04, 0x00, 0x00, 0x03, 0x00, 0xf0, 0x3c, 0x48, 0x96, 0x58 };
+    const sem_b = [_]u8{ 0x00, 0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x0a, 0xac, 0xb2, 0x08, 0x4d, 0x80, 0x88, 0x00, 0x00, 0x03, 0x00, 0x08, 0x00, 0x00, 0x03, 0x01, 0xe0, 0x78, 0x91, 0x32, 0x40 };
+    try std.testing.expect(spsReorders(&com_b));
+    try std.testing.expect(!spsReorders(&sem_b));
+    try std.testing.expect(!spsReorders(com_b[0..12])); // cortado: não sabe, não inventa
+}
+
+test "hasBSlice" {
+    // fatia não-IDR: first_mb 0 ("1"), slice_type 1 = B ("010") / 0 = P ("1") / 5 = P ("00110")
+    try std.testing.expect(hasBSlice(&.{ 0, 0, 0, 1, 0x01, 0b1010_0000 }));
+    try std.testing.expect(!hasBSlice(&.{ 0, 0, 0, 1, 0x41, 0b1100_0000 }));
+    try std.testing.expect(!hasBSlice(&.{ 0, 0, 0, 1, 0x41, 0b1001_1000 }));
+    // slice_type 6 = B ("00111")
+    try std.testing.expect(hasBSlice(&.{ 0, 0, 1, 0x01, 0b1001_1100 }));
+    try std.testing.expect(!hasBSlice(&.{ 0, 0, 1, 0x65, 0b1010_0000 })); // IDR não conta
+}
+
 /// Tem um NAL de IDR (tipo 5) no bitstream Annex B?
 pub fn hasIdrNal(bits: []const u8) bool {
     var i: usize = 0;
@@ -692,6 +897,9 @@ pub const HwDecoder = struct {
 
 pub const Decoder = struct {
     dec: [*c]oh.ISVCDecoder,
+    /// o fluxo tem quadros B (vídeo repassado do YouTube, por exemplo): aí a
+    /// reordenação é de verdade e não dá pra forçar a saída de cada quadro
+    has_b: bool = false,
 
     /// Uma thread só, de propósito: o modo com threads do openh264 2.6
     /// (DECODER_OPTION_NUM_OF_THREADS) rende ~1,7x com 2 threads, mas a imagem
@@ -722,12 +930,14 @@ pub const Decoder = struct {
     pub fn decode(d: *Decoder, data: []const u8) !?Picture {
         var planes: [3][*c]u8 = .{ null, null, null };
         var info = std.mem.zeroes(oh.SBufferInfo);
+        if (!d.has_b and (hasBSlice(data) or spsReorders(data))) d.has_b = true;
         const st = d.dec.*.*.DecodeFrameNoDelay.?(d.dec, data.ptr, @intCast(data.len), &planes, &info);
         if (st != oh.dsErrorFree) return error.Decode;
         // perfis Main/High: o openh264 segura a imagem esperando reordenação
-        // (B-frames), mesmo sem nenhum B-frame no fluxo. Como nunca usamos
-        // B-frames, a imagem já pode sair: pede pra soltar.
-        if (info.iBufferStatus != 1) _ = d.dec.*.*.FlushFrame.?(d.dec, &planes, &info);
+        // (B-frames), mesmo sem nenhum B-frame no fluxo. Sem B-frames a imagem
+        // já pode sair: pede pra soltar. Com eles, soltar a cada quadro bagunça
+        // a ordem e o decoder cai pra 2–3 q/s (medido com x264 High -bf 3).
+        if (info.iBufferStatus != 1 and !d.has_b) _ = d.dec.*.*.FlushFrame.?(d.dec, &planes, &info);
         if (info.iBufferStatus != 1 or planes[0] == null) return null;
         const sb = info.UsrData.sSystemBuffer;
         return .{

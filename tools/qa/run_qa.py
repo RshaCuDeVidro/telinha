@@ -814,6 +814,54 @@ def cartao_de_bot():
 
 
 @test
+def bot_telao():
+    """Bot de tela (bots/telao): !watch com um link de vídeo H.264 com quadros B e som; o bot transmite sem recodificar, quem assiste vê a ~30 q/s até no openh264, e o painel do bot (cartão marcado como painel) aparece encaixado embaixo da transmissão; o Pause do painel pausa o vídeo."""
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        log("sem ffmpeg: pulado")
+        return
+    with Session("telao") as s:
+        p = port()
+        s.spawn("srv", [SERVER, "--porta", str(p), "--senha", "pw"], {k: os.environ[k] for k in ("HOME", "PATH")})
+        www = os.path.join(s.base, "www")
+        os.makedirs(www)
+        # o jeito do YouTube: High com quadros B (pirâmide), som separado no mesmo arquivo aqui
+        subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=1280x720:r=30", "-f", "lavfi", "-i", "sine=f=440:r=48000",
+                        "-t", "30", "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high", "-bf", "3", "-g", "60", "-b:v", "2500k",
+                        "-c:a", "aac", "-shortest", "-movflags", "+faststart", os.path.join(www, "filme.mp4")], check=True)
+        hp = port()
+        s.spawn("www", [sys.executable, "-m", "http.server", str(hp), "--bind", "127.0.0.1", "--directory", www], {k: os.environ[k] for k in ("HOME", "PATH")})
+        time.sleep(0.6)
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+        s.spawn("bot", [sys.executable, os.path.join(root, "bots", "telao", "telao.py"), f"telinha://127.0.0.1:{p}#pw"], {"HOME": s.base, "PATH": os.environ["PATH"]})
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--senha", "pw", "--assistir"],
+                  extra_env={"TELINHA_SEM_NVDEC": "1", "TELINHA_SEM_HWDEC_ALT": "1"})
+        b.wait(lambda st: st["status"] == "connected" and any(m["name"] == "Telão" for m in st["members"]), 15, "a Bia e o Telão entrarem")
+        b.click("##chatin")
+        time.sleep(0.2)
+        b.type("!join\n")
+        b.wait(lambda st: any("Joined the call" in l["text"] for l in st["chat"]), 10, "o Telão entrar na call")
+        b.type(f"!watch http://127.0.0.1:{hp}/filme.mp4\n")
+        st = b.wait(lambda st: any(v["shown"] for v in st["views"]), 25, "a tela do Telão aparecer")
+        fps = []
+        for _ in range(12):
+            time.sleep(1)
+            v = next(v for v in b.state()["views"] if v["shown"])
+            fps.append(round(v["fps"]))
+        log(f"q/s a cada segundo: {fps}")
+        expect(v["decoder"] == "openh264", f"decoder: {v['decoder']}")
+        expect(v["fps"] >= 24, f"o vídeo com quadros B está engasgando: {v['fps']:.1f} q/s")
+        st = b.wait(lambda st: any(l["embed"] and l["embed"]["kicker"] == "NOW SHOWING" for l in st["chat"]), 10, "o painel do Telão")
+        line = next(l for l in st["chat"] if l["embed"] and l["embed"]["kicker"] == "NOW SHOWING")
+        _, items = b.items()
+        on_stage = [it for it in items if it["label"] == f"##eb{line['id']}_0" and "main" in it["window"]]
+        expect(on_stage, f"o painel não apareceu embaixo da transmissão ({[it['window'] for it in items if it['label'].startswith('##eb')]})")
+        b.screenshot(os.path.join(s.base, "telao.png"))
+        b.click_rect((on_stage[0]["x0"], on_stage[0]["y0"], on_stage[0]["x1"], on_stage[0]["y1"]))
+        b.wait(lambda st: any(l["id"] == line["id"] and l["embed"]["kicker"] == "PAUSED" and l["embed"]["paused"] for l in st["chat"]), 5, "o Pause do painel pausar")
+        log(f"Telão: {v['fps']:.0f} q/s no openh264 com quadros B, painel embaixo da transmissão, Pause funcionou")
+
+
+@test
 def identidade_servidor():
     """Identidade do servidor: o convite leva a impressão e quem entra por ele confere; convite com impressão errada não entra; num servidor dedicado, a primeira vez é lembrada e, se a chave mudar, o app avisa e só entra depois de confiar na nova."""
     with Session("identidade") as s:

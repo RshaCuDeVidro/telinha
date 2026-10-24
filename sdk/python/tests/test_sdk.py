@@ -295,6 +295,111 @@ class SdkTest(unittest.IsolatedAsyncioTestCase):
         out.frombytes(p2._gain(array("f", [1.0, -0.5, 0.25]).tobytes()))
         self.assertEqual(list(out), [0.5, -0.25, 0.125])
 
+    async def _watcher(self, name: str, target: Client):
+        """Alguém (pelo SDK) na call assistindo a tela de `target`: guarda os quadros e o som que chegam."""
+        from telinha.wire import MsgType, Writer
+        w = await self.join(Client(self.room.invite(), name))
+        await target.join_call("geral")
+        await w.join_call("geral")
+        got = {"frames": [], "audio": []}
+        orig = w._dispatch
+
+        async def spy(typ, p):
+            if typ == MsgType.FRAME:
+                got["frames"].append((p[8] if len(p) > 8 else 0, p[25:], time.monotonic()))  # u32 stream, u32 seq, u8 flags...
+            elif typ == MsgType.AUDIO:
+                got["audio"].append(time.monotonic())
+            await orig(typ, p)
+        w._dispatch = spy
+
+        async def watch():
+            await w._send(Writer(MsgType.WATCH).u32(target.me).u8(1).u8(0).done())
+        return w, got, watch
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "sem ffmpeg")
+    async def test_tela_parada_e_ponteiro(self):
+        from telinha import Screen
+        from telinha.wire import MsgType, Writer
+        bot = await self.join(Client(self.room.invite(), "Placar"))
+        ana, got, watch = await self._watcher("Ana", bot)
+        screen = Screen(bot)
+        clicks = []
+
+        async def on_pointer(frm, x, y, flags):
+            clicks.append((frm, round(x, 2), round(y, 2), flags))
+        bot.on("pointer")(on_pointer)
+        with tempfile.TemporaryDirectory() as d:
+            img = Path(d) / "placar.png"
+            subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=640x360", "-frames:v", "1", str(img)], check=True)
+            shown = await screen.show(img)
+        self.assertEqual((shown.width, shown.height), (640, 360))
+        await until(lambda: bot.me in ana.members and ana.members[bot.me].streaming, what="o bot ao vivo")
+        await asyncio.sleep(0.3)
+        self.assertEqual(got["frames"], [])  # ninguém assistindo: nada chega
+        # começou a assistir: a sala pede um quadro completo e a Screen manda a imagem de novo
+        await watch()
+        await until(lambda: len(got["frames"]) >= 1, what="a imagem chegar pra quem começou a assistir")
+        self.assertEqual(got["frames"][0][0] & 1, 1)  # quadro-chave
+        self.assertEqual(got["frames"][0][1], shown.data)
+        # clique no vídeo vai pro bot, com a posição de 0 a 1
+        await ana._send(Writer(MsgType.POINTER).u32(bot.me).u16(16383).u16(49151).u8(3).done())
+        await until(lambda: clicks, what="o clique chegar no bot")
+        self.assertEqual(clicks[0], (ana.me, 0.25, 0.75, 3))
+        await screen.clear()
+        await until(lambda: not ana.members[bot.me].streaming, what="o bot parar de transmitir")
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "sem ffmpeg")
+    async def test_video_passa_direto_no_ritmo(self):
+        from telinha import VideoPlayer
+        bot = await self.join(Client(self.room.invite(), "Telão"))
+        ana, got, watch = await self._watcher("Ana", bot)
+        with tempfile.TemporaryDirectory() as d:
+            mp4 = Path(d) / "filme.mp4"
+            # 2 s, 30 q/s, H.264 High com quadros B (o jeito do YouTube) e som
+            subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=30", "-f", "lavfi",
+                            "-i", "sine=f=440:r=48000", "-t", "2", "-c:v", "libx264", "-profile:v", "high", "-bf", "3", "-g", "30",
+                            "-c:a", "aac", "-shortest", str(mp4)], check=True)
+            player = VideoPlayer(bot)
+            info = await player.probe(str(mp4))
+            self.assertEqual((info.codec, info.width, info.height, round(info.fps)), ("h264", 320, 180, 30))
+            self.assertAlmostEqual(info.duration, 2.0, delta=0.15)
+            await watch()
+            await asyncio.sleep(0.2)
+            t0 = time.monotonic()
+            self.assertTrue(await player.play(str(mp4), info=info))
+            took = time.monotonic() - t0
+        self.assertTrue(player.passthrough)
+        await until(lambda: len(got["frames"]) >= 55 and len(got["audio"]) >= 150, 3, "o vídeo e o som chegarem")
+        self.assertEqual(got["frames"][0][0] & 1, 1)  # começa num quadro completo
+        self.assertTrue(any(f[0] & 2 for f in got["frames"]))  # quadros B sem referência vão como puláveis
+        # no ritmo: 2 s de vídeo levam ~2 s, e os quadros chegam espalhados
+        self.assertGreater(took, 1.7)
+        self.assertLess(took, 4.0)
+        self.assertGreater(got["frames"][-1][2] - got["frames"][0][2], 1.5)
+        self.assertTrue(bot.streaming)  # continua ao vivo pra emendar a próxima
+        await bot.stop_stream()
+
+    def test_painel_vai_no_cartao(self):
+        from telinha import Embed
+        e = Embed(title="filme", panel=True, progress=(0, 1000))
+        back = Embed.decode(e.encode())
+        self.assertTrue(back.panel)
+        self.assertFalse(Embed.decode(Embed(title="x").encode()).panel)
+
+    def test_access_units(self):
+        from telinha.video import access_units, is_droppable, is_idr
+        aud = b"\x00\x00\x00\x01\x09\xf0"
+        idr = aud + b"\x00\x00\x00\x01\x67\x64" + b"\x00\x00\x01\x65\x88"
+        p = aud + b"\x00\x00\x01\x41\x9a"
+        b = aud + b"\x00\x00\x01\x01\x9e"  # nal_ref_idc 0
+        buf = bytearray(idr + p + b[:4])
+        self.assertEqual(access_units(buf), [idr])  # o P ainda pode crescer
+        buf += b[4:]
+        self.assertEqual(access_units(buf, final=True), [p, b])
+        self.assertEqual(buf, bytearray())
+        self.assertTrue(is_idr(idr) and not is_idr(p))
+        self.assertTrue(is_droppable(b) and not is_droppable(p) and not is_droppable(idr))
+
     async def test_mic_ligado_aparece_pra_sala(self):
         dj = await self.join(Client(self.room.invite(), "DJ"))
         ana = await self.join(Client(self.room.invite(), "Ana"))

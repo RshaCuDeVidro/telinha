@@ -11,6 +11,7 @@ const gpa = std.heap.c_allocator;
 pub const flag_thumb: u8 = 1; // a imagem da mensagem vai como capa do cartão
 pub const flag_progress: u8 = 2; // tem barra de progresso
 pub const flag_big_image: u8 = 4; // a imagem da mensagem vai grande, embaixo
+pub const flag_panel: u8 = 8; // painel da transmissão do autor (bot): encaixado embaixo dela no palco
 
 pub const Style = enum(u8) { neutral = 0, primary = 1, danger = 2, success = 3, _ };
 

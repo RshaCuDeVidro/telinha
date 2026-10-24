@@ -59,6 +59,8 @@ EVENTS = (
     "web_link",  # (url: str) link pra assistir pelo navegador
     "action",  # (click: Click) alguém clicou num botão de um cartão do bot
     "edit",  # (message_id: int, text: str, embed: Embed | None) uma mensagem mudou
+    "keyreq",  # (kind: int) a sala quer um quadro completo da transmissão do bot (alguém começou a assistir)
+    "pointer",  # (member_id: int, x: float, y: float, flags: int) ponteiro de quem assiste o bot (x, y de 0 a 1; flags & POINTER_PING = clique)
     "disconnect",  # (reason: str) caiu (vai tentar de novo, a não ser que tenha sido recusado)
 )
 
@@ -123,6 +125,10 @@ class Client:
         self._uploads: dict[int, "_Upload"] = {}
         self._downloads: dict[int, "_Download"] = {}
         self._voice_seq = 0
+        self._frame_seq = 0
+        self._audio_seq = 0
+        self.streaming = False  # o bot está transmitindo (ver telinha.video)
+        self._stream_args: tuple[int, int, int, bool] | None = None
         self._last_rx = 0.0
         self._ping_rtt_us = 0
         self._mic = False
@@ -304,6 +310,10 @@ class Client:
             feats = r.opt(r.u8, 0)
             self.welcome = Welcome(self.me, self.room, admin, route, ver, feats)
             self._mic = self._deaf = False
+            self.streaming = False
+            if self._stream_args:  # reconectou no meio de uma transmissão: volta a transmitir
+                w, h, fps, audio = self._stream_args
+                await self.start_stream(w, h, fps, audio=audio)
             log.info("dentro da sala %r como %s (id %d)", self.room, self.name, self.me)
             self._ready.set()
             await self._emit("ready", self.welcome)
@@ -377,6 +387,12 @@ class Client:
             n = r.opt(r.u32, 0)
             emb = Embed.decode(r.take(n)) if n else None
             await self._emit("edit", mid, text, emb)
+        elif typ == MsgType.KEYREQ:
+            await self._emit("keyreq", r.opt(r.u8, wire.KIND_SCREEN))
+        elif typ == MsgType.POINTER:
+            frm, stream, x, y, flags = r.u32(), r.u32(), r.u16(), r.u16(), r.u8()
+            if stream == self.me & 0x7FFFFFFF and x != wire.COORD_NONE:
+                await self._emit("pointer", frm, x / 65534, y / 65534, flags)
         # o resto (quadros, cursor, desenhos...) é de quem assiste transmissão
 
     async def _on_members(self, r: Reader) -> None:
@@ -559,6 +575,41 @@ class Client:
         deve mandar no ritmo (ver telinha.audio.Player)."""
         self._voice_seq = (self._voice_seq + 1) & 0xFFFFFFFF
         await self._send(Writer(MsgType.VOICE).u32(self._voice_seq).bytes(opus_packet).done())
+
+    # ------------------------------------------------------------ transmissão
+    async def start_stream(self, width: int, height: int, fps: int = 30, *, audio: bool = False) -> None:
+        """Começa (ou muda a resolução de) a transmissão de tela do bot. Os
+        quadros vão com send_frame; telinha.video faz isso pra você."""
+        self._stream_args = (width, height, fps, audio)
+        await self._send(Writer(MsgType.STREAM_START).u8(wire.KIND_SCREEN).u16(width).u16(height)
+                         .u8(max(1, min(fps, 240))).u8(wire.STREAM_AUDIO if audio else 0).done())
+        self.streaming = True
+
+    async def stop_stream(self) -> None:
+        self._stream_args = None
+        if not self.streaming:
+            return
+        self.streaming = False
+        try:
+            await self._send(Writer(MsgType.STREAM_STOP).u8(wire.KIND_SCREEN).done())
+        except ConnectError:
+            pass
+
+    async def send_frame(self, h264: bytes, *, key: bool, width: int, height: int, droppable: bool = False,
+                         capture_us: int | None = None) -> None:
+        """Um quadro H.264 (Annex B, um access unit) da transmissão do bot."""
+        self._frame_seq = (self._frame_seq + 1) & 0xFFFFFFFF
+        flags = (wire.FRAME_KEY if key else 0) | (wire.FRAME_DROPPABLE if droppable and not key else 0)
+        ts = self.room_time_us() if capture_us is None else capture_us
+        await self._send(Writer(MsgType.FRAME).u32(self._frame_seq).u8(flags).u64(ts).u16(width).u16(height)
+                         .u16(wire.COORD_NONE).u16(wire.COORD_NONE).bytes(h264).done())
+
+    async def send_stream_audio(self, opus_packet: bytes, *, capture_us: int | None = None) -> None:
+        """Um pacote Opus (48 kHz estéreo, 10 ms) do som da transmissão: vai
+        só pra quem assiste, junto com o vídeo (diferente da voz)."""
+        self._audio_seq = (self._audio_seq + 1) & 0xFFFFFFFF
+        ts = self.room_time_us() if capture_us is None else capture_us
+        await self._send(Writer(MsgType.AUDIO).u32(self._audio_seq).u64(ts).bytes(opus_packet).done())
 
     # ------------------------------------------------------------ arquivos
     async def send_file(self, path: str | os.PathLike, *, name: str | None = None, to: int = 0, reply_to: int = 0,

@@ -847,6 +847,7 @@ pub const App = struct {
 
     views: std.ArrayList(*View) = .empty,
     focused: ?u32 = null, // stream em destaque (minhas prévias: proto.streamId(0, tipo))
+    panel_h: f32 = 0, // altura do painel de bot embaixo da transmissão (medida no quadro anterior)
     theater: bool = false,
     fullscreen: bool = false,
     // tela cheia/cinema com o mouse parado: controles e seta somem
@@ -5206,6 +5207,41 @@ pub const App = struct {
         }
     };
 
+    /// Painel de bot: o cartão mais novo que ele marcou como painel
+    /// (embed_mod.flag_panel) fica encaixado embaixo da transmissão dele
+    /// quando ela está sozinha ou em destaque no palco. Os botões funcionam
+    /// como os do chat. Retorna a altura que ocupou (0 = nenhum).
+    fn drawStagePanel(a: *App, cl: *Client, tiles: []const Tile, x: f32, bottom: f32, w: f32) f32 {
+        if (a.theater or tiles.len == 0) return 0;
+        const big: ?usize = if (a.focused) |fo| (for (tiles, 0..) |t, i| {
+            if (t.stream == fo) break i;
+        } else null) else if (tiles.len == 1) 0 else null;
+        const bi = big orelse return 0;
+        const t = tiles[bi];
+        if (t.view == null or proto.kindOf(t.stream) != proto.kind_screen) return 0;
+        const member = proto.memberOf(t.stream);
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        var i = cl.chat.items.len;
+        const line = while (i > 0) {
+            i -= 1;
+            const l = &cl.chat.items[i];
+            if (l.from != member) continue;
+            if (l.embed) |em| if (em.flags & embed_mod.flag_panel != 0) break l;
+        } else return 0;
+        const h = if (a.panel_h > 0) a.panel_h else S(130);
+        const pw = @min(w, S(520));
+        const top = bottom - h + S(10);
+        c.igSetCursorScreenPos(v2(x + (w - pw) / 2, top));
+        const d = drawList();
+        c.ImDrawList_ChannelsSplit(d, 2);
+        c.ImDrawList_ChannelsSetCurrent(d, 1);
+        a.drawEmbed(cl, line, line.embed.?, pw);
+        c.ImDrawList_ChannelsMerge(d);
+        a.panel_h = c.igGetCursorScreenPos().y - top + S(10);
+        return h;
+    }
+
     fn zoomFor(a: *App, stream: u32) *Zoom {
         for (&a.zooms) |*zm| if (zm.used and zm.stream == stream) return zm;
         // vaga: uma sem uso, ou uma que está sem zoom
@@ -5292,7 +5328,8 @@ pub const App = struct {
         const area_x = o.x + S(if (a.theater) 0 else 16);
         const area_y = o.y + top_h + S(if (a.theater) 0 else 16);
         const area_w = size.x - S(if (a.theater) 0 else 32);
-        const area_h = size.y - top_h - S(if (a.theater) 0 else 32) - dock_h;
+        var area_h = size.y - top_h - S(if (a.theater) 0 else 32) - dock_h;
+        area_h -= a.drawStagePanel(cl, tiles[0..n], area_x, area_y + area_h, area_w);
 
         if (n == 0) {
             a.drawEmpty(cl, v2(o.x, o.y + top_h), v2(size.x, size.y - top_h - dock_h));

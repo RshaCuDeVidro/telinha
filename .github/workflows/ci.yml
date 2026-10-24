@@ -82,7 +82,7 @@ jobs:
         # escolhem AVX2 em tempo de execução)
         run: zig build -Dcpu=x86_64_v2 -Drepo=${{ github.repository }} --summary all
 
-      - name: SDK Python e bot de música contra o servidor recém-compilado
+      - name: SDK Python e bots (música, telão) contra o servidor recém-compilado
         # cada teste sobe uma sala própria em 127.0.0.1 com o telinha-server do zig-out
         timeout-minutes: 15 # um teste preso (ffmpeg, rede) segurou o job da tag v3.5.0 por 1h30
         run: |
@@ -90,9 +90,11 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/sdk"
           "$RUNNER_TEMP/sdk/bin/pip" install --quiet "cryptography>=42"
           "$RUNNER_TEMP/sdk/bin/python" -m unittest discover -s sdk/python/tests -v
-          "$RUNNER_TEMP/sdk/bin/python" -m py_compile bots/musica/musica.py bots/musica/sources.py sdk/python/examples/*.py
+          "$RUNNER_TEMP/sdk/bin/python" -m py_compile bots/musica/musica.py bots/musica/sources.py bots/telao/telao.py sdk/python/examples/*.py
           # o bot de música (sem yt-dlp e sem internet: pasta, cartão, botões, join)
           "$RUNNER_TEMP/sdk/bin/python" -m unittest discover -s bots/musica -v
+          # o telão (um vídeo local por http: passa direto, painel, pausar)
+          "$RUNNER_TEMP/sdk/bin/python" -m unittest discover -s bots/telao -v
 
       - name: Build (Linux, glibc 2.31)
         # glibc fixada numa versão velha: roda no Ubuntu/Pop!_OS 20.04 em diante,
