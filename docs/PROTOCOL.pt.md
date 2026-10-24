@@ -223,7 +223,9 @@ Flags: 1 = transmitindo a tela, 2 = admin, 4 = tela com áudio, 8 = microfone
 ligado, 16 = surdo, 32 = silenciado pelo admin, 64 = câmera ligada, 128 = o
 admin tirou o pincel. Na `rota`, além do `0x80` (dono) e da rota nos 5 bits de
 baixo: `0x40` = está no meu canal de texto, `0x20` = está na minha call (cada um
-recebe a sua lista: todo mundo do seu chat mais todo mundo da sua call).
+recebe a sua lista: todo mundo do seu chat mais todo mundo da sua call, e os
+bots de qualquer canal, sem nenhum dos dois bits, pra dar pra chamar um bot de
+longe; app antigo ignora quem não está em nenhum dos dois).
 
 **Frame** (cabeçalho de 21 bytes):
 
@@ -453,7 +455,9 @@ desenha valida o resto). Little-endian, `str` = `u16` + UTF-8:
 ```
 u8  versão (1)
 u32 cor 0xRRGGBB (0 = a cor de destaque do tema)
-u8  flags: 1 = a imagem é a capa, 2 = tem progresso, 4 = imagem grande
+u8  flags: 1 = a imagem é a capa, 2 = tem progresso, 4 = imagem grande,
+          8 = painel da transmissão do autor (o app mostra encaixado embaixo
+              dela quando ela está sozinha ou em destaque no palco)
 str kicker, str título, str url (http/https), str descrição (Markdown), str rodapé
 [flags & 2] u32 posição_ms, u32 total_ms (0 = ao vivo), u8 pausado
 u8 n_campos (≤ 12) × (str nome, str valor, u8 inline)

@@ -4,9 +4,10 @@
 
 A bot is a program that joins the room as one more person: it reads and sends
 messages, answers commands (`!dado 20`), reacts, switches channels, plays sound
-in the call and sends files. telinha ships a ready-made
-[music bot](BOTS_MUSIC.md) and a **Python SDK** (`sdk/python` in the
-repository) for making your own.
+in the call, streams its own screen and sends files. telinha ships a
+ready-made [music bot](BOTS_MUSIC.md) and [big-screen bot](BOTS_SCREEN.md)
+(plays videos for everyone to watch together), and a **Python SDK**
+(`sdk/python` in the repository) for making your own.
 
 A bot runs anywhere that can reach the room: your PC, a VPS, a Raspberry Pi. It
 costs the streamer nothing.
@@ -74,6 +75,7 @@ your friends (the app's **Copy invite** button).
 ## Next steps
 
 - [Music bot](BOTS_MUSIC.md): install it, commands, radios, keeping it on a VPS.
+- [Big-screen bot](BOTS_SCREEN.md): videos on the bot's screen, with the panel under the video.
 - [Make a bot](BOTS_TUTORIAL.md): step by step, from commands to events, polls, music and files.
 - [API reference](BOTS_API.md): every class, method and event.
 - Ready-made examples in [`sdk/python/examples`](../sdk/python/examples): `dado.py`, `eco.py`, `enquete.py`, `vigia.py`.

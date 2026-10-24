@@ -2,13 +2,14 @@
 
 <sub>[🇺🇸 English](BOTS_API.md) · [🇧🇷 Português](BOTS_API.pt.md)</sub>
 
-The `telinha` package (`sdk/python`), version 0.2. Everything is `asyncio`:
+The `telinha` package (`sdk/python`), version 0.3. Everything is `asyncio`:
 methods marked `await` are coroutines. To get started, see the
 [tutorial](BOTS_TUTORIAL.md).
 
 ```python
 from telinha import Bot, Client, Player, Reaction, Member, Message, Denied
 from telinha import Embed, Button, Click, Icon, Style
+from telinha import Screen, VideoPlayer
 ```
 
 ## Client
@@ -37,7 +38,8 @@ Client(invite, name, *, password=None, channel=None, bot_token="", key=None, rec
 | `me` | the bot's id in the room |
 | `room` | the room's name |
 | `welcome` | the `Welcome` from the last join |
-| `members` | `dict[int, Member]`: who the bot can see (its text channel and its call) |
+| `members` | `dict[int, Member]`: who the bot can see (its text channel, its call and bots in any channel) |
+| `streaming` | the bot is sharing its screen |
 | `channel` | the current text channel |
 | `call` | the current call (`""` = none) |
 | `channels` | `dict[str, ChannelInfo]` |
@@ -65,6 +67,9 @@ Client(invite, name, *, password=None, channel=None, bot_token="", key=None, rec
 | `await send_voice(opus)` | one Opus packet (48 kHz) in the call; prefer `Player` |
 | `await send_file(path, *, name=None, to=0, reply_to=0, progress=None)` | sends a file (up to 256 MB); returns its id |
 | `await download(file_info, dest)` | downloads a room file (`msg.file`); `dest` can be a folder |
+| `await start_stream(width, height, fps=30, *, audio=False)` / `await stop_stream()` | starts (or resizes) the bot's screen share / stops it; prefer [`Screen` and `VideoPlayer`](#streaming-the-screen) |
+| `await send_frame(h264, *, key, width, height, droppable=False)` | one H.264 frame (Annex B, one access unit) of the stream |
+| `await send_stream_audio(opus)` | one Opus packet (48 kHz stereo, 10 ms) of the stream's sound: goes only to viewers |
 | `member(id_or_name)` | finds someone by id or name (with or without `@`) |
 | `room_time_us()` | now, on the room clock |
 
@@ -74,7 +79,7 @@ Client(invite, name, *, password=None, channel=None, bot_token="", key=None, rec
 |---|---|---|
 | `ready` | `welcome: Welcome` | joined the room (again too, after reconnecting) |
 | `message` | `msg: Message` | a message in the channel chat or in private, including the bot's own and old ones (`msg.history`) |
-| `join` | `member: Member` | someone appeared (in the bot's text channel or call) |
+| `join` | `member: Member` | someone appeared (in the bot's text channel or call; a bot, in any channel) |
 | `leave` | `member: Member` | someone left |
 | `members` | `members: list[Member]` | the list changed (anything: mic, stream...) |
 | `reaction` | `message_id, member_id, reaction, on` | someone added or removed a reaction |
@@ -84,6 +89,8 @@ Client(invite, name, *, password=None, channel=None, bot_token="", key=None, rec
 | `notice` | `kind, text, extra` | something an admin did to the bot (`Notice`) |
 | `voice` | `member_id, seq, opus` | someone's voice in the call (raw Opus packet) |
 | `web_link` | `url` | the browser link changed |
+| `keyreq` | `kind` | the room wants a full frame of the bot's stream (someone started watching); `Screen` answers it by itself |
+| `pointer` | `member_id, x, y, flags` | the pointer of someone watching the bot: `x`, `y` from 0 to 1 on the video; `flags & 2` = click |
 | `disconnect` | `reason` | the connection dropped (it will retry) |
 
 Each handler runs in its own task; an error in one goes to the log and doesn't
@@ -183,6 +190,44 @@ Player(client, *, bitrate=128_000, stereo=True, ffmpeg="ffmpeg")
 
 Needs ffmpeg (`FFmpegMissing` if absent).
 
+## Streaming the screen
+
+A bot can go live like anyone else: whoever is in the same call clicks it and
+watches. Two ready-made pieces, in `telinha.video`:
+
+```python
+screen = Screen(bot)
+await screen.show("scoreboard.png")  # a file, link, bytes, a Pillow image or a ChatImage
+await screen.clear()                 # stops streaming
+
+player = VideoPlayer(bot, max_height=720)
+await player.play("movie.mp4")       # or player.play(video_url, audio_url, headers=...)
+```
+
+**`Screen(client, *, max_side=1280)`**: a still image (a panel, a scoreboard,
+a quiz question). Each `show` becomes one full frame, and whoever starts
+watching later gets the last one again: no new image, nothing is sent (almost
+zero CPU and bandwidth). Together with the `pointer` event, you can make a
+screen people click on.
+
+**`VideoPlayer(client, *, max_height=720, bitrate=2_500_000, audio_bitrate=128_000)`**:
+
+| | |
+|---|---|
+| `await probe(source, headers=None)` | `VideoInfo` (codec, `width`, `height`, `fps`, `duration`, `has_audio`) from ffprobe |
+| `await play(video, audio=None, *, headers=None, start=0.0, info=None)` | plays to the end; `True` if it finished, `False` if stopped. `audio`: the sound as a separate link (YouTube sends it that way). The stream stays on at the end, so the next one follows on |
+| `pause()` / `resume()` / `await stop()` | pausing holds the picture and the sound together |
+| `playing`, `paused`, `position`, `info`, `passthrough` | `passthrough`: the video goes without re-encoding |
+
+H.264 up to `max_height` **is passed straight through**: the packets go as
+they came, without decoding or encoding again (YouTube video up to 1080p is
+H.264). It uses almost no CPU; B-frames nobody references go as droppable
+(the room skips them for whoever can't keep up). Other codecs (VP9, AV1) get
+re-encoded to H.264 by ffmpeg, and that's heavy (~1 core for 720p). The sound
+goes as the stream's sound (10 ms Opus, on the same clock as the picture),
+only to viewers. Viewers on an app before 3.6 without a hardware decoder see
+video with B-frames stutter.
+
 ## Embed
 
 A card in the chat: a colored bar, a small line on top (`kicker`), a title
@@ -209,6 +254,7 @@ await msg.edit(embed=card)
 | `color` | `0xRRGGBB` of the bar (`0` = the viewer's theme accent) |
 | `thumbnail` / `big_image` | the message's image goes as the cover (in the corner) / large, below |
 | `progress`, `paused` | `(position_ms, total_ms)`; total `0` = live. Each app moves it by itself until `paused` |
+| `panel` | the panel of the bot's stream: whoever watches its screen (app 3.6+) sees the card docked under the video, with the buttons; in the chat it stays as usual |
 | `add_field(name, value, inline=True)` | up to 12 |
 | `add_button(label="", *, icon=Icon.NONE, style="neutral", disabled=False, on_click=None)` | up to 5. `style`: `neutral`, `primary`, `danger`, `success`. `on_click`: `async def f(click: Click)` |
 

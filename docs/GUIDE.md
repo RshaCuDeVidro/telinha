@@ -23,7 +23,12 @@ In the *Inviting people from outside* card:
 2. If your ISP uses CGNAT, the port won't open. Then click
    **Create public link**: the room gets an address that works on any
    network, with nothing to configure.
-3. Click **Copy invite** and send it.
+3. Click **Copy invite** and send it. The **Invite** button, in the top bar,
+   copies the same invite any time.
+
+Whoever joins a room with nobody live sees the three steps on the stage: call
+your friends (with the copy invite button), share your screen and, on the
+other side, they click **Watch**.
 
 The invite (`telinha://…`) carries every way into the room: LAN, opened port,
 IPv6 and public link. Each person joins through the fastest one that works for
@@ -69,6 +74,12 @@ scales back up the moment someone enlarges it.
 
 Click anyone who is live. Several streams sit in a grid that keeps every video
 as large as possible.
+A screen bot (like the [big-screen bot](BOTS_SCREEN.md)) is watched the same
+way. If it has a panel, the panel sits docked under the video, with its
+buttons (pause, skip...), while its stream is alone or featured. A bot in
+another channel shows up in the room panel, under *Bots in other channels*:
+right-click → **Bring to my call**.
+
 If nobody in your call is streaming but someone is live in another channel, a
 *Someone is live in #channel: go and watch* button shows up: one click and
 you're there, watching.
@@ -207,7 +218,7 @@ The gear button opens the settings, in a room or on the home screen.
 | Page | What's there |
 |---|---|
 | **General** | Name, language, notifications, stats always visible, new-version alerts (and installing on its own), clips and how long they are |
-| **Appearance** | Themes: dark, light, pwnd (neon), pwnd light, Nord, Dracula or your own CSS (reloads when you save the file); interface size; CRT effect; **room mood** (the background shifts tone with the room's energy, with no constant animation); home screen animations; show or hide other people's drawings. Drag the chat panel's edge to make it wider or narrower |
+| **Appearance** | Themes: pwnd (neon, the default), dark, light, pwnd light, Nord, Dracula or your own CSS (reloads when you save the file); interface size; CRT effect; **room mood** (the background shifts tone with the room's energy, with no constant animation); home screen animations; show or hide other people's drawings. Drag the chat panel's edge to make it wider or narrower |
 | **Voice** | Voice activation or push-to-talk, microphone, sensitivity, volume, automatic gain, noise suppression, echo cancellation, joining with the mic on, notification sounds |
 | **Shortcuts** | Global hotkeys (and a master switch) |
 | **Camera** | Which camera and its resolution |

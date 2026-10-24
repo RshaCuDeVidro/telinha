@@ -2,13 +2,14 @@
 
 <sub>[🇺🇸 English](BOTS_API.md) · [🇧🇷 Português](BOTS_API.pt.md)</sub>
 
-O pacote `telinha` (`sdk/python`), versão 0.2. Tudo é `asyncio`: os métodos
+O pacote `telinha` (`sdk/python`), versão 0.3. Tudo é `asyncio`: os métodos
 marcados com `await` são corrotinas. Pra começar, veja o
 [tutorial](BOTS_TUTORIAL.pt.md).
 
 ```python
 from telinha import Bot, Client, Player, Reaction, Member, Message, Denied
 from telinha import Embed, Button, Click, Icon, Style
+from telinha import Screen, VideoPlayer
 ```
 
 ## Client
@@ -37,7 +38,8 @@ Client(invite, name, *, password=None, channel=None, bot_token="", key=None, rec
 | `me` | o id do bot na sala |
 | `room` | o nome da sala |
 | `welcome` | `Welcome` da última entrada |
-| `members` | `dict[int, Member]`: quem o bot enxerga (o canal de texto dele e a call dele) |
+| `members` | `dict[int, Member]`: quem o bot enxerga (o canal de texto dele, a call dele e os bots de qualquer canal) |
+| `streaming` | o bot está transmitindo a tela |
 | `channel` | o canal de texto atual |
 | `call` | a call atual (`""` = nenhuma) |
 | `channels` | `dict[str, ChannelInfo]` |
@@ -65,6 +67,9 @@ Client(invite, name, *, password=None, channel=None, bot_token="", key=None, rec
 | `await send_voice(opus)` | um pacote Opus (48 kHz) na call; prefira o `Player` |
 | `await send_file(caminho, *, name=None, to=0, reply_to=0, progress=None)` | manda um arquivo (até 256 MB); retorna o id |
 | `await download(file_info, destino)` | baixa um arquivo da sala (`msg.file`); `destino` pode ser uma pasta |
+| `await start_stream(largura, altura, fps=30, *, audio=False)` / `await stop_stream()` | começa (ou muda o tamanho de) a transmissão de tela do bot / para; prefira [`Screen` e `VideoPlayer`](#transmitir-a-tela) |
+| `await send_frame(h264, *, key, width, height, droppable=False)` | um quadro H.264 (Annex B, um access unit) da transmissão |
+| `await send_stream_audio(opus)` | um pacote Opus (48 kHz estéreo, 10 ms) do som da transmissão: vai só pra quem assiste |
 | `member(id_ou_nome)` | acha alguém pelo id ou pelo nome (com ou sem `@`) |
 | `room_time_us()` | agora, no relógio da sala |
 
@@ -74,7 +79,7 @@ Client(invite, name, *, password=None, channel=None, bot_token="", key=None, rec
 |---|---|---|
 | `ready` | `welcome: Welcome` | entrou na sala (de novo também, depois de reconectar) |
 | `message` | `msg: Message` | mensagem no chat do canal ou em privado, inclusive as do próprio bot e as antigas (`msg.history`) |
-| `join` | `member: Member` | apareceu alguém (no canal de texto ou na call do bot) |
+| `join` | `member: Member` | apareceu alguém (no canal de texto ou na call do bot; bot, em qualquer canal) |
 | `leave` | `member: Member` | saiu |
 | `members` | `members: list[Member]` | a lista mudou (qualquer coisa: microfone, transmissão...) |
 | `reaction` | `message_id, member_id, reaction, on` | alguém pôs ou tirou uma reação |
@@ -84,6 +89,8 @@ Client(invite, name, *, password=None, channel=None, bot_token="", key=None, rec
 | `notice` | `kind, text, extra` | algo que um admin fez com o bot (`Notice`) |
 | `voice` | `member_id, seq, opus` | voz de alguém na call (pacote Opus cru) |
 | `web_link` | `url` | o link do navegador mudou |
+| `keyreq` | `kind` | a sala quer um quadro completo da transmissão do bot (alguém começou a assistir); a `Screen` responde sozinha |
+| `pointer` | `member_id, x, y, flags` | o ponteiro de quem assiste o bot: `x`, `y` de 0 a 1 no vídeo; `flags & 2` = clique |
 | `disconnect` | `reason` | a conexão caiu (vai tentar de novo) |
 
 Cada handler roda na sua própria tarefa; um erro nele vai pro log e não
@@ -182,6 +189,44 @@ Player(client, *, bitrate=128_000, stereo=True, ffmpeg="ffmpeg")
 
 Precisa do ffmpeg (`FFmpegMissing` se não tiver).
 
+## Transmitir a tela
+
+O bot também transmite, como qualquer pessoa: quem está na mesma call clica
+nele e assiste. Duas peças prontas, em `telinha.video`:
+
+```python
+screen = Screen(bot)
+await screen.show("placar.png")     # arquivo, link, bytes, imagem do Pillow ou ChatImage
+await screen.clear()                # para de transmitir
+
+player = VideoPlayer(bot, max_height=720)
+await player.play("filme.mp4")      # ou player.play(video_url, audio_url, headers=...)
+```
+
+**`Screen(client, *, max_side=1280)`**: uma imagem parada (um painel, um
+placar, a pergunta de um quiz). Cada `show` vira um quadro completo, e quem
+começa a assistir depois recebe a última de novo: sem imagem nova, não sai
+nada (quase zero de CPU e de banda). Junto com o evento `pointer`, dá pra fazer
+uma tela que a galera clica.
+
+**`VideoPlayer(client, *, max_height=720, bitrate=2_500_000, audio_bitrate=128_000)`**:
+
+| | |
+|---|---|
+| `await probe(fonte, headers=None)` | `VideoInfo` (codec, `width`, `height`, `fps`, `duration`, `has_audio`) pelo ffprobe |
+| `await play(video, audio=None, *, headers=None, start=0.0, info=None)` | toca até o fim; `True` se acabou, `False` se foi parado. `audio`: o som num link separado (o YouTube manda assim). A transmissão continua ligada no fim, pra emendar a próxima |
+| `pause()` / `resume()` / `await stop()` | pausar segura a imagem e o som juntos |
+| `playing`, `paused`, `position`, `info`, `passthrough` | `passthrough`: o vídeo passa sem recodificar |
+
+H.264 até `max_height` **passa direto**: os pacotes vão como vieram, sem
+decodificar nem codificar de novo (o vídeo do YouTube em até 1080p é H.264).
+Gasta quase nada de CPU; quadros B que ninguém usa de referência vão como
+puláveis (a sala tira eles de quem não dá conta). Outro codec (VP9, AV1) o
+ffmpeg recodifica pra H.264, e aí pesa (~1 núcleo pra 720p). O som vai como o
+som da transmissão (Opus de 10 ms, no mesmo relógio da imagem), só pra quem
+assiste. Quem assiste com app de antes da 3.6 sem decodificador na placa vê
+vídeo com quadros B engasgando.
+
 ## Embed
 
 Um cartão no chat: barra colorida, uma linha pequena em cima (`kicker`),
@@ -208,6 +253,7 @@ await msg.edit(embed=card)
 | `color` | `0xRRGGBB` da barra (`0` = a cor de destaque do tema de quem vê) |
 | `thumbnail` / `big_image` | a imagem da mensagem vai como capa (no canto) / grande, embaixo |
 | `progress`, `paused` | `(posição_ms, total_ms)`; total `0` = ao vivo. Cada app anda sozinho até `paused` |
+| `panel` | painel da transmissão do bot: quem assiste a tela dele (app 3.6+) vê o cartão encaixado embaixo do vídeo, com os botões; no chat ele continua igual |
 | `add_field(nome, valor, inline=True)` | até 12 |
 | `add_button(label="", *, icon=Icon.NONE, style="neutral", disabled=False, on_click=None)` | até 5. `style`: `neutral`, `primary`, `danger`, `success`. `on_click`: `async def f(click: Click)` |
 

@@ -2,6 +2,52 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.6.0
+
+Conversa com a 3.5, a 3.4, a 3.3, a 3.2 e a 3.1 (app antigo mostra o painel de bot só no chat e não lista bots de outros canais). A 3.5.0 não chegou a sair pra atualização automática (o empacotamento travou): quem está na 3.4 recebe as duas juntas.
+
+### Destaques
+
+- 📺 **Bot de tela (Telão)**: `!watch link ou nome` passa o vídeo **na tela do bot**, com som, pra quem estiver na call assistir junto. O vídeo do YouTube (H.264) passa direto, sem recodificar: quase não gasta CPU na máquina do bot.
+- 🎛️ **Painel de bot embaixo do vídeo**: o cartão que o bot marca como painel fica encaixado embaixo da transmissão dele, com os botões (pausar, pular, parar) funcionando pra quem está assistindo.
+- 🧭 **Cara nova, mais fácil pra quem chega**: o tema pwnd (neon) é o padrão de quem instala; o palco vazio de quem entra numa sala mostra os três passos (chamar a galera, compartilhar a tela, eles clicam em Assistir); o convite virou o botão **Convidar** na barra de cima; as transmissões ganharam moldura de visor e os títulos do painel o jeito de terminal.
+- 🤖 **Chamar um bot de qualquer canal**: os bots aparecem no painel mesmo estando em outro canal (*Bots em outros canais*), e o clique direito → **Chamar pra minha call** traz eles.
+- 🎞️ **Vídeo com quadros B sem engasgar**: o decodificador por software (openh264) caía pra 2 ou 3 quadros por segundo em vídeo com quadros B (o jeito do YouTube); agora roda a 30 desde o primeiro quadro.
+
+<!-- detalhes -->
+
+### Todas as mudanças
+
+- **Decodificador por software**: o openh264 segura a imagem nos perfis Main e
+  High esperando reordenação, e a gente forçava a saída a cada quadro (os
+  nossos encoders nunca usam quadros B). Com quadros B de verdade, isso
+  bagunçava a ordem. Agora, se o SPS diz que os quadros saem fora de ordem
+  (`max_num_reorder_frames` > 0 no VUI) ou chega uma fatia B, o decodificador
+  deixa a ordem certa; os nossos fluxos continuam sem atraso nenhum.
+- **SDK 0.3**: `telinha.video` com `Screen` (uma imagem parada: um quadro
+  completo por imagem, reenviado pra quem começa a assistir) e `VideoPlayer`
+  (arquivo ou link; H.264 passa direto, o resto o ffmpeg recodifica; o som vai
+  como som da transmissão, no mesmo relógio da imagem). No `Client`:
+  `start_stream`, `stop_stream`, `send_frame`, `send_stream_audio`, e os
+  eventos `keyreq` e `pointer` (onde quem assiste apontou ou clicou, de 0 a 1).
+  `Embed(panel=True)` marca o cartão como painel. Reconectou no meio de uma
+  transmissão: volta a transmitir.
+- **Telão** (`bots/telao`): `!watch`, `!search`, `!queue`, `!skip`,
+  `!pause`, `!resume`, `!stop`, `!join`, `!leave` (com apelidos em português);
+  pelo yt-dlp pede H.264 até a altura escolhida (720p padrão) com o som
+  separado; fila, painel com o próximo da fila e o que está passando, e a tela
+  some quando a fila acaba. Guia em *Bots → Bot de tela*.
+- **Servidor**: os bots entram na lista de todo mundo, estejam em que canal
+  estiverem (sem as marcas de "no meu canal" e "na minha call"; app antigo
+  ignora quem não tem nenhuma das duas).
+- **Interface**: tema pwnd como padrão pra configuração nova (quem já tem
+  tema salvo continua com o seu); três passos no palco vazio, com **Copiar
+  convite** e **Compartilhar tela**; **Convidar** com texto na barra de cima;
+  cantos de visor em volta das transmissões e do husky do palco; etiqueta AO
+  VIVO e borda na cor de destaque nos cartões de quem está ao vivo; títulos
+  das seções do painel com `>`. Tudo parado: nada a mais pra redesenhar.
+- **CI**: os testes do Telão rodam junto com os do SDK e do bot de música.
+
 ## 3.5.0
 
 Conversa com a 3.4, a 3.3, a 3.2 e a 3.1 (app antigo mostra "limpou o chat" como aviso e não conhece canal invisível nem dono de canal).

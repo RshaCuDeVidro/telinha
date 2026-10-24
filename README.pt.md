@@ -12,7 +12,7 @@
 <p align="center">
   <img alt="Plataformas" src="https://img.shields.io/badge/plataformas-Linux%20%7C%20Windows-5865f2?style=flat-square">
   <img alt="Zig 0.16" src="https://img.shields.io/badge/zig-0.16-f7a41d?style=flat-square">
-  <img alt="Versão 3.5.0" src="https://img.shields.io/badge/vers%C3%A3o-3.5.0-9333ea?style=flat-square">
+  <img alt="Versão 3.6.0" src="https://img.shields.io/badge/vers%C3%A3o-3.6.0-9333ea?style=flat-square">
   <img alt="Licença MIT" src="https://img.shields.io/badge/licen%C3%A7a-MIT-22c55e?style=flat-square">
 </p>
 
@@ -138,7 +138,7 @@ No Wayland o sistema pergunta qual tela ou janela compartilhar na primeira vez e
 - **Reconexão automática**, que retoma a sua transmissão e as que você estava assistindo.
 - **Atualiza sozinho** no Windows e no Linux: mostra o que muda, confere a assinatura da release e troca o executável. O histórico de versões fica em Configurações → Sobre.
 - Estatísticas ao vivo: resolução, fps, banda e atraso de ponta a ponta medido.
-- **Bots**: um [SDK em Python](docs/BOTS.pt.md) pra fazer os seus (comandos, eventos, música na call, arquivos) e um [bot de música](docs/BOTS_MUSIC.pt.md) pronto. Aparecem com a etiqueta BOT e nunca viram admin.
+- **Bots**: um [SDK em Python](docs/BOTS.pt.md) pra fazer os seus (comandos, eventos, música na call, arquivos) e dois prontos: o [bot de música](docs/BOTS_MUSIC.pt.md) e o [bot de tela](docs/BOTS_SCREEN.pt.md), que passa vídeos na tela dele com o painel embaixo. Aparecem com a etiqueta BOT e nunca viram admin.
 - **Atalhos globais configuráveis** pra clipe, microfone, surdo, transmitir, print e um que liga e desliga todos.
 - Temas: escuro, claro, pwnd (neon), pwnd claro, Nord, Drácula, ou o seu próprio CSS.
 

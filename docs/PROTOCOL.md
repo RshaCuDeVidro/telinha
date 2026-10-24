@@ -227,7 +227,9 @@ the screen, 2 = admin, 4 = screen with audio, 8 = microphone on, 16 = deafened,
 32 = muted by an admin, 64 = camera on, 128 = the admin took their pen. In
 `rota`, besides `0x80` (owner) and the route in the low 5 bits: `0x40` = in my
 text channel, `0x20` = in my call (each person gets their own list: everyone in
-their chat plus everyone in their call).
+their chat plus everyone in their call, and the bots of every channel with
+neither bit, so a bot can be called from afar; old apps ignore anyone in
+neither).
 
 **Frame** (21-byte header):
 
@@ -462,7 +464,9 @@ UTF-8:
 ```
 u8  version (1)
 u32 color 0xRRGGBB (0 = the theme accent)
-u8  flags: 1 = the image is the cover, 2 = has progress, 4 = large image
+u8  flags: 1 = the image is the cover, 2 = has progress, 4 = large image,
+          8 = the panel of the author's stream (the app docks it under the
+              stream when it's alone or featured on the stage)
 str kicker, str title, str url (http/https), str description (Markdown), str footer
 [flags & 2] u32 position_ms, u32 total_ms (0 = live), u8 paused
 u8 n_fields (≤ 12) × (str name, str value, u8 inline)

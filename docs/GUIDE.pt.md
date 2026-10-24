@@ -23,7 +23,12 @@ No card *Chamando a galera de fora*:
 2. Se a operadora usa CGNAT, a porta não abre. Aí clique em
    **Criar link público**: a sala ganha um endereço que funciona em qualquer
    rede, sem configurar nada.
-3. Clique em **Copiar convite** e mande pra galera.
+3. Clique em **Copiar convite** e mande pra galera. O botão **Convidar**, na
+   barra de cima, copia o mesmo convite a qualquer hora.
+
+Quem entra numa sala sem ninguém ao vivo vê no palco os três passos: chamar a
+galera (com o botão de copiar o convite), compartilhar a tela e, do outro
+lado, a galera clica em **Assistir**.
 
 O convite (`telinha://…`) leva todos os caminhos até a sala: rede local, porta
 aberta, IPv6 e link público. Cada pessoa entra pelo mais rápido que funcionar
@@ -71,6 +76,12 @@ Clique em quem está ao vivo. Várias transmissões ficam numa grade que deixa
 cada vídeo o maior possível. Se ninguém da sua call está transmitindo mas tem
 gente ao vivo em outro canal, aparece o botão *Tem gente ao vivo no #canal: ir
 e assistir*: um clique e você já está lá, assistindo.
+
+Um bot de tela (como o [Telão](BOTS_SCREEN.pt.md)) se assiste do mesmo jeito.
+Se ele tem um painel, o painel fica encaixado embaixo do vídeo, com os botões
+dele (pausar, pular...), enquanto a transmissão dele está sozinha ou em
+destaque. Bot em outro canal aparece no painel da sala, em *Bots em outros
+canais*: clique direito → **Chamar pra minha call**.
 
 A bolinha do lado do nome de quem transmite diz como a transmissão está
 chegando: verde flui bem, amarela engasgando, vermelha ruim, e o porquê (*sua
@@ -210,7 +221,7 @@ O botão da engrenagem abre as configurações, na sala ou na tela inicial.
 | Página | O que tem |
 |---|---|
 | **Geral** | Nome, idioma, notificações, estatísticas sempre à mostra, aviso de versão nova (e instalar sozinho), clipes e a duração deles |
-| **Aparência** | Temas: escuro, claro, pwnd (neon), pwnd claro, Nord, Drácula ou o seu próprio CSS (atualiza sozinho quando você salva o arquivo); tamanho da interface; efeito CRT; **clima da sala** (o fundo muda de tom com a energia da sala, sem animação contínua); animações da tela inicial; mostrar ou esconder os desenhos dos outros. O painel do chat fica mais largo ou estreito arrastando a borda dele |
+| **Aparência** | Temas: pwnd (neon, o padrão), escuro, claro, pwnd claro, Nord, Drácula ou o seu próprio CSS (atualiza sozinho quando você salva o arquivo); tamanho da interface; efeito CRT; **clima da sala** (o fundo muda de tom com a energia da sala, sem animação contínua); animações da tela inicial; mostrar ou esconder os desenhos dos outros. O painel do chat fica mais largo ou estreito arrastando a borda dele |
 | **Voz** | Ativação por voz ou apertar pra falar, microfone, sensibilidade, volume, ganho automático, supressão de ruído, cancelamento de eco, entrar com o microfone ligado, sons de aviso |
 | **Atalhos** | Atalhos globais (e um interruptor geral) |
 | **Câmera** | Qual câmera e a resolução |

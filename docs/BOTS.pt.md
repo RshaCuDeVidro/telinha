@@ -4,9 +4,10 @@
 
 Um bot é um programa que entra na sala como mais uma pessoa: lê e manda
 mensagens, responde comandos (`!dado 20`), reage, troca de canal, toca som na
-call e manda arquivos. O telinha vem com um [bot de música](BOTS_MUSIC.pt.md)
-pronto e com o **SDK em Python** (`sdk/python` no repositório) pra você fazer
-os seus.
+call, transmite a própria tela e manda arquivos. O telinha vem com um
+[bot de música](BOTS_MUSIC.pt.md) e um [bot de tela](BOTS_SCREEN.pt.md)
+(passa vídeos pra galera assistir junto) prontos, e com o **SDK em Python**
+(`sdk/python` no repositório) pra você fazer os seus.
 
 Um bot roda em qualquer lugar que alcance a sala: no seu PC, numa VPS, num
 Raspberry Pi. Ele não gasta nada do computador de quem transmite.
@@ -72,6 +73,7 @@ lista os comandos sozinho. O convite é o mesmo que você manda pros amigos
 ## Próximos passos
 
 - [Bot de música](BOTS_MUSIC.pt.md): instalar, comandos, rádios, deixar ligado na VPS.
+- [Bot de tela](BOTS_SCREEN.pt.md): vídeos na tela do bot, com o painel embaixo do vídeo.
 - [Criar um bot](BOTS_TUTORIAL.pt.md): passo a passo, de comandos a eventos, enquete, música e arquivos.
 - [Referência da API](BOTS_API.pt.md): cada classe, método e evento.
 - Exemplos prontos em [`sdk/python/examples`](../sdk/python/examples): `dado.py`, `eco.py`, `enquete.py`, `vigia.py`.

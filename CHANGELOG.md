@@ -2,6 +2,52 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.6.0
+
+Talks to 3.5, 3.4, 3.3, 3.2 and 3.1 (an older app shows a bot's panel only in the chat and doesn't list bots from other channels). 3.5.0 never made it to auto-update (packaging got stuck): whoever is on 3.4 gets both together.
+
+### Highlights
+
+- 📺 **Big-screen bot (Telão)**: `!watch link or name` plays the video **on the bot's screen**, with sound, for everyone in the call to watch together. YouTube video (H.264) is passed straight through, without re-encoding: it barely uses any CPU on the bot's machine.
+- 🎛️ **Bot panel under the video**: the card a bot marks as its panel sits docked under its stream, with the buttons (pause, skip, stop) working for whoever is watching.
+- 🧭 **A new look, easier for newcomers**: the pwnd (neon) theme is the default for new installs; the empty stage of whoever joins a room shows the three steps (call your friends, share your screen, they click Watch); the invite became the **Invite** button in the top bar; streams got viewfinder corners and the panel headings a terminal look.
+- 🤖 **Call a bot from any channel**: bots show up in the panel even while in another channel (*Bots in other channels*), and right-click → **Bring to my call** brings them over.
+- 🎞️ **Video with B-frames without stutter**: the software decoder (openh264) dropped to 2 or 3 frames per second on video with B-frames (the way YouTube encodes); now it runs at 30 from the first frame.
+
+<!-- detalhes -->
+
+### All changes
+
+- **Software decoder**: openh264 holds the picture on the Main and High
+  profiles waiting for reordering, and we forced it out on every frame (our
+  own encoders never use B-frames). With real B-frames, that scrambled the
+  order. Now, if the SPS says frames come out of order
+  (`max_num_reorder_frames` > 0 in the VUI) or a B slice arrives, the decoder
+  keeps the right order; our own streams still have no added delay.
+- **SDK 0.3**: `telinha.video` with `Screen` (a still image: one full frame
+  per image, sent again to whoever starts watching) and `VideoPlayer` (a file
+  or link; H.264 passes through, everything else ffmpeg re-encodes; the sound
+  goes as the stream's sound, on the same clock as the picture). On `Client`:
+  `start_stream`, `stop_stream`, `send_frame`, `send_stream_audio`, and the
+  `keyreq` and `pointer` events (where a viewer pointed or clicked, from 0 to
+  1). `Embed(panel=True)` marks the card as a panel. Reconnected in the middle
+  of a stream: it goes live again.
+- **Telão** (`bots/telao`): `!watch`, `!search`, `!queue`, `!skip`, `!pause`,
+  `!resume`, `!stop`, `!join`, `!leave` (with Portuguese aliases); through
+  yt-dlp it asks for H.264 up to the chosen height (720p by default) with the
+  sound separate; a queue, a panel with what's playing and what's next, and
+  the screen goes away when the queue ends. Guide under *Bots → Big-screen bot*.
+- **Server**: bots go in everyone's list, whatever channel they're in (without
+  the "in my channel" and "in my call" marks; older apps ignore anyone with
+  neither).
+- **Interface**: pwnd theme as the default for a new configuration (whoever
+  already has a theme saved keeps it); three steps on the empty stage, with
+  **Copy invite** and **Share screen**; **Invite** with text in the top bar;
+  viewfinder corners around streams and the stage's husky; a LIVE tag and an
+  accent border on the cards of whoever is live; panel section headings with
+  `>`. All static: nothing extra to redraw.
+- **CI**: the Telão tests run along with the SDK and music bot ones.
+
 ## 3.5.0
 
 Talks to 3.4, 3.3, 3.2 and 3.1 (an older app shows "cleared the chat" as a notice and doesn't know invisible channels or channel owners).

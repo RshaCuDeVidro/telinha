@@ -56,6 +56,7 @@ SECTIONS = [
     ("bots", {"pt": "Bots", "en": "Bots", "icon": "bot"}, [
         ("bots", "docs/BOTS.md", "docs/BOTS.pt.md", None),
         ("bots-music", "docs/BOTS_MUSIC.md", "docs/BOTS_MUSIC.pt.md", None),
+        ("bots-screen", "docs/BOTS_SCREEN.md", "docs/BOTS_SCREEN.pt.md", None),
         ("bots-tutorial", "docs/BOTS_TUTORIAL.md", "docs/BOTS_TUTORIAL.pt.md", None),
         ("bots-api", "docs/BOTS_API.md", "docs/BOTS_API.pt.md", None),
     ]),
@@ -77,6 +78,7 @@ NAV = {
     "contributing": {"pt": "Contribuir", "en": "Contributing"},
     "bots": {"pt": "Visão geral", "en": "Overview"},
     "bots-music": {"pt": "Bot de música", "en": "Music bot"},
+    "bots-screen": {"pt": "Bot de tela", "en": "Big-screen bot"},
     "bots-tutorial": {"pt": "Criar um bot", "en": "Make a bot"},
     "bots-api": {"pt": "Referência da API", "en": "API reference"},
 }
