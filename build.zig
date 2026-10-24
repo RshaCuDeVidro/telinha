@@ -353,10 +353,23 @@ const NasmProgram = union(enum) {
 // ---------------------------------------------------------------------------
 // NASM
 
+/// Alvo das ferramentas que rodam durante o build. No Linux, a glibc que vem
+/// com o zig (versão explícita) em vez da do sistema: o crt1.o do sistema muda
+/// com o gcc (o do gcc 16 tem .sframe, que o linker do zig 0.16 não conhece).
+fn toolTarget(b: *std.Build) std.Build.ResolvedTarget {
+    if (b.graph.host.result.os.tag != .linux) return b.graph.host;
+    return b.resolveTargetQuery(.{
+        .cpu_arch = b.graph.host.result.cpu.arch,
+        .os_tag = .linux,
+        .abi = .gnu,
+        .glibc_version = .{ .major = 2, .minor = 39, .patch = 0 }, // o config.h do NASM conta com strlcpy (2.38+)
+    });
+}
+
 fn nasmProgram(b: *std.Build) ?NasmProgram {
     if (b.findProgram(&.{"nasm"}, &.{})) |path| return .{ .system = path } else |_| {}
     const dep = b.lazyDependency("nasm", .{}) orelse return null;
-    const mod = b.createModule(.{ .target = b.graph.host, .optimize = .ReleaseFast, .link_libc = true });
+    const mod = b.createModule(.{ .target = toolTarget(b), .optimize = .ReleaseFast, .link_libc = true });
     const exe = b.addExecutable(.{ .name = "nasm", .root_module = mod });
     mod.addIncludePath(b.path("tools/nasm")); // config/config.h (gerado pelo configure do NASM)
     for ([_][]const u8{ "include", ".", "x86", "asm", "disasm", "output" }) |p| mod.addIncludePath(dep.path(p));
@@ -511,7 +524,7 @@ fn addImgui(b: *std.Build, deps: Deps, mod: *std.Build.Module, target: std.Build
         .name = "patch_cimgui",
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/patch_cimgui.zig"),
-            .target = b.graph.host,
+            .target = toolTarget(b),
             .optimize = .Debug, // ReleaseSafe liga o FORTIFY da glibc, que o translate-c não traduz
             .link_libc = true,
         }),
@@ -661,6 +674,7 @@ fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: st
         mod.addCSourceFile(.{ .file = b.path("src/c/netaddr_win.c"), .flags = &.{"-O2"} });
         mod.addCSourceFile(.{ .file = b.path("src/c/httpget_win.c"), .flags = &.{"-O2"} });
         mod.addCSourceFile(.{ .file = b.path("src/c/audio_apps_win.c"), .flags = &.{"-O2"} });
+        mod.addCSourceFile(.{ .file = b.path("src/c/audio_proc_win.c"), .flags = &.{"-O2"} });
         mod.addCSourceFile(.{ .file = b.path("src/c/filepick.c"), .flags = &.{"-O2"} });
         mod.addWin32ResourceFile(.{ .file = b.path("assets/telinha.rc") });
         for ([_][]const u8{ "opengl32", "gdi32", "user32", "shell32", "ws2_32", "d3d11", "dxgi", "ole32", "dwmapi", "winmm", "advapi32", "iphlpapi", "winhttp", "comdlg32" }) |lib|

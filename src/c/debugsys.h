@@ -28,7 +28,7 @@ int dbg_proc_stats(dbg_stats *s);
 typedef struct dbg_thread {
     unsigned tid;
     unsigned long long cpu_ms;
-    char name[16];
+    char name[32]; // sem nome: "t<id>@<dll onde começou>"
 } dbg_thread;
 int dbg_threads(dbg_thread *out, int max);
 // Windows: sistema, processador, memória, placas de vídeo. Linux: vazio.

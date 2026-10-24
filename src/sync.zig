@@ -325,6 +325,7 @@ pub const Pool = struct {
     }
 
     fn worker(self: *Pool) void {
+        nameThread("pool");
         lowerThreadPriority();
         while (true) {
             self.mutex.lock();

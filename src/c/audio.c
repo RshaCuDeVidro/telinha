@@ -12,6 +12,8 @@
 #include "audio.h"
 #ifndef _WIN32
 #include "audio_pw.h"
+#else
+#include "audio_proc_win.h"
 #endif
 
 #include <stdio.h>
@@ -30,6 +32,8 @@ struct audio_dev {
     int hears_self; // a captura pega também o que o próprio app toca
 #ifndef _WIN32
     pwcap *pw; // captura dos aplicativos pelo grafo do PipeWire (sem o telinha)
+#else
+    proc_loop *pl; // loopback por processo (audio_proc_win.c)
 #endif
     audio_capture_fn capture;
     audio_play_fn play;
@@ -57,6 +61,8 @@ void audio_close(audio_dev *d) {
     if (!d) return;
 #ifndef _WIN32
     if (d->pw) pwcap_close(d->pw);
+#else
+    if (d->pl) proc_loop_close(d->pl);
 #endif
     if (d->dev_ok) ma_device_uninit(&d->dev);
     if (d->ctx_ok) ma_context_uninit(&d->ctx);
@@ -158,36 +164,34 @@ audio_dev *audio_capture_open(audio_capture_fn fn, void *user, const char *app, 
             return NULL;
         }
     }
+    // tudo menos o próprio telinha (o som das transmissões assistidas não volta em eco),
+    // ou só o programa escolhido (e os processos filhos dele)
+    {
+        audio_dev *d = calloc(1, sizeof *d);
+        if (!d) return NULL;
+        d->pl = proc_loop_open(pid ? pid : (uint32_t)GetCurrentProcessId(), pid ? 0 : 1, fn, user, err, errlen);
+        if (d->pl) return d;
+        free(d);
+        // sem loopback por processo não dá pra separar um programa
+        if (pid) return NULL;
+    }
+    // Windows antigo (antes do 10 2004): captura tudo, inclusive o telinha
     const ma_backend backends[] = {ma_backend_wasapi};
     audio_dev *d = open_dev(ma_device_type_loopback, backends, 1, err, errlen);
     if (!d) return NULL;
     d->capture = fn;
     d->user = user;
+    d->hears_self = 1;
     ma_device_config cfg = ma_device_config_init(ma_device_type_loopback);
     cfg.capture.format = ma_format_f32;
     cfg.capture.channels = AUDIO_CHANNELS;
-    // tudo menos o próprio telinha (o som das transmissões assistidas não volta em eco),
-    // ou só o programa escolhido (e os processos filhos dele)
-    cfg.wasapi.loopbackProcessID = pid ? (ma_uint32)pid : (ma_uint32)GetCurrentProcessId();
-    cfg.wasapi.loopbackProcessExclude = pid ? MA_FALSE : MA_TRUE;
     if (start(d, &cfg, err, errlen) < 0) {
-        if (pid) {
-            // sem loopback por processo não dá pra separar um programa
-            audio_close(d);
-            return NULL;
-        }
-        // Windows antigo (sem loopback por processo): captura tudo
-        if (d->dev_ok) ma_device_uninit(&d->dev);
-        d->dev_ok = 0;
-        cfg.wasapi.loopbackProcessID = 0;
-        cfg.wasapi.loopbackProcessExclude = MA_FALSE;
-        d->hears_self = 1;
-        if (start(d, &cfg, err, errlen) < 0) {
-            audio_close(d);
-            audio_loopback_probe();
-            return NULL;
-        }
+        audio_close(d);
+        audio_loopback_probe();
+        return NULL;
     }
+    // o erro da tentativa por processo não vale mais (senão a UI diz "sem áudio")
+    if (err && errlen > 0) err[0] = 0;
     return d;
 #else
     // PipeWire: os aplicativos ligados direto na nossa entrada, menos o telinha
@@ -303,7 +307,7 @@ static void discard(void *user, const float *samples, int frames) {
 #endif
 
 #ifdef _WIN32
-// Número do build do Windows (o loopback por processo existe a partir do 20348).
+// Número do build do Windows (o loopback por processo existe a partir do 19041, o 10 2004).
 static unsigned long win_build(void) {
     typedef LONG(WINAPI * rtl_get_version)(OSVERSIONINFOW *);
     rtl_get_version f = (rtl_get_version)(void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion");
@@ -333,7 +337,7 @@ int audio_describe(char *out, int cap) {
              ma_get_backend_name(ctx.backend), out_name, (unsigned)npb, in_name, (unsigned)ncp,
 #ifdef _WIN32
              audio_process_loopback_ok() ? " | captura por programa: sim"
-             : win_build() >= 20348      ? " | captura por programa: não (o Windows recusou)"
+             : win_build() >= 19041      ? " | captura por programa: não (o Windows recusou)"
                                          : " | captura por programa: não (Windows antigo)"
 #else
              ""

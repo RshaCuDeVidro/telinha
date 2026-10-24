@@ -172,7 +172,7 @@ pub const Usage = struct {
     top: [6]Thread = undefined, // threads que mais gastaram (Linux)
     n_top: usize = 0,
 
-    pub const Thread = struct { name: [16]u8, len: usize, pct: f32 };
+    pub const Thread = struct { name: [32]u8, len: usize, pct: f32 };
 };
 
 var last_ms: u64 = 0;
@@ -236,7 +236,7 @@ pub fn usage() Usage {
 fn threadTop(u: *Usage, dt_ms: u64) void {
     const dir = std.c.opendir("/proc/self/task") orelse return;
     defer _ = std.c.closedir(dir);
-    var now_list: [256]struct { tid: u32, ticks: u64, name: [16]u8, len: usize } = undefined;
+    var now_list: [256]struct { tid: u32, ticks: u64, name: [32]u8, len: usize } = undefined;
     var n: usize = 0;
     while (std.c.readdir(dir)) |ent| {
         const nm = std.mem.sliceTo(@as([*:0]const u8, @ptrCast(&ent.name)), 0);

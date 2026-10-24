@@ -130,6 +130,36 @@ int dbg_proc_stats(dbg_stats *s) {
 }
 
 typedef HRESULT(WINAPI *GetThreadDescription_fn)(HANDLE, PWSTR *);
+typedef LONG(WINAPI *NtQueryInformationThread_fn)(HANDLE, int, PVOID, ULONG, PULONG);
+
+// Nome (sem pasta e sem extensão) da DLL/exe onde a thread começou.
+static void thread_module(DWORD tid, char *out, int cap) {
+    static NtQueryInformationThread_fn q;
+    static int looked;
+    if (!looked) {
+        looked = 1;
+        q = (NtQueryInformationThread_fn)(void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread");
+    }
+    if (!q) return;
+    HANDLE th = OpenThread(THREAD_QUERY_INFORMATION, FALSE, tid);
+    if (!th) return;
+    void *start = NULL;
+    const LONG st = q(th, 9 /* ThreadQuerySetWin32StartAddress */, &start, sizeof start, NULL);
+    CloseHandle(th);
+    HMODULE m = NULL;
+    if (st != 0 || !start ||
+        !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)start, &m))
+        return;
+    WCHAR path[MAX_PATH];
+    if (!GetModuleFileNameW(m, path, MAX_PATH)) return;
+    WCHAR *base = path;
+    for (WCHAR *p = path; *p; p++)
+        if (*p == L'\\' || *p == L'/') base = p + 1;
+    for (WCHAR *p = base; *p; p++)
+        if (*p == L'.') *p = 0;
+    WideCharToMultiByte(CP_UTF8, 0, base, -1, out, cap, NULL, NULL);
+    out[cap - 1] = 0;
+}
 
 int dbg_threads(dbg_thread *out, int max) {
     static GetThreadDescription_fn get_desc;
@@ -159,7 +189,13 @@ int dbg_threads(dbg_thread *out, int max) {
             LocalFree(d);
         }
         o->name[sizeof o->name - 1] = 0;
-        if (!o->name[0]) snprintf(o->name, sizeof o->name, "t%u", (unsigned)te.th32ThreadID);
+        if (!o->name[0]) {
+            // sem nome (driver de vídeo, Media Foundation, WASAPI...): a DLL
+            // onde a thread começou diz de quem ela é
+            char mod[20] = "";
+            thread_module(te.th32ThreadID, mod, sizeof mod);
+            snprintf(o->name, sizeof o->name, mod[0] ? "t%u@%s" : "t%u", (unsigned)te.th32ThreadID, mod);
+        }
         CloseHandle(th);
         n++;
     }
