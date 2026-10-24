@@ -81,6 +81,7 @@ pub const Config = struct {
     ptt_mouse: i32 = -1, // botão do mouse (2 = meio, 3/4 = laterais); -1 = é tecla
     crt: bool = false, // efeito de tela antiga (linhas) por cima da interface
     animations: bool = true,
+    eco: bool = false, // modo econômico: interface a 30 q/s, sem animação nem efeito (PC fraco)
     draw_color: u8 = 0, // cor do pincel (proto.draw_colors; 0 = a minha cor)
     draw_size: u8 = 0, // espessura (0 normal, 1 fina, 2 grossa, 3 marca-texto)
     show_drawings: bool = true, // mostrar os desenhos dos outros por cima das transmissões // tela inicial animada (parada quando o telinha não está em foco)
@@ -339,6 +340,8 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         cfg.crt = int != 0;
     } else if (std.mem.eql(u8, k, "animations")) {
         cfg.animations = int != 0;
+    } else if (std.mem.eql(u8, k, "eco")) {
+        cfg.eco = int != 0;
     } else if (std.mem.eql(u8, k, "draw_color")) {
         cfg.draw_color = @intCast(std.math.clamp(int, 0, 15));
     } else if (std.mem.eql(u8, k, "draw_size")) {
@@ -408,8 +411,8 @@ pub fn save(cfg: *const Config) void {
     _ = c.fwrite(m.ptr, 1, m.len, f);
     // (um format só aceita 32 valores: o resto vai aqui)
     var more2: [700]u8 = undefined;
-    const m2 = std.fmt.bufPrint(&more2, "animations={d}\njoin_channel={s}\ndraw_color={d}\ndraw_size={d}\nshow_drawings={d}\njoin_fp={s}\njoin_fp_for={s}\nupdate_auto={d}\nupdate_skip={s}\nlast_version={s}\nav1={d}\n", .{
-        @intFromBool(cfg.animations), getStr(&cfg.join_channel), cfg.draw_color, cfg.draw_size, @intFromBool(cfg.show_drawings), getStr(&cfg.join_fp), getStr(&cfg.join_fp_for),
+    const m2 = std.fmt.bufPrint(&more2, "animations={d}\neco={d}\njoin_channel={s}\ndraw_color={d}\ndraw_size={d}\nshow_drawings={d}\njoin_fp={s}\njoin_fp_for={s}\nupdate_auto={d}\nupdate_skip={s}\nlast_version={s}\nav1={d}\n", .{
+        @intFromBool(cfg.animations), @intFromBool(cfg.eco), getStr(&cfg.join_channel), cfg.draw_color, cfg.draw_size, @intFromBool(cfg.show_drawings), getStr(&cfg.join_fp), getStr(&cfg.join_fp_for),
         @intFromBool(cfg.update_auto), getStr(&cfg.update_skip), getStr(&cfg.last_version), @intFromBool(cfg.av1),
     }) catch return;
     _ = c.fwrite(m2.ptr, 1, m2.len, f);

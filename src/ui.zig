@@ -490,6 +490,27 @@ fn hash01(n: u32) f32 {
 
 /// Brilho redondo e suave: um leque de triângulos com a cor no meio sumindo
 /// até a borda (degradê de verdade, sem os degraus de círculos empilhados).
+/// A seta do mouse (ponta em `at`, k = escala; 1 ≈ 22 px). O miolo vai em
+/// pedaços convexos e sem a borda suavizada: o preenchimento côncavo do ImGui
+/// com antialiasing soltava uma lasca nos cantos de dentro (embaixo da seta);
+/// o contorno (suavizado) cobre a borda.
+fn arrowShape(d: *c.ImDrawList, at: c.ImVec2_c, k: f32, fill: u32, outline: u32, thickness: f32) void {
+    const pts = [_][2]f32{ .{ 0, 0 }, .{ 0, 17 }, .{ 4, 13 }, .{ 7.5, 20.5 }, .{ 10, 19.5 }, .{ 6.6, 12 }, .{ 12, 12 } };
+    var p: [pts.len]c.ImVec2_c = undefined;
+    for (pts, 0..) |q, i| p[i] = v2(at.x + q[0] * k * 1.05, at.y + q[1] * k * 1.05);
+    const flags = d.Flags;
+    d.Flags &= ~@as(c_int, 1 << 2); // ImDrawListFlags_AntiAliasedFill (o cimgui traduzido não traz os enums)
+    // cabeça: leque a partir da ponta (ela enxerga todos os cantos); cauda: um quadrilátero
+    for ([_][2]usize{ .{ 1, 2 }, .{ 2, 5 }, .{ 5, 6 } }) |t| {
+        var tri = [_]c.ImVec2_c{ p[0], p[t[0]], p[t[1]] };
+        c.ImDrawList_AddConvexPolyFilled(d, &tri, 3, fill, 0);
+    }
+    var tail = [_]c.ImVec2_c{ p[2], p[3], p[4], p[5] };
+    c.ImDrawList_AddConvexPolyFilled(d, &tail, 4, fill, 0);
+    d.Flags = flags;
+    c.ImDrawList_AddPolyline(d, &p, p.len, outline, thickness, c.ImDrawFlags_Closed);
+}
+
 fn glow(d: *c.ImDrawList, center: c.ImVec2_c, radius: f32, color: u32, strength: u8) void {
     const seg = 48;
     const uv = c.igGetFontTexUvWhitePixel();
@@ -885,6 +906,12 @@ pub const App = struct {
     open_member_menu: bool = false,
 
     audio_err_shown: bool = false,
+    img_ready: ?*chatsend.Ready = null, // imagem colada/arrastada esperando o Enviar
+    img_ready_tex: u32 = 0,
+    img_ready_frames: u8 = 0,
+    net_loss_at: u64 = 0, // saúde das transmissões: perda de pacotes daqui
+    net_loss_prev: u64 = 0,
+    net_loss_level: u8 = 0,
     clear_armed_at: f64 = -10, // "limpar o chat" pede um segundo clique
     self_mute_shown: bool = false,
     // notificações do sistema
@@ -1015,9 +1042,10 @@ pub const App = struct {
         a.applyTheme();
         a.applyPtt();
         hotkey.on_press = wakeUi;
+        chatsend.on_ready = wakeUi;
         a.applyHotkeys();
         clip.keep_secs.store(@intCast(std.math.clamp(a.cfg.clip_secs, 5, 600)), .release);
-        frame_cap_fps = @intCast(@max(0, a.cfg.ui_fps_cap));
+        frame_cap_fps = uiCap(&a.cfg);
         codec.setHwEffort(@intCast(a.cfg.hw_effort));
         codec.av1_enabled.store(a.cfg.av1, .release);
         if (a.cfg.ui_zoom != 100) setZoom(@as(f32, @floatFromInt(a.cfg.ui_zoom)) / 100);
@@ -1654,6 +1682,8 @@ pub const App = struct {
         a.trim_at = c.igGetTime() + 2;
         a.closeModals();
         a.clearChatImages();
+        if (a.img_ready) |r| chatsend.drop(r);
+        a.img_ready = null;
         a.chat_h.clearRetainingCapacity();
         a.stopMic();
         a.mic_wanted = false;
@@ -2668,6 +2698,11 @@ pub const App = struct {
     /// gente assistindo) na esquerda e o cartão de entrar/criar na direita;
     /// em janela estreita, só o cartão. A animação só roda com o telinha em
     /// foco e as animações ligadas (Aparência); sem isso a tela fica parada.
+    /// Animações valendo (desligadas no modo econômico).
+    fn animOn(a: *const App) bool {
+        return a.cfg.animations and !a.cfg.eco;
+    }
+
     fn drawHome(a: *App, size: c.ImVec2_c) void {
         a.pasteInvite();
         const d = drawList();
@@ -2680,16 +2715,16 @@ pub const App = struct {
         // telinha volta a dormir até o próximo evento
         const io = c.igGetIO_Nil();
         const active = now - a.mouse_moved_at < 12 or c.igIsAnyItemActive() or io.*.InputQueueCharacters.Size > 0;
-        const animate = a.cfg.animations and !a.away() and active;
+        const animate = a.animOn() and !a.away() and active;
         if (animate) a.home_anim_t += @min(io.*.DeltaTime, 0.1);
         const t = a.home_anim_t;
-        const enter = if (a.cfg.animations) easeOut(@floatCast(std.math.clamp((now - a.home_enter_at) / 0.55, 0, 1))) else 1;
+        const enter = if (a.animOn()) easeOut(@floatCast(std.math.clamp((now - a.home_enter_at) / 0.55, 0, 1))) else 1;
         // indicador da aba deslizando
         const tab_goal: f32 = @floatFromInt(a.home_tab);
-        if (!a.cfg.animations) a.home_tab_anim = tab_goal;
+        if (!a.animOn()) a.home_tab_anim = tab_goal;
         a.home_tab_anim += (tab_goal - a.home_tab_anim) * @min(1, io.*.DeltaTime * 14);
         if (@abs(tab_goal - a.home_tab_anim) < 0.002) a.home_tab_anim = tab_goal;
-        const switching = a.home_tab_anim != tab_goal or (a.cfg.animations and now - a.home_switch_at < 0.3);
+        const switching = a.home_tab_anim != tab_goal or (a.animOn() and now - a.home_switch_at < 0.3);
         if (animate) redrawIn(1.0 / 30.0) else if (enter < 1 or switching) redrawIn(0.016);
 
         // fundo: o degradê do tema e três brilhos que passeiam devagar
@@ -2810,9 +2845,7 @@ pub const App = struct {
         {
             const px = ix0 + side + (ix1 - ix0 - side) * (0.5 + 0.32 * @sin(t * 0.55));
             const py = iy0 + (iy1 - iy0) * (0.5 + 0.3 * @sin(t * 0.83 + 1));
-            const pts = [_]c.ImVec2_c{ v2(px, py), v2(px, py + S(17)), v2(px + S(4.5), py + S(13)), v2(px + S(8), py + S(20)), v2(px + S(10.5), py + S(19)), v2(px + S(7), py + S(12)), v2(px + S(12), py + S(12)) };
-            c.ImDrawList_AddConcavePolyFilled(d, &pts, pts.len, fa(col.white, ak));
-            c.ImDrawList_AddPolyline(d, &pts, pts.len, fa(rgba(0x000000, 200), ak), S(1.2), c.ImDrawFlags_Closed);
+            arrowShape(d, v2(px, py), S(1) / 1.05, fa(col.white, ak), fa(rgba(0x000000, 200), ak), S(1.2));
         }
         c.ImDrawList_PopClipRect(d);
         // AO VIVO piscando
@@ -2974,7 +3007,7 @@ pub const App = struct {
 
         // o conteúdo da aba entra deslizando de lado
         const since: f32 = @floatCast(c.igGetTime() - a.home_switch_at);
-        const sw = if (a.cfg.animations) easeOut(std.math.clamp(since / 0.3, 0, 1)) else 1;
+        const sw = if (a.animOn()) easeOut(std.math.clamp(since / 0.3, 0, 1)) else 1;
         const dir: f32 = if (a.home_tab == 1) 1 else -1;
         c.igPushStyleVar_Float(c.ImGuiStyleVar_Alpha, @max(0.01, ak * sw));
         defer c.igPopStyleVar(1);
@@ -3140,6 +3173,7 @@ pub const App = struct {
             if (a.share_modal) a.drawShareModal();
             if (a.settings_modal) a.drawSettingsModal();
             if (a.leave_confirm) a.drawLeaveConfirm();
+            if (a.img_ready != null) a.drawImageConfirm(cl);
             if (a.stats_open) a.drawStatsModal(cl, size);
             if (a.img_view != null) a.drawImageViewer(size);
         }
@@ -3833,6 +3867,67 @@ pub const App = struct {
         if (primaryButton(tr("Fechar a sala###fecharsalabtn"), v2(bw, S(40)), col.red, col.red_hover, col.red_hover)) {
             c.igCloseCurrentPopup();
             a.leaveRoom();
+        }
+    }
+
+    /// Prévia da imagem antes de mandar no chat: Enviar (Enter) ou Cancelar (Esc).
+    fn drawImageConfirm(a: *App, cl: *Client) void {
+        const r = a.img_ready orelse return;
+        _ = c.igOpenPopup_Str(tr("Mandar imagem###mandarimg"), 0);
+        const vp = c.igGetMainViewport();
+        c.igSetNextWindowPos(v2(vp.*.Pos.x + vp.*.Size.x / 2, vp.*.Pos.y + vp.*.Size.y / 2), c.ImGuiCond_Always, v2(0.5, 0.5));
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(22), S(20)));
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, S(10) * col.round);
+        c.igPushStyleColor_U32(c.ImGuiCol_PopupBg, col.bg_main);
+        c.igPushStyleColor_U32(c.ImGuiCol_ModalWindowDimBg, rgba(0x000000, 170));
+        defer {
+            c.igPopStyleColor(2);
+            c.igPopStyleVar(2);
+        }
+        // tamanho automático: o ImGui esconde a janela no primeiro quadro (mede),
+        // e sem evento o telinha dormiria antes do segundo
+        if (a.img_ready_frames < 3) {
+            a.img_ready_frames += 1;
+            redrawIn(0.016);
+        }
+        if (!c.igBeginPopupModal(tr("Mandar imagem###mandarimg"), null, c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoResize | c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_AlwaysAutoResize)) return;
+        defer c.igEndPopup();
+        pushFont(font_bold, 18);
+        textColored(col.header, if (cl.chans_supported) fmtZ("Mandar no #{s}?", .{cl.chan_name[0..cl.chan_name_len]}) else tr("Mandar no chat?"));
+        popFont();
+        c.igDummy(v2(0, S(8)));
+        // a prévia, inteira, cabendo em 440 x 300
+        const tw: f32 = @floatFromInt(r.tw);
+        const th: f32 = @floatFromInt(r.th);
+        const k = @min(S(440) / tw, S(300) / th);
+        const iw = tw * k;
+        const ih = th * k;
+        const p = c.igGetCursorScreenPos();
+        const box_w = @max(iw, S(300));
+        const d = drawList();
+        rectFill(d, p.x, p.y, p.x + box_w, p.y + ih, col.input, S(8));
+        c.ImDrawList_AddImageRounded(d, texRef(a.img_ready_tex), v2(p.x + (box_w - iw) / 2, p.y), v2(p.x + (box_w - iw) / 2 + iw, p.y + ih), v2(0, 0), v2(1, 1), 0xFFFFFFFF, S(8), 0);
+        c.igDummy(v2(box_w, ih));
+        pushFont(font_regular, 12.5);
+        textColored(col.faint, fmtZ("{d} × {d}", .{ r.w, r.h }));
+        popFont();
+        c.igDummy(v2(0, S(10)));
+        const bw = (box_w - S(10)) / 2;
+        var done = false;
+        if (secondaryButton(tr("Cancelar (Esc)###imgcancel"), v2(bw, S(40))) or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
+            chatsend.drop(r);
+            done = true;
+        }
+        c.igSameLine(0, S(10));
+        if (!done and (primaryButton(fmtZ("{s}  Enviar (Enter)###imgsend", .{ic.send}), v2(bw, S(40)), col.blurple, col.blurple_hover, col.blurple_active) or
+            c.igIsKeyPressed_Bool(c.ImGuiKey_Enter, false) or c.igIsKeyPressed_Bool(c.ImGuiKey_KeypadEnter, false)))
+        {
+            chatsend.send(cl, r, "");
+            done = true;
+        }
+        if (done) {
+            a.img_ready = null;
+            c.igCloseCurrentPopup();
         }
     }
 
@@ -4970,7 +5065,39 @@ pub const App = struct {
         ptr_stream: u32 = 0,
         cur_x: u16 = proto.coord_none, // ponta do cursor de quem transmite
         cur_y: u16 = proto.coord_none,
+        health: Health = .{},
     };
+
+    /// Saúde da transmissão (bolinha verde/amarela/vermelha no nome) e, quando
+    /// não está boa, de quem é a culpa.
+    const Health = struct {
+        level: u8 = 0, // 0 bem, 1 engasgando, 2 ruim
+        cause: []const u8 = "",
+    };
+
+    /// Quem assiste: atraso, o decoder daqui e a rede daqui; o resto é do outro lado.
+    fn viewHealth(a: *const App, v: *const View, who: []const u8, buf: []u8) Health {
+        // decoder daqui não dá conta (cada quadro leva quase o intervalo entre eles)
+        const fps = @max(v.shownFps(), 1);
+        if (v.decode_ms > 0 and (v.decode_ms * fps > 850 or v.decode_ms > 60))
+            return .{ .level = if (v.decode_ms * fps > 1000) 2 else 1, .cause = tr("seu PC (decodificar está pesado)") };
+        if (a.net_loss_level > 0) return .{ .level = a.net_loss_level, .cause = tr("sua internet (pacotes se perdendo)") };
+        if (v.waiting_key and v.last_frame_ms.load(.monotonic) != 0)
+            return .{ .level = 2, .cause = tr("esperando um quadro completo") };
+        // imagem chegando atrasada sem culpa daqui: o PC ou a internet de quem transmite
+        if (v.shownFps() >= 0.5 and v.latency_ms > 400)
+            return .{ .level = if (v.latency_ms > 1000) 2 else 1, .cause = i18n.bufPrint(buf, "o PC ou a internet de {s}", .{who}) catch "" };
+        return .{};
+    }
+
+    /// Quem transmite: a rede pra subir, o encoder e quem assiste devagar.
+    fn shareHealth(s: *const Sharer) Health {
+        if (s.congested) return .{ .level = 2, .cause = tr("sua internet (subindo devagar)") };
+        const fps: f32 = @floatFromInt(@max(s.settings.fps, 1));
+        if (s.encode_ms > 900 / fps) return .{ .level = 1, .cause = tr("seu PC (o encoder não dá conta)") };
+        if (s.slow_viewer) return .{ .level = 1, .cause = tr("alguém assistindo com PC ou internet lenta") };
+        return .{};
+    }
 
     /// Zoom de uma transmissão (rodinha aproxima, arrastar move).
     const Zoom = struct {
@@ -5023,6 +5150,8 @@ pub const App = struct {
         var stat_bufs: [33][128]u8 = undefined;
         var lat_bufs: [33][48]u8 = undefined;
         var name_bufs: [33][48]u8 = undefined;
+        var cause_bufs: [33][80]u8 = undefined;
+        a.updateNetLoss(cl);
         cl.mutex.lock();
         for (a.views.items) |v| {
             if (n >= tiles.len - 2) break; // os dois últimos são das minhas prévias (tela e câmera)
@@ -5047,6 +5176,7 @@ pub const App = struct {
                 .ptr_stream = v.stream,
                 .cur_x = v.cursor_x.load(.monotonic),
                 .cur_y = v.cursor_y.load(.monotonic),
+                .health = a.viewHealth(v, name, &cause_bufs[n]),
             };
             n += 1;
         }
@@ -5055,7 +5185,7 @@ pub const App = struct {
         if (a.sharer) |s| {
             s.mutex.lock();
             const st = i18n.bufPrintZ(&stat_bufs[n], "{d}x{d} · {d:.0} fps · {d} kbit/s{s} · {s} {d:.1} ms · {s}", .{ s.w, s.h, s.shownFps(), s.bitrate_kbps, if (s.congested) tr(" (rede lenta)") else if (s.slow_viewer) tr(" (espectador lento)") else "", s.encoder_name, s.encode_ms, s.backendSlice() }) catch "";
-            tiles[n] = .{ .stream = proto.streamId(0, proto.kind_screen), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = tr("Você"), .stats = st, .loading = s.preview_tex == 0, .ptr_stream = proto.streamId(my_id, proto.kind_screen), .clipbuf = s.clip };
+            tiles[n] = .{ .stream = proto.streamId(0, proto.kind_screen), .tex = s.preview_tex, .tw = s.preview_w, .th = s.preview_h, .name = tr("Você"), .stats = st, .loading = s.preview_tex == 0, .ptr_stream = proto.streamId(my_id, proto.kind_screen), .clipbuf = s.clip, .health = shareHealth(s) };
             s.mutex.unlock();
             n += 1;
         }
@@ -5129,6 +5259,22 @@ pub const App = struct {
             const row_off = (area_w - (tw * @as(f32, @floatFromInt(in_row)) + gap * @as(f32, @floatFromInt(in_row - 1)))) / 2;
             a.drawTile(t, area_x + row_off + @as(f32, @floatFromInt(cx)) * (tw + gap), area_y + @as(f32, @floatFromInt(cy)) * (th + gap), tw, th, false);
         }
+    }
+
+    /// Perda de pacotes na minha conexão (UDP), medida a cada 2 s: 0 nenhuma,
+    /// 1 alguma, 2 muita. Fica valendo até a próxima medida.
+    fn updateNetLoss(a: *App, cl: *Client) void {
+        const now = sync.nowMs();
+        if (now < a.net_loss_at) return;
+        a.net_loss_at = now + 2000;
+        const l = cl.udp.load(.acquire) orelse {
+            a.net_loss_level = 0;
+            return;
+        };
+        const lost = l.ep.stats.lost_msgs + l.ep.stats.nacks_sent;
+        const d = lost -| a.net_loss_prev;
+        a.net_loss_prev = lost;
+        a.net_loss_level = if (d > 20) 2 else if (d > 3) 1 else 0;
     }
 
     fn latencyText(buf: *[48]u8, v: *const View) []const u8 {
@@ -5292,12 +5438,26 @@ pub const App = struct {
         const ns = textSizeF(font_semibold, name_size, t.name);
         const lx = x + S(10);
         const ly = y + h - ns.y - S(16);
-        rectFill(d, lx, ly, lx + ns.x + S(70), ly + ns.y + S(8), col.overlay, S(6));
+        // saúde: bolinha no fim do nome; engasgando, o porquê do lado (se couber)
+        const health_cols = [_]u32{ col.green, col.yellow, col.red };
+        const hc = health_cols[@min(t.health.level, 2)];
+        const cause_w = if (t.health.level > 0 and !small) textSizeF(font_regular, 12, t.health.cause).x + S(12) else 0;
+        const label_w = @min(ns.x + S(84) + cause_w, w - S(20));
+        rectFill(d, lx, ly, lx + label_w, ly + ns.y + S(8), col.overlay, S(6));
         const bw = liveBadge(d, v2(lx + S(6), ly + S(4) + (ns.y - S(14)) / 2));
         drawTextF(d, font_semibold, name_size, v2(lx + S(12) + bw, ly + S(4)), col.white, t.name);
+        const dot = v2(lx + S(12) + bw + ns.x + S(9), ly + S(4) + ns.y / 2);
+        c.ImDrawList_AddCircleFilled(d, dot, S(4), hc, 0);
+        if (c.igIsMouseHoveringRect(v2(dot.x - S(7), dot.y - S(7)), v2(dot.x + S(7), dot.y + S(7)), true))
+            tooltipText(if (t.health.level == 0) tr("A transmissão está fluindo bem") else fmtZ("Engasgando: {s}", .{t.health.cause}));
+        if (cause_w > 0) {
+            c.ImDrawList_PushClipRect(d, v2(lx, ly), v2(lx + label_w - S(4), ly + ns.y + S(8)), true);
+            drawTextF(d, font_regular, 12, v2(dot.x + S(10), ly + S(4) + (ns.y - S(15)) / 2), hc, t.health.cause);
+            c.ImDrawList_PopClipRect(d);
+        }
         if (zm.z > 1.001) {
             const zt = fmtZ("{d:.1}x", .{zm.z});
-            drawTextF(d, font_semibold, 12, v2(lx + ns.x + S(78), ly + S(5)), col.white, zt);
+            drawTextF(d, font_semibold, 12, v2(lx + label_w + S(8), ly + S(5)), col.white, zt);
         }
 
         if (t.clipbuf) |cb| {
@@ -5513,11 +5673,7 @@ pub const App = struct {
 
     /// Seta de cursor clássica (preta com borda branca), ponta em `at`; `k` = escala (1 ≈ 22 px).
     fn drawArrow(d: *c.ImDrawList, at: c.ImVec2_c, k: f32) void {
-        const pts = [_][2]f32{ .{ 0, 0 }, .{ 0, 17 }, .{ 4, 13 }, .{ 7.5, 20.5 }, .{ 10, 19.5 }, .{ 6.6, 12 }, .{ 12, 12 } };
-        var poly: [pts.len]c.ImVec2_c = undefined;
-        for (pts, 0..) |p, i| poly[i] = v2(at.x + p[0] * k * 1.05, at.y + p[1] * k * 1.05);
-        c.ImDrawList_AddConcavePolyFilled(d, &poly, poly.len, rgba(0x000000, 235));
-        c.ImDrawList_AddPolyline(d, &poly, poly.len, rgba(0xffffff, 255), @max(1.0, 1.4 * k), c.ImDrawFlags_Closed);
+        arrowShape(d, at, k, rgba(0x000000, 235), rgba(0xffffff, 255), @max(1.0, 1.4 * k));
     }
 
     /// Seta com o nome de quem aponta (cor do avatar dela).
@@ -6538,6 +6694,25 @@ pub const App = struct {
             }
             n_drops = 0;
         }
+        // imagem pronta: a prévia pergunta antes de mandar (antes ia direto)
+        if (chatsend.take()) |r| {
+            if (a.img_ready) |old| chatsend.drop(old);
+            if (a.screen != .room or a.client == null) {
+                chatsend.drop(r);
+            } else {
+                a.img_ready = r;
+                a.img_ready_frames = 0;
+                gl.upload(&a.img_ready_tex, r.thumb, @intCast(r.tw), @intCast(r.th), gl.RGBA);
+            }
+        }
+        // Ctrl+V com imagem copiada em qualquer lugar da sala (fora de um campo
+        // de texto: o do chat trata o colar dele)
+        if (a.screen == .room and a.img_ready == null) if (a.client) |cl| {
+            const io = c.igGetIO_Nil();
+            if (io.*.KeyCtrl and !io.*.WantTextInput and c.igIsKeyPressed_Bool(c.ImGuiKey_V, false)) {
+                if (!chatsend.paste(cl)) a.toast("Nada pra colar: copie uma imagem (print) e aperte Ctrl+V.", .{}, false);
+            }
+        };
         const f = chatsend.failed.load(.acquire);
         if (f != a.img_failed_seen) {
             a.img_failed_seen = f;
@@ -7533,7 +7708,7 @@ pub const App = struct {
             c.igSetCursorScreenPos(back);
         }
         if (chatsend.running.load(.acquire) > 0) {
-            drawTextF(d, font_regular, 12, v2(bx + S(6), by - S(18)), col.muted, fmtZ("{s}  mandando imagem...", .{ic.image}));
+            drawTextF(d, font_regular, 12, v2(bx + S(6), by - S(18)), col.muted, fmtZ("{s}  preparando a imagem...", .{ic.image}));
         }
         c.igSameLine(0, 0);
         c.igSetCursorScreenPos(v2(bx + bw - S(76), by + bh - S(39)));
@@ -8291,7 +8466,7 @@ pub const App = struct {
 
     /// Linhas de tela antiga por cima da interface (menos nas transmissões).
     fn drawCrt(a: *App, size: c.ImVec2_c) void {
-        if (!a.cfg.crt) return;
+        if (!a.cfg.crt or a.cfg.eco) return;
         const d = c.igGetForegroundDrawList_ViewportPtr(c.igGetMainViewport());
         const dark = theme.luminance(col.bg_main) < 0.2;
         const line = withAlpha(col.black, if (dark) 46 else 18);
@@ -8835,6 +9010,19 @@ pub const App = struct {
     }
 
     fn settingsPerformance(a: *App, w: f32) void {
+        // um interruptor só pra PC fraco (por cima das outras escolhas, que ficam guardadas)
+        c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
+        if (c.igCheckbox(tr("Modo econômico (PC fraco): interface a 30 q/s, sem animações nem efeitos###eco"), &a.cfg.eco)) {
+            frame_cap_fps = uiCap(&a.cfg);
+            config.save(&a.cfg);
+        }
+        c.igPopStyleColor(1);
+        c.igPushTextWrapPos(c.igGetCursorPosX() + w);
+        pushFont(font_regular, 12.5);
+        textColored(col.faint, tr("Menos trabalho pra placa e pro processador enquanto você joga. O vídeo das transmissões continua no fps delas."));
+        popFont();
+        c.igPopTextWrapPos();
+        c.igDummy(v2(0, S(12)));
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         if (c.igCheckbox(tr("Qualidade automática: baixa a resolução sozinho se o PC não der conta do fps###autoq"), &a.cfg.auto_quality)) {
             config.save(&a.cfg);
@@ -8879,7 +9067,7 @@ pub const App = struct {
         }
         if (segmented("fpscap", &.{ "30 q/s", "60 q/s", "O do monitor" }, &ci, w)) {
             a.cfg.ui_fps_cap = caps[@intCast(ci)];
-            frame_cap_fps = @intCast(a.cfg.ui_fps_cap);
+            frame_cap_fps = uiCap(&a.cfg);
             config.save(&a.cfg);
         }
         pushFont(font_regular, 12.5);
@@ -9448,7 +9636,7 @@ pub const App = struct {
             cl.mutex.unlock();
         }
         try w.print("],\"strokes_drawn\":{d},\"show_drawings\":{},\"draw_color\":{d},\"draw_size\":{d},\"drawing\":{}", .{ a.strokes_drawn, a.cfg.show_drawings, a.cfg.draw_color, a.cfg.draw_size, a.draw_tile != null });
-        try w.print(",\"pctest\":{f},\"crash_pending\":{},\"crash_prompt\":{}", .{ s(@tagName(pctest.getState())), crash.pending(), a.crash_prompt });
+        try w.print(",\"pctest\":{f},\"crash_pending\":{},\"crash_prompt\":{},\"img_confirm\":{}", .{ s(@tagName(pctest.getState())), crash.pending(), a.crash_prompt, a.img_ready != null });
         var dlb: [512]u8 = undefined;
         try w.print(",\"debug_on\":{},\"debug_size\":{d},\"debug_send\":{f},\"debug_result\":{f}", .{ debuglog.on(), debuglog.fileSize(), s(@tagName(debuglog.sendState())), s(debuglog.sendResult(&dlb)) });
         try w.print(",\"last_saved\":{f},\"clip_jobs\":{d}", .{ s(a.last_saved[0..a.last_saved_len]), blk: {
@@ -9707,6 +9895,12 @@ pub var frame_work_max_us: u64 = 0;
 
 /// Limite de quadros por segundo da interface (0 = o do monitor).
 pub var frame_cap_fps: u64 = 60;
+
+/// Limite de quadros da interface valendo (o modo econômico segura em 30).
+fn uiCap(cfg: *const config.Config) u64 {
+    const want: u64 = @intCast(@max(0, cfg.ui_fps_cap));
+    return if (cfg.eco) (if (want == 0) 30 else @min(want, 30)) else want;
+}
 
 /// Quando a interface precisa se redesenhar sozinha (animação, contagem,
 /// aviso sumindo), em segundos de igGetTime. O loop principal dorme até lá

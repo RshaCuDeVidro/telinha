@@ -1,6 +1,7 @@
 //! Mandar imagem no chat: arquivo solto na janela ou imagem colada (Ctrl+V).
 //! A leitura (stb_image) e a codificação (chatimg.zig) rodam numa thread, pra
-//! interface não engasgar; o resultado vai direto pra sala.
+//! interface não engasgar; o resultado fica esperando (prévia com Enviar e
+//! Cancelar na interface) e só vai pra sala quando a pessoa confirma.
 const std = @import("std");
 const tr = @import("i18n.zig").tr;
 const c = @import("c.zig").c;
@@ -107,9 +108,75 @@ fn run(job: *Job) void {
         },
     };
     var enc = chatimg.encode(px, w, h) catch |e| return fail(if (e == error.TooBig) .too_big else .encode);
-    defer enc.deinit();
-    job.cl.sendChatImage("", enc.w, enc.h, enc.data);
+    errdefer enc.deinit();
+    // prévia pequena (RGBX) pra interface mostrar antes de mandar
+    const scale = @min(1.0, @min(@as(f32, preview_side) / @as(f32, @floatFromInt(w)), @as(f32, preview_side) / @as(f32, @floatFromInt(h))));
+    const tw: usize = @max(1, @as(usize, @intFromFloat(@as(f32, @floatFromInt(w)) * scale)));
+    const th: usize = @max(1, @as(usize, @intFromFloat(@as(f32, @floatFromInt(h)) * scale)));
+    const thumb = gpa.alloc(u8, tw * th * 4) catch {
+        enc.deinit();
+        return fail(.encode);
+    };
+    chatimg.resample(px, w, h, thumb, tw, th);
+    const r = gpa.create(Ready) catch {
+        gpa.free(thumb);
+        enc.deinit();
+        return fail(.encode);
+    };
+    r.* = .{ .enc = enc, .thumb = thumb, .tw = tw, .th = th, .w = w, .h = h };
+    ready_mutex.lock();
+    const old = ready;
+    ready = r;
+    ready_mutex.unlock();
+    if (old) |o| o.destroy(); // duas prontas antes da interface pegar: vale a última
+    if (on_ready) |f| f(); // acorda a interface (ela dorme sem evento)
+}
+
+/// Chamado (da thread) quando uma imagem fica pronta.
+pub var on_ready: ?*const fn () void = null;
+
+/// Lado maior da prévia.
+pub const preview_side = 480;
+
+/// Imagem pronta, esperando a pessoa confirmar.
+pub const Ready = struct {
+    enc: chatimg.Encoded,
+    thumb: []u8, // RGBX tw x th
+    tw: usize,
+    th: usize,
+    w: usize, // tamanho original
+    h: usize,
+
+    pub fn destroy(r: *Ready) void {
+        r.enc.deinit();
+        gpa.free(r.thumb);
+        gpa.destroy(r);
+    }
+};
+
+var ready_mutex: sync.Mutex = .{};
+var ready: ?*Ready = null;
+
+/// A imagem nova que ficou pronta (a interface fica com ela: mostra a prévia
+/// e depois chama send ou drop). null = nada novo.
+pub fn take() ?*Ready {
+    ready_mutex.lock();
+    defer ready_mutex.unlock();
+    const r = ready;
+    ready = null;
+    return r;
+}
+
+/// Manda (com a legenda, se tiver) e libera.
+pub fn send(cl: *Client, r: *Ready, caption: []const u8) void {
+    cl.sendChatImage(caption, r.enc.w, r.enc.h, r.enc.data);
     _ = sent.fetchAdd(1, .acq_rel);
+    r.destroy();
+}
+
+/// Desiste e libera.
+pub fn drop(r: *Ready) void {
+    r.destroy();
 }
 
 fn readFile(path: [:0]const u8) ?[]u8 {
