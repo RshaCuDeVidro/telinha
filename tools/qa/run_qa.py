@@ -862,6 +862,26 @@ def bot_telao():
 
 
 @test
+def bot_de_outro_canal():
+    """Bot em outro canal aparece no painel ("bots em outros canais") e o clique direito → "Chamar pra minha call" traz ele (um /msg !join por baixo)."""
+    with Session("botlonge") as s:
+        p = port()
+        s.spawn("srv", [SERVER, "--porta", str(p), "--senha", "pw"], {k: os.environ[k] for k in ("HOME", "PATH")})
+        time.sleep(0.6)
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+        s.spawn("bot", [sys.executable, os.path.join(root, "bots", "telao", "telao.py"), f"telinha://127.0.0.1:{p}#pw", "--channel", "cinema"], {"HOME": s.base, "PATH": os.environ["PATH"]})
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--senha", "pw"])
+        st = b.wait(lambda st: st["status"] == "connected" and any(m["name"] == "Telão" for m in st["room_bots"]), 15, "o Telão na lista de bots de outros canais")
+        bot = next(m for m in st["room_bots"] if m["name"] == "Telão")
+        expect(not any(m["id"] == bot["id"] for m in st["members"]), "o bot de outro canal entrou na lista da call")
+        b.screenshot(os.path.join(s.base, "bots_longe.png"))
+        b.click_rect(b.member_row(bot["id"]), button=3)
+        b.click(contains="###mbotjoin")
+        b.wait(lambda st: any(m["id"] == bot["id"] and m["bot"] for m in st["members"]) and not st["room_bots"], 10, "o Telão vir pra call da Bia")
+        log("bot de outro canal listado e chamado pra call pelo menu")
+
+
+@test
 def identidade_servidor():
     """Identidade do servidor: o convite leva a impressão e quem entra por ele confere; convite com impressão errada não entra; num servidor dedicado, a primeira vez é lembrada e, se a chave mudar, o app avisa e só entra depois de confiar na nova."""
     with Session("identidade") as s:
@@ -2295,16 +2315,16 @@ def log_depuracao():
 
 @test
 def temas():
-    """Temas: troca nas configurações na hora (claro, pwnd...), fica salvo e volta igual ao abrir de novo."""
+    """Temas: o pwnd é o padrão de quem instala; troca nas configurações na hora (escuro, claro...), fica salvo e volta igual ao abrir de novo."""
     with Session("temas") as s:
         p = port()
         a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)])
         st = a.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
-        expect(st["cfg"]["theme"] == "escuro", f"tema inicial: {st['cfg']['theme']}")
+        expect(st["cfg"]["theme"] == "pwnd", f"tema inicial: {st['cfg']['theme']}")
         a.click("##gear")
         a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
         a.click("##cfg-aparencia")
-        for t in ["claro", "pwnd", "pwnd-claro", "nord", "dracula", "pwnd"]:
+        for t in ["escuro", "claro", "pwnd-claro", "nord", "dracula", "pwnd"]:
             a.click(f"##tema-{t}", window="###configuracoes")
             a.wait(lambda st: st["cfg"]["theme"] == t, 3, f"trocar pro tema {t}")
         ini = open(os.path.join(a.cfg, "telinha", "config.ini")).read()

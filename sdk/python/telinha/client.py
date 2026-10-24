@@ -35,7 +35,7 @@ log = logging.getLogger("telinha")
 
 __all__ = ["Client", "Denied", "EVENTS"]
 
-SDK_VERSION = "0.2.1"
+SDK_VERSION = "0.3.0"
 PING_EVERY = 10.0  # s
 DEAD_AFTER = 45.0  # s sem nada chegando: a conexão morreu
 FILE_CHUNK = 32 * 1024
@@ -49,7 +49,7 @@ EDIT_GAP = 0.25  # s entre edições (o servidor ignora mais rápido que 200 ms)
 EVENTS = (
     "ready",  # (welcome: Welcome) entrou (de novo, depois de reconectar também)
     "message",  # (msg: Message) mensagem no chat (do canal ou privada; inclui as do próprio bot)
-    "join",  # (member: Member) apareceu alguém na sala (no meu canal ou na minha call)
+    "join",  # (member: Member) apareceu alguém na sala (no meu canal ou na minha call; bot, em qualquer canal)
     "leave",  # (member: Member) saiu
     "members",  # (members: list[Member]) a lista mudou
     "reaction",  # (message_id: int, member_id: int, reaction: int, on: bool)

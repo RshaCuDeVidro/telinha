@@ -2479,9 +2479,12 @@ pub const Server = struct {
     }
 
     fn broadcastMembersFor(s: *Server, ch: *Chan, call: ?*Chan) !void {
+        // os bots aparecem pra todo mundo, estejam onde estiverem: dá pra
+        // chamar um bot de outro canal pra sua call (app antigo ignora quem
+        // não está nem no canal nem na call)
         const shown = struct {
             fn f(o: *const Conn, c0: *Chan, c1: ?*Chan) bool {
-                return o.chan == c0 or (c1 != null and o.call == c1);
+                return o.chan == c0 or (c1 != null and o.call == c1) or o.bot;
             }
         }.f;
         var n: u16 = 0;

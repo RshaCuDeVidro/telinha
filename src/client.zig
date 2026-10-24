@@ -844,6 +844,7 @@ pub const Client = struct {
     room_name_len: usize = 0,
     members: std.ArrayList(Member) = .empty, // quem está na minha call (e eu)
     chan_members: std.ArrayList(Member) = .empty, // quem está no meu canal de texto
+    room_bots: std.ArrayList(Member) = .empty, // bots em outros canais (dá pra chamar pra minha call)
     chat: std.ArrayList(ChatLine) = .empty,
     chat_count: u64 = 0, // total de mensagens já recebidas (pra rolar o chat)
     chat_new: u64 = 0, // mensagens novas (não de histórico) — notificação
@@ -974,6 +975,7 @@ pub const Client = struct {
             cl.queue.deinit();
             cl.members.deinit(gpa);
             cl.chan_members.deinit(gpa);
+            cl.room_bots.deinit(gpa);
             for (cl.chat.items) |*l| l.free();
             cl.chat.deinit(gpa);
             cl.notices.deinit(gpa);
@@ -1407,12 +1409,15 @@ pub const Client = struct {
                 } else false;
                 var chat_list: std.ArrayList(Member) = .empty;
                 errdefer chat_list.deinit(gpa);
+                var bots: std.ArrayList(Member) = .empty;
+                errdefer bots.deinit(gpa);
                 cl.mutex.lock();
                 defer cl.mutex.unlock();
                 if (marked) {
                     var w: usize = 0;
                     for (list.items) |m| {
                         if (m.in_chan) try chat_list.append(gpa, m);
+                        if (m.bot and !m.in_chan and !m.in_call) try bots.append(gpa, m);
                         if (m.in_call or m.id == cl.my_id) {
                             list.items[w] = m;
                             w += 1;
@@ -1431,6 +1436,8 @@ pub const Client = struct {
                 cl.members = list;
                 cl.chan_members.deinit(gpa);
                 cl.chan_members = chat_list;
+                cl.room_bots.deinit(gpa);
+                cl.room_bots = bots;
                 // admin muda com a lista (alguém deu ou tirou)
                 for (list.items) |*m| {
                     if (m.id == cl.my_id) cl.is_admin = m.admin;

@@ -62,7 +62,7 @@ pub const Config = struct {
     camera_device: [160]u8 = zstr("", 160), // vazio = a primeira câmera
     camera_res: i32 = 1, // 0 = 480p, 1 = 720p, 2 = 1080p
     language: [8]u8 = zstr("auto", 8), // idioma: "auto" (o do sistema), "pt" ou "en"
-    theme: [24]u8 = zstr("escuro", 24), // tema da interface (id em theme.zig)
+    theme: [24]u8 = zstr("pwnd", 24), // tema da interface (id em theme.zig); o pwnd é a cara do telinha
     custom_theme: [96]u8 = zstr("", 96), // cores do tema personalizado (theme.encodeBase)
     custom_css: [512]u8 = zstr("", 512), // arquivo CSS do tema personalizado (atualiza sozinho)
     auto_quality: bool = true, // transmitindo: baixa a resolução sozinho se o PC não der conta
