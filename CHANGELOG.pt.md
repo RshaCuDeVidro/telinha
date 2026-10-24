@@ -2,6 +2,25 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.6.2
+
+Conversa com a 3.6, a 3.5, a 3.4, a 3.3, a 3.2 e a 3.1.
+
+### Destaques
+
+- 🔁 **Atualizar não trava mais o app**: no Linux, com o log de depuração ligado, a versão nova travava logo ao abrir depois de se instalar sozinha (aconteceu na 3.6.0 e na 3.6.1; reabrindo na mão ela funcionava).
+
+<!-- detalhes -->
+
+### Todas as mudanças
+
+- **Atualizador (Linux)**: a versão nova tirava do ambiente a variável com o
+  processo antigo (`unsetenv`), e isso encurtava a lista do ambiente que o Zig
+  guarda do começo do processo: a última entrada virava nulo e o primeiro
+  `std.debug.print` (o log de depuração) caía nela. Agora o valor vira "0" (a
+  lista fica do mesmo tamanho). O teste do atualizador reinicia com o log de
+  depuração ligado e confere que o processo novo continua de pé.
+
 ## 3.6.1
 
 Conversa com a 3.6, a 3.5, a 3.4, a 3.3, a 3.2 e a 3.1 (app antigo não mostra o "apagar canal", e num servidor antigo quem criou o canal continua entrando sem a senha).

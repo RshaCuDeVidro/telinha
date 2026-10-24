@@ -12,7 +12,7 @@
 <p align="center">
   <img alt="Plataformas" src="https://img.shields.io/badge/plataformas-Linux%20%7C%20Windows-5865f2?style=flat-square">
   <img alt="Zig 0.16" src="https://img.shields.io/badge/zig-0.16-f7a41d?style=flat-square">
-  <img alt="Versão 3.6.1" src="https://img.shields.io/badge/vers%C3%A3o-3.6.1-9333ea?style=flat-square">
+  <img alt="Versão 3.6.2" src="https://img.shields.io/badge/vers%C3%A3o-3.6.2-9333ea?style=flat-square">
   <img alt="Licença MIT" src="https://img.shields.io/badge/licen%C3%A7a-MIT-22c55e?style=flat-square">
 </p>
 

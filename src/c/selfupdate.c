@@ -253,7 +253,11 @@ void upd_wait_previous(void) {
     const char *v = getenv("TELINHA_ESPERAR_PID");
     if (!v) return;
     pid_t pid = (pid_t)atoi(v);
-    unsetenv("TELINHA_ESPERAR_PID");
+    // "0" em vez de unsetenv: o Zig guarda a lista do ambiente do começo do
+    // processo, e o unsetenv encurta essa lista no lugar (a última entrada
+    // virava nulo e o primeiro std.debug.print caía nela: o app travava toda
+    // vez que reiniciava depois de atualizar)
+    setenv("TELINHA_ESPERAR_PID", "0", 1);
     if (pid <= 1) return;
     // até 15 s (kill 0 só pergunta se o processo ainda existe)
     for (int i = 0; i < 300 && kill(pid, 0) == 0; i++) usleep(50000);

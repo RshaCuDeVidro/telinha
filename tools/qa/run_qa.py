@@ -2531,7 +2531,8 @@ def atualizacao():
             os.makedirs(os.path.dirname(exe))
             shutil.copy2(APP, exe)
             env = {"TELINHA_ATUALIZACAO_URL": ok_url, "TELINHA_CHAVE_ATUALIZACAO": pub, "QA_EXE": exe}
-            a = s.app("a", 91, ["--nome", "Ana"], extra_env=env, wrap=["sh", "-c", 'shift; exec "$QA_EXE" "$@"', "x"])
+            # com o log de depuração: o primeiro std.debug.print do processo novo travava (3.6.0 e 3.6.1)
+            a = s.app("a", 91, ["--nome", "Ana"], extra_env=env, wrap=["sh", "-c", 'shift; exec "$QA_EXE" "$@"', "x"], config={"debug_log": 1})
             st = a.wait(lambda st: st["update"] == "newer" and st["update_modal"], 20, "o aviso de versão nova")
             expect(st["update_can"], f"não dá pra instalar: {st['update_why']}")
             notes = st["update_notes"]
@@ -2551,8 +2552,11 @@ def atualizacao():
             st = a.wait(lambda st: st["pid"] != old_pid and st["screen"] == "home", 20, "abrir de novo (o executável novo)")
             new_pid = st["pid"]
             expect(os.readlink(f"/proc/{new_pid}/exe") == exe, f"o processo novo não é o executável trocado: {os.readlink(f'/proc/{new_pid}/exe')}")
-            # nada da conexão/arquivos do antigo ficou aberto no novo (só 0,1,2 + os dele)
             log(f"reabriu: pid {old_pid} -> {new_pid}")
+            time.sleep(1.5)
+            expect(os.path.exists(f"/proc/{new_pid}"), "o processo novo morreu logo depois de abrir")
+            crash = os.path.join(a.cfg, "telinha", "telinha-travou.txt")
+            expect(not os.path.exists(crash), "travou ao reabrir: " + (open(crash).read()[:300] if os.path.exists(crash) else ""))
 
             # assinatura errada: avisa, mas não instala
             exe2 = os.path.join(s.base, "bin2", "telinha")

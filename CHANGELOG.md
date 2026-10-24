@@ -2,6 +2,25 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.6.2
+
+Talks to 3.6, 3.5, 3.4, 3.3, 3.2 and 3.1.
+
+### Highlights
+
+- 🔁 **Updating no longer crashes the app**: on Linux, with the debug log on, the new version crashed right after installing itself and reopening (it happened on 3.6.0 and 3.6.1; opening it again by hand worked).
+
+<!-- detalhes -->
+
+### All changes
+
+- **Updater (Linux)**: the new version removed the variable holding the old
+  process from the environment (`unsetenv`), which shortened the environment
+  list Zig keeps from the start of the process: the last entry became null and
+  the first `std.debug.print` (the debug log) hit it. Now the value becomes
+  "0" (the list keeps its size). The updater test restarts with the debug log
+  on and checks that the new process stays up.
+
 ## 3.6.1
 
 Talks to 3.6, 3.5, 3.4, 3.3, 3.2 and 3.1 (an older app doesn't show "delete channel", and on an older server a channel's creator still gets in without the password).
