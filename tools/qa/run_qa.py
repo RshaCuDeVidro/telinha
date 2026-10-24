@@ -297,7 +297,7 @@ def tela_inicial_parada():
 
 @test
 def canais():
-    """Canais (como no IRC) com a call separada: /join e o clique no nome trocam só o chat (a call continua); o fone do canal troca a call e a transmissão vai junto; quem assistia na call velha para; entrar pela tela inicial num canal já põe na call dele; o convite leva o canal; o + cria; canal vazio some."""
+    """Canais (como no IRC) com a call separada: /join e o clique no nome trocam só o chat (a call continua); o fone do canal troca a call e a transmissão vai junto; quem assistia na call velha para; entrar pela tela inicial num canal já põe na call dele; o convite leva o canal; o + cria; canal vazio continua na lista (some depois de dias)."""
     with Session("canais") as s:
         p = port()
         a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--senha", "pw"])
@@ -348,7 +348,7 @@ def canais():
         b.click("##callbtn")
         b.wait(lambda st: st["call"] == "", 5, "o Bruno fora da call")
         c.wait(lambda st: not st["views"], 10, "a Carol parar de assistir (o Bruno saiu da call)")
-        # + do painel: cria um canal; voltando, o canal vazio some
+        # + do painel: cria um canal; voltando, o canal vazio continua na lista
         c.click("##newchan")
         time.sleep(0.3)
         c.click("##chanin")
@@ -358,7 +358,7 @@ def canais():
         time.sleep(1.0)  # limite de troca
         c.click("#geral")
         c.wait(lambda st: st["channel"] == "geral", 5, "a Carol no geral")
-        a.wait(lambda st: not any(ch["name"] == "filmes" for ch in st["channels"]), 5, "o canal vazio sumir")
+        a.wait(lambda st: any(ch["name"] == "filmes" and ch["people"] == 0 for ch in st["channels"]), 5, "o canal vazio continuar na lista")
 
 
 @test

@@ -912,6 +912,7 @@ pub const App = struct {
     net_loss_at: u64 = 0, // saúde das transmissões: perda de pacotes daqui
     net_loss_prev: u64 = 0,
     net_loss_level: u8 = 0,
+    chan_menu_admin: bool = false, // o menu do canal aberto por admin da sala (senão: quem criou)
     clear_armed_at: f64 = -10, // "limpar o chat" pede um segundo clique
     self_mute_shown: bool = false,
     // notificações do sistema
@@ -4380,7 +4381,8 @@ pub const App = struct {
                 const id = std.fmt.bufPrintZ(&lb, "#{s}###ch{d}", .{ name, i }) catch "###ch";
                 const clicked = c.igInvisibleButton(id.ptr, v2(rw - (if (calls_known) cb else 0), row_h - S(2)), 0);
                 const hov = c.igIsItemHovered(0);
-                if (i_am_admin and c.igIsItemClicked(1)) {
+                if ((i_am_admin or ch.flags & proto.chan_mine != 0) and c.igIsItemClicked(1)) {
+                    a.chan_menu_admin = i_am_admin;
                     a.chan_menu_len = @min(name.len, a.chan_menu.len);
                     @memcpy(a.chan_menu[0..a.chan_menu_len], name[0..a.chan_menu_len]);
                     a.chan_menu_flags = ch.flags;
@@ -4806,7 +4808,22 @@ pub const App = struct {
         cl.mutex.lock();
         const i_am_admin = cl.is_admin;
         const my_id = cl.my_id;
+        // quem criou o canal em que estou (e não é admin da sala): só "tirar do canal"
+        const chan_boss = cl.chans_supported and for (cl.chans[0..cl.n_chans]) |*ch| {
+            if (std.mem.eql(u8, ch.nameSlice(), cl.chan_name[0..cl.chan_name_len])) break ch.flags & proto.chan_mine != 0;
+        } else false;
+        var my_chan_buf: [proto.channel_name_max]u8 = undefined;
+        const my_chan_len = cl.chan_name_len;
+        @memcpy(my_chan_buf[0..my_chan_len], cl.chan_name[0..my_chan_len]);
         cl.mutex.unlock();
+        if (!i_am_admin and chan_boss and target.id != my_id and !target.owner and !target.admin) {
+            c.igDummy(v2(0, S(4)));
+            c.igSeparator();
+            c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);
+            if (c.igSelectable_Bool(fmtZ("{s}  Tirar do #{s} (não volta)###cban", .{ ic.ban, my_chan_buf[0..my_chan_len] }), false, 0, v2(S(220), 0)))
+                cl.chanAdmin(proto.chan_act_ban, my_chan_buf[0..my_chan_len], "", target.id);
+            c.igPopStyleColor(1);
+        }
         const me = for (members) |*m| {
             if (m.id == my_id) break m;
         } else null;
@@ -4846,6 +4863,8 @@ pub const App = struct {
             }
             c.igEndMenu();
         }
+        if (cl.chans_supported and my_chan_len > 0 and c.igSelectable_Bool(fmtZ("{s}  Tirar do #{s} (não volta)###cban", .{ ic.ban, my_chan_buf[0..my_chan_len] }), false, 0, v2(w, 0)))
+            cl.chanAdmin(proto.chan_act_ban, my_chan_buf[0..my_chan_len], "", target.id);
         if (c.igSelectable_Bool(fmtZ("{s}  Expulsar da sala###akick", .{ic.ban}), false, 0, v2(w, 0))) cl.admin(proto.admin_kick, target.id, 0);
         if (c.igSelectable_Bool(fmtZ("{s}  Banir (não volta mais)###aban", .{ic.gavel}), false, 0, v2(w, 0))) cl.admin(proto.admin_ban, target.id, 0);
         c.igPopStyleColor(1);
@@ -7948,10 +7967,18 @@ pub const App = struct {
         pushFont(font_bold, 13);
         textColored(col.header, fmtZ("#{s}", .{name}));
         popFont();
+        if (fl & proto.chan_mine != 0) {
+            pushFont(font_regular, 12);
+            textColored(col.faint, tr("Você criou esse canal: você manda nele."));
+            popFont();
+        }
         c.igSeparator();
-        if (c.igSelectable_Bool(if (fl & proto.chan_fixed != 0) fmtZ("{s}  Soltar (some quando esvaziar)###cfix", .{ic.lock_open}) else fmtZ("{s}  Fixar (fica, mesmo vazio e reiniciando)###cfix", .{ic.lock}), false, 0, v2(w, 0)))
+        // fixar é coisa do admin da sala; o resto, quem criou o canal também pode
+        if (a.chan_menu_admin and c.igSelectable_Bool(if (fl & proto.chan_fixed != 0) fmtZ("{s}  Soltar (some dias depois de esvaziar)###cfix", .{ic.lock_open}) else fmtZ("{s}  Fixar (fica pra sempre, mesmo vazio)###cfix", .{ic.lock}), false, 0, v2(w, 0)))
             cl.chanAdmin(proto.chan_act_fix, name, if (fl & proto.chan_fixed != 0) "0" else "1", 0);
-        if (c.igSelectable_Bool(if (fl & proto.chan_locked != 0) fmtZ("{s}  Destrancar###clock", .{ic.lock_open}) else fmtZ("{s}  Trancar (só admin entra)###clock", .{ic.lock}), false, 0, v2(w, 0)))
+        if (c.igSelectable_Bool(if (fl & proto.chan_hidden != 0) fmtZ("{s}  Mostrar na lista###chide", .{ic.eye}) else fmtZ("{s}  Invisível (só entra quem sabe o nome)###chide", .{ic.eye_slash}), false, 0, v2(w, 0)))
+            cl.chanAdmin(proto.chan_act_hide, name, if (fl & proto.chan_hidden != 0) "0" else "1", 0);
+        if (c.igSelectable_Bool(if (fl & proto.chan_locked != 0) fmtZ("{s}  Destrancar###clock", .{ic.lock_open}) else fmtZ("{s}  Trancar (só admin e você entram)###clock", .{ic.lock}), false, 0, v2(w, 0)))
             cl.chanAdmin(proto.chan_act_lock, name, if (fl & proto.chan_locked != 0) "0" else "1", 0);
         if (c.igSelectable_Bool(fmtZ("{s}  Senha do canal…###cpw", .{ic.shield}), false, 0, v2(w, 0))) a.startChanEdit(.password, name);
         if (c.igSelectable_Bool(fmtZ("{s}  Tópico…###ctopic", .{ic.pen}), false, 0, v2(w, 0))) a.startChanEdit(.topic, name);

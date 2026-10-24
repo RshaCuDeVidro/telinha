@@ -89,6 +89,8 @@ pub const chan_live: u8 = 1; // alguém ao vivo nele
 pub const chan_fixed: u8 = 2; // não some quando esvazia (o padrão e os do --canais)
 pub const chan_password: u8 = 4; // pede senha pra entrar
 pub const chan_locked: u8 = 8; // só admin entra
+pub const chan_mine: u8 = 16; // foi você que criou: você manda nele (senha, trava, tópico, invisível, banir)
+pub const chan_hidden: u8 = 32; // invisível: fora da lista de quem não está nele (entra quem sabe o nome)
 pub const chan_topic_max = 120;
 /// chan_admin: ações
 pub const chan_act_fix: u8 = 1; // valor "1" fixa (sobrevive vazio e ao servidor reiniciar), "0" solta
@@ -96,6 +98,11 @@ pub const chan_act_lock: u8 = 2; // valor "1" tranca (só admin entra), "0" dest
 pub const chan_act_password: u8 = 3; // valor = senha (vazio = tira)
 pub const chan_act_topic: u8 = 4; // valor = tópico (vazio = tira)
 pub const chan_act_move: u8 = 5; // leva `alvo` pro canal (o chat e a call)
+pub const chan_act_hide: u8 = 6; // valor "1" deixa invisível, "0" volta pra lista (quem criou também pode)
+pub const chan_act_ban: u8 = 7; // tira `alvo` do canal e não deixa voltar (quem criou também pode)
+/// Canal criado por alguém que ficou vazio continua existindo esse tempo (e
+/// sobrevive a reiniciar o servidor); fixado pelo admin, pra sempre.
+pub const chan_keep_empty_ms: u64 = 3 * 24 * 3600 * 1000;
 /// Bits altos do byte de rota de cada membro (lista personalizada): está no
 /// meu canal de texto / está na minha call. Servidor antigo: nenhum dos dois.
 pub const member_in_chan: u8 = 0x40;

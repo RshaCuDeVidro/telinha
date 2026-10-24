@@ -402,9 +402,35 @@ const Chan = struct {
     chat_log: [chat_history_len]ChatEntry = undefined,
     chat_len: usize = 0,
     chat_head: usize = 0,
+    creator_key: u64 = 0, // a chave do app de quem criou (0 = o servidor/admin): manda no canal
+    hidden: bool = false, // invisível: fora da lista de quem não está nele
+    empty_since_ms: u64 = 0, // vazio desde (0 = tem gente): some depois de proto.chan_keep_empty_ms
+    banned: [16]u64 = .{0} ** 16, // chaves que quem manda tirou do canal
 
     fn nameSlice(ch: *const Chan) []const u8 {
         return ch.name[0..ch.name_len];
+    }
+
+    /// Admin da sala, ou quem criou o canal.
+    fn isBoss(ch: *const Chan, cn: *const Conn) bool {
+        return cn.admin or (ch.creator_key != 0 and ch.creator_key == cn.client_key);
+    }
+
+    fn isBanned(ch: *const Chan, key: u64) bool {
+        if (key == 0) return false;
+        for (ch.banned) |b| if (b == key) return true;
+        return false;
+    }
+
+    fn ban(ch: *Chan, key: u64) void {
+        if (key == 0 or ch.isBanned(key)) return;
+        for (&ch.banned) |*b| if (b.* == 0) {
+            b.* = key;
+            return;
+        };
+        // cheia: o mais velho sai
+        std.mem.copyForwards(u64, ch.banned[0 .. ch.banned.len - 1], ch.banned[1..]);
+        ch.banned[ch.banned.len - 1] = key;
     }
 
     fn topicSlice(ch: *const Chan) []const u8 {
@@ -780,6 +806,8 @@ pub const Server = struct {
             const now_us = sync.nowUs();
             // arquivos vencidos e subidas paradas, a cada 10 s
             if (ticks % 40 == 0) _ = s.files.expire(now_ms);
+            // canais vazios há dias, a cada minuto
+            if (ticks % 240 == 0) s.expireChans(now_ms);
             // estatísticas pra quem pediu (o dono olhando), a cada 2 s
             if (ticks % 8 == 0) for (s.conns.items) |o| {
                 if (o.stats_on) {
@@ -1848,11 +1876,18 @@ pub const Server = struct {
         if (normalizeChannel(want_chan, &nb)) |nm| {
             if (s.findChan(nm)) |ch| {
                 // trancado ou com senha: começa no padrão (o app pergunta a senha)
-                if ((ch.locked or ch.has_password) and !is_owner) {
+                const boss = is_owner or (ch.creator_key != 0 and ch.creator_key == cn.client_key);
+                if (ch.isBanned(cn.client_key) and !is_owner) {
+                    // tirado do canal: começa no padrão
+                } else if ((ch.locked or ch.has_password) and !boss) {
                     needs_pw = ch.has_password and !ch.locked;
                 } else cn.chan = ch;
             } else if (s.canCreateChan()) {
-                cn.chan = s.addChan(nm, false) catch cn.chan;
+                if (s.addChan(nm, false)) |ch| {
+                    ch.creator_key = cn.client_key;
+                    cn.chan = ch;
+                    s.saveState();
+                } else |_| {}
             }
         }
         cn.call = cn.chan; // entrar na sala = estar na call do canal em que entrou
@@ -2596,7 +2631,23 @@ pub const Server = struct {
     }
 
     fn canCreateChan(s: *Server) bool {
-        return s.new_channels and s.chans.items.len < proto.max_channels;
+        if (!s.new_channels) return false;
+        if (s.chans.items.len >= proto.max_channels) s.evictEmptyChan();
+        return s.chans.items.len < proto.max_channels;
+    }
+
+    /// Sem vaga pra canal novo: o que está vazio há mais tempo (não fixo) sai.
+    fn evictEmptyChan(s: *Server) void {
+        var oldest: ?usize = null;
+        for (s.chans.items, 0..) |ch, i| {
+            if (ch.fixed or ch.empty_since_ms == 0) continue;
+            if (oldest == null or ch.empty_since_ms < s.chans.items[oldest.?].empty_since_ms) oldest = i;
+        }
+        const i = oldest orelse return;
+        const ch = s.chans.orderedRemove(i);
+        s.log("canal #{s} vazio saiu pra dar lugar a um novo", .{ch.nameSlice()});
+        ch.destroy();
+        s.saveState();
     }
 
     fn addChan(s: *Server, name: []const u8, fixed: bool) !*Chan {
@@ -2611,31 +2662,69 @@ pub const Server = struct {
     }
 
     /// Canal criado por alguém que ficou vazio (ninguém no chat nem na call)
-    /// some, com o chat dele.
+    /// continua na lista (e no arquivo de estado) por proto.chan_keep_empty_ms;
+    /// depois some, com o chat dele (expireChans).
     fn dropIfEmpty(s: *Server, ch: *Chan) void {
-        if (ch.fixed) return;
+        if (ch.fixed or ch.empty_since_ms != 0) return;
         for (s.conns.items) |o| if (o.chan == ch or o.call == ch) return;
-        const i = std.mem.findScalar(*Chan, s.chans.items, ch) orelse return;
-        _ = s.chans.orderedRemove(i);
-        s.log("canal #{s} vazio: fechado", .{ch.nameSlice()});
-        ch.destroy();
+        ch.empty_since_ms = sync.nowMs();
+        s.log("canal #{s} vazio: fica mais {d} dias", .{ ch.nameSlice(), proto.chan_keep_empty_ms / (24 * 3600 * 1000) });
+    }
+
+    /// Canais vazios há tempo demais somem; os que voltaram a ter gente zeram a conta.
+    fn expireChans(s: *Server, now_ms: u64) void {
+        var changed = false;
+        var i: usize = 0;
+        while (i < s.chans.items.len) {
+            const ch = s.chans.items[i];
+            const used = for (s.conns.items) |o| {
+                if (o.chan == ch or o.call == ch) break true;
+            } else false;
+            if (used or ch.fixed) {
+                ch.empty_since_ms = 0;
+            } else if (ch.empty_since_ms == 0) {
+                ch.empty_since_ms = now_ms;
+            } else if (now_ms -| ch.empty_since_ms > proto.chan_keep_empty_ms) {
+                _ = s.chans.orderedRemove(i);
+                s.log("canal #{s} vazio há {d} dias: fechado", .{ ch.nameSlice(), proto.chan_keep_empty_ms / (24 * 3600 * 1000) });
+                ch.destroy();
+                changed = true;
+                continue;
+            }
+            i += 1;
+        }
+        if (changed) {
+            s.saveState();
+            s.broadcastChannels();
+        }
     }
 
     /// Mensagem `channel` pra `cn`: em que canal ela está + a lista.
     fn pushChannels(s: *Server, cn: *Conn) void {
         var b: proto.Builder = .{};
         defer b.deinit();
-        s.buildChannels(&b, cn.chan, cn.call) catch return;
+        s.buildChannels(&b, cn.chan, cn.call, cn) catch return;
         cn.queue.pushOwned(b.finish() catch return);
+    }
+
+    /// O canal aparece na lista de `viewer`? (invisível: só pra quem está
+    /// nele e pra quem manda nele)
+    fn listed(ch: *const Chan, viewer: ?*const Conn) bool {
+        if (!ch.hidden) return true;
+        const v = viewer orelse return true;
+        return v.chan == ch or v.call == ch or ch.isBoss(v);
     }
 
     /// str canal atual, u8 n, n × (str nome, u16 no chat, u8 flags), e no fim
     /// (app que só lê o começo ignora): n × u16 na call, n × str tópico, str call atual.
-    fn buildChannels(s: *Server, b: *proto.Builder, current: *Chan, call: ?*Chan) !void {
+    fn buildChannels(s: *Server, b: *proto.Builder, current: *Chan, call: ?*Chan, viewer: ?*const Conn) !void {
         try b.begin(.channel);
         try b.str(current.nameSlice());
-        try b.u8_(@intCast(s.chans.items.len));
+        var n: u8 = 0;
+        for (s.chans.items) |ch| n += @intFromBool(listed(ch, viewer));
+        try b.u8_(n);
         for (s.chans.items) |ch| {
+            if (!listed(ch, viewer)) continue;
             var people: u16 = 0;
             var live = false;
             for (s.conns.items) |o| {
@@ -2647,18 +2736,23 @@ pub const Server = struct {
             if (ch.fixed) flags |= proto.chan_fixed;
             if (ch.has_password) flags |= proto.chan_password;
             if (ch.locked) flags |= proto.chan_locked;
+            if (ch.hidden) flags |= proto.chan_hidden;
+            if (viewer) |v| if (ch.creator_key != 0 and ch.creator_key == v.client_key) {
+                flags |= proto.chan_mine;
+            };
             try b.str(ch.nameSlice());
             try b.u16_(people);
             try b.u8_(flags);
         }
         for (s.chans.items) |ch| {
+            if (!listed(ch, viewer)) continue;
             var in_call: u16 = 0;
             for (s.conns.items) |o| {
                 if (o.call == ch) in_call += 1;
             }
             try b.u16_(in_call);
         }
-        for (s.chans.items) |ch| try b.str(ch.topicSlice());
+        for (s.chans.items) |ch| if (listed(ch, viewer)) try b.str(ch.topicSlice());
         try b.str(if (call) |cc| cc.nameSlice() else "");
     }
 
@@ -2668,7 +2762,7 @@ pub const Server = struct {
     fn broadcastChannels(s: *Server) void {
         var b: proto.Builder = .{};
         defer b.deinit();
-        s.buildChannels(&b, s.chans.items[0], null) catch return;
+        s.buildChannels(&b, s.chans.items[0], null, null) catch return;
         const m = b.finish() catch return;
         defer m.release();
         const body = m.data;
@@ -2703,13 +2797,20 @@ pub const Server = struct {
                 try pushNotice(cn, proto.notice_channel, "Esse servidor não deixa criar canal novo.", 0);
                 return null;
             }
-            if (s.chans.items.len >= proto.max_channels) {
+            if (!s.canCreateChan()) {
                 try pushNotice(cn, proto.notice_channel, "O servidor já tem canais demais.", 0);
                 return null;
             }
-            return try s.addChan(name, false);
+            const nc = try s.addChan(name, false);
+            nc.creator_key = cn.client_key;
+            s.saveState();
+            return nc;
         };
-        if (!cn.admin) {
+        if (ch.isBanned(cn.client_key) and !cn.admin) {
+            try pushNotice(cn, proto.notice_channel, "Você foi tirado desse canal.", 0);
+            return null;
+        }
+        if (!ch.isBoss(cn)) {
             if (ch.locked) {
                 try pushNotice(cn, proto.notice_channel, "Esse canal está trancado: só admin entra.", 0);
                 return null;
@@ -2802,10 +2903,28 @@ pub const Server = struct {
     /// Admin mexe num canal: fixar, trancar, senha, tópico, levar alguém.
     /// Chamado com o mutex travado.
     fn chanAdmin(s: *Server, cn: *Conn, action: u8, raw: []const u8, value: []const u8, target_id: u32) !void {
-        if (!cn.admin) return;
         var nb: [proto.channel_name_max]u8 = undefined;
         const name = normalizeChannel(raw, &nb) orelse return;
         var tmp: [200]u8 = undefined;
+        // fixar e levar alguém: só admin da sala; o resto, quem criou o canal também
+        if (!cn.admin) {
+            const ch = s.findChan(name) orelse return;
+            if (action == proto.chan_act_fix or action == proto.chan_act_move or !ch.isBoss(cn)) return;
+        }
+        if (action == proto.chan_act_ban) {
+            const ch = s.findChan(name) orelse return;
+            const t = s.findConn(target_id) orelse return;
+            if (t == cn or t.owner or (t.admin and !cn.owner)) return;
+            ch.ban(t.client_key);
+            if (t.chan == ch) try s.moveText(t, s.chans.items[0]);
+            if (t.call == ch) s.moveCall(t, null);
+            try pushNotice(t, proto.notice_moved, std.fmt.bufPrint(&tmp, "{s} te tirou do #{s}.", .{ cn.nameSlice(), ch.nameSlice() }) catch "", 0);
+            try s.broadcastChat(ch, std.fmt.bufPrint(&tmp, "{s} tirou do canal: {s}", .{ cn.nameSlice(), t.nameSlice() }) catch "");
+            s.log("{s} tirou {s} do #{s}", .{ cn.nameSlice(), t.nameSlice(), ch.nameSlice() });
+            try s.broadcastMembers();
+            s.broadcastChannels();
+            return;
+        }
         if (action == proto.chan_act_move) {
             const t = s.findConn(target_id) orelse return;
             if (t.owner and !cn.owner) return;
@@ -2827,6 +2946,11 @@ pub const Server = struct {
                 if (!on and ch == s.chans.items[0]) return; // o padrão fica sempre
                 ch.fixed = on;
                 break :blk std.fmt.bufPrint(&tmp, "{s} {s} o canal", .{ cn.nameSlice(), if (on) "fixou" else "soltou" }) catch "";
+            },
+            proto.chan_act_hide => blk: {
+                if (ch == s.chans.items[0]) return; // o padrão sempre aparece
+                ch.hidden = on;
+                break :blk std.fmt.bufPrint(&tmp, "{s} {s} o canal", .{ cn.nameSlice(), if (on) "deixou invisível" else "voltou a mostrar" }) catch "";
             },
             proto.chan_act_lock => blk: {
                 ch.locked = on;
@@ -2854,7 +2978,7 @@ pub const Server = struct {
         try s.broadcastChat(ch, said);
         s.log("#{s}: {s}", .{ ch.nameSlice(), said });
         s.saveState();
-        s.dropIfEmpty(ch); // soltou um canal vazio: some
+        s.dropIfEmpty(ch); // soltou um canal vazio: começa a contar os dias
         s.broadcastChannels();
     }
 
@@ -2878,10 +3002,12 @@ pub const Server = struct {
         }.w;
         put(f, "# telinha-server: estado (canais fixos, banidos, silenciados). Gerado sozinho.\n");
         for (s.chans.items) |ch| {
-            if (!ch.fixed) continue;
             var hex: [64]u8 = undefined;
             const pw = if (ch.has_password) std.fmt.bufPrint(&hex, "{x}", .{&ch.password_hash}) catch "-" else "-";
-            put(f, std.fmt.bufPrint(&lb, "canal\t{s}\t{d}\t{s}\t{s}\n", .{ ch.nameSlice(), @intFromBool(ch.locked), pw, ch.topicSlice() }) catch continue);
+            // fixo: "canal" (o formato de sempre); criado por alguém: "criado" (some vazio depois de dias)
+            put(f, std.fmt.bufPrint(&lb, "{s}\t{s}\t{d}\t{s}\t{s}\n", .{ if (ch.fixed) "canal" else "criado", ch.nameSlice(), @intFromBool(ch.locked), pw, ch.topicSlice() }) catch continue);
+            if (ch.creator_key != 0 or ch.hidden)
+                put(f, std.fmt.bufPrint(&lb, "dono\t{s}\t{x}\t{d}\n", .{ ch.nameSlice(), ch.creator_key, @intFromBool(ch.hidden) }) catch continue);
         }
         for (s.bans.items) |*b| put(f, std.fmt.bufPrint(&lb, "ban\t{x}\t{s}\t{s}\n", .{ b.key, b.ip[0..b.ip_len], b.name[0..b.name_len] }) catch continue);
         for (s.muted_keys.items) |k| put(f, std.fmt.bufPrint(&lb, "mudo\t{x}\n", .{k}) catch continue);
@@ -2907,11 +3033,13 @@ pub const Server = struct {
             if (line.len == 0 or line[0] == '#') continue;
             var it = std.mem.splitScalar(u8, line, '\t');
             const kind = it.next() orelse continue;
-            if (std.mem.eql(u8, kind, "canal")) {
+            if (std.mem.eql(u8, kind, "canal") or std.mem.eql(u8, kind, "criado")) {
+                const fixed = kind[1] == 'a';
                 var nb: [proto.channel_name_max]u8 = undefined;
                 const name = normalizeChannel(it.next() orelse continue, &nb) orelse continue;
-                const ch = s.findChan(name) orelse (if (s.chans.items.len < proto.max_channels) (s.addChan(name, true) catch continue) else continue);
-                ch.fixed = true;
+                const ch = s.findChan(name) orelse (if (s.chans.items.len < proto.max_channels) (s.addChan(name, fixed) catch continue) else continue);
+                ch.fixed = ch.fixed or fixed;
+                if (!ch.fixed) ch.empty_since_ms = sync.nowMs(); // começa vazio: conta os dias de novo
                 ch.locked = std.mem.eql(u8, it.next() orelse "0", "1");
                 const pw = it.next() orelse "-";
                 if (pw.len == 64) {
@@ -2922,6 +3050,12 @@ pub const Server = struct {
                 const topic = it.rest();
                 ch.topic_len = @min(topic.len, ch.topic.len);
                 @memcpy(ch.topic[0..ch.topic_len], topic[0..ch.topic_len]);
+            } else if (std.mem.eql(u8, kind, "dono")) {
+                var nb: [proto.channel_name_max]u8 = undefined;
+                const name = normalizeChannel(it.next() orelse continue, &nb) orelse continue;
+                const ch = s.findChan(name) orelse continue;
+                ch.creator_key = std.fmt.parseInt(u64, it.next() orelse "0", 16) catch 0;
+                ch.hidden = std.mem.eql(u8, it.next() orelse "0", "1");
             } else if (std.mem.eql(u8, kind, "ban")) {
                 var b: Ban = .{ .key = std.fmt.parseInt(u64, it.next() orelse continue, 16) catch 0 };
                 copyInto(&b.ip, &b.ip_len, it.next() orelse "");

@@ -183,6 +183,8 @@ const server_suffixes = [_]Suffix{
     .{ " tirou a senha do canal", "{s} removed the channel password" },
     .{ " mudou o tópico", "{s} changed the topic" },
     .{ " tirou o tópico", "{s} removed the topic" },
+    .{ " deixou invisível o canal", "{s} made the channel invisible" },
+    .{ " voltou a mostrar o canal", "{s} made the channel visible again" },
 };
 /// "<quem> <verbo> <quem>".
 const server_infixes = [_]Suffix{
@@ -191,6 +193,8 @@ const server_infixes = [_]Suffix{
     .{ " mandou um log: ", "{s} sent a log: {s}" },
     .{ " foi pro #", "{s} went to #{s}" },
     .{ " te levou pro #", "{s} moved you to #{s}" },
+    .{ " te tirou do #", "{s} removed you from #{s}" },
+    .{ " tirou do canal: ", "{s} removed from the channel: {s}" },
     .{ " entrou no #", "{s} joined #{s}" },
 };
 const server_whole = [_]Suffix{
@@ -211,6 +215,7 @@ const server_whole = [_]Suffix{
     .{ "Esse servidor não deixa criar canal novo.", "This server doesn't allow new channels." },
     .{ "O servidor já tem canais demais.", "The server already has too many channels." },
     .{ "Esse canal tem senha.", "This channel has a password." },
+    .{ "Você foi tirado desse canal.", "You were removed from this channel." },
     .{ "Senha do canal errada.", "Wrong channel password." },
     .{ "Esse canal está trancado: só admin entra.", "This channel is locked: admins only." },
 };
@@ -254,13 +259,13 @@ const table = [_][2][]const u8{
     .{ "Ler o chat do #{s}", "Read #{s}" },
     .{ "Sair da call", "Leave the call" },
     .{ "{s}  Destrancar", "{s}  Unlock" },
-    .{ "{s}  Fixar (fica, mesmo vazio e reiniciando)", "{s}  Pin (stays, even empty and across restarts)" },
+    .{ "{s}  Fixar (fica pra sempre, mesmo vazio)", "{s}  Pin (stays forever, even empty)" },
     .{ "{s}  Levar pro canal", "{s}  Move to channel" },
     .{ "{s}  NA CALL #{s} · {d}", "{s}  IN CALL #{s} · {d}" },
     .{ "{s}  Senha do canal…", "{s}  Channel password…" },
-    .{ "{s}  Soltar (some quando esvaziar)", "{s}  Unpin (disappears when empty)" },
+    .{ "{s}  Soltar (some dias depois de esvaziar)", "{s}  Unpin (goes away days after it empties)" },
     .{ "{s}  Tópico…", "{s}  Topic…" },
-    .{ "{s}  Trancar (só admin entra)", "{s}  Lock (admins only)" },
+    .{ "{s}  Trancar (só admin e você entram)", "{s}  Lock (only admins and you get in)" },
     .{ "Entrar na call do #{s}", "Join the #{s} call" },
     .{ "Fora da call", "Not in a call" },
     .{ "Na call #{s}", "In call #{s}" },
@@ -438,6 +443,10 @@ const table = [_][2][]const u8{
     .{ "Sala trancada: ninguém novo entra. Clique pra destrancar.", "Room locked: no one new can join. Click to unlock." },
     .{ "Trancar a sala (ninguém novo entra)", "Lock the room (no one new can join)" },
     .{ "Limpar o chat da sala", "Clear the room's chat" },
+    .{ "Você criou esse canal: você manda nele.", "You created this channel: you run it." },
+    .{ "{s}  Mostrar na lista", "{s}  Show in the list" },
+    .{ "{s}  Invisível (só entra quem sabe o nome)", "{s}  Invisible (only people who know the name get in)" },
+    .{ "{s}  Tirar do #{s} (não volta)", "{s}  Remove from #{s} (can't come back)" },
     .{ "seu PC (decodificar está pesado)", "your PC (decoding is too heavy)" },
     .{ "sua internet (pacotes se perdendo)", "your internet (packets getting lost)" },
     .{ "esperando um quadro completo", "waiting for a full frame" },

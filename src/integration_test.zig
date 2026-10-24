@@ -1843,7 +1843,7 @@ test "canais: nome normalizado (sem #, minúsculas, espaço vira -, acento ok, a
     try testing.expect(std.unicode.utf8ValidateSlice(n));
 }
 
-test "canais: cada um com o seu chat, membros e voz; nome novo cria; trocar leva o histórico; vazio some; app antigo cai no padrão" {
+test "canais: cada um com o seu chat, membros e voz; nome novo cria; trocar leva o histórico; vazio fica (por dias); app antigo cai no padrão" {
     net.init();
     const port = freshPort();
     const srv = try Server.start(.{ .port = port, .channels = "geral,Jogos" });
@@ -1912,7 +1912,7 @@ test "canais: cada um com o seu chat, membros e voz; nome novo cria; trocar leva
     sync.sleepMs(150);
     try testing.expectEqual(@as(usize, 0), srv.watchingCount(a.id));
 
-    // Caio vai pro jogos: recebe o canal novo e o histórico dele; o filmes-antigos some
+    // Caio vai pro jogos: recebe o canal novo e o histórico dele; o filmes-antigos fica na lista, vazio
     try c.watch(b.id, 0); // ainda em outro canal: não vale
     try c.joinChannel("JOGOS");
     l = try c.waitChannels({}, struct {
@@ -1920,7 +1920,8 @@ test "canais: cada um com o seu chat, membros e voz; nome novo cria; trocar leva
             return std.mem.eql(u8, x.current(), "jogos");
         }
     }.f);
-    try testing.expect(!l.has("filmes-antigos"));
+    try testing.expect(l.has("filmes-antigos"));
+    try testing.expectEqual(@as(u16, 0), l.peopleIn("filmes-antigos"));
     const hist = try c.userChat(&tb);
     try testing.expect(hist.history);
     try testing.expectEqualStrings("bora jogar", hist.text);
@@ -2175,6 +2176,103 @@ test "call separada do canal: trocar o chat não tira da call; sair da call para
     }.f);
     try testing.expectEqual(@as(u16, 1), l.in_call[l.index("jogos").?]);
     try testing.expectEqual(@as(u16, 1), l.in_call[l.index("geral").?]);
+}
+
+test "canais: quem criou manda (senha, invisível, tirar alguém); vazio fica e sobrevive a reiniciar" {
+    net.init();
+    const port = freshPort();
+    var path_buf: [128]u8 = undefined;
+    const state = try std.fmt.bufPrint(&path_buf, "/tmp/telinha-teste-dono-{d}.txt", .{port});
+    defer {
+        var zb: [140]u8 = undefined;
+        if (std.fmt.bufPrintZ(&zb, "{s}", .{state})) |z| _ = std.c.unlink(z.ptr) else |_| {}
+    }
+    {
+        const srv = try Server.start(.{ .port = port, .state_path = state });
+        defer srv.stop();
+        var ana = try TestClient.connectCalls(port, "Ana", "", "", 11);
+        defer ana.close();
+        try ana.welcome();
+        var bia = try TestClient.connectCalls(port, "Bia", "", "", 12);
+        defer bia.close();
+        try bia.welcome();
+        // a Ana cria o #toca: é dela (chan_mine só na lista dela)
+        try sendChannel(&ana, "toca", "");
+        var l = try waitList(&ana, struct {
+            fn f(x: *const ChanList) bool {
+                return std.mem.eql(u8, x.current(), "toca");
+            }
+        }.f);
+        try testing.expect(l.flags[l.index("toca").?] & proto.chan_mine != 0);
+        l = try waitList(&bia, struct {
+            fn f(x: *const ChanList) bool {
+                return x.has("toca");
+            }
+        }.f);
+        try testing.expect(l.flags[l.index("toca").?] & proto.chan_mine == 0);
+        // a Bia (não é admin nem dona) não tranca; a Ana põe senha
+        try chanAdmin(&bia, proto.chan_act_lock, "toca", "1", 0);
+        try chanAdmin(&ana, proto.chan_act_password, "toca", "pw", 0);
+        l = try waitList(&bia, struct {
+            fn f(x: *const ChanList) bool {
+                const i = x.index("toca") orelse return false;
+                return x.flags[i] & proto.chan_password != 0;
+            }
+        }.f);
+        try testing.expect(l.flags[l.index("toca").?] & proto.chan_locked == 0);
+        // invisível: some da lista da Bia, a Ana continua vendo
+        try chanAdmin(&ana, proto.chan_act_hide, "toca", "1", 0);
+        _ = try waitList(&bia, struct {
+            fn f(x: *const ChanList) bool {
+                return !x.has("toca");
+            }
+        }.f);
+        // quem sabe o nome e a senha entra mesmo assim
+        try sendChannel(&bia, "toca", "pw");
+        _ = try waitList(&bia, struct {
+            fn f(x: *const ChanList) bool {
+                return std.mem.eql(u8, x.current(), "toca");
+            }
+        }.f);
+        // a Ana tira a Bia: ela volta pro padrão e não entra de novo
+        try chanAdmin(&ana, proto.chan_act_ban, "toca", "", bia.id);
+        _ = try waitList(&bia, struct {
+            fn f(x: *const ChanList) bool {
+                return std.mem.eql(u8, x.current(), "geral") and !x.has("toca");
+            }
+        }.f);
+        sync.sleepMs(900); // limite de troca
+        try sendChannel(&bia, "toca", "pw");
+        sync.sleepMs(300);
+        l = try bia.channels();
+        try testing.expectEqualStrings("geral", l.current());
+        // a Ana sai: o canal fica (vazio), e vai pro arquivo de estado
+        sync.sleepMs(900);
+        try sendChannel(&ana, "geral", "");
+        l = try waitList(&ana, struct {
+            fn f(x: *const ChanList) bool {
+                return std.mem.eql(u8, x.current(), "geral") and x.has("toca") and x.peopleIn("toca") == 0;
+            }
+        }.f);
+    }
+    // reiniciou: o #toca continua da Ana (e invisível pra Bia)
+    const srv = try Server.start(.{ .port = port, .state_path = state });
+    defer srv.stop();
+    var ana = try TestClient.connectCalls(port, "Ana", "", "", 11);
+    defer ana.close();
+    try ana.welcome();
+    const l = try waitList(&ana, struct {
+        fn f(x: *const ChanList) bool {
+            const i = x.index("toca") orelse return false;
+            return x.flags[i] & proto.chan_mine != 0 and x.flags[i] & proto.chan_hidden != 0 and x.flags[i] & proto.chan_password != 0;
+        }
+    }.f);
+    _ = l;
+    var bia = try TestClient.connectCalls(port, "Bia", "", "", 12);
+    defer bia.close();
+    try bia.welcome();
+    const lb = try bia.channels();
+    try testing.expect(!lb.has("toca"));
 }
 
 test "canais: senha, trava, tópico, admin leva alguém; o que é fixo sobrevive ao servidor reiniciar (com os banidos)" {
