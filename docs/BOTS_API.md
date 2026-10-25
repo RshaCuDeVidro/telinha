@@ -166,6 +166,7 @@ generic error message.
 | `streaming`, `camera` | streaming the screen / the camera |
 | `mic`, `deaf`, `muted` | microphone on / deafened / muted by an admin |
 | `in_channel`, `in_call` | is in the bot's text channel / the bot's call |
+| `op`, `op_call` | is an OP of the bot's text channel / of the bot's call's channel (the creator is too) |
 | `route` | how they got in (1 this machine, 2 LAN, 3–4 internet, 5 public link, 6 browser) |
 | `version` | their app version |
 | `watching` | the streams they're watching |
@@ -173,7 +174,8 @@ generic error message.
 ## ChannelInfo
 
 `name`, `people` (in the chat), `in_call`, `topic`, plus `live`, `fixed`,
-`has_password`, `locked`.
+`has_password`, `locked`, `hidden` (invisible), `op` (the bot is an OP of it),
+`created` (the bot created it).
 
 ## Player
 

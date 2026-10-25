@@ -22,6 +22,8 @@ class Member:
     in_call: bool = True  # está na minha call
     version: str = ""
     bot: bool = False
+    op: bool = False  # OP do meu canal de texto (manda nele)
+    op_call: bool = False  # OP do canal da minha call
     watching: list[int] = field(default_factory=list)
 
     @property
@@ -143,6 +145,20 @@ class ChannelInfo:
     @property
     def locked(self) -> bool:
         return bool(self.flags & wire.CHAN_LOCKED)
+
+    @property
+    def hidden(self) -> bool:
+        return bool(self.flags & wire.CHAN_HIDDEN)
+
+    @property
+    def op(self) -> bool:
+        """O bot é OP desse canal (manda nele)."""
+        return bool(self.flags & wire.CHAN_MINE)
+
+    @property
+    def created(self) -> bool:
+        """Foi o bot que criou o canal."""
+        return bool(self.flags & wire.CHAN_CREATOR)
 
 
 @dataclass

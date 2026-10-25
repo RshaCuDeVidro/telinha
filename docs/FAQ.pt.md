@@ -75,6 +75,17 @@ internet de upload fraca), use um [servidor dedicado](DEPLOY.pt.md) numa VPS:
 aí quem transmite manda uma vez só e o servidor distribui. O servidor
 dedicado aceita 32 pessoas por padrão (`--max` muda).
 
+### Pus senha no canal (e deixei invisível) e outra janela minha entrou sem senha
+
+Admin da sala entra em qualquer canal, com senha ou trancado, e vê os
+invisíveis. Se você colocou o token de admin em *Opções avançadas* na tela de
+entrada, toda janela do telinha nesse PC entra como admin (elas usam a mesma
+configuração), e no menu do canal aparece "Você é admin da sala". Quem não é
+admin precisa da senha, não entra no trancado e não vê o invisível. Pra testar
+como outra pessoa, use outro PC, ou apague o token antes de abrir a segunda
+janela. Duas janelas no mesmo PC também são a mesma pessoa pra ser OP do
+canal.
+
 ## Transmitir
 
 ### No Wayland não aparece o seletor de tela

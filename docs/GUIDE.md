@@ -158,15 +158,23 @@ while staying in another's call.
 - **+** creates a channel. It stays in the list even when empty (and if the
   server restarts); it only goes away after 3 days without anyone. Channels
   pinned by an admin stay forever.
-- **Whoever created a channel runs it** (right-click the channel): password,
-  lock, topic, make it **invisible** (left out of the list; whoever knows the
-  name and password gets in), **remove someone** from it for good
-  (right-click the person) and **delete** the channel (it asks to confirm;
-  whoever was in it goes back to the default channel). Room admins can do all
-  of that too.
-- A **channel password applies to everyone**, the creator included: to get
-  in, type the password (the app remembers it and goes back to the channel on
-  its own if the internet drops). Only room admins get in without it.
+- **Whoever creates a channel is its OP**, with a **blue crown** next to their
+  name in the list (the yellow one is the room owner's). An OP runs the
+  channel: right-click the channel for password, lock, topic and making it
+  **invisible** (left out of the list; whoever knows the name and password
+  gets in); right-click a person to **make them OP**, **move** them to another
+  channel (an open one or one where you're also an OP) and **remove** them
+  from the channel for good. An OP can't touch the channel's creator or
+  admins; other OPs, only the creator can.
+- Only **the creator** deletes the channel (it asks to confirm; whoever was in
+  it goes back to the default channel) and takes OP away from others. Room
+  admins can do everything, in any channel. The default channel has no OPs.
+- A **channel password applies to everyone**, OPs and the creator included: to
+  get in, type the password (the app remembers it and goes back to the
+  channel on its own if the internet drops). Only room admins get in without
+  it, and they also get into locked channels and see invisible ones. Testing
+  with two windows on the same PC: both are the same person to the server
+  (and with the admin token in *Advanced options*, both are admins).
 
 ## Chat commands
 
@@ -223,7 +231,7 @@ The gear button opens the settings, in a room or on the home screen.
 | Page | What's there |
 |---|---|
 | **General** | Name, language, notifications, stats always visible, new-version alerts (and installing on its own), clips and how long they are |
-| **Appearance** | Themes: pwnd (neon, the default), dark, light, pwnd light, Nord, Dracula or your own CSS (reloads when you save the file); interface size; CRT effect; **room mood** (the background shifts tone with the room's energy, with no constant animation); home screen animations; show or hide other people's drawings. Drag the chat panel's edge to make it wider or narrower |
+| **Appearance** | Themes: pwnd (neon, the default), dark, light, pwnd light, Nord, Dracula or your own CSS (reloads when you save the file); interface size; CRT effect; **room mood** (the background shifts tone with the room's energy, with no constant animation); home screen animations; show or hide other people's drawings. Drag the chat panel's edge to make it wider or narrower, and the line above the chat to make it taller (double-click goes back to automatic) |
 | **Voice** | Voice activation or push-to-talk, microphone, sensitivity, volume, automatic gain, noise suppression, echo cancellation, joining with the mic on, notification sounds |
 | **Shortcuts** | Global hotkeys (and a master switch) |
 | **Camera** | Which camera and its resolution |

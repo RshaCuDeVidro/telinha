@@ -402,7 +402,8 @@ const Chan = struct {
     chat_log: [chat_history_len]ChatEntry = undefined,
     chat_len: usize = 0,
     chat_head: usize = 0,
-    creator_key: u64 = 0, // a chave do app de quem criou (0 = o servidor/admin): manda no canal
+    creator_key: u64 = 0, // a chave do app de quem criou (0 = o servidor/admin): OP que ninguém tira
+    ops: [proto.chan_ops_max]u64 = .{0} ** proto.chan_ops_max, // chaves de quem ganhou OP (0 = vago)
     hidden: bool = false, // invisível: fora da lista de quem não está nele
     empty_since_ms: u64 = 0, // vazio desde (0 = tem gente): some depois de proto.chan_keep_empty_ms
     banned: [16]u64 = .{0} ** 16, // chaves que quem manda tirou do canal
@@ -411,9 +412,50 @@ const Chan = struct {
         return ch.name[0..ch.name_len];
     }
 
-    /// Admin da sala, ou quem criou o canal.
-    fn isBoss(ch: *const Chan, cn: *const Conn) bool {
-        return cn.admin or (ch.creator_key != 0 and ch.creator_key == cn.client_key);
+    /// Quem criou o canal (a instalação do app: outra janela no mesmo PC também).
+    fn isCreator(ch: *const Chan, cn: *const Conn) bool {
+        return ch.creator_key != 0 and ch.creator_key == cn.client_key;
+    }
+
+    /// OP pela chave: quem criou ou quem ganhou OP.
+    fn isOpKey(ch: *const Chan, key: u64) bool {
+        if (key == 0) return false;
+        if (key == ch.creator_key) return true;
+        for (ch.ops) |k| if (k == key) return true;
+        return false;
+    }
+
+    /// Manda no canal: admin da sala ou OP dele.
+    fn isOp(ch: *const Chan, cn: *const Conn) bool {
+        return cn.admin or ch.isOpKey(cn.client_key);
+    }
+
+    /// `cn` pode levar ou tirar `t` do canal? OP não mexe em admin nem em
+    /// quem criou; em outro OP, só quem criou mexe.
+    fn outranks(ch: *const Chan, cn: *const Conn, t: *const Conn) bool {
+        if (t.owner or (t.admin and !cn.owner)) return false;
+        if (cn.admin) return true;
+        if (ch.isCreator(t)) return false;
+        return !ch.isOpKey(t.client_key) or ch.isCreator(cn);
+    }
+
+    /// false = já tem OPs demais.
+    fn addOp(ch: *Chan, key: u64) bool {
+        if (key == 0 or ch.isOpKey(key)) return true;
+        for (&ch.ops) |*k| if (k.* == 0) {
+            k.* = key;
+            return true;
+        };
+        return false;
+    }
+
+    fn removeOp(ch: *Chan, key: u64) bool {
+        if (key == 0) return false;
+        for (&ch.ops) |*k| if (k.* == key) {
+            k.* = 0;
+            return true;
+        };
+        return false;
     }
 
     fn isBanned(ch: *const Chan, key: u64) bool {
@@ -1877,11 +1919,10 @@ pub const Server = struct {
         if (normalizeChannel(want_chan, &nb)) |nm| {
             if (s.findChan(nm)) |ch| {
                 // trancado ou sem a senha certa: começa no padrão (o app pergunta a senha)
-                const boss = is_owner or (ch.creator_key != 0 and ch.creator_key == cn.client_key);
                 if (ch.isBanned(cn.client_key) and !is_owner) {
                     // tirado do canal: começa no padrão
-                } else if (ch.locked and !boss) {
-                    // trancado: só admin e quem criou
+                } else if (ch.locked and !ch.isOp(cn)) {
+                    // trancado: só admin e os OPs
                 } else if (!is_owner and !ch.passwordOk(want_pw)) {
                     needs_pw = true;
                 } else cn.chan = ch;
@@ -2146,7 +2187,7 @@ pub const Server = struct {
     }
 
     fn serverFeatures(s: *Server) u8 {
-        return proto.srv_dm | proto.srv_chan_delete | (if (s.files.ok) proto.srv_files else 0);
+        return proto.srv_dm | proto.srv_chan_delete | proto.srv_chan_op | (if (s.files.ok) proto.srv_files else 0);
     }
 
     // ------------------------------------------------------------ arquivos
@@ -2533,8 +2574,17 @@ pub const Server = struct {
         }
         // versão do app de cada um, na mesma ordem (no fim: quem não lê ignora)
         for (s.conns.items) |o| if (shown(o, ch, call)) try b.str(std.mem.sliceTo(&o.app_version, 0));
-        // e o que cada um é (bot ou gente)
-        for (s.conns.items) |o| if (shown(o, ch, call)) try b.u8_(if (o.bot) proto.member_kind_bot else 0);
+        // e o que cada um é (bot ou gente) e se é OP do meu canal / da minha call
+        for (s.conns.items) |o| if (shown(o, ch, call)) {
+            var kind: u8 = if (o.bot) proto.member_kind_bot else 0;
+            if (ch.isOpKey(o.client_key)) kind |= proto.member_kind_op_chan;
+            if (ch.isCreator(o)) kind |= proto.member_kind_creator_chan;
+            if (call) |cc| {
+                if (cc.isOpKey(o.client_key)) kind |= proto.member_kind_op_call;
+                if (cc.isCreator(o)) kind |= proto.member_kind_creator_call;
+            }
+            try b.u8_(kind);
+        };
         const m = try b.finish();
         defer m.release();
         for (s.conns.items) |o| if (o.chan == ch and o.call == call) o.queue.push(m);
@@ -2718,7 +2768,7 @@ pub const Server = struct {
     fn listed(ch: *const Chan, viewer: ?*const Conn) bool {
         if (!ch.hidden) return true;
         const v = viewer orelse return true;
-        return v.chan == ch or v.call == ch or ch.isBoss(v);
+        return v.chan == ch or v.call == ch or ch.isOp(v);
     }
 
     /// str canal atual, u8 n, n × (str nome, u16 no chat, u8 flags), e no fim
@@ -2743,9 +2793,10 @@ pub const Server = struct {
             if (ch.has_password) flags |= proto.chan_password;
             if (ch.locked) flags |= proto.chan_locked;
             if (ch.hidden) flags |= proto.chan_hidden;
-            if (viewer) |v| if (ch.creator_key != 0 and ch.creator_key == v.client_key) {
-                flags |= proto.chan_mine;
-            };
+            if (viewer) |v| {
+                if (ch.isOpKey(v.client_key)) flags |= proto.chan_mine;
+                if (ch.isCreator(v)) flags |= proto.chan_creator;
+            }
             try b.str(ch.nameSlice());
             try b.u16_(people);
             try b.u8_(flags);
@@ -2816,8 +2867,8 @@ pub const Server = struct {
             try pushNotice(cn, proto.notice_channel, "Você foi tirado desse canal.", 0);
             return null;
         }
-        if (ch.locked and !ch.isBoss(cn)) {
-            try pushNotice(cn, proto.notice_channel, "Esse canal está trancado: só admin entra.", 0);
+        if (ch.locked and !ch.isOp(cn)) {
+            try pushNotice(cn, proto.notice_channel, "Esse canal está trancado: só admin e os OPs entram.", 0);
             return null;
         }
         // a senha vale até pra quem criou o canal (ele sabe qual é): quem criou é
@@ -2874,7 +2925,9 @@ pub const Server = struct {
         const old = cn.chan;
         if (old == target) return;
         var tmp: [120]u8 = undefined;
-        try s.broadcastChat(old, std.fmt.bufPrint(&tmp, "{s} foi pro #{s}", .{ cn.nameSlice(), target.nameSlice() }) catch "");
+        // invisível: quem fica não fica sabendo o nome (sabendo, entrava)
+        const where = if (target.hidden) std.fmt.bufPrint(&tmp, "{s} foi pra outro canal", .{cn.nameSlice()}) else std.fmt.bufPrint(&tmp, "{s} foi pro #{s}", .{ cn.nameSlice(), target.nameSlice() });
+        try s.broadcastChat(old, where catch "");
         cn.chan = target;
         s.log("{s}: #{s} → #{s}", .{ cn.nameSlice(), old.nameSlice(), target.nameSlice() });
         s.dropIfEmpty(old); // (antes da lista: ela já sai sem o canal que esvaziou)
@@ -2906,17 +2959,68 @@ pub const Server = struct {
         s.pushChannels(cn);
     }
 
-    /// Admin mexe num canal: fixar, trancar, senha, tópico, levar alguém.
+    /// OP leva alguém: só quem está no canal dele (o chat, a call, ou os dois,
+    /// conforme onde ele é OP), pra um canal que já existe e em que a pessoa
+    /// entraria sozinha (sem senha nem trava), ou em que ele também é OP.
     /// Chamado com o mutex travado.
+    fn opMove(s: *Server, cn: *Conn, name: []const u8, target_id: u32) !void {
+        const dest = s.findChan(name) orelse return;
+        const t = s.findConn(target_id) orelse return;
+        if (t == cn) return;
+        const text = t.chan != dest and t.chan.isOp(cn) and t.chan.outranks(cn, t);
+        const call = if (t.call) |tc| tc != dest and tc.isOp(cn) and tc.outranks(cn, t) else false;
+        if (!text and !call) return;
+        if (dest.isBanned(t.client_key)) return;
+        if (!dest.isOp(cn) and (dest.locked or dest.has_password)) return;
+        if (text) try s.moveText(t, dest);
+        if (call) s.moveCall(t, dest);
+        var tmp: [120]u8 = undefined;
+        try pushNotice(t, proto.notice_moved, std.fmt.bufPrint(&tmp, "{s} te levou pro #{s}.", .{ cn.nameSlice(), dest.nameSlice() }) catch "", 0);
+        s.log("{s} levou {s} pro #{s}", .{ cn.nameSlice(), t.nameSlice(), dest.nameSlice() });
+        try s.broadcastMembers();
+    }
+
+    /// Admin ou OP mexe num canal: fixar, trancar, senha, tópico, levar e
+    /// tirar alguém, dar OP. Chamado com o mutex travado.
     fn chanAdmin(s: *Server, cn: *Conn, action: u8, raw: []const u8, value: []const u8, target_id: u32) !void {
         var nb: [proto.channel_name_max]u8 = undefined;
         const name = normalizeChannel(raw, &nb) orelse return;
         var tmp: [200]u8 = undefined;
-        // fixar e levar alguém: só admin da sala; o resto, quem criou o canal também
+        // fixar: só admin da sala; apagar e tirar OP: admin e quem criou; levar
+        // alguém: o OP de onde a pessoa está (ver opMove); o resto, os OPs
         if (!cn.admin) {
+            if (action == proto.chan_act_fix) return;
+            if (action == proto.chan_act_move) return s.opMove(cn, name, target_id);
             const ch = s.findChan(name) orelse return;
-            if (action == proto.chan_act_fix or action == proto.chan_act_move or !ch.isBoss(cn)) return;
-            if (action == proto.chan_act_delete and ch.fixed) return; // fixo: quem fixou (admin) decide
+            if (!ch.isOp(cn)) return;
+            if (action == proto.chan_act_delete and (ch.fixed or !ch.isCreator(cn))) return; // fixo: quem fixou (admin) decide
+            if (action == proto.chan_act_op and !std.mem.eql(u8, value, "1") and !ch.isCreator(cn)) return;
+        }
+        if (action == proto.chan_act_op) {
+            const ch = s.findChan(name) orelse return;
+            if (ch == s.chans.items[0]) return; // o padrão é da sala (do admin): sem OP
+            const t = s.findConn(target_id) orelse return;
+            if (t.client_key == 0 or t.web) return; // sem chave não dá pra lembrar quem é
+            const give = std.mem.eql(u8, value, "1");
+            if (give) {
+                if (t.chan != ch and t.call != ch) return; // só pra quem está no canal
+                if (ch.isOpKey(t.client_key)) return;
+                if (!ch.addOp(t.client_key)) {
+                    try pushNotice(cn, proto.notice_channel, "Esse canal já tem OPs demais.", 0);
+                    return;
+                }
+            } else if (!ch.removeOp(t.client_key)) return; // (quem criou não perde o OP)
+            const said = if (give)
+                std.fmt.bufPrint(&tmp, "{s} deu OP pra {s}", .{ cn.nameSlice(), t.nameSlice() }) catch ""
+            else
+                std.fmt.bufPrint(&tmp, "{s} tirou o OP de {s}", .{ cn.nameSlice(), t.nameSlice() }) catch "";
+            try s.broadcastChat(ch, said);
+            s.log("#{s}: {s}", .{ ch.nameSlice(), said });
+            s.saveState();
+            // a lista de canais de cada um muda (chan_mine): manda pra quem tem a chave
+            for (s.conns.items) |o| if (o.client_key == t.client_key) s.pushChannels(o);
+            try s.broadcastMembers();
+            return;
         }
         if (action == proto.chan_act_delete) {
             const ch = s.findChan(name) orelse return;
@@ -2943,8 +3047,9 @@ pub const Server = struct {
             const ch = s.findChan(name) orelse return;
             if (ch == s.chans.items[0]) return; // do padrão ninguém é tirado (é pra onde vai quem sai)
             const t = s.findConn(target_id) orelse return;
-            if (t == cn or t.owner or (t.admin and !cn.owner)) return;
+            if (t == cn or !ch.outranks(cn, t)) return;
             ch.ban(t.client_key);
+            if (ch.removeOp(t.client_key)) s.saveState(); // tirado do canal perde o OP
             if (t.chan == ch) try s.moveText(t, s.chans.items[0]);
             if (t.call == ch) s.moveCall(t, null);
             try pushNotice(t, proto.notice_moved, std.fmt.bufPrint(&tmp, "{s} te tirou do #{s}.", .{ cn.nameSlice(), ch.nameSlice() }) catch "", 0);
@@ -3037,6 +3142,16 @@ pub const Server = struct {
             put(f, std.fmt.bufPrint(&lb, "{s}\t{s}\t{d}\t{s}\t{s}\n", .{ if (ch.fixed) "canal" else "criado", ch.nameSlice(), @intFromBool(ch.locked), pw, ch.topicSlice() }) catch continue);
             if (ch.creator_key != 0 or ch.hidden)
                 put(f, std.fmt.bufPrint(&lb, "dono\t{s}\t{x}\t{d}\n", .{ ch.nameSlice(), ch.creator_key, @intFromBool(ch.hidden) }) catch continue);
+            // os OPs (servidor antigo ignora a linha)
+            var ow: std.Io.Writer = .fixed(&lb);
+            ow.print("op\t{s}", .{ch.nameSlice()}) catch continue;
+            var n_ops: usize = 0;
+            for (ch.ops) |k| if (k != 0) {
+                ow.print("\t{x}", .{k}) catch break;
+                n_ops += 1;
+            };
+            ow.writeByte('\n') catch continue;
+            if (n_ops > 0) put(f, ow.buffered());
         }
         for (s.bans.items) |*b| put(f, std.fmt.bufPrint(&lb, "ban\t{x}\t{s}\t{s}\n", .{ b.key, b.ip[0..b.ip_len], b.name[0..b.name_len] }) catch continue);
         for (s.muted_keys.items) |k| put(f, std.fmt.bufPrint(&lb, "mudo\t{x}\n", .{k}) catch continue);
@@ -3085,6 +3200,11 @@ pub const Server = struct {
                 const ch = s.findChan(name) orelse continue;
                 ch.creator_key = std.fmt.parseInt(u64, it.next() orelse "0", 16) catch 0;
                 ch.hidden = std.mem.eql(u8, it.next() orelse "0", "1");
+            } else if (std.mem.eql(u8, kind, "op")) {
+                var nb: [proto.channel_name_max]u8 = undefined;
+                const name = normalizeChannel(it.next() orelse continue, &nb) orelse continue;
+                const ch = s.findChan(name) orelse continue;
+                while (it.next()) |k| _ = ch.addOp(std.fmt.parseInt(u64, k, 16) catch continue);
             } else if (std.mem.eql(u8, kind, "ban")) {
                 var b: Ban = .{ .key = std.fmt.parseInt(u64, it.next() orelse continue, 16) catch 0 };
                 copyInto(&b.ip, &b.ip_len, it.next() orelse "");

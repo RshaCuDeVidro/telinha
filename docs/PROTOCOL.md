@@ -114,9 +114,9 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | type | name | direction | payload |
 |---|---|---|---|
 | 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (what it decodes, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (channel to join; empty or missing = the default), `str token_bot` (bots only; see `feat_bot`), `str senha_do_canal` (if the channel has a password; the app sends the last one it used there, to get back to the channel when it reconnects) |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1), `u8 recursos_do_servidor` (`srv_*`: 1 = private messages and quoted replies, 2 = files, 4 = cards, 8 = deleting channels; an older server doesn't send it = 0) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1), `u8 recursos_do_servidor` (`srv_*`: 1 = private messages and quoted replies, 2 = files, 4 = cards, 8 = deleting channels, 16 = channel OPs; an older server doesn't send it = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (the server closes right after) |
-| 4 | members | S→C | `u8 sala` (1 = locked), `u16 n`, n × member (below), n × `str versão_do_app` (same order), n × `u8 tipo` (1 = bot; an older server doesn't send it) |
+| 4 | members | S→C | `u8 sala` (1 = locked), `u16 n`, n × member (below), n × `str versão_do_app` (same order), n × `u8 tipo` (1 = bot, 2 = OP of my text channel, 4 = OP of my call's channel, 8 = created my text channel, 16 = created my call's channel; an older server doesn't send it) |
 | 5 | chat | C→S | `str texto`, image (optional, below), `u32 resposta` (id of the message replied to; 0 = none), `u32 pra` (private to this member; 0 = the channel), `u32 n` + n bytes of a [card](#cards) (0 = none) |
 | 5 | chat | S→C | `u32 id`, `u32 de` (0 = system), `str nome`, `str texto`, `u64 hora` (room clock, µs), `u8 flags` (1 = history), image, `u8 n`, n × (`u8 reação`, `u32 de`), `u32 resposta` (if ≠ 0: `u32 de`, `str nome`, `str trecho`), `u32 pra` (if ≠ 0: `str nome`), `u32 arquivo` (if ≠ 0: `str nome`, `u64 tamanho`), `u32 n` + n bytes of a card; **to bots only**, on live messages: `str canal`, `str call` of whoever sent it (where they are now; `call` empty = not in one) |
 | 6 | stream_start | C→S | `u8 tipo`, `u16 w`, `u16 h`, `u8 fps`, `u8 flags` (1 = with audio; screen only) |
@@ -318,19 +318,35 @@ the person's own color; `proto.draw_colors`). An old app ignores the style bits.
 | 8 | clear the room's chat: every channel's history (private messages too) and the room's files (target ignored) | — |
 
 **chan_admin** — actions: 1 = pin (`value` "1"/"0": a pinned channel stays empty
-forever and across restarts), 2 = lock (only admins and the creator get in), 3 =
+forever and across restarts), 2 = lock (only admins and OPs get in), 3 =
 password (`value`; empty removes it), 4 = topic (`value`, up to 120 bytes), 5 =
-move `target` to the channel (chat and call, even if locked), 6 = invisible
-(`value` "1"/"0": left out of the list of whoever isn't in it; you join by
-knowing the name), 7 = remove `target` from the channel and don't let them back
-(by key), 8 = delete the channel (whoever was in its chat goes to the default
+move `target` to the channel (chat and call), 6 = invisible (`value` "1"/"0":
+left out of the list of whoever isn't in it; you join by knowing the name), 7 =
+remove `target` from the channel and don't let them back (by key; an OP loses
+the OP), 8 = delete the channel (whoever was in its chat goes to the default
 one, and whoever was in its call leaves it; never the default; a pinned one,
-admins only). The password applies even to the creator: only room admins get
-in without it. Pin and move: room admins only; the rest, also whoever created the
-channel (the server remembers the creator's app key, and the channel list
-marks it for them with `chan_mine` = 16; `chan_hidden` = 32 marks an invisible
-one). A channel someone created stays in the list when it empties (and in the
-state file across restarts) for 3 days without anyone; a pinned one, forever.
+admins only), 9 = OP (`value` "1" gives it to `target`, who must be in the
+channel's chat or call; "0" removes it).
+
+**Channel OPs.** Whoever creates a channel is its OP, and an OP can make
+anyone in the channel an OP (up to 16 per channel besides the creator; the
+server remembers app keys and saves them in the state file). Room admins can
+do everything, in any channel. An OP: password, lock, invisible, topic,
+removing people, giving OP and moving people. For an OP, moving only works on
+people in their channel (the chat, the call, or both, depending on where they
+are an OP) and to a channel that already exists and that the person could
+join on their own (no password or lock), or where they're also an OP; an
+admin moves anyone anywhere, even into a locked channel (and creates it if it
+doesn't exist). An OP doesn't move or remove admins or the creator; another
+OP, only the creator does. Only the creator (and admins) delete the channel
+and take OP away from others; the creator never loses OP. The default channel
+has no OPs. The password applies to everyone but room admins (OPs and the
+creator too, and another window of the same app); the lock lets admins and OPs
+in; an invisible channel shows up for whoever is in it, its OPs and admins.
+The channel list marks for each person `chan_mine` = 16 (I'm an OP),
+`chan_creator` = 64 (I created it) and `chan_hidden` = 32 (invisible). A
+channel someone created stays in the list when it empties (and in the state
+file across restarts) for 3 days without anyone; a pinned one, forever.
 
 **notice** — types: 1 = microphone muted, 2 = microphone released, 3 = stream
 stopped (`extra` = its type), 4 = became admin, 5 = is no longer admin, 7/8 = pen

@@ -485,8 +485,8 @@ class SdkTest(unittest.IsolatedAsyncioTestCase):
         await bot.join_call("jogos")
         await until(lambda: bot.call == "jogos", what="entrar na call")
 
-    async def chan_admin(self, c: Client, action: int, name: str, value: str = "") -> None:
-        await c._send(Writer(MsgType.CHAN_ADMIN).u8(action).str(name).str(value).u32(0).done())
+    async def chan_admin(self, c: Client, action: int, name: str, value: str = "", target: int = 0) -> None:
+        await c._send(Writer(MsgType.CHAN_ADMIN).u8(action).str(name).str(value).u32(target).done())
 
     async def test_senha_do_canal_vale_ate_pra_outra_janela_de_quem_criou(self):
         dono = await self.join(Client(self.room.invite(), "Dono", key=4242))
@@ -523,6 +523,122 @@ class SdkTest(unittest.IsolatedAsyncioTestCase):
         # quem criou continua mandando: tira a senha
         await self.chan_admin(dono, 3, "zika", "")
         await until(lambda: not dono.channels["zika"].flags & wire.CHAN_PASSWORD, what="tirar a senha")
+
+    async def test_canal_invisivel_com_senha_e_trancado_pra_quem_e_de_fora(self):
+        dono = await self.join(Client(self.room.invite(), "Dono", key=4242))
+        ana = await self.join(Client(self.room.invite(), "Ana"))
+        bia = await self.join(Client(self.room.invite(), "Bia"))
+        said: list = []
+        bia.on("message")(_collect(said))
+        await dono.join_channel("zika")
+        await until(lambda: dono.channel == "zika" and "zika" in ana.channels, what="criar o canal")
+        await self.chan_admin(dono, 6, "zika", "1")
+        await self.chan_admin(dono, 3, "zika", "abc")
+        await until(lambda: "zika" not in ana.channels, what="sumir da lista de quem é de fora")
+        await until(lambda: dono.channels["zika"].flags & wire.CHAN_PASSWORD, what="a senha valer")
+        said.clear()  # ("Dono foi pro #zika" foi antes de ficar invisível)
+        notes: list = []
+
+        async def on_notice(kind, text, extra):
+            notes.append(text)
+        ana.on("notice")(on_notice)
+        # sabendo o nome, sem a senha: não entra nem no chat nem na call
+        await ana.join_call("zika")
+        await ana.join_channel("zika")
+        await until(lambda: len(notes) >= 2, what="os dois avisos de senha")
+        self.assertEqual((ana.channel, ana.call), ("geral", "geral"))
+        self.assertNotIn("zika", ana.channels)
+        # pelo convite direto no canal, sem senha: começa no padrão e não vê o canal
+        sem = await self.join(Client(self.room.invite(), "Sem", channel="zika"))
+        self.assertEqual(sem.channel, "geral")
+        self.assertNotIn("zika", sem.channels)
+        # com a senha entra (e aí vê o canal); quem ficou no #geral não fica sabendo o nome
+        await ana.join_channel("zika", "abc")
+        await until(lambda: ana.channel == "zika" and "zika" in ana.channels, what="entrar com a senha")
+        await until(lambda: any(m.text.startswith("Ana ") for m in said), what="o aviso de que a Ana saiu")
+        self.assertEqual([m.text for m in said if m.text.startswith("Ana ")], ["Ana foi pra outro canal"])
+        # trancado: nem com a senha
+        await self.chan_admin(dono, 2, "zika", "1")
+        await until(lambda: dono.channels["zika"].flags & wire.CHAN_LOCKED, what="trancar")
+        await sem.join_channel("zika", "abc")
+        await asyncio.sleep(0.5)
+        self.assertEqual(sem.channel, "geral")
+        self.assertNotIn("zika", sem.channels)
+
+    async def test_op_do_canal(self):
+        dono = await self.join(Client(self.room.invite(), "Dono", key=4242))
+        ana = await self.join(Client(self.room.invite(), "Ana", key=5151))
+        bia = await self.join(Client(self.room.invite(), "Bia"))
+        await dono.join_channel("zika")
+        await until(lambda: dono.channel == "zika", what="criar o canal")
+        mine = wire.CHAN_MINE | wire.CHAN_CREATOR
+        self.assertEqual(dono.channels["zika"].flags & mine, mine)
+        await ana.join_channel("zika")
+        await bia.join_channel("zika")
+        await until(lambda: ana.channel == "zika" and bia.channel == "zika", what="as duas entrarem")
+        # quem criou aparece como OP pra quem está no canal
+        await until(lambda: ana.members[dono.me].op and not ana.members[bia.me].op, what="o dono aparecer como OP")
+        self.assertFalse(ana.channels["zika"].flags & wire.CHAN_MINE)
+        # sem OP não manda
+        await self.chan_admin(ana, 4, "zika", "tópico da Ana")
+        await self.chan_admin(ana, 9, "zika", "1", bia.me)
+        await asyncio.sleep(0.4)
+        self.assertEqual(dono.channels["zika"].topic, "")
+        self.assertFalse(dono.members[bia.me].op)
+        # o dono dá OP pra Ana: ela vê que manda, todo mundo vê a coroa
+        await self.chan_admin(dono, 9, "zika", "1", ana.me)
+        await until(lambda: ana.channels["zika"].flags & mine == wire.CHAN_MINE, what="a Ana virar OP")
+        await until(lambda: bia.members[ana.me].op, what="a Bia ver a Ana como OP")
+        # OP: tópico, invisível, trava, senha
+        await self.chan_admin(ana, 4, "zika", "agora é da Ana")
+        await self.chan_admin(ana, 6, "zika", "1")
+        await self.chan_admin(ana, 2, "zika", "1")
+        await self.chan_admin(ana, 3, "zika", "abc")
+        want = wire.CHAN_HIDDEN | wire.CHAN_LOCKED | wire.CHAN_PASSWORD
+        await until(lambda: dono.channels["zika"].flags & want == want and dono.channels["zika"].topic == "agora é da Ana", what="as mudanças da OP")
+        # OP não apaga o canal, não tira o OP de quem criou nem tira ele do canal
+        await self.chan_admin(ana, 8, "zika")
+        await self.chan_admin(ana, 9, "zika", "0", dono.me)
+        await self.chan_admin(ana, 7, "zika", "", dono.me)
+        await asyncio.sleep(0.4)
+        self.assertEqual(dono.channel, "zika")
+        self.assertIn("zika", dono.channels)
+        self.assertTrue(bia.members[dono.me].op)
+        # OP leva gente do canal dela: pra um canal aberto vai; pra um com senha de outro, não
+        carla = await self.join(Client(self.room.invite(), "Carla"))
+        await carla.join_channel("outro")
+        await until(lambda: carla.channel == "outro", what="a Carla criar o #outro")
+        await self.chan_admin(carla, 3, "outro", "xyz")
+        await until(lambda: ana.channels.get("outro") and ana.channels["outro"].flags & wire.CHAN_PASSWORD, what="a senha do #outro")
+        await self.chan_admin(ana, 5, "outro", "", bia.me)
+        await asyncio.sleep(0.4)
+        self.assertEqual(bia.channel, "zika")
+        # e não leva quem está em outro canal
+        await self.chan_admin(ana, 5, "zika", "", carla.me)
+        await asyncio.sleep(0.4)
+        self.assertEqual(carla.channel, "outro")
+        await self.chan_admin(ana, 5, "geral", "", bia.me)
+        await until(lambda: bia.channel == "geral", what="a OP levar a Bia pro #geral")
+        # tirada do canal por uma OP: não volta (nem com a senha)
+        await self.chan_admin(ana, 7, "zika", "", bia.me)
+        await asyncio.sleep(0.9)
+        await bia.join_channel("zika", "abc")
+        await asyncio.sleep(0.5)
+        self.assertEqual(bia.channel, "geral")
+        # o OP fica gravado
+        state = (Path(self.room.dir.name) / "estado.txt").read_text()
+        self.assertIn(f"op\tzika\t{5151:x}", state)
+        # quem criou tira o OP da Ana
+        await self.chan_admin(dono, 9, "zika", "0", ana.me)
+        await until(lambda: not ana.channels["zika"].flags & wire.CHAN_MINE, what="a Ana perder o OP")
+        await until(lambda: not dono.members[ana.me].op, what="a coroa da Ana sumir")
+        await self.chan_admin(ana, 4, "zika", "de novo")
+        await asyncio.sleep(0.4)
+        self.assertEqual(dono.channels["zika"].topic, "agora é da Ana")
+        # o padrão não tem OP
+        await self.chan_admin(dono, 9, "geral", "1", bia.me)
+        await asyncio.sleep(0.4)
+        self.assertFalse(dono.channels["geral"].flags & wire.CHAN_MINE)
 
     async def test_apagar_canal(self):
         dono = await self.join(Client(self.room.invite(), "Dono"))

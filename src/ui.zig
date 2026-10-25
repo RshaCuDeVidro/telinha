@@ -56,6 +56,8 @@ const Sharer = sharer_mod.Sharer;
 
 const rgba = theme.rgba;
 const rgb = theme.rgb;
+/// A coroa de quem é OP de um canal (a amarela é do dono da sala).
+const op_blue = rgb(0x3D9BFF);
 const withAlpha = theme.withAlpha;
 
 /// Cores do tema em uso (troca na hora: ver `setTheme` e theme.zig).
@@ -3276,8 +3278,15 @@ pub const App = struct {
             // botão invisível por quadro; nada roda sem o mouse em cima)
             c.igSetCursorPos(v2(main_w - S(3), header_h + S(12)));
             _ = c.igInvisibleButton("##panelsplit", v2(S(8), size.y - header_h - S(24)), 0);
-            if (c.igIsItemHovered(0) or c.igIsItemActive()) c.igSetMouseCursor(c.ImGuiMouseCursor_ResizeEW);
-            if (c.igIsItemActive()) {
+            if (c.igIsItemHovered(0) or c.igIsItemActive()) {
+                c.igSetMouseCursor(c.ImGuiMouseCursor_ResizeEW);
+                const r = c.igGetItemRectMin();
+                rectFill(drawList(), r.x + S(3), r.y, r.x + S(5), r.y + size.y - header_h - S(24), withAlpha(col.blurple, 200), S(1));
+                if (!c.igIsItemActive()) tooltipText(tr("Arraste pra mudar a largura do painel (duplo clique: normal)"));
+            }
+            // só arrastando (o duplo clique também deixa o botão ativo: sem isso
+            // o mouse parado na borda desfazia a volta ao normal)
+            if (c.igIsItemActive() and c.igIsMouseDragging(0, -1)) {
                 const mx = c.igGetIO_Nil().*.MousePos.x;
                 a.cfg.panel_w = @intFromFloat(std.math.clamp((size.x - mx) / scale, 280, 900));
             }
@@ -4426,6 +4435,9 @@ pub const App = struct {
             config.save(&a.cfg);
         }
         var top = y0 + S(16);
+        // o chat com a altura que a pessoa escolheu (arrastando a divisa de
+        // cima dele): a lista de gente e a de canais cedem o espaço
+        const chat_want: f32 = if (a.cfg.chat_h > 0) S(@floatFromInt(a.cfg.chat_h)) else 0;
         if (has_chans) {
             _ = termHeader(d, v2(inner_x + S(12), top), fmtZ("CANAIS · {d}", .{n_chans}));
             c.igSetCursorScreenPos(v2(x1 - S(72), y0 + S(8)));
@@ -4438,7 +4450,8 @@ pub const App = struct {
             // campos que aparecem em cima da lista: canal novo, senha pedida, senha/tópico do admin
             const n_fields: f32 = @floatFromInt(@as(u8, @intFromBool(a.new_chan_open)) + @as(u8, @intFromBool(a.chan_pw_len > 0)) + @as(u8, @intFromBool(a.chan_edit != .none)));
             const want_h = row_h * @as(f32, @floatFromInt(n_chans)) + n_fields * S(48) + S(4);
-            const ch_h = std.math.clamp(want_h, row_h, (y1 - y0) * 0.32);
+            const ch_room = if (chat_want > 0) @min((y1 - y0) * 0.32, y1 - top - S(54) - S(48) - chat_want) else (y1 - y0) * 0.32;
+            const ch_h = std.math.clamp(want_h, row_h, @max(row_h, ch_room));
             c.igSetCursorScreenPos(v2(inner_x, top));
             c.igPushStyleColor_U32(c.ImGuiCol_ScrollbarBg, 0);
             _ = c.igBeginChild_Str("chanlist", v2(inner_w, ch_h), 0, 0);
@@ -4602,11 +4615,16 @@ pub const App = struct {
         const rows: f32 = @floatFromInt(n_chat + (if (other_call) n_call + 1 else 0) + (if (n_bots_away > 0) n_bots_away + 1 else 0));
         const want_h = row_h * rows + S(8);
         const list_top = top + S(22);
-        const list_h = std.math.clamp(want_h, S(60), @max(S(60), (y1 - list_top) * 0.45));
+        const list_h = if (chat_want > 0)
+            std.math.clamp(y1 - list_top - S(12) - chat_want, S(48), @max(S(48), y1 - list_top - S(12) - S(140)))
+        else
+            std.math.clamp(want_h, S(60), @max(S(60), (y1 - list_top) * 0.45));
         c.igSetCursorScreenPos(v2(inner_x, list_top));
         c.igPushStyleColor_U32(c.ImGuiCol_ScrollbarBg, 0);
         _ = c.igBeginChild_Str("lists", v2(inner_w, list_h), 0, 0);
-        for (chat_ppl[0..n_chat]) |*m| a.memberRow(m, my_id, inner_w, i_am_admin);
+        const chat_op: OpCtx = .{ .mask = proto.member_kind_op_chan, .where = cur, .mine = chanFlags(chans[0..n_chans], cur) & proto.chan_mine != 0 };
+        const call_op: OpCtx = .{ .mask = proto.member_kind_op_call, .where = my_call, .mine = chanFlags(chans[0..n_chans], my_call) & proto.chan_mine != 0 };
+        for (chat_ppl[0..n_chat]) |*m| a.memberRow(m, my_id, inner_w, i_am_admin, chat_op);
         if (other_call) {
             c.igDummy(v2(0, S(6)));
             c.igSetCursorPosX(S(12));
@@ -4614,7 +4632,7 @@ pub const App = struct {
             textColored(col.green, if (same_call) fmtZ("{s}  NA CALL, LENDO OUTRO CANAL · {d}", .{ ic.headphones, n_call }) else fmtZ("{s}  NA CALL #{s} · {d}", .{ ic.headphones, my_call, n_call }));
             popFont();
             c.igDummy(v2(0, S(2)));
-            for (call_ppl[0..n_call]) |*m| a.memberRow(m, my_id, inner_w, i_am_admin);
+            for (call_ppl[0..n_call]) |*m| a.memberRow(m, my_id, inner_w, i_am_admin, call_op);
         }
         // bots que estão em outro canal: clique direito → chamar pra minha call
         if (n_bots_away > 0) {
@@ -4624,7 +4642,7 @@ pub const App = struct {
             textColored(col.muted, fmtZ("BOTS EM OUTROS CANAIS · {d}", .{n_bots_away}));
             popFont();
             c.igDummy(v2(0, S(2)));
-            for (bot_ppl[0..n_bots_away]) |*m| a.memberRow(m, my_id, inner_w, i_am_admin);
+            for (bot_ppl[0..n_bots_away]) |*m| a.memberRow(m, my_id, inner_w, i_am_admin, .{});
         }
         // o menu de alguém (clique direito) vale pras três listas
         var all: [128]Member = undefined;
@@ -4646,7 +4664,27 @@ pub const App = struct {
         c.igEndChild();
         c.igPopStyleColor(1);
         const div_y = list_top + list_h + S(6);
-        rectFill(d, inner_x + S(10), div_y, inner_x + inner_w - S(10), div_y + S(1), withAlpha(col.text, 18), 0);
+        // a divisa: arrastar muda a altura do chat; duplo clique volta ao automático
+        c.igSetCursorScreenPos(v2(inner_x + S(10), div_y - S(4)));
+        _ = c.igInvisibleButton("##chatsplit", v2(inner_w - S(20), S(9)), 0);
+        const split_hot = c.igIsItemHovered(0) or c.igIsItemActive();
+        if (split_hot) {
+            c.igSetMouseCursor(c.ImGuiMouseCursor_ResizeNS);
+            if (!c.igIsItemActive()) tooltipText(tr("Arraste pra mudar a altura do chat (duplo clique: automático)"));
+        }
+        if (c.igIsItemActive() and c.igIsMouseDragging(0, -1)) {
+            const my = c.igGetIO_Nil().*.MousePos.y;
+            a.cfg.chat_h = @intFromFloat(std.math.clamp((y1 - my - S(6)) / scale, 140, @max(140, (y1 - y0) * 0.9 / scale)));
+        }
+        if (c.igIsItemDeactivated()) config.save(&a.cfg);
+        if (c.igIsItemHovered(0) and c.igIsMouseDoubleClicked_Nil(0)) {
+            a.cfg.chat_h = 0;
+            config.save(&a.cfg);
+        }
+        if (split_hot)
+            rectFill(d, inner_x + S(10), div_y - S(1), inner_x + inner_w - S(10), div_y + S(2), withAlpha(col.blurple, 200), S(1))
+        else
+            rectFill(d, inner_x + S(10), div_y, inner_x + inner_w - S(10), div_y + S(1), withAlpha(col.text, 18), 0);
 
         // chat
         c.igSetCursorScreenPos(v2(inner_x, div_y + S(2)));
@@ -4798,7 +4836,20 @@ pub const App = struct {
         };
     }
 
-    fn memberRow(a: *App, m: *const Member, my_id: u32, width: f32, i_am_admin: bool) void {
+    /// De que canal é a lista em que a pessoa aparece (pra coroa de OP).
+    const OpCtx = struct {
+        mask: u8 = 0, // proto.member_kind_op_chan / _op_call (0 = lista sem canal)
+        where: []const u8 = "",
+        mine: bool = false, // eu sou OP desse canal
+    };
+
+    fn chanFlags(chans: []const client_mod.ChanInfo, name: []const u8) u8 {
+        if (name.len == 0) return 0;
+        for (chans) |*ch| if (std.mem.eql(u8, ch.nameSlice(), name)) return ch.flags;
+        return 0;
+    }
+
+    fn memberRow(a: *App, m: *const Member, my_id: u32, width: f32, i_am_admin: bool, op: OpCtx) void {
         const d = drawList();
         const h = S(42);
         c.igPushID_Int(@intCast(m.id));
@@ -4816,8 +4867,16 @@ pub const App = struct {
         if (hovered) {
             var tip: [200]u8 = undefined;
             const route = routeText(m.route);
-            const action: []const u8 = if (m.id == my_id) "" else if (i_am_admin) tr("Clique direito: volume da voz e ações de admin") else tr("Clique direito: volume da voz");
-            const t = std.fmt.bufPrintZ(&tip, "{s}{s}{s}{s}", .{
+            const action: []const u8 = if (m.id == my_id) "" else if (i_am_admin) tr("Clique direito: volume da voz e ações de admin") else if (op.mine) tr("Clique direito: volume da voz e ações de OP") else tr("Clique direito: volume da voz");
+            var ob: [96]u8 = undefined;
+            const op_line: []const u8 = if (m.kind & (op.mask << 2) != 0)
+                i18n.bufPrint(&ob, "Criou o #{s}: é OP nele", .{op.where}) catch ""
+            else if (m.kind & op.mask != 0)
+                i18n.bufPrint(&ob, "OP do #{s}: manda no canal", .{op.where}) catch ""
+            else
+                "";
+            const t = std.fmt.bufPrintZ(&tip, "{s}{s}{s}{s}{s}{s}", .{
+                op_line,                          if (op_line.len > 0 and route.len + action.len > 0) "\n" else "",
                 if (route.len > 0) tr("Conectado: ") else "", route, if (route.len > 0 and action.len > 0) "\n" else "", action,
             }) catch "";
             if (t.len > 0) tooltipText(t);
@@ -4841,6 +4900,11 @@ pub const App = struct {
             tx += S(18);
         } else if (m.admin) {
             drawTextF(d, font_regular, 11, v2(tx, p.y + (h - S(13)) / 2), col.blurple, ic.shield);
+            tx += S(18);
+        }
+        // OP do canal dessa lista: coroa azul
+        if (m.kind & op.mask != 0) {
+            drawTextF(d, font_regular, 11, v2(tx, p.y + (h - S(13)) / 2), op_blue, ic.crown);
             tx += S(18);
         }
         if (m.id == my_id) drawTextF(d, font_regular, 12, v2(tx, p.y + (h - S(15)) / 2), col.faint, tr("(você)"));
@@ -4951,27 +5015,72 @@ pub const App = struct {
         cl.mutex.lock();
         const i_am_admin = cl.is_admin;
         const my_id = cl.my_id;
-        // quem criou o canal em que estou (e não é admin da sala): só "tirar do canal"
-        const chan_boss = cl.chans_supported and for (cl.chans[0..cl.n_chans]) |*ch| {
-            if (std.mem.eql(u8, ch.nameSlice(), cl.chan_name[0..cl.chan_name_len])) break ch.flags & proto.chan_mine != 0;
-        } else false;
-        var my_chan_buf: [proto.channel_name_max]u8 = undefined;
-        // do canal padrão (o primeiro) ninguém é tirado: é pra onde vai quem sai
-        const my_chan_len = if (cl.n_chans > 0 and std.mem.eql(u8, cl.chans[0].nameSlice(), cl.chan_name[0..cl.chan_name_len])) 0 else cl.chan_name_len;
-        @memcpy(my_chan_buf[0..my_chan_len], cl.chan_name[0..my_chan_len]);
-        cl.mutex.unlock();
-        if (!i_am_admin and chan_boss and my_chan_len > 0 and target.id != my_id and !target.owner and !target.admin) {
-            c.igDummy(v2(0, S(4)));
-            c.igSeparator();
-            c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);
-            if (c.igSelectable_Bool(fmtZ("{s}  Tirar do #{s} (não volta)###cban", .{ ic.ban, my_chan_buf[0..my_chan_len] }), false, 0, v2(S(220), 0)))
-                cl.chanAdmin(proto.chan_act_ban, my_chan_buf[0..my_chan_len], "", target.id);
-            c.igPopStyleColor(1);
+        const ops_known = cl.server_features & proto.srv_chan_op != 0;
+        var chans: [proto.max_channels]client_mod.ChanInfo = undefined;
+        const n_chans = if (cl.chans_supported) cl.n_chans else 0;
+        @memcpy(chans[0..n_chans], cl.chans[0..n_chans]);
+        // o canal da pessoa em que eu mando: o meu de texto (se ela está nele)
+        // ou o da minha call. Do padrão (o primeiro) ninguém é tirado nem é OP:
+        // é pra onde vai quem sai.
+        var op_buf: [proto.channel_name_max]u8 = undefined;
+        var op_len: usize = 0;
+        var op_mask: u8 = 0;
+        const default_name = if (n_chans > 0) chans[0].nameSlice() else "";
+        for ([_]struct { bool, []const u8, u8 }{
+            .{ target.in_chan, cl.chan_name[0..cl.chan_name_len], proto.member_kind_op_chan },
+            .{ target.in_call and cl.calls_known, cl.call_name[0..cl.call_name_len], proto.member_kind_op_call },
+        }) |cand| {
+            if (!cand[0] or cand[1].len == 0 or std.mem.eql(u8, cand[1], default_name)) continue;
+            // servidor sem OP: só quem criou, e só o canal de texto
+            if (!ops_known and cand[2] != proto.member_kind_op_chan) continue;
+            if (!i_am_admin and chanFlags(chans[0..n_chans], cand[1]) & proto.chan_mine == 0) continue;
+            op_len = cand[1].len;
+            @memcpy(op_buf[0..op_len], cand[1]);
+            op_mask = cand[2];
+            break;
         }
+        cl.mutex.unlock();
+        const op_chan = op_buf[0..op_len];
+        const op_fl = chanFlags(chans[0..n_chans], op_chan);
+        const t_op = target.kind & op_mask != 0;
+        const t_creator = target.kind & (op_mask << 2) != 0;
+        const i_created = op_fl & proto.chan_creator != 0;
+        // OP não mexe em admin nem em quem criou; em outro OP, só quem criou
+        const op_over = !target.owner and !target.admin and !t_creator and (!t_op or i_created);
         const me = for (members) |*m| {
             if (m.id == my_id) break m;
         } else null;
         const i_am_owner = me != null and me.?.owner;
+        const w = S(220);
+        // dar ou tirar o OP (tirar: quem criou e admin); levar e tirar do canal:
+        // o admin tem os dele embaixo
+        const can_op = ops_known and !target.bot and target.route != proto.route_web and !t_creator and (!t_op or i_created or i_am_admin);
+        const can_manage = !i_am_admin and op_over;
+        if (op_len > 0 and target.id != my_id and (can_op or can_manage)) {
+            c.igDummy(v2(0, S(4)));
+            c.igSeparator();
+            c.igDummy(v2(0, S(2)));
+            pushFont(font_bold, 11);
+            textColored(op_blue, fmtZ("{s}  OP DO #{s}", .{ ic.crown, op_chan }));
+            popFont();
+            if (can_op and c.igSelectable_Bool(if (t_op) fmtZ("{s}  Tirar o OP do #{s}###cop", .{ ic.crown, op_chan }) else fmtZ("{s}  Dar OP no #{s}###cop", .{ ic.crown, op_chan }), false, 0, v2(w, 0)))
+                cl.chanAdmin(proto.chan_act_op, op_chan, if (t_op) "0" else "1", target.id);
+            if (can_manage) {
+                if (ops_known and c.igBeginMenu(fmtZ("{s}  Levar pro canal###cmove", .{ic.arrow_right}), true)) {
+                    // os abertos e os que eu mando (nos outros o servidor não deixa)
+                    for (chans[0..n_chans], 0..) |*ch, i| {
+                        if (std.mem.eql(u8, ch.nameSlice(), op_chan)) continue;
+                        if (ch.flags & proto.chan_mine == 0 and ch.flags & (proto.chan_locked | proto.chan_password) != 0) continue;
+                        if (c.igMenuItem_Bool(fmtZ("#{s}###omv{d}", .{ ch.nameSlice(), i }), null, false, true)) cl.chanAdmin(proto.chan_act_move, ch.nameSlice(), "", target.id);
+                    }
+                    c.igEndMenu();
+                }
+                c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);
+                if (c.igSelectable_Bool(fmtZ("{s}  Tirar do #{s} (não volta)###cban", .{ ic.ban, op_chan }), false, 0, v2(w, 0)))
+                    cl.chanAdmin(proto.chan_act_ban, op_chan, "", target.id);
+                c.igPopStyleColor(1);
+            }
+        }
         if (!i_am_admin or target.owner or (target.admin and !i_am_owner)) return;
         c.igDummy(v2(0, S(4)));
         c.igSeparator();
@@ -4979,7 +5088,6 @@ pub const App = struct {
         pushFont(font_bold, 11);
         textColored(col.muted, tr("ADMIN"));
         popFont();
-        const w = S(220);
         if (c.igSelectable_Bool(if (target.muted()) fmtZ("{s}  Liberar o microfone###amute", .{ic.mic}) else fmtZ("{s}  Silenciar o microfone (pra todos)###amute", .{ic.mic_slash}), false, 0, v2(w, 0)))
             cl.admin(proto.admin_mute, target.id, @intFromBool(!target.muted()));
         if (target.streaming and c.igSelectable_Bool(fmtZ("{s}  Parar a transmissão###astop", .{ic.stop}), false, 0, v2(w, 0)))
@@ -5007,8 +5115,8 @@ pub const App = struct {
             }
             c.igEndMenu();
         }
-        if (cl.chans_supported and my_chan_len > 0 and c.igSelectable_Bool(fmtZ("{s}  Tirar do #{s} (não volta)###cban", .{ ic.ban, my_chan_buf[0..my_chan_len] }), false, 0, v2(w, 0)))
-            cl.chanAdmin(proto.chan_act_ban, my_chan_buf[0..my_chan_len], "", target.id);
+        if (op_len > 0 and c.igSelectable_Bool(fmtZ("{s}  Tirar do #{s} (não volta)###cban", .{ ic.ban, op_chan }), false, 0, v2(w, 0)))
+            cl.chanAdmin(proto.chan_act_ban, op_chan, "", target.id);
         if (c.igSelectable_Bool(fmtZ("{s}  Expulsar da sala###akick", .{ic.ban}), false, 0, v2(w, 0))) cl.admin(proto.admin_kick, target.id, 0);
         if (c.igSelectable_Bool(fmtZ("{s}  Banir (não volta mais)###aban", .{ic.gavel}), false, 0, v2(w, 0))) cl.admin(proto.admin_ban, target.id, 0);
         c.igPopStyleColor(1);
@@ -8239,24 +8347,31 @@ pub const App = struct {
         pushFont(font_bold, 13);
         textColored(col.header, fmtZ("#{s}", .{name}));
         popFont();
-        if (fl & proto.chan_mine != 0) {
-            pushFont(font_regular, 12);
-            textColored(col.faint, tr("Você criou esse canal: você manda nele."));
-            popFont();
-        }
+        // servidor antigo (sem OP): "mine" é quem criou
+        const ops_known = cl.server_features & proto.srv_chan_op != 0;
+        const created = fl & proto.chan_creator != 0 or (!ops_known and fl & proto.chan_mine != 0);
+        pushFont(font_regular, 12);
+        if (created)
+            textColored(op_blue, fmtZ("{s}  Você criou esse canal: é OP nele.", .{ic.crown}))
+        else if (fl & proto.chan_mine != 0)
+            textColored(op_blue, fmtZ("{s}  Você é OP desse canal.", .{ic.crown}));
+        popFont();
+        // admin passa por tudo: sem isso, parece que a senha e a trava não funcionam
+        if (a.chan_menu_admin) wrapText(col.faint, 12, tr("Você é admin da sala: entra com senha ou trancado e vê os invisíveis. Os outros, não."), w);
         c.igSeparator();
         // fixar é coisa do admin da sala; o resto, quem criou o canal também pode
         if (a.chan_menu_admin and c.igSelectable_Bool(if (fl & proto.chan_fixed != 0) fmtZ("{s}  Soltar (some dias depois de esvaziar)###cfix", .{ic.lock_open}) else fmtZ("{s}  Fixar (fica pra sempre, mesmo vazio)###cfix", .{ic.lock}), false, 0, v2(w, 0)))
             cl.chanAdmin(proto.chan_act_fix, name, if (fl & proto.chan_fixed != 0) "0" else "1", 0);
         if (c.igSelectable_Bool(if (fl & proto.chan_hidden != 0) fmtZ("{s}  Mostrar na lista###chide", .{ic.eye}) else fmtZ("{s}  Invisível (só entra quem sabe o nome)###chide", .{ic.eye_slash}), false, 0, v2(w, 0)))
             cl.chanAdmin(proto.chan_act_hide, name, if (fl & proto.chan_hidden != 0) "0" else "1", 0);
-        if (c.igSelectable_Bool(if (fl & proto.chan_locked != 0) fmtZ("{s}  Destrancar###clock", .{ic.lock_open}) else fmtZ("{s}  Trancar (só admin e você entram)###clock", .{ic.lock}), false, 0, v2(w, 0)))
+        if (c.igSelectable_Bool(if (fl & proto.chan_locked != 0) fmtZ("{s}  Destrancar###clock", .{ic.lock_open}) else fmtZ("{s}  Trancar (só admin e os OPs entram)###clock", .{ic.lock}), false, 0, v2(w, 0)))
             cl.chanAdmin(proto.chan_act_lock, name, if (fl & proto.chan_locked != 0) "0" else "1", 0);
         if (c.igSelectable_Bool(fmtZ("{s}  Senha do canal…###cpw", .{ic.shield}), false, 0, v2(w, 0))) a.startChanEdit(.password, name);
         if (c.igSelectable_Bool(fmtZ("{s}  Tópico…###ctopic", .{ic.pen}), false, 0, v2(w, 0))) a.startChanEdit(.topic, name);
-        // apagar: o padrão nunca; fixo, só o admin (foi ele que fixou)
+        // apagar: o padrão nunca; fixo, só o admin (foi ele que fixou); OP que
+        // não criou, não
         if (a.chan_menu_default or cl.server_features & proto.srv_chan_delete == 0) return;
-        if (fl & proto.chan_fixed != 0 and !a.chan_menu_admin) return;
+        if (!a.chan_menu_admin and (fl & proto.chan_fixed != 0 or !created)) return;
         c.igSeparator();
         if (fl & proto.chan_fixed == 0) {
             pushFont(font_regular, 12);
@@ -9986,8 +10101,8 @@ pub const App = struct {
             s(config.getStr(&cf.name)),      s(config.getStr(&cf.join_addr)),    s(config.getStr(&cf.join_pass)),   s(config.getStr(&cf.room_name)),
             s(config.getStr(&cf.host_pass)), s(std.mem.sliceTo(&a.port_buf, 0)), s(config.getStr(&cf.public_addr)), s(config.getStr(&cf.join_fp)),
         });
-        try w.print(",\"fps\":{d},\"quality\":{d},\"mode\":{d},\"resolution\":{d},\"cursor\":{},\"audio\":{},\"hardware\":{},\"stats_always\":{},\"show_chat\":{}", .{
-            cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.stats_always, cf.show_chat,
+        try w.print(",\"fps\":{d},\"quality\":{d},\"mode\":{d},\"resolution\":{d},\"cursor\":{},\"audio\":{},\"hardware\":{},\"stats_always\":{},\"show_chat\":{},\"chat_h\":{d},\"panel_w\":{d}", .{
+            cf.fps, cf.quality, cf.mode, cf.resolution, cf.cursor, cf.audio, cf.hardware, cf.stats_always, cf.show_chat, cf.chat_h, cf.panel_w,
         });
         try w.print(",\"noise_suppression\":{},\"echo_cancellation\":{},\"voice_sensitivity\":{d},\"mic_on_join\":{},\"sounds\":{},\"mic_device\":{f},\"notifications\":{},\"clips\":{},\"camera_res\":{d},\"camera_device\":{f},\"cameras\":{d},\"audio_app\":{f},\"audio_exclude\":{f},\"audio_apps\":{d},\"language\":{f},\"debug_log\":{},\"debug_send\":{d},\"debug_webhook\":{f},\"theme\":{f},\"custom_theme\":{f},\"custom_css\":{f},\"css_status\":{f},\"auto_quality\":{},\"resolution_idx\":{d},\"ui_zoom\":{d},\"crt\":{},\"voice_ptt\":{},\"ptt_key\":{d},\"ptt_mouse\":{d},\"clip_key\":{d}", .{
             cf.noise_suppression, cf.echo_cancellation, cf.voice_sensitivity, cf.mic_on_join, cf.sounds, s(config.getStr(&cf.mic_device)), cf.notifications, cf.clips, cf.camera_res, s(config.getStr(&cf.camera_device)), a.n_cams, s(config.getStr(&cf.audio_app)), s(config.getStr(&cf.audio_exclude)), a.n_audio_apps, s(config.getStr(&cf.language)), cf.debug_log, cf.debug_send, s(config.getStr(&cf.debug_webhook)), s(config.getStr(&cf.theme)), s(config.getStr(&cf.custom_theme)), s(config.getStr(&cf.custom_css)), s(@tagName(cssfile.getStatus())), cf.auto_quality, cf.resolution, cf.ui_zoom, cf.crt, cf.voice_ptt, cf.ptt_key, cf.ptt_mouse, cf.hk[@intFromEnum(config.HotkeyId.clip)].key,
@@ -10182,12 +10297,19 @@ pub const App = struct {
             try w.print(",\"id_state\":{f},\"server_fp\":{f}", .{ s(@tagName(cl.id_state)), s(if (cl.id_state == .verified or cl.id_state == .mismatch) &cl.server_fp else "") });
             try w.print(",\"channels_supported\":{},\"channel\":{f},\"call\":{f},\"calls_known\":{},\"chan_pw_for\":{f},\"chan_members\":[", .{ cl.chans_supported, s(cl.chan_name[0..cl.chan_name_len]), s(cl.call_name[0..cl.call_name_len]), cl.calls_known, s(a.chan_pw_for[0..a.chan_pw_len]) });
             for (cl.chan_members.items, 0..) |*m, i| try w.print("{s}{d}", .{ if (i > 0) "," else "", m.id });
+            // quem é OP do meu canal de texto (a coroa azul)
+            try w.writeAll("],\"chan_ops\":[");
+            var n_ops: usize = 0;
+            for (cl.chan_members.items) |*m| if (m.kind & proto.member_kind_op_chan != 0) {
+                try w.print("{s}{d}", .{ if (n_ops > 0) "," else "", m.id });
+                n_ops += 1;
+            };
             try w.writeAll("],\"room_bots\":[");
             for (cl.room_bots.items, 0..) |*m, i| try w.print("{s}{{\"id\":{d},\"name\":{f}}}", .{ if (i > 0) "," else "", m.id, s(m.nameSlice()) });
             try w.writeAll("],\"channels\":[");
             for (cl.chans[0..cl.n_chans], 0..) |*ch, i| {
                 if (i > 0) try w.writeByte(',');
-                try w.print("{{\"name\":{f},\"people\":{d},\"in_call\":{d},\"live\":{},\"fixed\":{},\"locked\":{},\"password\":{},\"topic\":{f}}}", .{ s(ch.nameSlice()), ch.people, ch.in_call, ch.flags & proto.chan_live != 0, ch.flags & proto.chan_fixed != 0, ch.flags & proto.chan_locked != 0, ch.flags & proto.chan_password != 0, s(ch.topicSlice()) });
+                try w.print("{{\"name\":{f},\"people\":{d},\"in_call\":{d},\"live\":{},\"fixed\":{},\"locked\":{},\"password\":{},\"hidden\":{},\"mine\":{},\"creator\":{},\"topic\":{f}}}", .{ s(ch.nameSlice()), ch.people, ch.in_call, ch.flags & proto.chan_live != 0, ch.flags & proto.chan_fixed != 0, ch.flags & proto.chan_locked != 0, ch.flags & proto.chan_password != 0, ch.flags & proto.chan_hidden != 0, ch.flags & proto.chan_mine != 0, ch.flags & proto.chan_creator != 0, s(ch.topicSlice()) });
             }
             const sst = &cl.stats;
             try w.print("],\"channel_gen\":{d},\"stats_open\":{},\"stats_gen\":{d},\"stats\":{{\"conns\":{d},\"channels\":{d},\"cpu\":{d},\"rss_kb\":{d},\"out_bps\":{d},\"in_bps\":{d},\"people\":{d},\"hosted\":{}}}", .{

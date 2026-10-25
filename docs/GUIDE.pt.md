@@ -159,14 +159,22 @@ e continuar na call de outro.
 - O **+** cria um canal. Ele continua na lista mesmo vazio (e se o servidor
   reiniciar); só some depois de 3 dias sem ninguém. Os fixados pelo admin ficam
   pra sempre.
-- **Quem criou o canal manda nele** (clique direito no canal): senha, trancar,
-  tópico, deixar **invisível** (fora da lista; entra quem sabe o nome e a
-  senha), **tirar alguém** do canal sem volta (clique direito na pessoa) e
-  **apagar** o canal (pede confirmação; quem estava nele volta pro canal
-  padrão). O admin da sala também pode tudo isso.
-- A **senha do canal vale pra todo mundo**, inclusive pra quem criou: pra
-  entrar, digita a senha (o app lembra dela e volta pro canal sozinho se a
-  internet cair). Só o admin da sala entra sem.
+- **Quem cria o canal é OP dele**, com uma **coroa azul** do lado do nome na
+  lista (a amarela é do dono da sala). O OP manda no canal: pelo clique
+  direito no canal, senha, trancar, tópico e deixar **invisível** (fora da
+  lista; entra quem sabe o nome e a senha); pelo clique direito na pessoa,
+  **dar OP** pra ela, **levar** ela pra outro canal (um aberto ou um em que
+  você também é OP) e **tirar** ela do canal sem volta. Em quem criou o canal
+  e em admin o OP não mexe; em outro OP, só quem criou.
+- Só **quem criou** apaga o canal (pede confirmação; quem estava nele volta
+  pro canal padrão) e tira o OP dos outros. O admin da sala pode tudo, em
+  qualquer canal. O canal padrão não tem OP.
+- A **senha do canal vale pra todo mundo**, inclusive pros OPs e pra quem
+  criou: pra entrar, digita a senha (o app lembra dela e volta pro canal
+  sozinho se a internet cair). Só o admin da sala entra sem, e também entra no
+  trancado e vê os invisíveis. Testando com duas janelas no mesmo PC: as duas
+  são a mesma pessoa pro servidor (e, com o token de admin em *Opções
+  avançadas*, as duas são admin).
 
 ## Comandos do chat
 
@@ -225,7 +233,7 @@ O botão da engrenagem abre as configurações, na sala ou na tela inicial.
 | Página | O que tem |
 |---|---|
 | **Geral** | Nome, idioma, notificações, estatísticas sempre à mostra, aviso de versão nova (e instalar sozinho), clipes e a duração deles |
-| **Aparência** | Temas: pwnd (neon, o padrão), escuro, claro, pwnd claro, Nord, Drácula ou o seu próprio CSS (atualiza sozinho quando você salva o arquivo); tamanho da interface; efeito CRT; **clima da sala** (o fundo muda de tom com a energia da sala, sem animação contínua); animações da tela inicial; mostrar ou esconder os desenhos dos outros. O painel do chat fica mais largo ou estreito arrastando a borda dele |
+| **Aparência** | Temas: pwnd (neon, o padrão), escuro, claro, pwnd claro, Nord, Drácula ou o seu próprio CSS (atualiza sozinho quando você salva o arquivo); tamanho da interface; efeito CRT; **clima da sala** (o fundo muda de tom com a energia da sala, sem animação contínua); animações da tela inicial; mostrar ou esconder os desenhos dos outros. O painel do chat fica mais largo ou estreito arrastando a borda dele, e o chat fica mais alto arrastando a linha de cima dele (duplo clique volta ao automático) |
 | **Voz** | Ativação por voz ou apertar pra falar, microfone, sensibilidade, volume, ganho automático, supressão de ruído, cancelamento de eco, entrar com o microfone ligado, sons de aviso |
 | **Atalhos** | Atalhos globais (e um interruptor geral) |
 | **Câmera** | Qual câmera e a resolução |

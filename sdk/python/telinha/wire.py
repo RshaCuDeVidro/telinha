@@ -105,6 +105,8 @@ MEMBER_NO_DRAW = 128
 MEMBER_IN_CHAN = 0x40
 MEMBER_IN_CALL = 0x20
 MEMBER_KIND_BOT = 1
+MEMBER_KIND_OP_CHAN = 2  # OP do meu canal de texto (quem criou também é)
+MEMBER_KIND_OP_CALL = 4  # OP do canal da minha call
 ROOM_LOCKED = 1
 
 # voice_state
@@ -122,6 +124,9 @@ CHAN_LIVE = 1
 CHAN_FIXED = 2
 CHAN_PASSWORD = 4
 CHAN_LOCKED = 8
+CHAN_MINE = 16  # sou OP dele
+CHAN_HIDDEN = 32
+CHAN_CREATOR = 64  # fui eu que criei
 
 
 class Deny(enum.IntEnum):

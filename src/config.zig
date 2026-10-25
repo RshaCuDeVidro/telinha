@@ -83,6 +83,7 @@ pub const Config = struct {
     animations: bool = true,
     mood: bool = true, // clima da sala (cor do fundo do palco, muda a cada poucos segundos no máximo)
     panel_w: i32 = 350, // largura do painel da direita (chat), em pixels na escala 1
+    chat_h: i32 = 0, // altura do chat no painel, em pixels na escala 1 (0 = sozinha: o que sobra da lista)
     eco: bool = false, // modo econômico: interface a 30 q/s, sem animação nem efeito (PC fraco)
     draw_color: u8 = 0, // cor do pincel (proto.draw_colors; 0 = a minha cor)
     draw_size: u8 = 0, // espessura (0 normal, 1 fina, 2 grossa, 3 marca-texto)
@@ -348,6 +349,8 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         cfg.mood = int != 0;
     } else if (std.mem.eql(u8, k, "panel_w")) {
         cfg.panel_w = std.math.clamp(int, 280, 900);
+    } else if (std.mem.eql(u8, k, "chat_h")) {
+        cfg.chat_h = if (int <= 0) 0 else std.math.clamp(int, 140, 4000);
     } else if (std.mem.eql(u8, k, "draw_color")) {
         cfg.draw_color = @intCast(std.math.clamp(int, 0, 15));
     } else if (std.mem.eql(u8, k, "draw_size")) {
@@ -417,9 +420,9 @@ pub fn save(cfg: *const Config) void {
     _ = c.fwrite(m.ptr, 1, m.len, f);
     // (um format só aceita 32 valores: o resto vai aqui)
     var more2: [700]u8 = undefined;
-    const m2 = std.fmt.bufPrint(&more2, "animations={d}\neco={d}\npanel_w={d}\nmood={d}\njoin_channel={s}\ndraw_color={d}\ndraw_size={d}\nshow_drawings={d}\njoin_fp={s}\njoin_fp_for={s}\nupdate_auto={d}\nupdate_skip={s}\nlast_version={s}\nav1={d}\n", .{
+    const m2 = std.fmt.bufPrint(&more2, "animations={d}\neco={d}\npanel_w={d}\nmood={d}\njoin_channel={s}\ndraw_color={d}\ndraw_size={d}\nshow_drawings={d}\njoin_fp={s}\njoin_fp_for={s}\nupdate_auto={d}\nupdate_skip={s}\nlast_version={s}\nav1={d}\nchat_h={d}\n", .{
         @intFromBool(cfg.animations), @intFromBool(cfg.eco), cfg.panel_w, @intFromBool(cfg.mood), getStr(&cfg.join_channel), cfg.draw_color, cfg.draw_size, @intFromBool(cfg.show_drawings), getStr(&cfg.join_fp), getStr(&cfg.join_fp_for),
-        @intFromBool(cfg.update_auto), getStr(&cfg.update_skip), getStr(&cfg.last_version), @intFromBool(cfg.av1),
+        @intFromBool(cfg.update_auto), getStr(&cfg.update_skip), getStr(&cfg.last_version), @intFromBool(cfg.av1), cfg.chat_h,
     }) catch return;
     _ = c.fwrite(m2.ptr, 1, m2.len, f);
     inline for (@typeInfo(HotkeyId).@"enum".fields) |fl| {

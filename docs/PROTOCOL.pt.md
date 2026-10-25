@@ -110,9 +110,9 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | tipo | nome | direção | payload |
 |---|---|---|---|
 | 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (o que decodifica, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (canal pra entrar; vazio ou sem o campo = o padrão), `str token_bot` (só bot; ver `feat_bot`), `str senha_do_canal` (se o canal tiver senha; o app manda a última que usou nele, pra voltar pro canal ao reconectar) |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1), `u8 recursos_do_servidor` (`srv_*`: 1 = mensagem privada e resposta citada, 2 = arquivos, 4 = cartões, 8 = apagar canal; servidor antigo não manda = 0) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1), `u8 recursos_do_servidor` (`srv_*`: 1 = mensagem privada e resposta citada, 2 = arquivos, 4 = cartões, 8 = apagar canal, 16 = OPs de canal; servidor antigo não manda = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (servidor fecha em seguida) |
-| 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo), n × `str versão_do_app` (mesma ordem), n × `u8 tipo` (1 = bot; servidor antigo não manda) |
+| 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo), n × `str versão_do_app` (mesma ordem), n × `u8 tipo` (1 = bot, 2 = OP do meu canal de texto, 4 = OP do canal da minha call, 8 = criou o meu canal de texto, 16 = criou o canal da minha call; servidor antigo não manda) |
 | 5 | chat | C→S | `str texto`, imagem (opcional, abaixo), `u32 resposta` (id da mensagem respondida; 0 = nenhuma), `u32 pra` (privada pra esse membro; 0 = o canal), `u32 n` + n bytes de um [cartão](#cartões) (0 = nenhum) |
 | 5 | chat | S→C | `u32 id`, `u32 de` (0 = sistema), `str nome`, `str texto`, `u64 hora` (relógio da sala, µs), `u8 flags` (1 = histórico), imagem, `u8 n`, n × (`u8 reação`, `u32 de`), `u32 resposta` (se ≠ 0: `u32 de`, `str nome`, `str trecho`), `u32 pra` (se ≠ 0: `str nome`), `u32 arquivo` (se ≠ 0: `str nome`, `u64 tamanho`), `u32 n` + n bytes de um cartão; **só pra bot**, nas mensagens ao vivo: `str canal`, `str call` de quem mandou (onde a pessoa está agora; `call` vazia = fora de call) |
 | 6 | stream_start | C→S | `u8 tipo`, `u16 w`, `u16 h`, `u8 fps`, `u8 flags` (1 = com áudio; só vale pra tela) |
@@ -310,19 +310,32 @@ ignora os bits de estilo.
 | 8 | limpar o chat da sala: o histórico de todos os canais (privadas inclusive) e os arquivos da sala (alvo ignorado) | — |
 
 **chan_admin** — ações: 1 = fixar (`valor` "1"/"0": canal fixo fica vazio pra
-sempre e depois de reiniciar), 2 = trancar (só admin e quem criou entram), 3 =
+sempre e depois de reiniciar), 2 = trancar (só admin e os OPs entram), 3 =
 senha (`valor`; vazio tira), 4 = tópico (`valor`, até 120 bytes), 5 = levar
-`alvo` pro canal (chat e call, mesmo trancado), 6 = invisível (`valor`
-"1"/"0": fora da lista de quem não está nele; entra quem sabe o nome), 7 =
-tirar `alvo` do canal e não deixar voltar (pela chave), 8 = apagar o canal
+`alvo` pro canal (chat e call), 6 = invisível (`valor` "1"/"0": fora da lista
+de quem não está nele; entra quem sabe o nome), 7 = tirar `alvo` do canal e
+não deixar voltar (pela chave; quem era OP perde o OP), 8 = apagar o canal
 (quem estava no chat dele vai pro padrão, e quem estava na call sai dela; o
-padrão nunca; um fixo, só admin). A senha vale até pra quem criou: só admin
-da sala entra sem. Fixar e levar: só admin
-da sala; o resto, quem criou o canal também (o servidor guarda a chave do app
-de quem criou, e a lista de canais marca pra essa pessoa com `chan_mine` = 16;
-`chan_hidden` = 32 marca um invisível). Canal criado por alguém continua na
-lista quando esvazia (e no arquivo de estado, reiniciando) por 3 dias sem
-ninguém; fixo, pra sempre.
+padrão nunca; um fixo, só admin), 9 = OP (`valor` "1" dá pro `alvo`, que
+precisa estar no chat ou na call do canal; "0" tira).
+
+**OPs de canal.** Quem cria um canal é OP dele, e um OP dá OP pra quem está no
+canal (até 16 por canal, fora quem criou; o servidor guarda as chaves do app e
+grava no estado). Admin da sala pode tudo, em qualquer canal. O OP: senha,
+trava, invisível, tópico, tirar do canal, dar OP e levar gente. Levar, pra
+OP, só vale pra quem está no canal dele (o chat, a call, ou os dois, conforme
+onde ele é OP) e pra um canal que já existe e em que a pessoa entraria
+sozinha (sem senha nem trava), ou em que ele também é OP; admin leva
+qualquer um pra qualquer canal, mesmo trancado (e cria o canal se não
+existir). OP não leva nem tira admin nem quem criou; outro OP, só quem criou.
+Só quem criou (e admin) apaga o canal e tira o OP dos outros; quem criou não
+perde o OP. O padrão não tem OP. A senha vale pra todo mundo menos admin da
+sala (inclusive OP e quem criou, e outra janela do mesmo app); a trava deixa
+entrar admin e os OPs; o invisível aparece na lista de quem está nele, dos
+OPs e de admin. A lista de canais marca pra cada um `chan_mine` = 16 (sou OP),
+`chan_creator` = 64 (fui eu que criei) e `chan_hidden` = 32 (invisível).
+Canal criado por alguém continua na lista quando esvazia (e no arquivo de
+estado, reiniciando) por 3 dias sem ninguém; fixo, pra sempre.
 
 **notice** — tipos: 1 = microfone silenciado, 2 = microfone liberado, 3 =
 transmissão parada (`extra` = tipo dela), 4 = virou admin, 5 = deixou de ser

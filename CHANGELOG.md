@@ -2,6 +2,40 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.7.0
+
+Talks to 3.6, 3.5, 3.4, 3.3, 3.2 and 3.1 (an older app doesn't show the crown or the OP actions; on an older server, the new app shows the channel menu only to its creator, as before).
+
+### Highlights
+
+- 👑 **Channel OPs**: whoever creates a channel is its OP, with a blue crown next to their name. An OP can make other people in the channel OPs, set a password, lock it, make it invisible, change the topic, move people from the channel to another one and remove people from it (right-click the channel or the person). Only the creator deletes the channel and takes OP away from others.
+- ↕️ **Chat as tall as you want**: drag the line above the chat to make it taller (the people list shrinks); double-click goes back to automatic. The panel's edge and that line light up when the mouse goes over them.
+- 🙈 **An invisible channel no longer leaks its name**: people left in the channel saw "Someone went to #secret-channel"; now they see "Someone went to another channel".
+
+<!-- detalhes -->
+
+### All changes
+
+- **Server**: each channel keeps up to 16 OPs besides the creator, by app key,
+  and saves them in the state file (an `op` line; an older server ignores it).
+  An OP gets through the lock, sees the invisible channel and does what the
+  creator did; the password still applies to everyone but admins. For an OP,
+  moving someone only works on people in their channel and to an open channel
+  (no password or lock) or one where they're also an OP. An OP doesn't touch
+  admins or the creator; other OPs, only the creator does. Being removed from
+  the channel takes the OP away. The default channel has no OPs.
+- **Protocol**: `chan_admin` 9 (give/remove OP), `chan_creator` = 64 in the
+  channel list, the `members` type byte marks OPs and creators (of my text
+  channel and of my call's channel), and the server announces `srv_chan_op` = 16.
+- **Channel menu**: says whether you created it or are an OP; for admins, it
+  says they get in with a password, into locked channels and see invisible ones
+  (others don't). A second app window on the same PC with the admin token joins
+  as an admin: that's what made the password and invisible look broken.
+- **Panel**: double-clicking the panel's edge went back to the default and the
+  mouse resting on it undid that right away; now it only resizes while dragging.
+- **SDK 0.3.2**: `Member.op` and `Member.op_call`; `ChannelInfo.hidden`, `.op`
+  and `.created`.
+
 ## 3.6.2
 
 Talks to 3.6, 3.5, 3.4, 3.3, 3.2 and 3.1.

@@ -165,6 +165,7 @@ chamou. Qualquer outro erro vai pro log e o bot responde "Deu erro aqui".
 | `streaming`, `camera` | transmitindo a tela / a câmera |
 | `mic`, `deaf`, `muted` | microfone ligado / surdo / silenciado por um admin |
 | `in_channel`, `in_call` | está no canal de texto do bot / na call do bot |
+| `op`, `op_call` | é OP do canal de texto do bot / do canal da call do bot (quem criou também é) |
 | `route` | por onde chegou (1 nessa máquina, 2 rede local, 3–4 internet, 5 link público, 6 navegador) |
 | `version` | a versão do app dela |
 | `watching` | as transmissões que ela está vendo |
@@ -172,7 +173,8 @@ chamou. Qualquer outro erro vai pro log e o bot responde "Deu erro aqui".
 ## ChannelInfo
 
 `name`, `people` (no chat), `in_call`, `topic`, e `live`, `fixed`,
-`has_password`, `locked`.
+`has_password`, `locked`, `hidden` (invisível), `op` (o bot é OP dele),
+`created` (foi o bot que criou).
 
 ## Player
 

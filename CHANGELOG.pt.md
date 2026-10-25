@@ -2,6 +2,39 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.7.0
+
+Conversa com a 3.6, a 3.5, a 3.4, a 3.3, a 3.2 e a 3.1 (app antigo não mostra a coroa nem as ações de OP; num servidor antigo, o app novo mostra o menu do canal só pra quem criou, como antes).
+
+### Destaques
+
+- 👑 **OP de canal**: quem cria um canal é OP dele, com uma coroa azul do lado do nome. O OP dá OP pra outras pessoas do canal, põe senha, tranca, deixa invisível, muda o tópico, leva gente do canal pra outro e tira gente do canal (clique direito no canal ou na pessoa). Só quem criou apaga o canal e tira o OP dos outros.
+- ↕️ **Chat do tamanho que você quiser**: arraste a linha de cima do chat pra deixar ele mais alto (a lista de gente encolhe); duplo clique volta ao automático. A borda do painel e essa linha acendem quando o mouse passa.
+- 🙈 **Canal invisível não vaza mais o nome**: quem fica no canal via "Fulano foi pro #canal-secreto"; agora vê "Fulano foi pra outro canal".
+
+<!-- detalhes -->
+
+### Todas as mudanças
+
+- **Servidor**: cada canal guarda até 16 OPs além de quem criou, pela chave do
+  app, e grava no arquivo de estado (linha `op`; servidor antigo ignora). O OP
+  passa pela trava, vê o canal invisível e faz o que quem criou fazia; a senha
+  continua valendo pra todo mundo menos admin. Levar alguém, pra OP, só vale
+  pra quem está no canal dele e pra um canal aberto (sem senha nem trava) ou
+  em que ele também é OP. OP não mexe em admin nem em quem criou; em outro
+  OP, só quem criou. Tirado do canal perde o OP. O canal padrão não tem OP.
+- **Protocolo**: `chan_admin` 9 (dar/tirar OP), `chan_creator` = 64 na lista de
+  canais, o byte de tipo do `members` marca OP e quem criou (do meu canal de
+  texto e do da minha call), e o servidor anuncia `srv_chan_op` = 16.
+- **Menu do canal**: diz se você criou ou é OP; pra admin, avisa que ele entra
+  com senha, no trancado e vê os invisíveis (os outros, não). Uma segunda
+  janela do app no mesmo PC com o token de admin entra como admin: era isso
+  que fazia parecer que a senha e o invisível não funcionavam.
+- **Painel**: o duplo clique na borda do painel voltava ao normal e o mouse
+  parado em cima desfazia na hora; agora só redimensiona arrastando.
+- **SDK 0.3.2**: `Member.op` e `Member.op_call`; `ChannelInfo.hidden`, `.op` e
+  `.created`.
+
 ## 3.6.2
 
 Conversa com a 3.6, a 3.5, a 3.4, a 3.3, a 3.2 e a 3.1.

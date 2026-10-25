@@ -185,6 +185,7 @@ const server_suffixes = [_]Suffix{
     .{ " tirou o tópico", "{s} removed the topic" },
     .{ " deixou invisível o canal", "{s} made the channel invisible" },
     .{ " voltou a mostrar o canal", "{s} made the channel visible again" },
+    .{ " foi pra outro canal", "{s} went to another channel" },
 };
 /// "<quem> <verbo> <quem>".
 const server_infixes = [_]Suffix{
@@ -197,6 +198,8 @@ const server_infixes = [_]Suffix{
     .{ " apagou o #", "{s} deleted #{s}" },
     .{ " tirou do canal: ", "{s} removed from the channel: {s}" },
     .{ " entrou no #", "{s} joined #{s}" },
+    .{ " deu OP pra ", "{s} made {s} an OP" },
+    .{ " tirou o OP de ", "{s} removed {s}'s OP" },
 };
 const server_whole = [_]Suffix{
     .{ "O servidor não conseguiu guardar o arquivo.", "The server couldn't store the file." },
@@ -218,7 +221,8 @@ const server_whole = [_]Suffix{
     .{ "Esse canal tem senha.", "This channel has a password." },
     .{ "Você foi tirado desse canal.", "You were removed from this channel." },
     .{ "Senha do canal errada.", "Wrong channel password." },
-    .{ "Esse canal está trancado: só admin entra.", "This channel is locked: admins only." },
+    .{ "Esse canal está trancado: só admin e os OPs entram.", "This channel is locked: only admins and OPs get in." },
+    .{ "Esse canal já tem OPs demais.", "This channel already has too many OPs." },
 };
 
 /// Mensagem do servidor (chat do sistema, motivo de recusa, aviso do admin).
@@ -266,7 +270,7 @@ const table = [_][2][]const u8{
     .{ "{s}  Senha do canal…", "{s}  Channel password…" },
     .{ "{s}  Soltar (some dias depois de esvaziar)", "{s}  Unpin (goes away days after it empties)" },
     .{ "{s}  Tópico…", "{s}  Topic…" },
-    .{ "{s}  Trancar (só admin e você entram)", "{s}  Lock (only admins and you get in)" },
+    .{ "{s}  Trancar (só admin e os OPs entram)", "{s}  Lock (only admins and OPs get in)" },
     .{ "Entrar na call do #{s}", "Join the #{s} call" },
     .{ "Fora da call", "Not in a call" },
     .{ "Na call #{s}", "In call #{s}" },
@@ -448,7 +452,16 @@ const table = [_][2][]const u8{
     .{ "{s}   Tem gente ao vivo no #{s}: ir e assistir", "{s}   Someone is live in #{s}: go and watch" },
     .{ "Clima da sala: o fundo muda de tom com a energia da sala (quieta, conversa, festa)", "Room mood: the background shifts tone with the room's energy (quiet, talking, party)" },
     .{ "Só um pedaço da tela (você arrasta um retângulo assim que começar)", "Just part of the screen (you drag a rectangle as soon as it starts)" },
-    .{ "Você criou esse canal: você manda nele.", "You created this channel: you run it." },
+    .{ "{s}  Você criou esse canal: é OP nele.", "{s}  You created this channel: you're an OP here." },
+    .{ "{s}  Você é OP desse canal.", "{s}  You're an OP of this channel." },
+    .{ "Você é admin da sala: entra com senha ou trancado e vê os invisíveis. Os outros, não.", "You're a room admin: you get in with a password or locked, and see invisible channels. Others don't." },
+    .{ "{s}  OP DO #{s}", "{s}  OP OF #{s}" },
+    .{ "{s}  Dar OP no #{s}", "{s}  Make OP in #{s}" },
+    .{ "{s}  Tirar o OP do #{s}", "{s}  Remove OP in #{s}" },
+    .{ "Criou o #{s}: é OP nele", "Created #{s}: an OP here" },
+    .{ "OP do #{s}: manda no canal", "OP of #{s}: runs the channel" },
+    .{ "Arraste pra mudar a altura do chat (duplo clique: automático)", "Drag to change the chat's height (double-click: automatic)" },
+    .{ "Arraste pra mudar a largura do painel (duplo clique: normal)", "Drag to change the panel's width (double-click: default)" },
     .{ "Vazio, ele some sozinho em 3 dias.", "Once empty, it goes away on its own in 3 days." },
     .{ "{s}  Apagar o canal…", "{s}  Delete the channel…" },
     .{ "{s}  Apagar #{s} de vez (o chat some)", "{s}  Delete #{s} for good (the chat goes too)" },
@@ -498,6 +511,7 @@ const table = [_][2][]const u8{
     .{ "Direto pela internet (IPv6)", "Direct over the internet (IPv6)" },
     .{ "Pelo link público (túnel)", "Through the public link (tunnel)" },
     .{ "Clique direito: volume da voz e ações de admin", "Right-click: voice volume and admin actions" },
+    .{ "Clique direito: volume da voz e ações de OP", "Right-click: voice volume and OP actions" },
     .{ "Clique direito: volume da voz", "Right-click: voice volume" },
     .{ "Conectado: ", "Connected: " },
     .{ "(você)", "(you)" },

@@ -99,6 +99,7 @@ pub const Member = struct {
     version: [16]u8 = undefined, // versão do app dela ("" = não contou)
     version_len: u8 = 0,
     bot: bool = false, // é um bot (sdk/python): etiqueta na lista e no chat
+    kind: u8 = 0, // proto.member_kind_*: OP / criou o meu canal de texto e o da minha call
     w: u16,
     h: u16,
     fps: u8,
@@ -1415,7 +1416,10 @@ pub const Client = struct {
                     @memcpy(m.version[0..m.version_len], v[0..m.version_len]);
                 }
                 // o que cada um é (servidor antigo não manda: ninguém é bot)
-                for (list.items) |*m| m.bot = (r.u8_() catch break) & proto.member_kind_bot != 0;
+                for (list.items) |*m| {
+                    m.kind = r.u8_() catch break;
+                    m.bot = m.kind & proto.member_kind_bot != 0;
+                }
                 // servidor com call separada marca quem está no meu chat e na
                 // minha call: `members` fica com a call (palco, voz, assistir) e
                 // eu; `chan_members` com o chat (painel, menções). Antigo: os dois iguais.

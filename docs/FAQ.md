@@ -74,6 +74,17 @@ upload), use a [dedicated server](DEPLOY.md) on a VPS: the streamer then sends
 once and the server fans it out. The dedicated server accepts 32 people by
 default (`--max` changes it).
 
+### I put a password on a channel (and made it invisible), and another window of mine got in without it
+
+Room admins get into any channel, with a password or locked, and see invisible
+ones. If you put the admin token in *Advanced options* on the join screen,
+every telinha window on that PC joins as an admin (they share the same
+settings), and the channel menu says "You're a room admin". Someone who isn't
+an admin needs the password, can't get into a locked channel and doesn't see
+an invisible one. To test as another person, use another PC, or clear the
+token before opening the second window. Two windows on the same PC are also
+the same person when it comes to being a channel OP.
+
 ## Streaming
 
 ### On Wayland the screen picker doesn't show up

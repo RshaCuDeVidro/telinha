@@ -15,7 +15,7 @@ const udp = @import("udp.zig");
 
 pub const version: u16 = 6;
 /// Versão do app (vai no hello/welcome/members pra avisar quem está desatualizado).
-pub const app_version = "3.6.2";
+pub const app_version = "3.7.0";
 pub const max_msg = 32 * 1024 * 1024;
 /// Marcador em claro no lugar do tamanho: "senha errada" (o servidor não
 /// conseguiu decifrar a primeira mensagem).
@@ -88,19 +88,23 @@ pub const max_channels = 32;
 pub const chan_live: u8 = 1; // alguém ao vivo nele
 pub const chan_fixed: u8 = 2; // não some quando esvazia (o padrão e os do --canais)
 pub const chan_password: u8 = 4; // pede senha pra entrar
-pub const chan_locked: u8 = 8; // só admin entra
-pub const chan_mine: u8 = 16; // foi você que criou: você manda nele (senha, trava, tópico, invisível, banir)
+pub const chan_locked: u8 = 8; // só admin e os OPs entram
+pub const chan_mine: u8 = 16; // você é OP dele: manda nele (senha, trava, tópico, invisível, levar e tirar gente, dar OP)
 pub const chan_hidden: u8 = 32; // invisível: fora da lista de quem não está nele (entra quem sabe o nome)
+pub const chan_creator: u8 = 64; // foi você que criou: além de OP, apaga o canal e tira o OP dos outros
 pub const chan_topic_max = 120;
 /// chan_admin: ações
 pub const chan_act_fix: u8 = 1; // valor "1" fixa (sobrevive vazio e ao servidor reiniciar), "0" solta
-pub const chan_act_lock: u8 = 2; // valor "1" tranca (só admin entra), "0" destranca
+pub const chan_act_lock: u8 = 2; // valor "1" tranca (só admin e os OPs entram), "0" destranca
 pub const chan_act_password: u8 = 3; // valor = senha (vazio = tira)
 pub const chan_act_topic: u8 = 4; // valor = tópico (vazio = tira)
-pub const chan_act_move: u8 = 5; // leva `alvo` pro canal (o chat e a call)
-pub const chan_act_hide: u8 = 6; // valor "1" deixa invisível, "0" volta pra lista (quem criou também pode)
-pub const chan_act_ban: u8 = 7; // tira `alvo` do canal e não deixa voltar (quem criou também pode)
+pub const chan_act_move: u8 = 5; // leva `alvo` pro canal (o chat e a call); OP: só quem está no canal dele
+pub const chan_act_hide: u8 = 6; // valor "1" deixa invisível, "0" volta pra lista (os OPs também podem)
+pub const chan_act_ban: u8 = 7; // tira `alvo` do canal e não deixa voltar (os OPs também podem)
 pub const chan_act_delete: u8 = 8; // apaga o canal (quem criou também, se não for fixo); quem estava nele vai pro padrão
+pub const chan_act_op: u8 = 9; // valor "1" dá OP pro `alvo` (que está no canal), "0" tira (quem criou e admin)
+/// OPs por canal, fora quem criou
+pub const chan_ops_max = 16;
 /// Canal criado por alguém que ficou vazio continua existindo esse tempo (e
 /// sobrevive a reiniciar o servidor); fixado pelo admin, pra sempre.
 pub const chan_keep_empty_ms: u64 = 3 * 24 * 3600 * 1000;
@@ -149,6 +153,12 @@ pub const member_no_draw: u8 = 128; // o admin tirou o pincel
 /// members: depois das versões, um byte por pessoa (mesma ordem): o que ela é.
 /// Servidor antigo não manda (ninguém é bot).
 pub const member_kind_bot: u8 = 1;
+/// OP no meu canal de texto / no canal da minha call (quem criou também é OP)
+pub const member_kind_op_chan: u8 = 2;
+pub const member_kind_op_call: u8 = 4;
+/// criou o meu canal de texto / o canal da minha call
+pub const member_kind_creator_chan: u8 = 8;
+pub const member_kind_creator_call: u8 = 16;
 
 /// members: estado da sala
 pub const room_locked: u8 = 1; // ninguém novo entra
@@ -274,7 +284,8 @@ pub const srv_dm: u8 = 1; // mensagem privada e resposta citada
 pub const srv_files: u8 = 2; // arquivos na sala (file_*)
 pub const srv_embed: u8 = 4; // cartões, edição e botões (chat_edit, embed_action)
 pub const srv_chan_delete: u8 = 8; // entende chan_act_delete
-pub const server_features: u8 = srv_dm | srv_files | srv_embed | srv_chan_delete;
+pub const srv_chan_op: u8 = 16; // OPs de canal (chan_act_op, chan_creator, member_kind_op_*), OP leva gente
+pub const server_features: u8 = srv_dm | srv_files | srv_embed | srv_chan_delete | srv_chan_op;
 /// Cartão (embed): bloco opaco pro servidor, no fim do chat (u32 tamanho + bytes).
 /// Formato em docs/PROTOCOL.md; o primeiro byte é a versão.
 pub const embed_max = 8 * 1024;

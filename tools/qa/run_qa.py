@@ -480,6 +480,83 @@ def canal_do_dono():
 
 
 @test
+def op_do_canal():
+    """OP de canal: quem cria é OP (coroa azul na lista), dá OP pra outra pessoa pelo menu dela; a OP deixa o canal invisível pelo menu do canal e leva gente pro #geral pelo menu da pessoa (em quem criou ela não mexe); quem criou tira o OP. E o chat muda de altura arrastando a divisa de cima dele (duplo clique volta ao automático)."""
+    with Session("opcanal") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)])
+        a.wait(lambda st: st["status"] == "connected" and st["channels_supported"], 10, "a sala")
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}"])
+        c = s.app("c", 93, ["--nome", "Caio", "--entrar", f"127.0.0.1:{p}"])
+        d = s.app("d", 94, ["--nome", "Dani", "--entrar", f"127.0.0.1:{p}"])
+        for x, who in ((b, "Bia"), (c, "Caio"), (d, "Dani")):
+            x.wait(lambda st: st["status"] == "connected" and st["channels_supported"], 10, f"{who} entrar")
+        bid, cid, did = b.state()["my_id"], c.state()["my_id"], d.state()["my_id"]
+        b.click("##chatin")
+        time.sleep(0.2)
+        b.type("/join zika\n")
+        b.wait(lambda st: st["channel"] == "zika" and any(ch["name"] == "zika" and ch["mine"] and ch["creator"] for ch in st["channels"]), 5, "a Bia criar o zika (OP)")
+        for x in (c, d):
+            x.click("##chatin")
+            time.sleep(0.2)
+            x.type("/join zika\n")
+            x.wait(lambda st: st["channel"] == "zika", 5, "entrar no zika")
+        c.wait(lambda st: st["chan_ops"] == [bid], 5, "a Bia com a coroa de OP pro Caio")
+        expect(not any(ch["name"] == "zika" and ch["mine"] for ch in c.state()["channels"]), "o Caio já é OP")
+        # sem OP, o menu do Caio na Dani não tem ação de OP
+        c.click_rect(c.member_row(did), button=3)
+        expect(c.find(contains="###cop", timeout=0.8, need=False) is None, "dar OP sem ser OP")
+        c.key("Escape")
+        # a Bia dá OP pro Caio pelo menu dele
+        b.click_rect(b.member_row(cid), button=3)
+        b.click(contains="###cop")
+        c.wait(lambda st: any(ch["name"] == "zika" and ch["mine"] and not ch["creator"] for ch in st["channels"]), 5, "o Caio virar OP")
+        b.wait(lambda st: sorted(st["chan_ops"]) == sorted([bid, cid]), 5, "a coroa do Caio na lista da Bia")
+        b.screenshot(os.path.join(s.base, "coroas.png"))
+        # a OP deixa invisível pelo menu do canal
+        cidx = next(i for i, ch in enumerate(c.state()["channels"]) if ch["name"] == "zika")
+        c.click(f"#zika###ch{cidx}", button=3)
+        time.sleep(0.3)
+        c.screenshot(os.path.join(s.base, "menu_canal_op.png"))
+        c.click(contains="###chide")
+        b.wait(lambda st: any(ch["name"] == "zika" and ch["hidden"] for ch in st["channels"]), 5, "o zika invisível")
+        # em quem criou a OP não mexe; na Dani, leva pro #geral
+        c.click_rect(c.member_row(bid), button=3)
+        expect(c.find(contains="###cmove", timeout=0.8, need=False) is None, "a OP pode levar quem criou")
+        c.key("Escape")
+        time.sleep(0.3)
+        c.click_rect(c.member_row(did), button=3)
+        c.click(contains="###cmove")
+        time.sleep(0.4)
+        c.screenshot(os.path.join(s.base, "menu_pessoa_op.png"))
+        c.click(contains="###omv0")
+        d.wait(lambda st: st["channel"] == "geral" and any("levou" in t for t in st["toasts"]), 5, "a Dani levada pro geral")
+        d.wait(lambda st: not any(ch["name"] == "zika" for ch in st["channels"]), 5, "o zika sumir da lista da Dani (invisível)")
+        # quem criou tira o OP
+        b.click_rect(b.member_row(cid), button=3)
+        b.click(contains="###cop")
+        c.wait(lambda st: not any(ch["name"] == "zika" and ch["mine"] for ch in st["channels"]), 5, "o Caio perder o OP")
+        b.wait(lambda st: st["chan_ops"] == [bid], 5, "a coroa do Caio sumir")
+        # o chat: arrastar a divisa pra cima aumenta; duplo clique volta
+        expect(b.state()["cfg"]["chat_h"] == 0, "o chat já começou com altura escolhida")
+        it = b.find("##chatsplit")
+        x, y = b._abs(it)
+        b.move(x, y)
+        b.press()
+        for i in range(1, 9):
+            b.move(x, y - 160 * i / 8)
+        b.release()
+        st = b.wait(lambda st: st["cfg"]["chat_h"] > 0, 3, "a altura do chat mudar")
+        b.screenshot(os.path.join(s.base, "chat_maior.png"))
+        h1 = st["cfg"]["chat_h"]
+        it = b.find("##chatsplit")
+        x2, y2 = b._abs(it)
+        expect(y2 < y - 100, f"a divisa não subiu ({y} → {y2})")
+        b.click_at(x2, y2, double=True)
+        b.wait(lambda st: st["cfg"]["chat_h"] == 0, 3, f"o duplo clique voltar ao automático (estava {h1})")
+
+
+@test
 def estatisticas_servidor():
     """Estatísticas do servidor: o botão só aparece pra quem entrou com o token de admin; abre, chegam números (pessoas, canais, CPU), fecha e para de pedir."""
     with Session("estat") as s:

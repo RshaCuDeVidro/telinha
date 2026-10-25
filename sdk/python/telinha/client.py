@@ -35,7 +35,7 @@ log = logging.getLogger("telinha")
 
 __all__ = ["Client", "Denied", "EVENTS"]
 
-SDK_VERSION = "0.3.1"
+SDK_VERSION = "0.3.2"
 PING_EVERY = 10.0  # s
 DEAD_AFTER = 45.0  # s sem nada chegando: a conexão morreu
 FILE_CHUNK = 32 * 1024
@@ -413,7 +413,10 @@ class Client:
         for m in members:
             m.version = r.opt(r.str, "")
         for m in members:
-            m.bot = bool(r.opt(r.u8, 0) & wire.MEMBER_KIND_BOT)
+            kind = r.opt(r.u8, 0)
+            m.bot = bool(kind & wire.MEMBER_KIND_BOT)
+            m.op = bool(kind & wire.MEMBER_KIND_OP_CHAN)
+            m.op_call = bool(kind & wire.MEMBER_KIND_OP_CALL)
         # servidor antigo não marca canal/call: todo mundo está em tudo
         if not any(m.in_channel for m in members):
             for m in members:
