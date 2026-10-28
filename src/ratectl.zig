@@ -63,6 +63,21 @@ pub const RateControl = struct {
         rc.changed = true;
     }
 
+    /// Começa (transmissão nova) numa taxa que já se sabe que cabe nesse
+    /// servidor: até 10% acima da última que ficou 10 s sem problema.
+    pub fn resetFrom(rc: *RateControl, target: u32, last_good: u32) void {
+        rc.reset(target);
+        if (last_good > 0) rc.bps = @max(min_bps, @min(target, last_good / 10 * 11));
+    }
+
+    /// Taxa que está aguentando sem problema há 10 s (0 = ainda não sabe).
+    pub fn goodBps(rc: *const RateControl, now: u64) u32 {
+        const calm_since = @max(rc.last_congestion_us, rc.last_slow_us);
+        if (calm_since != 0 and now - calm_since < 10_000_000) return 0;
+        if (now - rc.last_adjust_us < 10_000_000 and rc.last_adjust_us != 0 and rc.bps < rc.target) return 0;
+        return rc.bps;
+    }
+
     /// Alvo novo mantendo uma redução que ainda esteja valendo.
     pub fn retarget(rc: *RateControl, target: u32) void {
         rc.target = target;

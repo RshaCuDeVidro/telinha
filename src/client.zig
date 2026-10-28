@@ -899,6 +899,9 @@ pub const Client = struct {
     /// Algum espectador não está dando conta da nossa taxa de bits: piso (% do
     /// alvo) até onde baixar. 0 = nenhum aviso pendente. Por tipo.
     viewer_slow: [2]std.atomic.Value(u8) = .{ .init(0), .init(0) },
+    /// Taxa que coube por 10 s sem problema nessa sala (a próxima transmissão
+    /// começa nela, em vez do alvo cheio e um congestionamento logo de cara).
+    last_good_bps: [2]std.atomic.Value(u32) = .{ .init(0), .init(0) },
     /// Até quando (ms) alguém não decodifica a tempo (proto.slow_decoder): o
     /// fps automático fica em 30.
     decoder_slow_until: [2]std.atomic.Value(u64) = .{ .init(0), .init(0) },

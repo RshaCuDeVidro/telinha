@@ -128,3 +128,18 @@ test "simlink: link oscilando (quedas curtas): não fica atrasando a cada sondag
     try std.testing.expect(r.late_s < 6);
     try std.testing.expect(r.avg_bps[6] > 5e6 * 0.6);
 }
+
+test "simlink/ratectl: transmissão nova começa no que já coube; sem saber, no alvo" {
+    var rc: RateControl = .{};
+    rc.resetFrom(6_000_000, 0);
+    try std.testing.expectEqual(@as(u32, 6_000_000), rc.bps);
+    rc.resetFrom(6_000_000, 3_000_000);
+    try std.testing.expectEqual(@as(u32, 3_300_000), rc.bps);
+    rc.resetFrom(6_000_000, 9_000_000);
+    try std.testing.expectEqual(@as(u32, 6_000_000), rc.bps);
+    // "coube" = 10 s sem congestionar
+    rc.reset(6_000_000);
+    rc.last_congestion_us = 5_000_000;
+    try std.testing.expectEqual(@as(u32, 0), rc.goodBps(10_000_000));
+    try std.testing.expectEqual(@as(u32, 6_000_000), rc.goodBps(16_000_000));
+}

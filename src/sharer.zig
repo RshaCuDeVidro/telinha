@@ -1434,7 +1434,10 @@ const Pipeline = struct {
                 if (enc) |*e| e.deinit();
                 enc = null;
                 const target = targetBitrate(sl.w, sl.h, rateFps(fps, mode, fps_auto), quality);
-                if (gen != enc_gen) bw.reset(target) else bw.retarget(target);
+                // primeira vez: começa no que já coube nesse servidor; depois
+                // (fps/modo mudaram, o fps automático desceu) mantém o que o
+                // controle aprendeu em vez de voltar pro alvo cheio
+                if (enc_gen == std.math.maxInt(u32)) bw.resetFrom(target, s.client.last_good_bps[kind].load(.monotonic)) else bw.retarget(target);
                 enc_quality = quality;
                 _ = bw.takeChange(); // o encoder novo já nasce com a taxa certa
                 // duas camadas temporais: o servidor pode mandar só metade dos
@@ -1506,6 +1509,8 @@ const Pipeline = struct {
             }
             bw.rampUp(sync.nowUs(), up.excess_us -| up.key_allowance_us);
             if (bw.takeChange()) |b| enc.?.setBitrate(b);
+            const good = bw.goodBps(sync.nowUs());
+            if (good > 0) s.client.last_good_bps[kind].store(good, .monotonic);
 
             const t0 = sync.nowUs();
             if (slowEncodeUs(sl.w, sl.h)) |us| sync.sleepMs(@intCast(us / 1000)); // teste: PC lento
