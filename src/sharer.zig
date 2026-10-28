@@ -488,7 +488,7 @@ const Pipeline = struct {
     reannounce: std.atomic.Value(bool) = .init(false), // o som mudou: anunciar de novo
     chan_seen: u32 = 0, // troca de canal já anunciada (client.channel_gen)
     audio_seq: u32 = 0,
-    fps_gen: u32 = 0, // muda quando fps/modo/qualidade mudam (encoder recria)
+    fps_gen: u32 = 0, // muda quando fps/modo mudam (encoder recria; a qualidade só muda a taxa)
     fps: u32 = 30,
     quality: u8 = 60,
     mode: codec.Mode = .screen,
@@ -796,10 +796,14 @@ const Pipeline = struct {
     fn applySettings(p: *Pipeline) void {
         p.mutex.lock();
         defer p.mutex.unlock();
-        p.fps = std.math.clamp(p.settings.fps, 1, 60);
+        const fps = std.math.clamp(p.settings.fps, 1, 60);
+        // só fps e modo pedem encoder novo (IDR pra todo mundo e o controle de
+        // taxa do zero); mexer em cursor, som, recorte ou no tamanho de quem
+        // assiste recriava o encoder a cada clique. Qualidade muda só a taxa.
+        if (fps != p.fps or p.settings.mode != p.mode) p.fps_gen +%= 1;
+        p.fps = fps;
         p.quality = p.settings.quality;
         p.mode = p.settings.mode;
-        p.fps_gen +%= 1;
     }
 
     // ------------------------------------------------------------ captura
@@ -1287,11 +1291,16 @@ const Pipeline = struct {
         // parar, um núcleo inteiro, até a rede folgar)
         var key_later = false;
         var key_retry_us: u64 = 0;
+        // quadro pulado pela rede congestionada: com a tela parada não vem outro,
+        // e o último estado da tela nunca chegava; manda de novo quando der
+        var redo_later = false;
+        var redo_us: u64 = 0;
+        var enc_quality: u8 = 0;
 
         while (true) {
             // espera um quadro novo (ou um pedido de IDR)
             p.mutex.lock();
-            while (p.ready == null and !p.quit and !s.client.keyreq[kind].load(.acquire) and !(key_later and sync.nowUs() >= key_retry_us)) p.cond.timedWait(&p.mutex, 50);
+            while (p.ready == null and !p.quit and !s.client.keyreq[kind].load(.acquire) and !(key_later and sync.nowUs() >= key_retry_us) and !(redo_later and sync.nowUs() >= redo_us)) p.cond.timedWait(&p.mutex, 50);
             if (p.quit or (teste_parar_us != null and sync.nowUs() > teste_parar_us.?)) {
                 p.mutex.unlock();
                 return;
@@ -1301,7 +1310,9 @@ const Pipeline = struct {
             const clip_key = s.clip != null and !s.idle.load(.acquire) and last_key_us != 0 and sync.nowUs() - last_key_us > clip_key_us;
             const key = s.client.keyreq[kind].swap(false, .acq_rel) or clip_key or key_later;
             key_later = false;
-            const idx: ?usize = if (p.ready) |r| r else if (key) p.last else null;
+            const redo = redo_later and sync.nowUs() >= redo_us;
+            if (p.ready != null or redo) redo_later = false;
+            const idx: ?usize = if (p.ready) |r| r else if (key or redo) p.last else null;
             p.ready_was_null = p.ready == null;
             if (p.ready != null) p.ready = null;
             p.encoding = idx;
@@ -1338,8 +1349,11 @@ const Pipeline = struct {
                 if (key) {
                     key_later = true;
                     key_retry_us = sync.nowUs() + 100_000;
+                } else {
+                    redo_later = true;
+                    redo_us = sync.nowUs() + 100_000;
                 }
-                p.doneWith(i, false);
+                p.doneWith(i, true); // fica como o último: é o que vai de novo
                 continue;
             }
 
@@ -1354,6 +1368,7 @@ const Pipeline = struct {
                 enc = null;
                 const target = targetBitrate(sl.w, sl.h, fps, quality);
                 if (gen != enc_gen) bw.reset(target) else bw.retarget(target);
+                enc_quality = quality;
                 _ = bw.takeChange(); // o encoder novo já nasce com a taxa certa
                 // duas camadas temporais: o servidor pode mandar só metade dos
                 // quadros pra quem não dá conta. No openh264 e no modo jogo é de
@@ -1411,8 +1426,15 @@ const Pipeline = struct {
             const watched = sync.nowMs() < watched_until_ms or s.client.anyoneWatching(proto.streamId(s.client.myId(), kind)) or ownRecording(s);
             s.idle.store(!watched, .release);
             if (!watched) {
-                p.doneWith(i, false);
+                // não codifica, mas guarda como o último: quem entrar recebe a
+                // tela de agora (era a de quando o último espectador saiu)
+                p.doneWith(i, true);
                 continue;
+            }
+            // qualidade mudou: só a taxa-alvo (o encoder segue o mesmo)
+            if (quality != enc_quality) {
+                enc_quality = quality;
+                bw.retarget(targetBitrate(sl.w, sl.h, fps, quality));
             }
             bw.rampUp(sync.nowUs(), up.excess_us -| up.key_allowance_us);
             if (bw.takeChange()) |b| enc.?.setBitrate(b);
@@ -1503,12 +1525,13 @@ const Pipeline = struct {
         }
     }
 
-    /// Libera o slot que o encoder usou (e guarda como "último" se foi codificado).
-    fn doneWith(p: *Pipeline, idx: usize, encoded: bool) void {
+    /// Libera o slot que o encoder usou; `keep` = guarda como "último" (o quadro
+    /// que vai de novo pra quem entrar ou num IDR pedido com a tela parada).
+    fn doneWith(p: *Pipeline, idx: usize, keep: bool) void {
         p.mutex.lock();
         defer p.mutex.unlock();
         p.encoding = null;
-        if (encoded) p.last = idx;
+        if (keep) p.last = idx;
     }
 
     fn announce(s: *Sharer, kind: u8, w: u32, h: u32, fps: u32, with_audio: bool) void {

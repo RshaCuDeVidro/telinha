@@ -1233,12 +1233,14 @@ pub const Server = struct {
     /// A sala aceita esse bot? (--sem-bots recusa todos; --token-bots pede o token)
     fn admitBot(s: *Server, cn: *Conn, name: []const u8, token: []const u8) !void {
         if (s.no_bots) {
-            s.log("bot {s} recusado (a sala não aceita bots)", .{safeName(name)});
+            var nb: [32]u8 = undefined;
+            s.log("bot {s} recusado (a sala não aceita bots)", .{safeName(name, &nb)});
             refuse(cn, proto.deny_bots, "Essa sala não aceita bots.");
             return error.BotsRefused;
         }
         if (s.bot_token_len > 0 and !constEql(token, s.bot_token[0..s.bot_token_len])) {
-            s.log("bot {s} recusado (token de bot errado)", .{safeName(name)});
+            var nb: [32]u8 = undefined;
+            s.log("bot {s} recusado (token de bot errado)", .{safeName(name, &nb)});
             refuse(cn, proto.deny_bots, "Token de bot errado: essa sala só aceita bots com o token dela.");
             return error.BotsRefused;
         }
@@ -1864,13 +1866,48 @@ pub const Server = struct {
         return false;
     }
 
-    /// O nome que vai pra sala: sem espaço nas pontas, até 32 bytes. Vazio, ou
-    /// um convite colado no campo do nome (a senha ia aparecer pra todo mundo),
-    /// vira "anônimo".
-    pub fn safeName(raw_name: []const u8) []const u8 {
+    /// O nome que vai pra sala: até 32 bytes de UTF-8 válido (cortado entre
+    /// caracteres), sem caracteres de controle nem invisíveis (zero-width,
+    /// controles de direção do texto), espaços seguidos viram um. Vazio, ou um
+    /// convite colado no campo do nome (a senha ia aparecer pra todo mundo),
+    /// vira "anônimo". Um '\n' no nome injetava linhas no arquivo de estado.
+    pub fn safeName(raw_name: []const u8, out: *[32]u8) []const u8 {
         const trimmed = std.mem.trim(u8, raw_name, " \t\r\n");
         if (trimmed.len == 0 or std.ascii.startsWithIgnoreCase(trimmed, "telinha://")) return "anônimo";
-        return trimmed[0..@min(trimmed.len, 32)];
+        var n: usize = 0;
+        var i: usize = 0;
+        var space = false;
+        while (i < trimmed.len) {
+            const len = std.unicode.utf8ByteSequenceLength(trimmed[i]) catch {
+                i += 1; // byte solto: some
+                continue;
+            };
+            if (i + len > trimmed.len) break;
+            const cp = std.unicode.utf8Decode(trimmed[i .. i + len]) catch {
+                i += 1;
+                continue;
+            };
+            const seq = trimmed[i .. i + len];
+            i += len;
+            if (cp == ' ' or cp == '\t' or cp == '\n' or cp == '\r' or cp == 0xA0 or cp == 0x3000) {
+                space = n > 0;
+                continue;
+            }
+            const invisible = cp < 0x20 or (cp >= 0x7F and cp <= 0x9F) or cp == 0xAD or
+                (cp >= 0x200B and cp <= 0x200F) or (cp >= 0x2028 and cp <= 0x202E) or
+                (cp >= 0x2060 and cp <= 0x206F) or cp == 0xFEFF;
+            if (invisible) continue;
+            const need = len + @intFromBool(space);
+            if (n + need > out.len) break;
+            if (space) {
+                out[n] = ' ';
+                n += 1;
+                space = false;
+            }
+            @memcpy(out[n .. n + len], seq);
+            n += len;
+        }
+        return if (n == 0) "anônimo" else out[0..n];
     }
 
     fn join(s: *Server, cn: *Conn, raw_name: []const u8, token: []const u8, want_chan: []const u8, want_pw: []const u8) !void {
@@ -1878,8 +1915,9 @@ pub const Server = struct {
         defer s.mutex.unlock();
         // a sala fechou enquanto essa conexão fazia o handshake
         if (s.stopped.load(.acquire)) return error.Stopped;
-        const is_owner = s.admin_token_len > 0 and std.mem.eql(u8, token, s.admin_token[0..s.admin_token_len]);
-        const base = safeName(raw_name);
+        const is_owner = s.admin_token_len > 0 and constEql(token, s.admin_token[0..s.admin_token_len]);
+        var base_buf: [32]u8 = undefined;
+        const base = safeName(raw_name, &base_buf);
         if (!is_owner) {
             if (s.banned(cn, base)) {
                 s.log("{s} tentou entrar, mas foi banido", .{base});
@@ -1954,8 +1992,11 @@ pub const Server = struct {
         try b.u8_(s.serverFeatures()); // o que este servidor sabe fazer (srv_*)
         cn.queue.pushOwned(try b.finish());
 
-        // em que canal ela está e quais existem; depois o que já foi dito nele
+        // em que canal ela está e quais existem; quem está na sala (antes do
+        // histórico: com prints no histórico a lista chegava segundos depois e a
+        // sala parecia vazia, sem botão de assistir); depois o que já foi dito nele
         s.pushChannels(cn);
+        try s.broadcastMembersFor(cn.chan, cn.call);
         try s.pushHistory(cn);
         if (needs_pw) pushNotice(cn, proto.notice_channel, "Esse canal tem senha.", proto.notice_channel_needs_password) catch {};
         // dá pra chamar gente pelo navegador: o link (o app mostra "copiar")
@@ -2294,6 +2335,9 @@ pub const Server = struct {
         // privada: só os dois; do canal: só quem está nele
         const allowed = if (e.to != 0) cn.id == e.from or cn.id == e.to else std.mem.eql(u8, cn.chan.nameSlice(), e.chanSlice());
         if (!allowed or !e.complete or off >= e.size) return;
+        // quem pede e não lê: o app honesto tem no máximo 4 MB em voo (bgflow);
+        // sem esse teto um script enfileirava o arquivo inteiro (256 MB) na RAM
+        if (cn.queue.queuedBytes() > max_viewer_backlog * 2) return;
         const n: usize = @intCast(@min(len, e.size - off));
         const m = try proto.Msg.alloc(.file_data, 12 + n);
         errdefer m.release();
@@ -2931,8 +2975,10 @@ pub const Server = struct {
         cn.chan = target;
         s.log("{s}: #{s} → #{s}", .{ cn.nameSlice(), old.nameSlice(), target.nameSlice() });
         s.dropIfEmpty(old); // (antes da lista: ela já sai sem o canal que esvaziou)
-        // primeiro "você está no canal X" (o app limpa o chat), depois o histórico dele
+        // primeiro "você está no canal X" (o app limpa o chat), quem está nele,
+        // depois o histórico dele
         s.pushChannels(cn);
+        try s.broadcastMembersFor(target, cn.call);
         try s.pushHistory(cn);
         try s.broadcastChat(target, std.fmt.bufPrint(&tmp, "{s} entrou no #{s}", .{ cn.nameSlice(), target.nameSlice() }) catch "");
     }
@@ -3153,7 +3199,9 @@ pub const Server = struct {
             ow.writeByte('\n') catch continue;
             if (n_ops > 0) put(f, ow.buffered());
         }
-        for (s.bans.items) |*b| put(f, std.fmt.bufPrint(&lb, "ban\t{x}\t{s}\t{s}\n", .{ b.key, b.ip[0..b.ip_len], b.name[0..b.name_len] }) catch continue);
+        // "ban2": IP em hex (no "ban" ele ia em bytes, e 10.x/192.168.9.x tinham
+        // \n e \t no meio, quebrando a linha); o nome já vem limpo (safeName)
+        for (s.bans.items) |*b| put(f, std.fmt.bufPrint(&lb, "ban2\t{x}\t{x}\t{s}\n", .{ b.key, b.ip[0..b.ip_len], b.name[0..b.name_len] }) catch continue);
         for (s.muted_keys.items) |k| put(f, std.fmt.bufPrint(&lb, "mudo\t{x}\n", .{k}) catch continue);
         for (s.no_draw_keys.items) |k| put(f, std.fmt.bufPrint(&lb, "sempincel\t{x}\n", .{k}) catch continue);
         _ = cio.fclose(f);
@@ -3205,10 +3253,17 @@ pub const Server = struct {
                 const name = normalizeChannel(it.next() orelse continue, &nb) orelse continue;
                 const ch = s.findChan(name) orelse continue;
                 while (it.next()) |k| _ = ch.addOp(std.fmt.parseInt(u64, k, 16) catch continue);
-            } else if (std.mem.eql(u8, kind, "ban")) {
+            } else if (std.mem.eql(u8, kind, "ban") or std.mem.eql(u8, kind, "ban2")) {
                 var b: Ban = .{ .key = std.fmt.parseInt(u64, it.next() orelse continue, 16) catch 0 };
-                copyInto(&b.ip, &b.ip_len, it.next() orelse "");
-                copyInto(&b.name, &b.name_len, it.next() orelse "");
+                const ip = it.next() orelse "";
+                if (kind.len == 4) {
+                    copyInto(&b.ip, &b.ip_len, ip); // formato antigo: bytes crus
+                } else if (ip.len % 2 == 0 and ip.len / 2 <= b.ip.len) {
+                    if (std.fmt.hexToBytes(&b.ip, ip)) |got| b.ip_len = got.len else |_| {}
+                }
+                var nb: [32]u8 = undefined;
+                const nm = it.next() orelse "";
+                copyInto(&b.name, &b.name_len, if (nm.len == 0) "" else safeName(nm, &nb));
                 s.bans.append(gpa, b) catch {};
             } else if (std.mem.eql(u8, kind, "mudo")) {
                 s.muted_keys.append(gpa, std.fmt.parseInt(u64, it.next() orelse continue, 16) catch continue) catch {};

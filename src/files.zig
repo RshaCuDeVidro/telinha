@@ -15,6 +15,8 @@ pub const cio = @cImport(@cInclude("stdio.h"));
 pub const expire_ms: u64 = 2 * 3600 * 1000;
 pub const stall_ms: u64 = 120 * 1000; // subida parada há 2 min: desiste
 pub const budget: u64 = 2 * 1024 * 1024 * 1024;
+/// Quantos arquivos a sala guarda ao mesmo tempo (os mais velhos saem).
+pub const max_files = 256;
 const prefix = "telinha-arq-";
 
 pub const Entry = struct {
@@ -101,7 +103,9 @@ pub const Store = struct {
     pub fn create(st: *Store, name: []const u8, size: u64, from: u32, from_name: []const u8, to: u32, chan: []const u8, reply_to: u32) !*Entry {
         if (!st.ok) return error.NoStorage;
         if (size == 0 or size > proto.file_max) return error.TooBig;
-        while (st.total + size > budget) {
+        // teto de bytes e de quantidade (um flood de arquivos de 1 byte enchia a
+        // lista e os descritores): os mais velhos saem
+        while (st.total + size > budget or st.items.items.len >= max_files) {
             // o mais velho que já terminou (subindo não sai)
             var oldest: ?usize = null;
             for (st.items.items, 0..) |e, i| {
@@ -206,6 +210,11 @@ pub const Store = struct {
         if (want > buf.len) return error.BadChunk;
         const got = cio.fread(&buf, 1, want, f);
         if (got != want) return error.NoStorage;
+        // último pedaço: fecha (o descritor ficava aberto até o arquivo expirar, 2 h)
+        if (offset + got >= e.size) {
+            _ = cio.fclose(f);
+            e.file = null;
+        }
         ChaCha.xor(out[0..got], buf[0..got], @intCast(offset / 64), st.key, e.nonce);
         e.last_ms = @max(e.last_ms, sync.nowMs() -| expire_ms / 2); // baixando: não expira no meio
         return got;

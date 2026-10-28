@@ -2361,11 +2361,18 @@ test "canais: senha, trava, tópico, admin leva alguém; o que é fixo sobrevive
 }
 
 test "nome: convite colado no campo do nome não vira o nome (a senha ia aparecer)" {
-    try std.testing.expectEqualStrings("anônimo", Server.safeName("telinha://168.75.82.0:7777#4byx"));
-    try std.testing.expectEqualStrings("anônimo", Server.safeName("  TELINHA://x:1!abc#pw "));
-    try std.testing.expectEqualStrings("anônimo", Server.safeName("   "));
-    try std.testing.expectEqualStrings("Ana", Server.safeName(" Ana "));
-    try std.testing.expectEqualStrings("a" ** 32, Server.safeName("a" ** 40));
+    var nb: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("anônimo", Server.safeName("telinha://168.75.82.0:7777#4byx", &nb));
+    try std.testing.expectEqualStrings("anônimo", Server.safeName("  TELINHA://x:1!abc#pw ", &nb));
+    try std.testing.expectEqualStrings("anônimo", Server.safeName("   ", &nb));
+    try std.testing.expectEqualStrings("Ana", Server.safeName(" Ana ", &nb));
+    try std.testing.expectEqualStrings("a" ** 32, Server.safeName("a" ** 40, &nb));
+    // nada de quebra de linha (injetava linhas no arquivo de estado) nem invisíveis
+    try std.testing.expectEqualStrings("Ana mudo 1", Server.safeName("Ana\nmudo\t1", &nb));
+    try std.testing.expectEqualStrings("João", Server.safeName("Jo\u{200B}ão\u{202E}", &nb));
+    try std.testing.expectEqualStrings("anônimo", Server.safeName("\u{200B}\u{FEFF}", &nb));
+    // corta entre caracteres: 31 'a' + "é" (2 bytes) não cabe, fica sem o é
+    try std.testing.expectEqualStrings("a" ** 31, Server.safeName("a" ** 31 ++ "é", &nb));
 }
 
 // ------------------------------------------------------- NAT-PMP / PCP

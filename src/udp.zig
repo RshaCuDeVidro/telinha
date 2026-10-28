@@ -537,7 +537,8 @@ pub const Endpoint = struct {
         const give_up = std.math.clamp(rtt * 4, 150, 400);
         var ready: std.ArrayList(Ready) = .empty;
         defer ready.deinit(gpa);
-        const Nack = struct { channel: u32, id: u32, frags: [500]u16 = undefined, n: usize = 0, all: bool = false };
+        const max_nack = 500; // pedaços por pedido (cabe num datagrama: 11 + 2*500 bytes)
+        const Nack = struct { channel: u32, id: u32, frags: [max_nack]u16 = undefined, n: usize = 0, all: bool = false };
         var nacks: std.ArrayList(Nack) = .empty;
         defer nacks.deinit(gpa);
         {
@@ -614,7 +615,9 @@ pub const Endpoint = struct {
             }
         }
         for (nacks.items) |nk| {
-            var b: [10 + 1000]u8 = undefined;
+            // cabeçalho de 11 bytes (tipo, canal, id, n) + 2 por pedaço: era [10 + 1000]
+            // e 500 pedaços faltando escreviam 1 byte além do fim
+            var b: [11 + 2 * max_nack]u8 = undefined;
             b[0] = @intFromEnum(P.nack);
             std.mem.writeInt(u32, b[1..5], nk.channel, .little);
             std.mem.writeInt(u32, b[5..9], nk.id, .little);
@@ -814,6 +817,49 @@ test "udp: quadros grandes chegam inteiros e em ordem, mesmo perdendo 10% dos pa
     }
     try std.testing.expect(pr.b.stats.nacks_sent > 0);
     try std.testing.expect(pr.a.stats.resent_pkts > 0);
+}
+
+test "udp: mensagem grande com quase tudo perdido pede reenvio de 500 pedaços sem estourar o pedido" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var pr = try testPair(0);
+    defer {
+        pr.a.destroy();
+        pr.b.destroy();
+        net.close(pr.sa);
+        net.close(pr.sb);
+    }
+    const addr_b = localAddr(net.localPortOf(pr.sb));
+    const addr_a = localAddr(net.localPortOf(pr.sa));
+    const wa: Wire = .{ .sock = pr.sa, .to = &addr_b };
+    const wb: Wire = .{ .sock = pr.sb, .to = &addr_a };
+    net.setRecvTimeout(pr.sa, 5);
+    net.setRecvTimeout(pr.sb, 5);
+    var side: TestSide = .{};
+    defer {
+        for (side.got.items) |g| gpa.free(g);
+        side.got.deinit(gpa);
+    }
+    var dummy: TestSide = .{};
+    // ~520 pedaços: o primeiro pedido de reenvio leva os 500 do limite (o
+    // buffer do pedido tinha 1 byte a menos e esse caso corrompia a pilha)
+    const m = try proto.Msg.alloc(.frame, 600_000);
+    defer m.release();
+    m.from = 0x42;
+    for (m.payload(), 0..) |*x, j| x.* = @truncate(j * 7);
+    try std.testing.expect(pr.a.sendMsg(wa, m, 0x42));
+    // o lado B só vê um pedaço; o resto "se perde"
+    var buf: [2048]u8 = undefined;
+    var first = true;
+    while (net.udpRecvFrom(pr.sb, &buf, null)) |n| {
+        if (first) _ = pr.b.handle(wb, buf[0..n], TestSide.deliver, &side);
+        first = false;
+    }
+    var waited: usize = 0;
+    while (side.got.items.len < 1 and waited < 300) : (waited += 1) pump(pr.a, pr.b, pr.sa, pr.sb, wa, wb, &side, &dummy, 1);
+    try std.testing.expect(pr.b.stats.nacks_sent > 0);
+    try std.testing.expectEqual(@as(usize, 1), side.got.items.len);
+    try std.testing.expectEqual(@as(usize, 600_000), side.got.items[0].len - 1);
+    try std.testing.expectEqual(@as(u8, @truncate(599_999 * 7)), side.got.items[0][600_000]);
 }
 
 test "udp: sem ordem (voz) chega sem esperar; pacote repetido não entra duas vezes" {
