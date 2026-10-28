@@ -5654,6 +5654,7 @@ pub const App = struct {
         cur_x: u16 = proto.coord_none, // ponta do cursor de quem transmite
         cur_y: u16 = proto.coord_none,
         health: Health = .{},
+        audio: AudioState = .ok,
     };
 
     /// Saúde da transmissão (bolinha verde/amarela/vermelha no nome) e, quando
@@ -5662,6 +5663,10 @@ pub const App = struct {
         level: u8 = 0, // 0 bem, 1 engasgando, 2 ruim
         cause: []const u8 = "",
     };
+
+    /// O som da transmissão, pro ícone no nome (quem não ouve nada sabe se é
+    /// falta de som de quem transmite ou se não está chegando).
+    const AudioState = enum { ok, none, not_arrived };
 
     /// Quem assiste: atraso, o decoder daqui e a rede daqui; o resto é do outro lado.
     fn viewHealth(a: *const App, v: *const View, who: []const u8, buf: []u8) Health {
@@ -5780,8 +5785,13 @@ pub const App = struct {
         for (a.views.items) |v| {
             if (n >= tiles.len - 2) break; // os dois últimos são das minhas prévias (tela e câmera)
             // cópia: a thread de rede troca a lista de membros a qualquer hora
+            var astate: AudioState = .ok;
             const name = for (cl.members.items) |*m| {
                 if (m.id == v.member()) {
+                    // tela: sem som ligado, ou com som que não chegou em 3 s (câmera não tem som)
+                    if (v.kind() == proto.kind_screen) {
+                        if (!m.audio) astate = .none else if (!v.audio_registered and sync.nowMs() -| v.born_ms > 3000) astate = .not_arrived;
+                    }
                     break std.fmt.bufPrint(&name_bufs[n], "{s}{s}", .{ m.nameSlice()[0..@min(m.name_len, 32)], if (v.kind() == proto.kind_camera) tr(" (câmera)") else "" }) catch "?";
                 }
             } else "?";
@@ -5795,6 +5805,7 @@ pub const App = struct {
                 .stats = st,
                 .loading = v.tex == 0,
                 .ring = if (v.audio_registered) &v.audio_ring else null,
+                .audio = astate,
                 .view = v,
                 .clipbuf = v.clip,
                 .ptr_stream = v.stream,
@@ -6091,7 +6102,8 @@ pub const App = struct {
         const health_cols = [_]u32{ col.green, col.yellow, col.red };
         const hc = health_cols[@min(t.health.level, 2)];
         const cause_w = if (t.health.level > 0 and !small) textSizeF(font_regular, 12, t.health.cause).x + S(12) else 0;
-        const label_w = @min(ns.x + S(84) + cause_w, w - S(20));
+        const audio_w: f32 = if (t.audio != .ok) S(22) else 0;
+        const label_w = @min(ns.x + S(84) + cause_w + audio_w, w - S(20));
         rectFill(d, lx, ly, lx + label_w, ly + ns.y + S(8), col.overlay, S(6));
         const bw = liveBadge(d, v2(lx + S(6), ly + S(4) + (ns.y - S(14)) / 2));
         drawTextF(d, font_semibold, name_size, v2(lx + S(12) + bw, ly + S(4)), col.white, t.name);
@@ -6103,6 +6115,14 @@ pub const App = struct {
             c.ImDrawList_PushClipRect(d, v2(lx, ly), v2(lx + label_w - S(4), ly + ns.y + S(8)), true);
             drawTextF(d, font_regular, 12, v2(dot.x + S(10), ly + S(4) + (ns.y - S(15)) / 2), hc, t.health.cause);
             c.ImDrawList_PopClipRect(d);
+        }
+        if (t.audio != .ok) {
+            // sem som, ou som que não chegou (o porquê no mouse em cima)
+            const ap = v2(dot.x + S(10) + cause_w, ly + S(4) + (ns.y - S(14)) / 2);
+            drawTextF(d, font_regular, 12, ap, if (t.audio == .none) col.faint else col.yellow, ic.volume_off);
+            if (c.igIsMouseHoveringRect(ap, v2(ap.x + S(16), ap.y + S(16)), true))
+                tooltipText(if (t.audio == .none) tr("Sem som: quem transmite não ligou o som da tela") else tr("O som ainda não chegou (quem transmite ligou o som, mas nada veio)"));
+            if (t.audio == .not_arrived) redrawIn(1.0);
         }
         if (zm.z > 1.001) {
             const zt = fmtZ("{d:.1}x", .{zm.z});

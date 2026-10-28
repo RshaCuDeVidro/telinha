@@ -430,6 +430,7 @@ pub const View = struct {
     audio_ring: audio.Ring = .{},
     audio_dec: ?audio.Decoder = null,
     audio_last_seq: ?u32 = null, // sequência do último pacote de som tocado (perda e ordem)
+    born_ms: u64 = 0, // quando começou a assistir
     audio_concealed: u32 = 0, // pacotes perdidos remendados pelo Opus (estatística)
     audio_registered: bool = false,
 
@@ -2627,7 +2628,7 @@ pub const Client = struct {
     pub fn watch(cl: *Client, stream: u32, opts: u8) !*View {
         if (cl.findView(stream)) |v| return v;
         const v = try gpa.create(View);
-        v.* = .{ .stream = stream, .client = cl.retain() };
+        v.* = .{ .stream = stream, .client = cl.retain(), .born_ms = sync.nowMs() };
         if (opts & proto.watch_clips != 0) v.clip = clip.Buffer.create() catch null;
         sync.spawn(View.decodeLoop, .{v}) catch {
             cl.release();

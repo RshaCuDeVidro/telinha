@@ -258,6 +258,8 @@ const table = [_][2][]const u8{
     .{ "Desbanir", "Unban" },
     .{ "Desbanir todo mundo", "Unban everyone" },
     .{ "Auto", "Auto" },
+    .{ "Sem som: quem transmite não ligou o som da tela", "No sound: the streamer didn't turn on screen sound" },
+    .{ "O som ainda não chegou (quem transmite ligou o som, mas nada veio)", "The sound hasn't arrived yet (the streamer turned it on, but nothing came)" },
     .{ "{s}  Chamar a galera de fora", "{s}  Call people from outside" },
     .{ "Tenta abrir a porta no roteador (menos atraso); se o roteador ou a operadora não deixar, liga o link público sozinho.", "Tries to open the port on your router (less latency); if the router or ISP won't allow it, turns on the public link by itself." },
     .{ "{s}  Escolher o caminho", "{s}  Choose the path" },
