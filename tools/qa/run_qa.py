@@ -2222,6 +2222,34 @@ def udp_com_perda():
 
 
 @test
+def udp_ruim_volta_pro_tcp():
+    """UDP com tanta perda que nem o reenvio dá conta (45% nos dois sentidos): quem assiste larga o UDP e o vídeo segue pelo TCP."""
+    with Session("udp-ruim") as s:
+        perda = {"TELINHA_UDP_PERDA": "45"}
+        p = port()
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--fps", "30"], extra_env=perda)
+        bia = s.app("bia", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"], extra_env=perda)
+        aid = bia.member_id("Ana")
+        bia.wait(lambda st: st["udp"] and st["udp"]["active"], 10, "a Bia abrir o UDP")
+        # tela mexendo: mensagens de verdade (e perdidas)
+        t0 = time.time()
+        while time.time() - t0 < 30 and bia.state()["udp"]["active"]:
+            ana.click("##hidechat") if ana.find("##hidechat", timeout=0.3, need=False) else ana.click("##showchat")
+            time.sleep(0.4)
+        st = bia.state()
+        log(f"UDP Bia {st['udp']}")
+        expect(not st["udp"]["active"], f"o UDP devia ter sido largado: {st['udp']}")
+        # e o vídeo continua (pelo TCP)
+        before = next(v for v in st["views"] if v["stream"] == aid)
+        for _ in range(6):
+            ana.click("##hidechat") if ana.find("##hidechat", timeout=0.3, need=False) else ana.click("##showchat")
+            time.sleep(0.5)
+        after = next(v for v in bia.state()["views"] if v["stream"] == aid)
+        log(f"depois de largar o UDP: {after['fps']} q/s")
+        expect(after["fps"] > 0, "o vídeo parou depois de largar o UDP")
+
+
+@test
 def udp_bloqueado():
     """UDP bloqueado (firewall): fica no TCP e funciona igual."""
     with Session("udpblq") as s:

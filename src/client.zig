@@ -1399,9 +1399,28 @@ pub const Client = struct {
         var last_ping: u64 = 0;
         var last_tick: u64 = 0;
         var hellos: u32 = 0;
+        // perda que nem o reenvio recupera: 5 mensagens em 10 s = o UDP desse
+        // caminho está ruim; larga ele por 60 s (sem hello nem ping: o
+        // servidor também volta pro TCP quando para de ouvir)
+        var lost_mark: u64 = 0;
+        var lost_since: u64 = sync.nowMs();
+        var udp_off_until: u64 = 0;
         while (!cl.closing.load(.acquire)) {
             const now = sync.nowMs();
-            if (!l.isActive()) {
+            if (l.isActive() and now - lost_since >= 10_000) {
+                const lost = l.ep.stats.lost_msgs;
+                if (lost -% lost_mark >= 5) {
+                    l.active.store(false, .release);
+                    udp_off_until = now + 60_000;
+                    hellos = 0;
+                    if (debugEnabled()) std.debug.print("[telinha] UDP perdendo {d} mensagens em 10 s: TCP por 60 s\n", .{lost -% lost_mark});
+                }
+                lost_mark = lost;
+                lost_since = now;
+            }
+            if (!l.isActive() and now < udp_off_until) {
+                // de molho: nem hello
+            } else if (!l.isActive()) {
                 // no começo, rápido; depois de desistir, de vez em quando
                 const every: u64 = if (hellos < 12) 250 else 3000;
                 if (now - last_hello >= every) {
