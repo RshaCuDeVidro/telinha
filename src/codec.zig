@@ -26,23 +26,19 @@ pub const Mode = enum {
 
 const V16 = @Vector(16, i32);
 
+inline fn clamp8(v: V16) @Vector(16, u8) {
+    const lo: V16 = @splat(0);
+    const hi: V16 = @splat(255);
+    return @intCast(@min(@max(v, lo), hi));
+}
+
 fn channelMask(comptime ch: usize) @Vector(16, i32) {
     var m: [16]i32 = undefined;
     for (0..16) |i| m[i] = @intCast(i * 4 + ch);
     return m;
 }
 
-inline fn load16(px: *const [64]u8, comptime ch: usize) V16 {
-    const v: @Vector(64, u8) = px.*;
-    const s: @Vector(16, u8) = @shuffle(u8, v, undefined, channelMask(ch));
-    return @intCast(s);
-}
 
-inline fn clamp8(v: V16) @Vector(16, u8) {
-    const lo: V16 = @splat(0);
-    const hi: V16 = @splat(255);
-    return @intCast(@min(@max(v, lo), hi));
-}
 
 const ToYuvCtx = struct {
     src: [*]const u8,
@@ -80,21 +76,34 @@ fn oddMask() @Vector(8, i32) {
     return m;
 }
 
-const V8 = @Vector(8, i32);
 
-inline fn lumaY(r: V16, g: V16, b: V16) @Vector(16, u8) {
-    const yv = (r * @as(V16, @splat(66)) + g * @as(V16, @splat(129)) + b * @as(V16, @splat(25)) + @as(V16, @splat(128))) >> @splat(8);
-    return clamp8(yv + @as(V16, @splat(16)));
+// A mesma conta em 16 bits (resultado igual bit a bit, sem estouro): luma até
+// 66·255 + 129·255 + 25·255 + 128 = 56228 cabe em u16; croma entre −28432 e
+// 28688 cabe em i16. Metade da largura dos vetores: o dobro de pixels por
+// registrador, e multiplicação de 16 bits (pmullw) em vez da de 32 (pmulld,
+// lenta nas CPUs sem AVX2 que o .exe e o binário Linux miram).
+const U16v = @Vector(16, u16);
+const U8v = @Vector(8, u16);
+const I8v = @Vector(8, i16);
+
+inline fn load16u(px: *const [64]u8, comptime ch: usize) U16v {
+    const v: @Vector(64, u8) = px.*;
+    const s: @Vector(16, u8) = @shuffle(u8, v, undefined, channelMask(ch));
+    return s;
 }
+
+inline fn lumaY16(r: U16v, g: U16v, b: U16v) @Vector(16, u8) {
+    const yv = (r * @as(U16v, @splat(66)) + g * @as(U16v, @splat(129)) + b * @as(U16v, @splat(25)) + @as(U16v, @splat(128))) >> @splat(8);
+    return @intCast(yv + @as(U16v, @splat(16))); // 16..235: nunca precisa cortar
+}
+
+inline fn pairSum16(v: U16v) U8v {
+    return @shuffle(u16, v, undefined, evenMask()) + @shuffle(u16, v, undefined, oddMask());
+}
+
 
 /// Soma pares de pixels vizinhos (16 -> 8).
-inline fn pairSum(v: V16) V8 {
-    return @shuffle(i32, v, undefined, evenMask()) + @shuffle(i32, v, undefined, oddMask());
-}
 
-inline fn clamp8x8(v: V8) @Vector(8, u8) {
-    return @intCast(@min(@max(v, @as(V8, @splat(0))), @as(V8, @splat(255))));
-}
 
 fn toYuvBand(ctx: *const ToYuvCtx, band: usize) void {
     const pairs = ctx.h / 2;
@@ -119,26 +128,30 @@ fn toYuvBand(ctx: *const ToYuvCtx, band: usize) void {
         while (x + 16 <= w) : (x += 16) {
             const a: *const [64]u8 = @ptrCast(row0 + x * 4);
             const b: *const [64]u8 = @ptrCast(row1 + x * 4);
-            const r0 = if (ri == 2) load16(a, 2) else load16(a, 0);
-            const g0 = load16(a, 1);
-            const b0 = if (bi == 0) load16(a, 0) else load16(a, 2);
-            const r1 = if (ri == 2) load16(b, 2) else load16(b, 0);
-            const g1 = load16(b, 1);
-            const b1 = if (bi == 0) load16(b, 0) else load16(b, 2);
-            yo0[x..][0..16].* = lumaY(r0, g0, b0);
-            yo1[x..][0..16].* = lumaY(r1, g1, b1);
-            const two: V8 = @splat(2);
-            const r = (pairSum(r0 + r1) + two) >> @splat(2);
-            const g = (pairSum(g0 + g1) + two) >> @splat(2);
-            const bb = (pairSum(b0 + b1) + two) >> @splat(2);
-            const half: V8 = @splat(128);
-            const uu = ((r * @as(V8, @splat(-38)) - g * @as(V8, @splat(74)) + bb * @as(V8, @splat(112)) + half) >> @splat(8)) + half;
-            const vv = ((r * @as(V8, @splat(112)) - g * @as(V8, @splat(94)) - bb * @as(V8, @splat(18)) + half) >> @splat(8)) + half;
+            const r0 = if (ri == 2) load16u(a, 2) else load16u(a, 0);
+            const g0 = load16u(a, 1);
+            const b0 = if (bi == 0) load16u(a, 0) else load16u(a, 2);
+            const r1 = if (ri == 2) load16u(b, 2) else load16u(b, 0);
+            const g1 = load16u(b, 1);
+            const b1 = if (bi == 0) load16u(b, 0) else load16u(b, 2);
+            yo0[x..][0..16].* = lumaY16(r0, g0, b0);
+            yo1[x..][0..16].* = lumaY16(r1, g1, b1);
+            const two: U8v = @splat(2);
+            // médias de 2x2 (0..255) e a conta do croma com sinal
+            const r: I8v = @intCast((pairSum16(r0 + r1) + two) >> @splat(2));
+            const g: I8v = @intCast((pairSum16(g0 + g1) + two) >> @splat(2));
+            const bb: I8v = @intCast((pairSum16(b0 + b1) + two) >> @splat(2));
+            const half: I8v = @splat(128);
+            const uu = ((r * @as(I8v, @splat(-38)) - g * @as(I8v, @splat(74)) + bb * @as(I8v, @splat(112)) + half) >> @splat(8)) + half;
+            const vv = ((r * @as(I8v, @splat(112)) - g * @as(I8v, @splat(94)) - bb * @as(I8v, @splat(18)) + half) >> @splat(8)) + half;
+            // 16..240: nunca precisa cortar
+            const u8v: @Vector(8, u8) = @intCast(uu);
+            const v8v: @Vector(8, u8) = @intCast(vv);
             if (ctx.nv12) {
-                uo[x..][0..16].* = @shuffle(u8, clamp8x8(uu), clamp8x8(vv), uvMask());
+                uo[x..][0..16].* = @shuffle(u8, u8v, v8v, uvMask());
             } else {
-                uo[x / 2 ..][0..8].* = clamp8x8(uu);
-                vo[x / 2 ..][0..8].* = clamp8x8(vv);
+                uo[x / 2 ..][0..8].* = u8v;
+                vo[x / 2 ..][0..8].* = v8v;
             }
         }
         // resto (largura não múltipla de 16)
