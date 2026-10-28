@@ -93,6 +93,14 @@ pub const Ring = struct {
     }
 
     pub fn write(rg: *Ring, samples: []const f32) void {
+        rg.writeLocked(samples);
+        // a saída estava parada (silêncio longo): liga de novo, fora do mutex
+        // do anel (o callback do som precisa dele) e numa thread à parte (ligar
+        // o dispositivo leva ms, e quem chama é a thread de rede)
+        if (mixer.paused.load(.acquire)) mixer.requestResume();
+    }
+
+    fn writeLocked(rg: *Ring, samples: []const f32) void {
         rg.mutex.lock();
         defer rg.mutex.unlock();
         if (rg.buf.len == 0) {
@@ -118,8 +126,6 @@ pub const Ring = struct {
         rg.len += src.len;
         rg.level = @max(peak, rg.level * 0.9);
         rg.last_write_us = sync.nowUs();
-        // a saída estava parada (silêncio longo): liga de novo
-        if (mixer.paused.load(.acquire)) mixer.wantResume();
     }
 
     /// Soma até `out.len` amostras em `out`.
@@ -176,6 +182,7 @@ pub const Mixer = struct {
     paused: std.atomic.Value(bool) = .init(false),
     last_sound_us: std.atomic.Value(u64) = .init(0),
     pause_mutex: sync.Mutex = .{}, // parar/retomar não podem se cruzar
+    resuming: std.atomic.Value(bool) = .init(false), // uma thread ligando a saída de novo
 
     /// Uma vez por quadro da interface: 5 s sem nada pra tocar → para o
     /// dispositivo (a saída aberta custa CPU e não deixa a placa/fone dormir).
@@ -205,6 +212,19 @@ pub const Mixer = struct {
     }
 
     /// Chegou som com a saída parada: liga (fora do callback de áudio).
+    /// Liga a saída parada numa thread à parte (uma só por vez).
+    fn requestResume(m: *Mixer) void {
+        if (m.resuming.cmpxchgStrong(false, true, .acq_rel, .acquire) != null) return;
+        sync.spawn(resumeThread, .{m}) catch {
+            m.resuming.store(false, .release);
+        };
+    }
+
+    fn resumeThread(m: *Mixer) void {
+        defer m.resuming.store(false, .release);
+        m.wantResume();
+    }
+
     fn wantResume(m: *Mixer) void {
         m.pause_mutex.lock();
         defer m.pause_mutex.unlock();
