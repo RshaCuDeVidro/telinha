@@ -45,6 +45,13 @@ def port():
     return random.randint(42000, 46000)
 
 
+def host_path(app, label):
+    """Clica num dos caminhos de "Chamando a galera de fora" (atrás de "Escolher o caminho")."""
+    if app.find(contains=label, need=False, timeout=0.6) is None:
+        app.click("##hostadv")
+    app.click(contains=label)
+
+
 def expect(cond, msg):
     if not cond:
         raise QAError(msg)
@@ -144,7 +151,7 @@ def link_publico():
         time.sleep(0.5)
         dono = s.app("dono", 91, ["--nome", "Dono", "--criar", str(p), "--senha", "segredo1"], config={"tunnel_host": f"127.0.0.1:{ctl}"})
         dono.wait(lambda st: st["status"] == "connected", 10, "o dono entrar")
-        dono.click(contains="Criar link público")
+        host_path(dono, "Criar link público")
         st = dono.wait(lambda st: st["tunnel"] and st["tunnel"]["state"] == "ready", 10, "o link público ficar pronto")
         pub = int(st["tunnel"]["addr"].rsplit(":", 1)[1])
         expect(pub != p, "o link público tem que ser outra porta")
@@ -1209,7 +1216,7 @@ def upnp_e_tunel_proprio():
         a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--senha", "pw2"], extra_env={"TELINHA_UPNP_SSDP": f"127.0.0.1:{udp}"},
                   config={"tunnel_host": f"127.0.0.1:{dead}"})
         a.wait(lambda st: st["status"] == "connected", 10, "entrar")
-        a.click(contains="Abrir porta no roteador")
+        host_path(a, "Abrir porta no roteador")
         st = a.wait(lambda st: st["upnp"] and st["upnp"]["state"] == "ready", 10, "o roteador abrir a porta")
         expect(st["upnp"]["addr"] == f"203.0.113.7:{p}", f"endereço errado: {st['upnp']}")
         a.click(contains="Copiar convite##upnp")
@@ -1220,7 +1227,7 @@ def upnp_e_tunel_proprio():
         time.sleep(1)
         expect("DeletePortMapping" in open(os.path.join(s.base, "igd.log")).read(), "a porta não foi fechada no roteador")
         # link público com o servidor do túnel fora do ar: falha, tenta de novo, fecha
-        a.click(contains="Criar link público")
+        host_path(a, "Criar link público")
         a.wait(lambda st: st["tunnel"] and st["tunnel"]["state"] == "failed", 10, "o link público falhar")
         a.click(contains="Tentar de novo")
         a.wait(lambda st: st["tunnel"] is not None, 3, "tentar de novo")
@@ -1252,7 +1259,7 @@ def natpmp_sem_upnp():
         # o UPnP vai pra uma porta onde ninguém responde; o NAT-PMP, pro de mentira
         a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--senha", "pw3"], extra_env={"TELINHA_UPNP_SSDP": f"127.0.0.1:{dead}", "TELINHA_NATPMP": f"127.0.0.1:{pmp}"})
         a.wait(lambda st: st["status"] == "connected", 10, "entrar")
-        a.click(contains="Abrir porta no roteador")
+        host_path(a, "Abrir porta no roteador")
         st = a.wait(lambda st: st["upnp"] and st["upnp"]["state"] != "working", 15, "abrir a porta (UPnP sem resposta, depois NAT-PMP)")
         expect(st["upnp"]["state"] == "ready" and st["upnp"]["addr"] == f"203.0.113.8:{p}", f"não abriu pelo NAT-PMP: {st['upnp']}")
         lines = open(logf).read()
@@ -1958,7 +1965,7 @@ def convite_varios_caminhos():
         a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--senha", "cam1"], extra_env={"TELINHA_UPNP_SSDP": f"127.0.0.1:{udp}"},
                   config={"tunnel_host": f"127.0.0.1:{ctl}"})
         a.wait(lambda st: st["status"] == "connected", 10, "entrar")
-        a.click(contains="Abrir porta no roteador")
+        host_path(a, "Abrir porta no roteador")
         a.wait(lambda st: st["upnp"] and st["upnp"]["state"] == "ready", 10, "a porta abrir")
         a.click(contains="Copiar convite##upnp")
         st = a.wait(lambda st: st["clipboard"].startswith("telinha://"), 3, "copiar o convite")
@@ -2944,6 +2951,24 @@ def convite_https():
         expect(inv.startswith("telinha://") and inv.endswith("#pw1"), f"o link não leva o convite: {inv}")
         conv = s.app("conv", 92, ["--nome", "Conv", "--entrar", link])
         conv.wait(lambda st: st["status"] == "connected", 10, "entrar pelo link https")
+
+
+@test
+def chamar_galera_de_fora():
+    """"Chamar a galera de fora" (um botão só): o roteador não abre a porta (nem UPnP nem NAT-PMP respondem) e o link público liga sozinho."""
+    with Session("chamar") as s:
+        p, ctl, dead, dead2 = port(), port(), port(), port()
+        s.spawn("mockbore", [sys.executable, os.path.join(os.path.dirname(__file__), "mockbore.py"), str(ctl)], dict(os.environ))
+        time.sleep(0.5)
+        dono = s.app("dono", 91, ["--nome", "Dono", "--criar", str(p), "--senha", "segredo1"], config={"tunnel_host": f"127.0.0.1:{ctl}"},
+                     extra_env={"TELINHA_UPNP_SSDP": f"127.0.0.1:{dead}", "TELINHA_NATPMP": f"127.0.0.1:{dead2}"})
+        dono.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
+        dono.click("###callout")
+        dono.wait(lambda st: st["upnp"] is not None, 3, "tentar a porta no roteador primeiro")
+        st = dono.wait(lambda st: st["tunnel"] and st["tunnel"]["state"] == "ready", 40, "o link público ligar sozinho")
+        log(f"link público: {st['tunnel']['addr']}")
+        expect(st["upnp"] is None, "a tentativa da porta devia ter sido largada")
+        expect(any("liguei o link público" in t for t in st["toasts"]), f"sem aviso: {st['toasts']}")
 
 
 @test

@@ -956,6 +956,8 @@ pub const App = struct {
     debug_fast_seen: u64 = 0,
     crash_ctx_sig: u64 = 0,
     single_watched: u32 = 0, // transmissão que o "assistir sozinho" (opção) já abriu (não reabre)
+    call_out: bool = false, // "Chamar a galera de fora": porta no roteador, e se falhar, o link público
+    host_adv: bool = false, // os dois caminhos à mostra (o "avançado" do Chamar a galera de fora)
     debug_status_seen: ?client_mod.Status = null,
     debug_size: usize = 0, // tamanho do arquivo (lido de vez em quando, nas configurações)
     debug_size_at: f64 = -10,
@@ -2822,6 +2824,27 @@ pub const App = struct {
         for (gone[0..n_gone]) |o| a.unwatch(o);
     }
 
+    /// "Chamar a galera de fora": a porta no roteador não deu (roteador sem
+    /// UPnP/NAT-PMP, operadora com CGNAT) → o link público sozinho.
+    fn callOutStep(a: *App) void {
+        if (!a.call_out) return;
+        const m = a.upnp orelse {
+            a.call_out = false;
+            return;
+        };
+        switch (m.status().state) {
+            .working => redrawIn(0.5),
+            .ready => a.call_out = false,
+            .failed => {
+                a.call_out = false;
+                debuglog.line("chamar a galera de fora: porta no roteador não deu, ligando o link público", .{});
+                a.stopUpnp();
+                a.startTunnel();
+                a.toast("A porta no roteador não deu: liguei o link público.", .{}, false);
+            },
+        }
+    }
+
     /// Convite de um link clicado com esta janela aberta: entra (ou, numa
     /// sala, deixa no campo de entrar e avisa) e traz a janela pra frente.
     fn takeLinkInvite(a: *App) void {
@@ -2892,6 +2915,7 @@ pub const App = struct {
         }
         a.updateCrashContext();
         a.takeLinkInvite();
+        a.callOutStep();
         trace.enabled.store(debuglog.on(), .monotonic);
         if (debuglog.on()) a.debugTick();
         a.pollPttKey();
@@ -7198,6 +7222,23 @@ pub const App = struct {
         const st: ?tunnel_mod.Status = if (a.tunnel) |t| t.status() else null;
         const bh = S(38);
         if (a.upnp == null and st == null) {
+            // o jeito fácil: um botão só (porta no roteador; se não der, o link
+            // público sozinho). Escolher o caminho fica no "avançado"
+            if (primaryButton(fmtZ("{s}  Chamar a galera de fora###callout", .{ic.user_plus}), v2(@min(w, S(360)), S(42)), col.blurple, col.blurple_hover, col.blurple_active)) {
+                a.call_out = true;
+                a.startUpnp();
+            }
+            wrapText(col.faint, 12, tr("Tenta abrir a porta no roteador (menos atraso); se o roteador ou a operadora não deixar, liga o link público sozinho."), w);
+            c.igDummy(v2(0, S(2)));
+            {
+                const toggle = fmtZ("{s}  Escolher o caminho", .{if (a.host_adv) ic.chev_up else ic.chev_down});
+                const ts = textSizeF(font_semibold, 13, toggle);
+                const p = c.igGetCursorScreenPos();
+                if (c.igInvisibleButton("##hostadv", v2(ts.x, ts.y + S(8)), 0)) a.host_adv = !a.host_adv;
+                drawTextF(d, font_semibold, 13, v2(p.x, p.y + S(4)), if (c.igIsItemHovered(0)) col.text else col.muted, toggle);
+            }
+        }
+        if (a.upnp == null and st == null and a.host_adv) {
             const side = w >= S(560);
             const cwid = if (side) (w - S(12)) / 2 else w;
             const inner = cwid - S(36);
@@ -7228,7 +7269,7 @@ pub const App = struct {
                 c.igSetCursorScreenPos(v2(x0, row_y + @max(h1, h2)));
                 c.igDummy(v2(w, 0));
             }
-        } else {
+        } else if (a.upnp != null or st != null) {
             const inner = w - S(36);
             if (a.upnp) |m| {
                 const ust = m.status();
