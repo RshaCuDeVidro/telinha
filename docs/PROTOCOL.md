@@ -185,6 +185,7 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | 42 | chat_edit | C→S / S→C | `u32 id`, `str texto`, `u32 n` + n bytes of a card (0 = none): the author changes their own message (the image stays) |
 | 43 | embed_action | C→S | `u32 id`, `u8 botão`: someone clicked a button on a card |
 | 43 | embed_action | S→C | `u32 id`, `u8 botão`, `u32 de`, `str nome` and, if the card's author is a bot, `str canal`, `str call` of whoever clicked; goes only to the card's author |
+| 44 | bans | S→C | `u16 n`, n × (`u32 id`, `str nome`, `u32 há_quantos_s`): who is banned; only to admins, after `welcome` (if anyone is) and whenever it changes (empty to someone who lost admin). `admin` action 9 with `alvo` = `id` unbans (0 = everyone) |
 
 `versão_do_app` ("3.0.0") only serves to warn whoever is out of date (the
 interface shows "so-and-so is on telinha X: there is a new version"); empty = not
@@ -439,6 +440,9 @@ the average rate), so a big IDR doesn't overflow the router's buffer.
   Repeated names get a suffix: `Ana (2)`.
 - Whoever isn't the owner is refused (`denied`) if banned (2), if the room is
   locked (5) or full (6; 32 people by default). The owner goes over all of that.
+  A ban holds by the app's key until an admin unbans it, and by IP for 24 h
+  (never by name: that caught anyone else with the same name, forever); the
+  server keeps the newest 256.
 - Right after `welcome`, whoever joins receives the last **50** chat messages
   (with the history flag: no sound or notification); then everyone receives
   "So-and-so joined the room" and the new `members`.

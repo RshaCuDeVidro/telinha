@@ -99,6 +99,7 @@ pub const Type = enum(u8) {
     // cartões (embed) e botões, ver docs/PROTOCOL.md "Cartões"
     chat_edit = 42, // C→S u32 id, str texto, u32 n, embed (só o autor) | S→C o mesmo: a mensagem mudou
     embed_action = 43, // C→S u32 id, u8 botão | S→C u32 id, u8 botão, u32 de, str nome (só pro autor da mensagem)
+    bans = 44, // S→C (só pra admin) u16 n, n × (u32 id, str nome, u32 há quantos segundos): quem está banido (admin_unban desfaz)
     _,
 };
 
@@ -239,6 +240,7 @@ pub const admin_set_admin: u8 = 5; // valor 1 = vira admin, 0 = deixa de ser
 pub const admin_lock: u8 = 6; // valor 1 = tranca a sala (alvo ignorado)
 pub const admin_draw: u8 = 7; // valor 1 = devolve o pincel, 0 = tira (os desenhos dela somem)
 pub const admin_clear_chat: u8 = 8; // apaga o chat de todos os canais e os arquivos da sala (alvo ignorado)
+pub const admin_unban: u8 = 9; // alvo = id do banimento (da lista `bans`); 0 = desbane todo mundo
 
 /// notice
 pub const notice_muted: u8 = 1;

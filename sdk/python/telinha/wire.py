@@ -60,6 +60,7 @@ class MsgType(enum.IntEnum):
     WEB_LINK = 41
     CHAT_EDIT = 42
     EMBED_ACTION = 43
+    BANS = 44
 
 
 # hello: o que este cliente entende (feat_*)

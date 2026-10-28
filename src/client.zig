@@ -318,6 +318,14 @@ pub const Notice = struct {
     }
 };
 
+/// Alguém banido da sala (a lista que o servidor manda pra admin).
+pub const Ban = struct {
+    id: u32,
+    name: [32]u8 = undefined,
+    name_len: usize = 0,
+    ago_s: u32, // há quanto tempo, quando a lista chegou (bans_at_ms)
+};
+
 /// Ponteiro "olha aqui" de alguém em cima de uma transmissão.
 pub const Pointer = struct {
     from: u32,
@@ -866,6 +874,11 @@ pub const Client = struct {
     /// Link pra assistir no navegador que o servidor divulga (vazio = não tem).
     web_link: [300]u8 = undefined,
     web_link_len: usize = 0,
+    /// Quem está banido (só chega pra admin; os mais novos, até bans.len).
+    bans: [64]Ban = undefined,
+    bans_n: usize = 0,
+    bans_total: usize = 0,
+    bans_at_ms: u64 = 0, // quando a lista chegou (o "há quanto tempo" anda a partir daí)
     /// Arquivos subindo e descendo nessa sala (filexfer.zig).
     xfers: filexfer.Registry = .{},
     instance: u64 = 0,
@@ -1792,6 +1805,25 @@ pub const Client = struct {
             .identity => if (cl.id_state == .unknown and !cl.checkIdentity(payload)) return error.Identity,
             .channel => try cl.onChannels(&r),
             .stats => try cl.onStats(&r),
+            .bans => {
+                const n = try r.u16_();
+                cl.mutex.lock();
+                defer cl.mutex.unlock();
+                cl.bans_total = n;
+                cl.bans_n = 0;
+                cl.bans_at_ms = sync.nowMs();
+                const skip = n -| cl.bans.len;
+                for (0..n) |i| {
+                    const id = try r.u32_();
+                    const nm = try r.str();
+                    const ago = try r.u32_();
+                    if (i < skip) continue;
+                    const b = &cl.bans[cl.bans_n];
+                    b.* = .{ .id = id, .ago_s = ago };
+                    copyInto(&b.name, &b.name_len, nm);
+                    cl.bans_n += 1;
+                }
+            },
             .web_link => {
                 const link = try r.str();
                 cl.mutex.lock();

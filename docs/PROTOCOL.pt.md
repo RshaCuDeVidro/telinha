@@ -181,6 +181,7 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 42 | chat_edit | C→S / S→C | `u32 id`, `str texto`, `u32 n` + n bytes de um cartão (0 = nenhum): o autor muda a própria mensagem (a imagem fica) |
 | 43 | embed_action | C→S | `u32 id`, `u8 botão`: alguém clicou num botão de um cartão |
 | 43 | embed_action | S→C | `u32 id`, `u8 botão`, `u32 de`, `str nome` e, se o autor do cartão for bot, `str canal`, `str call` de quem clicou; vai só pro autor do cartão |
+| 44 | bans | S→C | `u16 n`, n × (`u32 id`, `str nome`, `u32 há_quantos_s`): quem está banido; só pra admin, depois do `welcome` (se tiver alguém) e sempre que muda (vazia pra quem perdeu o admin). Ação `admin` 9 com `alvo` = `id` desbane (0 = todo mundo) |
 
 `versão_do_app` ("3.0.0") serve só pra avisar quem está desatualizado (a
 interface mostra "fulano está no telinha X: tem versão nova"); vazia = não
@@ -427,7 +428,9 @@ máximo 4× a taxa média), pra um IDR grande não estourar o buffer do roteador
   repetidos ganham sufixo: `Ana (2)`.
 - Quem não é o dono é recusado (`denied`) se estiver banido (2), se a sala
   estiver trancada (5) ou cheia (6; 32 pessoas por padrão). O dono passa por
-  cima de tudo isso.
+  cima de tudo isso. O ban vale pela chave do app até um admin desbanir e pelo
+  IP por 24 h (nunca pelo nome: pegava qualquer outro com o mesmo nome, pra
+  sempre); o servidor guarda os 256 mais novos.
 - Logo depois do `welcome`, quem entra recebe as últimas **50** mensagens do
   chat (com a flag de histórico: sem som nem notificação); depois todo mundo
   recebe "Fulano entrou na sala" e o `members` novo.

@@ -1997,6 +1997,55 @@ pub const App = struct {
 
     /// "Todo o som" menos alguns programas (o Discord, pra quem assiste não
     /// ouvir a própria voz de volta, por exemplo).
+    /// Lista de banidos (pra admin): nome, há quanto tempo e "Desbanir".
+    fn drawBanList(cl: *Client) void {
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(14), S(12)));
+        defer c.igPopStyleVar(1);
+        if (!c.igBeginPopup("##banlist", 0)) return;
+        defer c.igEndPopup();
+        var bans: [64]client_mod.Ban = undefined;
+        cl.mutex.lock();
+        const n = cl.bans_n;
+        const total = cl.bans_total;
+        const age_s: u64 = (sync.nowMs() -| cl.bans_at_ms) / 1000;
+        @memcpy(bans[0..n], cl.bans[0..n]);
+        cl.mutex.unlock();
+        pushFont(font_bold, 13);
+        textColored(col.header, tr("Quem está banido"));
+        popFont();
+        pushFont(font_regular, 12);
+        textColored(col.faint, tr("Pelo app não volta até alguém desbanir; pelo IP, só por 24 h."));
+        if (total > n) textColored(col.faint, fmtZ("({d} mais antigos não aparecem)", .{total - n}));
+        popFont();
+        c.igDummy(v2(0, S(4)));
+        if (n == 0) {
+            textColored(col.muted, tr("Ninguém."));
+            return;
+        }
+        var i: usize = n;
+        while (i > 0) { // os mais novos em cima
+            i -= 1;
+            const b = &bans[i];
+            const ago = @as(u64, b.ago_s) + age_s;
+            const when = if (ago < 3600) fmtZ("{d} min", .{ago / 60}) else if (ago < 48 * 3600) fmtZ("{d} h", .{ago / 3600}) else fmtZ("{d} dias", .{ago / 86400});
+            c.igPushID_Int(@intCast(b.id));
+            c.igAlignTextToFramePadding();
+            textColored(col.text, fmtZ("{s}", .{if (b.name_len > 0) b.name[0..b.name_len] else "?"}));
+            c.igSameLine(S(190), -1);
+            textColored(col.faint, when);
+            c.igSameLine(S(260), -1);
+            if (secondaryButton(fmtZ("{s}###unban", .{tr("Desbanir")}), v2(S(90), 0))) cl.admin(proto.admin_unban, b.id, 0);
+            c.igPopID();
+        }
+        if (n > 1) {
+            c.igDummy(v2(0, S(4)));
+            if (secondaryButton(fmtZ("{s}###unbanall", .{tr("Desbanir todo mundo")}), v2(S(350), 0))) {
+                cl.admin(proto.admin_unban, 0, 0);
+                c.igCloseCurrentPopup();
+            }
+        }
+    }
+
     fn drawAudioExclude(a: *App, bw: f32, bh: f32, w: f32) void {
         const list = config.getStr(&a.cfg.audio_exclude);
         var n: usize = 0;
@@ -4222,6 +4271,7 @@ pub const App = struct {
         const my_route = cl.route;
         const locked = cl.room_locked;
         const i_am_admin = cl.is_admin;
+        const n_bans = if (i_am_admin) cl.bans_n else 0;
         var members: [64]Member = undefined;
         const n_members = @min(cl.members.items.len, members.len);
         @memcpy(members[0..n_members], cl.members.items[0..n_members]);
@@ -4236,7 +4286,7 @@ pub const App = struct {
 
         // onde começam os botões da direita (o resto não passa disso)
         const bs = S(36);
-        const n_btns: f32 = @floatFromInt(2 + @as(u8, @intFromBool(!a.chat_visible)) + @as(u8, @intFromBool(i_am_admin or locked)) + @as(u8, @intFromBool(i_am_owner)));
+        const n_btns: f32 = @floatFromInt(2 + @as(u8, @intFromBool(!a.chat_visible)) + @as(u8, @intFromBool(i_am_admin or locked)) + @as(u8, @intFromBool(i_am_owner)) + @as(u8, @intFromBool(n_bans > 0)));
         const right_start = o.x + size.x - S(12) - n_btns * bs - (n_btns - 1) * S(4) - S(16);
 
         // logo + nome da sala + linha da conexão
@@ -4342,6 +4392,13 @@ pub const App = struct {
                     cl.admin(proto.admin_clear_chat, 0, 0);
                     a.clear_armed_at = -10;
                 } else a.clear_armed_at = now;
+            }
+            // quem está banido: a lista pra desbanir (só aparece quando tem alguém)
+            if (n_bans > 0) {
+                rx -= bs + S(4);
+                c.igSetCursorScreenPos(v2(rx, by));
+                if (iconButton("##bans", ic.gavel, bs, col.muted, col.hover, tr("Quem está banido (pra desbanir)"))) _ = c.igOpenPopup_Str("##banlist", 0);
+                drawBanList(cl);
             }
         } else if (locked) {
             rx -= bs + S(4);

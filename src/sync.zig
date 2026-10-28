@@ -85,6 +85,17 @@ pub fn nowMs() u64 {
     return nowUs() / 1000;
 }
 
+/// Segundos desde 1970 (relógio de parede): o que precisa valer depois de
+/// reiniciar (prazo de banimento gravado no arquivo de estado).
+pub fn unixSecs() i64 {
+    if (is_windows) {
+        var ft: c.FILETIME = undefined;
+        c.GetSystemTimeAsFileTime(&ft);
+        const q: u64 = (@as(u64, ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+        return @as(i64, @intCast(q / 10_000_000)) - 11_644_473_600;
+    } else return @intCast(c.time(null));
+}
+
 pub fn sleepMs(ms: u32) void {
     if (is_windows) {
         c.Sleep(ms);

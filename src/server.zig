@@ -299,15 +299,22 @@ fn addUnique(list: *std.ArrayList(u32), v: u32) void {
     if (!contains(list, v)) list.append(gpa, v) catch {};
 }
 
-/// Alguém banido: não volta enquanto a sala existir (pela chave do app, pelo
-/// nome ou pelo IP; quem vem pelo túnel tem o IP do túnel, aí não conta).
+/// Alguém banido: não volta pela chave do app até um admin desbanir; pelo IP,
+/// por ban_ip_secs (o IP de casa muda e vai parar em outra pessoa; quem vem
+/// pelo túnel tem o IP do túnel, aí não conta). O nome é só pra lista: banir
+/// pelo nome pegava pra sempre qualquer um que se chamasse igual.
 const Ban = struct {
     key: u64,
+    id: u32 = 0,
+    at_s: i64 = 0, // quando (relógio de parede, sobrevive a reiniciar)
     name: [48]u8 = undefined,
     name_len: usize = 0,
     ip: [16]u8 = undefined,
     ip_len: usize = 0,
 };
+
+const ban_ip_secs: i64 = 24 * 3600;
+const max_bans = 256; // o mais velho sai
 
 const RecentJoin = struct {
     key: u64,
@@ -722,6 +729,7 @@ pub const Server = struct {
     next_id: u32 = 1,
     locked: bool = false,
     bans: std.ArrayList(Ban) = .empty,
+    next_ban_id: u32 = 1,
     /// Chaves (do app) de quem o admin silenciou: quem cai e volta continua
     /// silenciado (antes voltava com o microfone liberado: "desmutou sozinho")
     muted_keys: std.ArrayList(u64) = .empty,
@@ -1783,6 +1791,34 @@ pub const Server = struct {
             s.log("{s} limpou o chat da sala ({d} arquivos)", .{ cn.nameSlice(), gone });
             return;
         }
+        if (action == proto.admin_unban) {
+            var i: usize = 0;
+            var n: usize = 0;
+            var tmp: [96]u8 = undefined;
+            while (i < s.bans.items.len) {
+                const b = &s.bans.items[i];
+                if (target_id != 0 and b.id != target_id) {
+                    i += 1;
+                    continue;
+                }
+                if (target_id != 0) {
+                    s.log("{s} desbaniu {s}", .{ cn.nameSlice(), b.name[0..b.name_len] });
+                    const said = std.fmt.bufPrint(&tmp, "{s} desbaniu {s}", .{ cn.nameSlice(), b.name[0..b.name_len] }) catch "";
+                    try s.broadcastChat(cn.chan, said);
+                }
+                _ = s.bans.orderedRemove(i);
+                n += 1;
+            }
+            if (n == 0) return;
+            if (target_id == 0) {
+                s.log("{s} desbaniu todo mundo ({d})", .{ cn.nameSlice(), n });
+                const said = std.fmt.bufPrint(&tmp, "{s} desbaniu todo mundo", .{cn.nameSlice()}) catch "";
+                try s.broadcastChat(cn.chan, said);
+            }
+            s.saveState();
+            s.broadcastBans();
+            return;
+        }
         if (target_id == cn.id) return;
         const t = s.findConn(target_id) orelse return;
         if (t.admin and !cn.owner) return;
@@ -1795,8 +1831,9 @@ pub const Server = struct {
                     var b: Ban = .{ .key = t.client_key };
                     copyInto(&b.name, &b.name_len, baseName(t.nameSlice()));
                     if (!t.via_tunnel and t.route != proto.route_local) copyInto(&b.ip, &b.ip_len, t.ip[0..t.ip_len]);
-                    s.bans.append(gpa, b) catch {};
+                    s.addBan(b);
                     s.saveState();
+                    s.broadcastBans();
                 }
                 s.log("{s} {s} {s}", .{ cn.nameSlice(), if (ban) "baniu" else "expulsou", t.nameSlice() });
                 const said = std.fmt.bufPrint(&tmp, "{s} {s} {s}", .{ cn.nameSlice(), if (ban) "baniu" else "expulsou", t.nameSlice() }) catch "";
@@ -1855,6 +1892,7 @@ pub const Server = struct {
                 s.log("{s} {s} {s}", .{ cn.nameSlice(), if (on) "deu admin pra" else "tirou o admin de", t.nameSlice() });
                 const text = std.fmt.bufPrint(&tmp, "{s} {s}", .{ cn.nameSlice(), if (on) "te deu admin na sala." else "tirou seu admin." }) catch "";
                 try pushNotice(t, if (on) proto.notice_admin_on else proto.notice_admin_off, text, 0);
+                s.pushBans(t); // a lista de banidos (vazia pra quem deixou de ser admin)
                 try s.broadcastMembers();
             },
             else => {},
@@ -2041,13 +2079,45 @@ pub const Server = struct {
         return false;
     }
 
-    fn banned(s: *Server, cn: *const Conn, name: []const u8) bool {
+    fn banned(s: *Server, cn: *const Conn) bool {
+        const now = sync.unixSecs();
         for (s.bans.items) |*b| {
             if (b.key != 0 and b.key == cn.client_key) return true;
-            if (std.ascii.eqlIgnoreCase(b.name[0..b.name_len], name)) return true;
-            if (b.ip_len > 0 and !cn.via_tunnel and std.mem.eql(u8, b.ip[0..b.ip_len], cn.ip[0..cn.ip_len])) return true;
+            if (b.ip_len > 0 and !cn.via_tunnel and now - b.at_s < ban_ip_secs and std.mem.eql(u8, b.ip[0..b.ip_len], cn.ip[0..cn.ip_len])) return true;
         }
         return false;
+    }
+
+    /// Guarda um banimento (com id pra lista e hora); passou de max_bans, o
+    /// mais velho sai. Chamado com o mutex travado (ou no começo).
+    fn addBan(s: *Server, ban: Ban) void {
+        var b = ban;
+        b.id = s.next_ban_id;
+        s.next_ban_id +%= 1;
+        if (s.next_ban_id == 0) s.next_ban_id = 1;
+        if (b.at_s == 0) b.at_s = sync.unixSecs();
+        if (s.bans.items.len >= max_bans) _ = s.bans.orderedRemove(0);
+        s.bans.append(gpa, b) catch {};
+    }
+
+    /// A lista de banidos pra um admin (pra desbanir); vazia pra quem não é.
+    fn pushBans(s: *Server, cn: *Conn) void {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        b.begin(.bans) catch return;
+        const now = sync.unixSecs();
+        const n: u16 = if (cn.admin) @intCast(s.bans.items.len) else 0;
+        b.u16_(n) catch return;
+        for (s.bans.items[0..n]) |*x| {
+            b.u32_(x.id) catch return;
+            b.str(x.name[0..x.name_len]) catch return;
+            b.u32_(@intCast(std.math.clamp(now - x.at_s, 0, std.math.maxInt(u32)))) catch return;
+        }
+        cn.queue.pushOwned(b.finish() catch return);
+    }
+
+    fn broadcastBans(s: *Server) void {
+        for (s.conns.items) |o| if (o.authed and o.admin and !o.web) s.pushBans(o);
     }
 
     /// O nome que vai pra sala: até 32 bytes de UTF-8 válido (cortado entre
@@ -2103,7 +2173,7 @@ pub const Server = struct {
         var base_buf: [32]u8 = undefined;
         const base = safeName(raw_name, &base_buf);
         if (!is_owner) {
-            if (s.banned(cn, base)) {
+            if (s.banned(cn)) {
                 s.log("{s} tentou entrar, mas foi banido", .{base});
                 refuse(cn, proto.deny_banned, "Você foi banido dessa sala.");
                 return error.Banned;
@@ -2185,6 +2255,8 @@ pub const Server = struct {
         if (needs_pw) pushNotice(cn, proto.notice_channel, "Esse canal tem senha.", proto.notice_channel_needs_password) catch {};
         // dá pra chamar gente pelo navegador: o link (o app mostra "copiar")
         if (s.web_link_len > 0 and !cn.web) s.pushWebLink(cn) catch {};
+        // admin vê quem está banido (pra desbanir)
+        if (cn.admin and !cn.web and s.bans.items.len > 0) s.pushBans(cn);
 
         // silenciado pelo admin antes de cair: continua silenciado (e sem pincel)
         if (cn.client_key != 0 and !cn.owner) for (s.muted_keys.items) |k| if (k == cn.client_key) {
@@ -3385,7 +3457,8 @@ pub const Server = struct {
         }
         // "ban2": IP em hex (no "ban" ele ia em bytes, e 10.x/192.168.9.x tinham
         // \n e \t no meio, quebrando a linha); o nome já vem limpo (safeName)
-        for (s.bans.items) |*b| put(f, std.fmt.bufPrint(&lb, "ban2\t{x}\t{x}\t{s}\n", .{ b.key, b.ip[0..b.ip_len], b.name[0..b.name_len] }) catch continue);
+        // "ban3": + a hora (o IP só vale ban_ip_secs); servidor antigo ignora
+        for (s.bans.items) |*b| put(f, std.fmt.bufPrint(&lb, "ban3\t{x}\t{x}\t{d}\t{s}\n", .{ b.key, b.ip[0..b.ip_len], b.at_s, b.name[0..b.name_len] }) catch continue);
         for (s.muted_keys.items) |k| put(f, std.fmt.bufPrint(&lb, "mudo\t{x}\n", .{k}) catch continue);
         for (s.no_draw_keys.items) |k| put(f, std.fmt.bufPrint(&lb, "sempincel\t{x}\n", .{k}) catch continue);
         _ = cio.fclose(f);
@@ -3437,18 +3510,22 @@ pub const Server = struct {
                 const name = normalizeChannel(it.next() orelse continue, &nb) orelse continue;
                 const ch = s.findChan(name) orelse continue;
                 while (it.next()) |k| _ = ch.addOp(std.fmt.parseInt(u64, k, 16) catch continue);
-            } else if (std.mem.eql(u8, kind, "ban") or std.mem.eql(u8, kind, "ban2")) {
+            } else if (std.mem.eql(u8, kind, "ban") or std.mem.eql(u8, kind, "ban2") or std.mem.eql(u8, kind, "ban3")) {
                 var b: Ban = .{ .key = std.fmt.parseInt(u64, it.next() orelse continue, 16) catch 0 };
                 const ip = it.next() orelse "";
-                if (kind.len == 4) {
+                if (kind.len == 3) {
                     copyInto(&b.ip, &b.ip_len, ip); // formato antigo: bytes crus
                 } else if (ip.len % 2 == 0 and ip.len / 2 <= b.ip.len) {
                     if (std.fmt.hexToBytes(&b.ip, ip)) |got| b.ip_len = got.len else |_| {}
                 }
+                // sem hora (formatos antigos): o IP vale ban_ip_secs a partir de agora
+                if (kind[kind.len - 1] == '3') b.at_s = std.fmt.parseInt(i64, it.next() orelse "", 10) catch 0;
                 var nb: [32]u8 = undefined;
                 const nm = it.next() orelse "";
                 copyInto(&b.name, &b.name_len, if (nm.len == 0) "" else safeName(nm, &nb));
-                s.bans.append(gpa, b) catch {};
+                // banido só pelo nome (sem chave nem IP): não pega mais ninguém
+                if (b.key == 0 and b.ip_len == 0) continue;
+                s.addBan(b);
             } else if (std.mem.eql(u8, kind, "mudo")) {
                 s.muted_keys.append(gpa, std.fmt.parseInt(u64, it.next() orelse continue, 16) catch continue) catch {};
             } else if (std.mem.eql(u8, kind, "sempincel")) {

@@ -161,15 +161,15 @@ def link_publico():
 
 @test
 def admin_menu():
-    """Menu de admin (clique direito): silenciar, liberar, dar admin, trancar a sala, expulsar."""
+    """Menu de admin (clique direito): silenciar, liberar, dar admin, trancar a sala, expulsar, banir e desbanir."""
     with Session("admin") as s:
         p = port()
         dono = s.app("dono", 91, ["--nome", "Dono", "--criar", str(p)])
         conv = s.app("conv", 92, ["--nome", "Conv", "--entrar", f"127.0.0.1:{p}"])
         cid = conv.wait(lambda st: st["status"] == "connected", 10, "o convidado entrar")["my_id"]
 
-        def menu(item):
-            dono.click_rect(dono.member_row(cid), button=3)
+        def menu(item, who=cid):
+            dono.click_rect(dono.member_row(who), button=3)
             dono.click(contains=item)
 
         menu("Silenciar o microfone")
@@ -191,6 +191,22 @@ def admin_menu():
         menu("Expulsar da sala")
         st = conv.wait(lambda st: st["final"], 5, "o convidado ser expulso")
         expect(st["deny"] == 1, f"motivo errado: {st['deny']}")
+        # banir: não volta pela chave do app; o dono vê quem está banido e desbane
+        key = {"client_key": "5eed0000abcd1"}
+        vis = s.app("vis", 94, ["--nome", "Visita", "--entrar", f"127.0.0.1:{p}"], config=key)
+        vid = vis.wait(lambda st: st["status"] == "connected", 10, "a visita entrar")["my_id"]
+        dono.wait(lambda st: any(m["id"] == vid for m in st["members"]), 5, "o dono ver a visita")
+        expect(not dono.find("##bans", need=False, timeout=0.3), "botão de banidos sem ninguém banido")
+        menu("Banir", vid)
+        st = vis.wait(lambda st: st["final"], 5, "a visita ser banida")
+        expect(st["deny"] == 2, f"motivo errado: {st['deny']}")
+        de_novo = s.app("vis2", 95, ["--nome", "Outro Nome", "--entrar", f"127.0.0.1:{p}"], config=key)
+        de_novo.wait(lambda st: st["screen"] == "home" and "banido" in st["home_error"], 10, "a visita não voltar com outro nome")
+        dono.click("##bans")
+        dono.click("Desbanir")
+        dono.wait(lambda st: any("desbaniu Visita" in c["text"] for c in st["chat"]), 5, "o aviso de desbanido")
+        volta = s.app("vis3", 96, ["--nome", "Visita", "--entrar", f"127.0.0.1:{p}"], config=key)
+        volta.wait(lambda st: st["status"] == "connected", 10, "a visita voltar depois de desbanida")
 
 
 @test

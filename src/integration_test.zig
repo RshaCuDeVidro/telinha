@@ -854,14 +854,33 @@ test "admin: expulsa, bane (não volta), silencia, para transmissão, dá admin 
     // dono bane a visita: sai com o motivo e não volta (nem com outro nome, pela chave do app)
     try dono.admin(proto.admin_ban, v.id, 0);
     try testing.expectEqual(proto.deny_banned, try v.denied());
+    // o dono recebe a lista de banidos (pra poder desbanir)
+    const ban_id = blk: {
+        var r: proto.Reader = .{ .data = try dono.expect(.bans) };
+        try testing.expectEqual(@as(u16, 1), try r.u16_());
+        const id = try r.u32_();
+        try testing.expectEqualStrings("Visita", try r.str());
+        break :blk id;
+    };
     sync.sleepMs(300);
     try testing.expectEqual(@as(usize, 2), srv.memberCount());
     var v2 = try TestClient.connectKey(port, "Disfarce", "", "", 0x1234);
     defer v2.close();
     try testing.expectEqual(proto.deny_banned, try v2.denied());
-    var v3 = try TestClient.connect(port, "visita", "", ""); // mesmo nome (maiúscula/minúscula não importa)
-    defer v3.close();
-    try testing.expectEqual(proto.deny_banned, try v3.denied());
+    {
+        // outra pessoa com o mesmo nome entra: banir pelo nome pegava homônimos pra sempre
+        var v3 = try TestClient.connect(port, "visita", "", "");
+        defer v3.close();
+        try v3.welcome();
+        // desbanir: a lista esvazia e a visita volta
+        try dono.admin(proto.admin_unban, ban_id, 0);
+        var r: proto.Reader = .{ .data = try dono.expect(.bans) };
+        try testing.expectEqual(@as(u16, 0), try r.u16_());
+        var v4 = try TestClient.connectKey(port, "Visita", "", "", 0x1234);
+        defer v4.close();
+        try v4.welcome();
+    }
+    while (srv.memberCount() != 2) sync.sleepMs(20);
     // tranca: ninguém novo entra; destranca: entra
     try dono.admin(proto.admin_lock, 0, 1);
     while ((try dono.members()).room_flags & proto.room_locked == 0) {}
