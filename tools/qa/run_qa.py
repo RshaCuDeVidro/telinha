@@ -2795,6 +2795,29 @@ def crash_run(s, name, num, how, wine=False):
 
 
 @test
+def decoder_lento():
+    """Quem assiste com o decoder lento (PC fraco): a fila atrasada larga primeiro os quadros puláveis (ou pula até um IDR que já chegou) em vez de jogar tudo fora e pedir IDR pra transmissão inteira."""
+    with Session("decoder-lento", audio=True) as s:
+        s.fake_camera()
+        p = port()
+        # H.264 com duas camadas (a de cima pulável), como o openh264 e o NVENC em modo jogo
+        dono = s.app("dono", 91, ["--nome", "Dono", "--criar", str(p)], extra_env={"TELINHA_SEM_HEVC": "1", "TELINHA_SEM_AV1": "1"})
+        dono.wait(lambda st: st["status"] == "connected", 10, "o dono entrar")
+        did = dono.state()["my_id"]
+        dono.click("##camera")
+        dono.wait(lambda st: st["camera"] and st["camera"]["state"] == "live", 15, "a câmera ficar ao vivo")
+        cam = did | 0x80000000
+        conv = s.app("conv", 92, ["--nome", "Conv", "--entrar", f"127.0.0.1:{p}", "--assistir"], extra_env={"TELINHA_TESTE_DECODE_LENTO": "45"})
+        conv.wait(lambda st: any(v["stream"] == cam and v["shown"] for v in st["views"]), 15, "ver a câmera")
+        time.sleep(12)
+        v = next(v for v in conv.state()["views"] if v["stream"] == cam)
+        log(f"decoder lento: {v['fps']} q/s, aliviou {v['relieved']}x, jogou tudo fora {v['flushes']}x")
+        log(f"câmera de quem transmite: {dono.state()['camera']}")
+        expect(v["fps"] >= 8, f"quase nada aparecendo: {v['fps']} q/s")
+        expect(v["flushes"] <= 2, f"jogou a fila fora {v['flushes']} vezes (devia aliviar antes)")
+
+
+@test
 def relatorio_de_travamento():
     """O app cai (falha de memória e panic): na próxima abertura pergunta se manda o relatório; mandando, o gofile (de mentira) recebe o motivo e a pilha."""
     with Session("travou") as s:

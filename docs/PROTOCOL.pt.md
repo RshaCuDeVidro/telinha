@@ -136,7 +136,7 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 8 | frame | S→C | `u32 stream`, frame |
 | 9 | watch | C→S | `u32 stream`, `u8 ligado`, `u8 opções` (1 = clipes: quer IDR de vez em quando) |
 | 10 | keyreq | S→C | `u8 tipo` (mande um IDR dessa transmissão) |
-| 10 | keyreq | C→S | `u32 stream`, `u8 motivo` (0 = perdi a referência, 1 = gravação começando) |
+| 10 | keyreq | C→S | `u32 stream`, `u8 motivo` (0 = perdi a referência, 1 = gravação começando, 2 = o decoder está atrasando mas se virou largando os quadros puláveis: sem IDR, só me afina; servidor antigo trata como 0) |
 | 11 | ping | C→S | `u64 t` |
 | 12 | pong | S→C | `u64 t` (eco), `u64 relógio_µs` |
 | 13 | kick | C→S | `u32 alvo` (o mesmo que `admin` com ação 1; ainda aceito) |
@@ -669,8 +669,10 @@ câmera de alguém têm controles independentes):
   sempre (metade do trabalho pro decoder).
 
 **Espectador:** confirma na hora; se o decoder fica mais de 150 ms atrasado,
-joga a fila fora e manda `keyreq stream` com motivo 0 (o servidor aplica a
-mesma espera crescente). Quadros que já têm um mais novo esperando são
+primeiro pula até um IDR que já está na fila, ou larga os quadros puláveis e
+manda `keyreq stream` com motivo 2 (sem IDR: o servidor só afina), dando 100 ms
+pro decoder; só quando nada disso resolve joga a fila fora e manda o motivo 0 (o
+servidor aplica a mesma espera crescente). Quadros que já têm um mais novo esperando são
 decodificados mas não vão pra tela.
 
 O pedido de IDR pra um espectador esperando normalmente sai quando chega o

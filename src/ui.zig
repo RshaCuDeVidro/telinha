@@ -10296,7 +10296,7 @@ pub const App = struct {
         if (a.camera) |cam| {
             cam.mutex.lock();
             defer cam.mutex.unlock();
-            try w.print(",\"camera\":{{\"state\":{f},\"w\":{d},\"h\":{d},\"fps\":{d:.1},\"err\":{f}}}", .{ s(@tagName(cam.state)), cam.w, cam.h, cam.fps, s(cam.errSlice()) });
+            try w.print(",\"camera\":{{\"state\":{f},\"w\":{d},\"h\":{d},\"fps\":{d:.1},\"err\":{f},\"encoder\":{f}}}", .{ s(@tagName(cam.state)), cam.w, cam.h, cam.fps, s(cam.errSlice()), s(cam.encoder_name) });
         } else try w.writeAll(",\"camera\":null");
         if (a.server) |srv| try w.print(",\"server_members\":{d}", .{srv.memberCount()});
         // link público e porta no roteador
@@ -10351,9 +10351,10 @@ pub const App = struct {
             if (i > 0) try w.writeByte(',');
             const has_audio = v.audio_registered;
             const rs: clip.Buffer.RecState = if (v.clip) |cb| cb.recState() else .{ .active = false, .waiting = false, .ms = 0, .failed = false };
-            try w.print("{{\"stream\":{d},\"fps\":{d:.1},\"w\":{d},\"h\":{d},\"shown\":{},\"audio\":{},\"volume\":{d:.2},\"muted\":{},\"clip_secs\":{d:.1},\"recording\":{},\"rec_ms\":{d},\"decoder\":{f},\"codec\":{f},\"latency\":{d:.0},\"cursor_apart\":{},\"cursor_x\":{d},\"cursor_y\":{d},\"view_sent_h\":{d}}}", .{
+            try w.print("{{\"stream\":{d},\"fps\":{d:.1},\"w\":{d},\"h\":{d},\"shown\":{},\"audio\":{},\"volume\":{d:.2},\"muted\":{},\"clip_secs\":{d:.1},\"recording\":{},\"rec_ms\":{d},\"decoder\":{f},\"codec\":{f},\"latency\":{d:.0},\"cursor_apart\":{},\"cursor_x\":{d},\"cursor_y\":{d},\"view_sent_h\":{d},\"relieved\":{d},\"flushes\":{d}}}", .{
                 v.stream,                      v.fps,                       v.tex_w,                     v.tex_h,       v.tex != 0, has_audio, v.audio_ring.getVolume(), v.audio_ring.isMuted(), if (v.clip) |cb| cb.seconds() else -1, rs.active, rs.ms, s(v.decoder_name), s(v.codec.name()), v.latency_ms,
                 v.cursor_apart.load(.acquire), v.cursor_x.load(.monotonic), v.cursor_y.load(.monotonic), v.view_sent_h,
+                v.backlog_relieved.load(.monotonic), v.backlog_flushes.load(.monotonic),
             });
         }
         try w.writeAll("]");

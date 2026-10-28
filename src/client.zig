@@ -392,6 +392,9 @@ pub const View = struct {
     arrivals: std.ArrayList(u64) = .empty, // hora (µs) em que cada quadro da fila chegou
     stop: bool = false,
     waiting_key: bool = true,
+    relief_until_us: u64 = 0, // descartou os puláveis: espera o decoder alcançar até aqui
+    backlog_relieved: std.atomic.Value(u32) = .init(0), // atrasos resolvidos sem pedir IDR
+    backlog_flushes: std.atomic.Value(u32) = .init(0), // atrasos que jogaram tudo fora (IDR pedido)
 
     // estatísticas
     fps: f32 = 0,
@@ -516,13 +519,20 @@ pub const View = struct {
             return;
         }
         const now = sync.nowUs();
-        // decode não está dando conta: descarta tudo e pede um IDR
+        // decode não está dando conta: primeiro o que não custa a transmissão de
+        // ninguém (ver relieveBacklog); só então descarta tudo e pede um IDR
         if (v.frames.items.len >= 30 or (v.arrivals.items.len > 0 and now - v.arrivals.items[0] > max_decode_backlog_us)) {
-            for (v.frames.items) |f| gpa.free(f);
-            v.frames.clearRetainingCapacity();
-            v.arrivals.clearRetainingCapacity();
-            v.waiting_key = true;
-            v.client.sendKeyreq(v.stream);
+            if (v.relieveBacklog(now)) {
+                // conta pro servidor (sem pedir IDR): ele manda só metade dos quadros
+                if (v.backlog_relieved.fetchAdd(1, .monotonic) % 8 == 0) v.client.sendKeyreqReason(v.stream, proto.keyreq_slow);
+            } else {
+                for (v.frames.items) |f| gpa.free(f);
+                v.frames.clearRetainingCapacity();
+                v.arrivals.clearRetainingCapacity();
+                v.waiting_key = true;
+                v.client.sendKeyreq(v.stream);
+                _ = v.backlog_flushes.fetchAdd(1, .monotonic);
+            }
         }
         v.arrivals.append(gpa, now) catch {
             gpa.free(frame);
@@ -534,6 +544,45 @@ pub const View = struct {
             return;
         };
         v.qcond.signal();
+    }
+
+    /// Fila do decoder atrasada (sob qmutex): 1) um IDR já na fila: pula até
+    /// ele; 2) senão tira os quadros puláveis (a camada de cima, que nenhum
+    /// outro quadro usa) e dá 100 ms pro decoder alcançar. true = resolveu sem
+    /// jogar tudo fora (antes: tudo fora + IDR pedido, e o IDR pra transmissão
+    /// inteira e o "espectador lento" no servidor a cada soluço do decoder).
+    fn relieveBacklog(v: *View, now: u64) bool {
+        const isKey = struct {
+            fn f(fr: []const u8) bool {
+                return fr.len > 4 and fr[4] & proto.frame_key != 0;
+            }
+        }.f;
+        var k: usize = v.frames.items.len;
+        while (k > 1) {
+            k -= 1;
+            if (!isKey(v.frames.items[k])) continue;
+            for (v.frames.items[0..k]) |f| gpa.free(f);
+            std.mem.copyForwards([]u8, v.frames.items[0..], v.frames.items[k..]);
+            v.frames.items.len -= k;
+            std.mem.copyForwards(u64, v.arrivals.items[0..], v.arrivals.items[k..]);
+            v.arrivals.items.len -= k;
+            return true;
+        }
+        if (now < v.relief_until_us) return v.frames.items.len < 30;
+        var removed: usize = 0;
+        var i: usize = 0;
+        while (i < v.frames.items.len) {
+            const fr = v.frames.items[i];
+            if (fr.len > 4 and fr[4] & proto.frame_droppable != 0) {
+                gpa.free(fr);
+                _ = v.frames.orderedRemove(i);
+                _ = v.arrivals.orderedRemove(i);
+                removed += 1;
+            } else i += 1;
+        }
+        if (removed == 0) return false;
+        v.relief_until_us = now + 100_000;
+        return true;
     }
 
     /// Próximo quadro e se já tem outro esperando atrás dele.
@@ -687,6 +736,16 @@ pub const View = struct {
     /// substituída em seguida. Só que um decoder que vive atrás (CPU fraca)
     /// sempre tem quadro esperando: aí entrega um a cada 50 ms mesmo assim.
     fn decodeFrame(v: *View, dec: *Decoder, frame: []const u8, behind: bool) !void {
+        // teste (TELINHA_TESTE_DECODE_LENTO=ms): cada quadro demora isso a mais, como num PC fraco
+        const S = struct {
+            var slow_ms: ?u32 = null;
+            var read = false;
+        };
+        if (!S.read) {
+            S.read = true;
+            if (std.c.getenv("TELINHA_TESTE_DECODE_LENTO")) |e| S.slow_ms = std.fmt.parseInt(u32, std.mem.span(e), 10) catch null;
+        }
+        if (S.slow_ms) |ms| sync.sleepMs(ms);
         const t0 = sync.nowUs();
         var r: proto.Reader = .{ .data = frame };
         _ = try r.u32_(); // seq

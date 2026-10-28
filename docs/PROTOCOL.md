@@ -140,7 +140,7 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | 8 | frame | S→C | `u32 stream`, frame |
 | 9 | watch | C→S | `u32 stream`, `u8 ligado`, `u8 opções` (1 = clips: wants an IDR now and then) |
 | 10 | keyreq | S→C | `u8 tipo` (send an IDR for that stream) |
-| 10 | keyreq | C→S | `u32 stream`, `u8 motivo` (0 = I lost the reference, 1 = recording starting) |
+| 10 | keyreq | C→S | `u32 stream`, `u8 motivo` (0 = I lost the reference, 1 = recording starting, 2 = my decoder is behind but caught up by dropping droppable frames: no IDR, just thin me; an older server treats it as 0) |
 | 11 | ping | C→S | `u64 t` |
 | 12 | pong | S→C | `u64 t` (echo), `u64 relógio_µs` |
 | 13 | kick | C→S | `u32 alvo` (the same as `admin` with action 1; still accepted) |
@@ -688,8 +688,10 @@ everything is measured with acknowledgements — separately for each stream
   keep up is always thinned (half the work for the decoder).
 
 **Viewer:** acknowledges right away; if the decoder falls more than 150 ms behind,
-it throws the queue away and sends `keyreq stream` with reason 0 (the server
-applies the same growing wait). Frames that already have a newer one waiting are
+it first skips to an IDR already in the queue, or drops the droppable frames and
+sends `keyreq stream` with reason 2 (no IDR: the server only thins it), giving the
+decoder 100 ms; only when neither helps does it throw the queue away and send
+reason 0 (the server applies the same growing wait). Frames that already have a newer one waiting are
 decoded but don't go to the screen.
 
 The IDR request for a viewer waiting normally goes out when the streamer's next

@@ -1044,6 +1044,43 @@ test "assistir: quem começa a assistir logo depois de outro não espera o limit
     try testing.expect(sync.nowMs() - t0 < 250);
 }
 
+test "assistir: decoder devagar que se virou sozinho (keyreq_slow) não faz pedir IDR" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+    var t = try TestClient.connect(port, "T", "", "");
+    defer t.close();
+    try t.welcome();
+    var a = try TestClient.connect(port, "A", "", "");
+    defer a.close();
+    try a.welcome();
+    try liveRoom(&t, &a);
+    try t.send(try frameSeq(true, 100, 0));
+    try a.ackFrame(try a.expect(.frame));
+    const keyreq = struct {
+        fn send(c: *TestClient, stream: u32, reason: u8) !void {
+            const m = try proto.Msg.alloc(.keyreq, 5);
+            std.mem.writeInt(u32, m.payload()[0..4], stream, .little);
+            m.payload()[4] = reason;
+            try c.send(m);
+        }
+    }.send;
+    sync.sleepMs(1100); // passa o limite de 1 s do pedido anterior
+    srv.mutex.lock();
+    const n0 = srv.n_keyreqs;
+    srv.mutex.unlock();
+    try keyreq(&a, t.id, proto.keyreq_slow);
+    sync.sleepMs(200);
+    srv.mutex.lock();
+    const n1 = srv.n_keyreqs;
+    srv.mutex.unlock();
+    try testing.expectEqual(n0, n1);
+    // perdeu a referência (keyreq_lost): aí sim pede IDR
+    try keyreq(&a, t.id, proto.keyreq_lost);
+    _ = try t.expect(.keyreq);
+}
+
 test "sala: membro comum não expulsa ninguém; o dono sim" {
     net.init();
     const port = freshPort();

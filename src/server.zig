@@ -1663,6 +1663,16 @@ pub const Server = struct {
                     return;
                 }
                 const f = cn.flow(stream) orelse return;
+                if (reason == proto.keyreq_slow) {
+                    // sem IDR: o app já largou os quadros puláveis; daqui pra frente só metade
+                    const now = sync.nowMs();
+                    f.decoder_behind = true;
+                    if (s.findConn(proto.memberOf(stream))) |sh| {
+                        if (now -| sh.streams[proto.kindOf(stream)].last_droppable_ms < 2000 and f.thinOut(now))
+                            s.log("{s} decodificando devagar {s}: recebendo só metade dos quadros por {d} s", .{ cn.nameSlice(), sh.nameSlice(), f.thin_ms / 1000 });
+                    }
+                    return;
+                }
                 f.win.dropNewest(cn.queue.dropFrames(stream));
                 addUnique(&cn.waiting_key, stream);
                 const now = sync.nowMs();

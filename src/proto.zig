@@ -268,6 +268,10 @@ pub const chat_quote_max = 140;
 /// keyreq (de quem assiste): por que precisa de um IDR
 pub const keyreq_lost: u8 = 0; // o decoder perdeu a referência (atrasou ou deu erro)
 pub const keyreq_record: u8 = 1; // gravação começando (sem efeito no controle de atraso)
+/// O decoder está atrasando, mas se virou sem IDR (largou os quadros puláveis):
+/// o servidor só passa a mandar metade dos quadros pra ele. Servidor antigo
+/// trata como keyreq_lost (IDR + metade), o mesmo de antes.
+pub const keyreq_slow: u8 = 2;
 
 /// watch: opções
 pub const watch_clips: u8 = 1; // guardando os últimos segundos pra clipe: quer IDR de vez em quando
