@@ -35,6 +35,8 @@ pub const Ring = struct {
     underruns: u32 = 0, // o som acabou no meio (picote)
     cuts: u32 = 0, // atrasou demais e jogou o excesso fora (pulo)
     fill_samples: usize = 0, // quanto tinha na fila na última mixagem
+    over_since_us: u64 = 0, // a fila passou do alvo (+20 ms) desde (0 = não)
+    drift_dropped: u64 = 0, // amostras (por canal) descartadas pra voltar ao alvo
 
     pub fn deinit(rg: *Ring) void {
         gpa.free(rg.buf);
@@ -68,7 +70,7 @@ pub const Ring = struct {
 
     /// Pro log de depuração: quantos ms na fila, quantas vezes faltou som e
     /// quantas cortou o excesso, desde a última vez (e zera).
-    pub const Stats = struct { fill_ms: u32, underruns: u32, cuts: u32, silent_ms: u64 };
+    pub const Stats = struct { fill_ms: u32, underruns: u32, cuts: u32, silent_ms: u64, drift_ms: u32 };
     pub fn takeStats(rg: *Ring) Stats {
         rg.mutex.lock();
         defer rg.mutex.unlock();
@@ -77,7 +79,9 @@ pub const Ring = struct {
             .underruns = rg.underruns,
             .cuts = rg.cuts,
             .silent_ms = if (rg.last_write_us == 0) std.math.maxInt(u64) else (sync.nowUs() -| rg.last_write_us) / 1000,
+            .drift_ms = @intCast(@min(rg.drift_dropped * 1000 / rate, std.math.maxInt(u32))),
         };
+        rg.drift_dropped = 0;
         rg.underruns = 0;
         rg.cuts = 0;
         return r;
@@ -128,6 +132,33 @@ pub const Ring = struct {
         rg.last_write_us = sync.nowUs();
     }
 
+    /// Fila acima do alvo por um tempo (a rede engasgou e despejou, ou o
+    /// relógio de quem transmite anda um tico mais rápido): volta pro alvo sem
+    /// pulo audível. Num trecho de silêncio, o excesso sai de uma vez; senão,
+    /// 2 a 4 amostras por bloco (0,4-0,8% mais rápido, imperceptível). Antes
+    /// a latência ficava parada até 200 ms e aí pulava de uma vez. (Sob o mutex.)
+    pub fn driftCorrect(rg: *Ring, block: usize, now: u64) void {
+        const slack = target_samples * 2 / 5; // 20 ms
+        if (rg.len <= target_samples + slack) {
+            rg.over_since_us = 0;
+            return;
+        }
+        if (rg.over_since_us == 0) rg.over_since_us = now;
+        if (now - rg.over_since_us < 500_000) return;
+        const excess = rg.len - target_samples;
+        const cap = rg.buf.len;
+        // o próximo bloco é silêncio? (pico abaixo de -50 dBFS)
+        var peak: f32 = 0;
+        for (0..@min(rg.len, block)) |i| peak = @max(peak, @abs(rg.buf[(rg.r + i) % cap]));
+        const drop = if (peak < 0.003)
+            @min(excess, block) / channels * channels
+        else
+            @as(usize, if (excess > target_samples * 2) 4 else 2) * channels;
+        rg.r = (rg.r + drop) % cap;
+        rg.len -= drop;
+        rg.drift_dropped += drop / channels;
+    }
+
     /// Soma até `out.len` amostras em `out`.
     pub fn mixInto(rg: *Ring, out: []f32, gain: f32) void {
         rg.mutex.lock();
@@ -144,6 +175,7 @@ pub const Ring = struct {
             rg.len -= drop;
             rg.cuts += 1;
         }
+        rg.driftCorrect(out.len, sync.nowUs());
         rg.fill_samples = rg.len;
         const n = @min(rg.len, out.len);
         const cap = rg.buf.len;

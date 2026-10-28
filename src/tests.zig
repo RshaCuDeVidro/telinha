@@ -547,6 +547,33 @@ test "RateControl: sobe rápido até 90% do teto, segura, e depois só sonda" {
     try testing.expectEqual(@as(u32, 2_106_320), rc.bps);
 }
 
+test "som: fila acima do alvo volta devagar com som tocando e de uma vez no silêncio" {
+    var rg: audio.Ring = .{};
+    defer rg.deinit();
+    // 150 ms de um tom alto (bem acima do alvo de 50 ms)
+    var tone: [audio.rate / 1000 * 150 * audio.channels]f32 = undefined;
+    for (&tone, 0..) |*x, i| x.* = if ((i / 40) % 2 == 0) 0.5 else -0.5;
+    rg.write(&tone);
+    const block = 480 * audio.channels;
+    var t: u64 = 1_000_000;
+    rg.driftCorrect(block, t); // começa a contar
+    const before = rg.len;
+    t += 400_000;
+    rg.driftCorrect(block, t);
+    try testing.expectEqual(before, rg.len); // ainda não (meio segundo acima do alvo)
+    t += 200_000;
+    rg.driftCorrect(block, t);
+    try testing.expect(rg.len < before and before - rg.len <= 4 * audio.channels); // com som: pouquinho
+    // silêncio pela frente: o excesso sai de uma vez (até um bloco)
+    var quiet: audio.Ring = .{};
+    defer quiet.deinit();
+    const zeros = [_]f32{0} ** (audio.rate / 1000 * 150 * audio.channels);
+    quiet.write(&zeros);
+    quiet.driftCorrect(block, 1_000_000);
+    quiet.driftCorrect(block, 1_600_000);
+    try testing.expectEqual(zeros.len - block, quiet.len);
+}
+
 test "RateControl: aviso de espectador lento respeita o piso" {
     var rc: RateControl = .{};
     rc.reset(4_000_000);

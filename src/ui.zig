@@ -1392,8 +1392,8 @@ pub const App = struct {
                 const as = v.audio_ring.takeStats();
                 var eb: [160]u8 = undefined;
                 const aerr = audio.mixer.lastError(&eb);
-                debuglog.line("  som {x}: fila {d} ms, faltou som {d}x, cortou atraso {d}x, pacotes perdidos remendados {d}, último pacote há {d} ms | saída {s}{s}{s}", .{
-                    v.stream,                                                                                                    as.fill_ms, as.underruns, as.cuts, v.audio_concealed, if (as.silent_ms == std.math.maxInt(u64)) 0 else as.silent_ms,
+                debuglog.line("  som {x}: fila {d} ms, faltou som {d}x, cortou atraso {d}x, encurtou {d} ms aos poucos, pacotes perdidos remendados {d}, último pacote há {d} ms | saída {s}{s}{s}", .{
+                    v.stream,                                                                                                    as.fill_ms, as.underruns, as.cuts, as.drift_ms, v.audio_concealed, if (as.silent_ms == std.math.maxInt(u64)) 0 else as.silent_ms,
                     if (audio.mixer.deaf.load(.monotonic)) "surdo" else if (audio.mixer.paused.load(.monotonic)) "parada (silêncio)" else "ligada", if (aerr.len > 0) ", último erro: " else "", aerr,
                 });
             }
