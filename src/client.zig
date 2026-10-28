@@ -1,6 +1,7 @@
 //! Cliente da sala: conexão cifrada, estado (membros, chat, ping, relógio)
 //! e as transmissões assistidas (decodificação H.264).
 const std = @import("std");
+const trace = @import("trace.zig");
 const sync = @import("sync.zig");
 const net = @import("net.zig");
 const proto = @import("proto.zig");
@@ -393,6 +394,11 @@ pub const View = struct {
     stop: bool = false,
     waiting_key: bool = true,
     relief_until_us: u64 = 0, // descartou os puláveis: espera o decoder alcançar até aqui
+    // tempos por quadro pro log de depuração (trace.zig)
+    t_decode: trace.Hist = .{}, // decodificar
+    t_lat: trace.Hist = .{}, // da captura até subir pra tela (relógio da sala)
+    t_gap: trace.Hist = .{}, // entre dois quadros novos na tela (o engasgo aparece aqui)
+    last_up_us: u64 = 0, // último quadro novo que subiu pra tela (só a UI)
     backlog_relieved: std.atomic.Value(u32) = .init(0), // atrasos resolvidos sem pedir IDR
     backlog_flushes: std.atomic.Value(u32) = .init(0), // atrasos que jogaram tudo fora (IDR pedido)
 
@@ -843,6 +849,7 @@ pub const View = struct {
         }
         v.client.wakeVideo();
 
+        v.t_decode.add(sync.nowUs() - t0);
         const dt = @as(f32, @floatFromInt(sync.nowUs() - t0)) / 1000.0;
         v.decode_ms = v.decode_ms * 0.9 + dt * 0.1;
         v.last_frame_ms.store(sync.nowMs(), .release);

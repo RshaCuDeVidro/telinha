@@ -12,6 +12,7 @@
 //! Controle de banda: ratectl.zig (pelo atraso de ponta a ponta medido com as
 //! confirmações do servidor, e pelos avisos de espectador lento).
 const std = @import("std");
+const trace = @import("trace.zig");
 const tr = @import("i18n.zig").tr;
 const sync = @import("sync.zig");
 const proto = @import("proto.zig");
@@ -260,6 +261,9 @@ pub const Sharer = struct {
     cursor_msgs: std.atomic.Value(u64) = .init(0),
     encode_ms: f32 = 0,
     target_fps: std.atomic.Value(u32) = .init(30), // o fps que o encoder usa agora (o automático resolvido)
+    // tempos por quadro pro log de depuração (trace.zig)
+    t_cap: trace.Hist = .{}, // entre dois quadros capturados
+    t_enc: trace.Hist = .{}, // codificar
     bitrate_kbps: u32 = 0,
     congested: bool = false,
     slow_viewer: bool = false, // algum espectador pediu menos nos últimos segundos
@@ -863,6 +867,7 @@ const Pipeline = struct {
         var next_us: u64 = 0;
         const started_us = sync.nowUs();
         var got_any = false;
+        var last_cap_us: u64 = 0;
         while (!s.stop_flag.load(.acquire)) {
             // configurações mudaram?
             s.mutex.lock();
@@ -944,6 +949,11 @@ const Pipeline = struct {
                 continue;
             }
             got_any = true;
+            {
+                const tn = sync.nowUs();
+                if (last_cap_us != 0) s.t_cap.add(tn - last_cap_us);
+                last_cap_us = tn;
+            }
             const ts = s.client.serverNowUs();
             // próximo quadro: no ritmo do fps; se atrasou, não tenta "compensar" em rajada
             next_us = @max(next_us + interval_us, sync.nowUs() + interval_us / 2);
@@ -1580,6 +1590,7 @@ const Pipeline = struct {
             s.client.queue.pushOwned(m);
             p.doneWith(i, true);
             const enc_us = sync.nowUs() - t0;
+            s.t_enc.add(enc_us);
             const enc_ms = @as(f32, @floatFromInt(enc_us)) / 1000.0;
             _ = p.timing.encode.fetchAdd(enc_us, .monotonic);
             _ = p.timing.encoded.fetchAdd(1, .monotonic);

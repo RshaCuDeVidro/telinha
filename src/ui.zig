@@ -42,6 +42,7 @@ const fonts_mod = @import("fonts.zig");
 const codec = @import("codec.zig");
 const pctest = @import("pctest.zig");
 const crash = @import("crash.zig");
+const trace = @import("trace.zig");
 const ptt = @import("ptt.zig");
 const cssfile = @import("cssfile.zig");
 const hotkey = @import("hotkey.zig");
@@ -1335,6 +1336,10 @@ pub const App = struct {
             debuglog.line("assistindo {x}: {d}x{d} {d:.1} q/s {d:.0} kbit/s | {s} via {s}, decodifica em {d:.1} ms | atraso {d:.0} ms | som={}", .{
                 v.stream, v.w, v.h, v.shownFps(), v.shownKbps() * 8, v.codec.name(), v.decoder_name, v.decode_ms, v.latency_ms, v.audio_registered,
             });
+            // mediana/p95/máximo (o engasgo aparece no "entre quadros na tela")
+            debuglog.line("  tempos {x}: entre quadros na tela {f}, decodificar {f}, captura→tela {f} | fila do decoder: aliviou {d}, jogou fora {d}", .{
+                v.stream, v.t_gap.take(), v.t_decode.take(), v.t_lat.take(), v.backlog_relieved.load(.monotonic), v.backlog_flushes.load(.monotonic),
+            });
         }
         for ([_]?*Sharer{ a.sharer, a.camera }) |maybe| {
             const sh = maybe orelse continue;
@@ -1360,6 +1365,8 @@ pub const App = struct {
                 sh.audio_on,
                 sh.idle.load(.monotonic),
             });
+            // mediana/p95/máximo: o engasgo que a média esconde
+            debuglog.line("  tempos ({s}): entre capturas {f}, codificar {f}", .{ if (sh.kind == proto.kind_camera) "câmera" else "tela", sh.t_cap.take(), sh.t_enc.take() });
         }
     }
 
@@ -2402,9 +2409,13 @@ pub const App = struct {
     /// Sobe pra GPU o que mudou nas transmissões (antes de desenhar).
     /// Latência de ponta a ponta: captura no transmissor → tela aqui.
     fn noteLatency(a: *App, v: *View, f: *const client_mod.Pic) void {
+        const local = sync.nowUs();
+        if (v.last_up_us != 0) v.t_gap.add(local - v.last_up_us);
+        v.last_up_us = local;
         const cl = a.client orelse return;
         const now = cl.serverNowUs();
         if (now > f.ts and f.ts > 0) {
+            v.t_lat.add(now - f.ts);
             const lat = @as(f32, @floatFromInt(now - f.ts)) / 1000.0;
             if (lat < 10_000) v.latency_ms = if (v.latency_ms == 0) lat else v.latency_ms * 0.9 + lat * 0.1;
         }
@@ -2804,6 +2815,7 @@ pub const App = struct {
             a.audio_err_seen = aerr;
         }
         a.updateCrashContext();
+        trace.enabled.store(debuglog.on(), .monotonic);
         if (debuglog.on()) a.debugTick();
         a.pollPttKey();
         a.pollHotkeys();
