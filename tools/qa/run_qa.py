@@ -2876,6 +2876,38 @@ def caminho_do_video():
 
 
 @test
+def novato_assiste():
+    """Quem entrou e está com o palco vazio: quando alguém começa a transmitir, o aviso "começou a transmitir · clique pra assistir" assiste com um clique (o palco mostra um cartão grande "Assistir fulano", no print); a opção "assistir sozinho" (desligada por padrão) abre sozinha uma vez."""
+    with Session("novato", audio=True) as s:
+        s.fake_camera()
+        p = port()
+        dono = s.app("dono", 91, ["--nome", "Dono", "--criar", str(p)])
+        dono.wait(lambda st: st["status"] == "connected", 10, "o dono entrar")
+        did = dono.state()["my_id"]
+        conv = s.app("conv", 92, ["--nome", "Conv", "--entrar", f"127.0.0.1:{p}"])
+        conv.wait(lambda st: st["status"] == "connected", 10, "o convidado entrar")
+        time.sleep(1.0)
+        dono.click("##camera")
+        dono.wait(lambda st: st["camera"] and st["camera"]["state"] == "live", 15, "a câmera ficar ao vivo")
+        # câmera não é "começou a transmitir": o aviso é da tela. Então: a tela
+        dono.click(contains="Compartilhar tela##share")
+        dono.wait(lambda st: st["share_modal"], 3, "abrir o compartilhar tela")
+        dono.click(contains="Ao vivo", window="Compartilhar")
+        dono.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 15, "a tela ao vivo")
+        conv.wait(lambda st: any("clique pra assistir" in t for t in st["toasts"]), 10, "o aviso clicável")
+        time.sleep(0.4)
+        conv.screenshot(os.path.join(s.base, "palco-vazio-um-ao-vivo.png"))
+        conv.click(contains="clique pra assistir")
+        conv.wait(lambda st: any(v["stream"] == did for v in st["views"]), 5, "assistir pelo aviso")
+        conv.stop()
+        # outro convidado com a opção ligada: abre sozinho (uma pessoa só ao vivo: a tela)
+        dono.click("##camera")
+        dono.wait(lambda st: not st["camera"] or st["camera"]["state"] != "live", 10, "a câmera desligar")
+        auto = s.app("auto", 93, ["--nome", "Auto", "--entrar", f"127.0.0.1:{p}"], config={"auto_watch": "1", "name": "Auto"})
+        auto.wait(lambda st: any(v["stream"] == did for v in st["views"]), 15, "assistir sozinho (opção ligada)")
+
+
+@test
 def relatorio_de_travamento():
     """O app cai (falha de memória e panic): na próxima abertura pergunta se manda o relatório; mandando, o gofile (de mentira) recebe o motivo e a pilha."""
     with Session("travou") as s:

@@ -757,7 +757,7 @@ fn segmented(id: [:0]const u8, comptime options: []const [:0]const u8, current: 
 
 const SettingsPage = enum { geral, aparencia, voz, atalhos, camera, desempenho, depuracao, sobre };
 
-const Toast = struct { text: [256]u8, len: usize, until: f64, err: bool };
+const Toast = struct { text: [256]u8, len: usize, until: f64, err: bool, stream: u32 = 0 }; // stream: clicar assiste
 
 /// Reconexão automática depois de uma queda (internet oscilou, túnel caiu...).
 const Reconnect = struct {
@@ -944,6 +944,7 @@ pub const App = struct {
     debug_frames_seen: u64 = 0,
     debug_fast_seen: u64 = 0,
     crash_ctx_sig: u64 = 0,
+    single_watched: u32 = 0, // transmissão que o "assistir sozinho" (opção) já abriu (não reabre)
     debug_status_seen: ?client_mod.Status = null,
     debug_size: usize = 0, // tamanho do arquivo (lido de vez em quando, nas configurações)
     debug_size_at: f64 = -10,
@@ -1221,6 +1222,19 @@ pub const App = struct {
         config.save(&a.cfg);
     }
 
+    /// "Fulano começou a transmitir · clique pra assistir" (8 s; clicar assiste).
+    fn toastWatch(a: *App, stream: u32, name: []const u8) void {
+        var t: Toast = .{ .text = undefined, .len = 0, .until = c.igGetTime() + 8.0, .err = false, .stream = stream };
+        const s = i18n.bufPrint(&t.text, "{s} começou a transmitir · clique pra assistir", .{name}) catch return;
+        t.len = s.len;
+        if (a.n_toasts == a.toasts.len) {
+            std.mem.copyForwards(Toast, a.toasts[0 .. a.toasts.len - 1], a.toasts[1..]);
+            a.n_toasts -= 1;
+        }
+        a.toasts[a.n_toasts] = t;
+        a.n_toasts += 1;
+    }
+
     fn toast(a: *App, comptime f: []const u8, args: anytype, err: bool) void {
         var t: Toast = .{ .text = undefined, .len = 0, .until = c.igGetTime() + 5.0, .err = err };
         const s = i18n.bufPrint(&t.text, f, args) catch t.text[0..0];
@@ -1488,6 +1502,9 @@ pub const App = struct {
             } else if (!old.?.streaming and m.streaming and m.id != me) {
                 went_live = true;
                 who = m;
+                // aviso que dá pra clicar: assiste na hora (quem estava no
+                // palco vazio ou vendo outra coisa não precisa achar o botão)
+                if (a.known_ready and m.in_call and a.findView(m.id) == null) a.toastWatch(m.id, m.nameSlice());
             }
         }
         for (a.known[0..a.n_known]) |k| {
@@ -6871,6 +6888,12 @@ pub const App = struct {
             a.watch_first_live = false;
             a.watch(live[0].id);
         }
+        // opção (desligada por padrão): uma pessoa só ao vivo e o palco vazio:
+        // assiste sozinho, uma vez por transmissão (parar de assistir não reabre)
+        if (a.cfg.auto_watch and n_live == 1 and a.single_watched != live[0].id) {
+            a.single_watched = live[0].id;
+            a.watch(live[0].id);
+        }
 
         // tudo numa área que rola: janela baixa não esconde mais nada
         c.igSetCursorScreenPos(o);
@@ -6953,8 +6976,10 @@ pub const App = struct {
         }
 
         if (n_live > 0) {
-            const card_w = S(220);
-            const card_h = S(150);
+            // uma pessoa só: um cartão grande no meio (o botão é o que importa)
+            const one = n_live == 1;
+            const card_w = if (one) S(320) else S(220);
+            const card_h = if (one) S(190) else S(150);
             const gap = S(14);
             const per_row = @max(1, @min(n_live, @as(usize, @intFromFloat((size.x - S(40) + gap) / (card_w + gap)))));
             var bottom = y;
@@ -6975,12 +7000,16 @@ pub const App = struct {
                 drawAvatar(d, v2(x + card_w / 2, yy + S(42)), S(26), m.id, m.nameSlice(), true);
                 const nts = textSizeF(font_semibold, 15, m.nameSlice());
                 drawTextF(d, font_semibold, 15, v2(x + (card_w - nts.x) / 2, yy + S(76)), col.header, m.nameSlice());
-                const btn = fmtZ("{s}  Assistir", .{ic.eye});
-                const bts = textSizeF(font_semibold, 13.5, btn);
+                var nb: [64]u8 = undefined;
+                const short_name = ellipsizeMiddle(font_semibold, 15, m.nameSlice(), card_w - S(90), &nb);
+                const btn = if (one) fmtZ("{s}  Assistir {s}", .{ ic.eye, short_name }) else fmtZ("{s}  Assistir", .{ic.eye});
+                const bfs: f32 = if (one) 15 else 13.5;
+                const bh = if (one) S(38) else S(30);
+                const bts = textSizeF(font_semibold, bfs, btn);
                 const bx0 = x + S(16);
-                const by0 = yy + card_h - S(44);
-                rectFill(d, bx0, by0, x + card_w - S(16), by0 + S(30), if (hov) col.blurple_hover else col.blurple, S(8));
-                drawTextF(d, font_semibold, 13.5, v2(x + (card_w - bts.x) / 2, by0 + (S(30) - bts.y) / 2), col.white, btn);
+                const by0 = yy + card_h - bh - S(14);
+                rectFill(d, bx0, by0, x + card_w - S(16), by0 + bh, if (hov) col.blurple_hover else col.blurple, S(8));
+                drawTextF(d, font_semibold, bfs, v2(x + (card_w - bts.x) / 2, by0 + (bh - bts.y) / 2), col.white, btn);
                 if (clicked) a.watch(m.id);
                 c.igPopID();
                 bottom = yy + card_h;
@@ -9087,6 +9116,7 @@ pub const App = struct {
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         _ = c.igCheckbox(tr("Mostrar estatísticas sempre (não só com o mouse em cima)###stats"), &a.cfg.stats_always);
         _ = c.igCheckbox(tr("Notificações com o telinha em segundo plano (chat, ao vivo, quem entrou)###notif"), &a.cfg.notifications);
+        _ = c.igCheckbox(tr("Assistir sozinho quando só uma pessoa estiver ao vivo###autowatch"), &a.cfg.auto_watch);
         if (build_options.repo.len > 0 or update.getState() != .idle) {
             if (c.igCheckbox(tr("Avisar quando sair versão nova (pergunta ao GitHub ao abrir)###updates"), &a.cfg.check_updates) and a.cfg.check_updates)
                 update.checkAsync(build_options.repo, version_string, i18n.english());
@@ -10567,9 +10597,31 @@ pub const App = struct {
             const h = ts.y + S(22);
             y -= h;
             const x = (size.x - w) / 2;
+            // aviso de "começou a transmitir": é um botão (clicar assiste)
+            // (numa janelinha própria por cima: dentro da janela principal o
+            // palco embaixo ficava com o mouse e o clique não chegava)
+            var hov = false;
+            if (t.stream != 0) {
+                c.igSetNextWindowPos(v2(x, y), 0, v2(0, 0));
+                c.igSetNextWindowSize(v2(w, h), 0);
+                c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(0, 0));
+                c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowBorderSize, 0);
+                const wf = c.ImGuiWindowFlags_NoDecoration | c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_NoSavedSettings | c.ImGuiWindowFlags_NoFocusOnAppearing | c.ImGuiWindowFlags_NoNav | c.ImGuiWindowFlags_NoBackground;
+                if (c.igBegin(fmtZ("##toastwin{d}", .{k}), null, wf)) {
+                    if (c.igInvisibleButton(fmtZ("{s}###toastwatch", .{s}), v2(w, h), 0)) {
+                        a.watch(t.stream);
+                        t.until = 0; // some no próximo quadro
+                        redrawIn(0);
+                    }
+                    hov = c.igIsItemHovered(0);
+                    if (hov) c.igSetMouseCursor(c.ImGuiMouseCursor_Hand);
+                }
+                c.igEnd();
+                c.igPopStyleVar(2);
+            }
             rectFill(d, x, y + S(3), x + w, y + h + S(3), rgba(0x000000, 100), S(8));
-            rectFill(d, x, y, x + w, y + h, col.bg_float, S(8));
-            rectFill(d, x, y, x + S(4), y + h, if (t.err) col.red else col.green, S(8));
+            rectFill(d, x, y, x + w, y + h, if (hov) col.selected else col.bg_float, S(8));
+            rectFill(d, x, y, x + S(4), y + h, if (t.err) col.red else if (t.stream != 0) col.blurple else col.green, S(8));
             drawTextF(d, font_semibold, 14, v2(x + S(22), y + S(11)), col.text, s);
             y -= S(10);
         }
