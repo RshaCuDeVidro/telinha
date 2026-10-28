@@ -2908,6 +2908,26 @@ def novato_assiste():
 
 
 @test
+def convite_na_janela_aberta():
+    """Link telinha:// clicado com o telinha já aberto (mesma configuração): o processo novo entrega o convite pra janela aberta e fecha na hora; a janela aberta entra na sala (antes abria uma segunda janela)."""
+    with Session("convite-aberto") as s:
+        p = port()
+        dono = s.app("dono", 91, ["--nome", "Dono", "--criar", str(p), "--senha", "pw1"])
+        dono.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
+        conv = s.app("conv", 92, ["--nome", "Conv"])
+        conv.wait(lambda st: st["screen"] == "home", 10, "a tela inicial")
+        t0 = time.time()
+        segundo = s.spawn("conv-link", [APP, f"telinha://127.0.0.1:{p}#pw1"], conv.env())
+        try:
+            segundo.wait(5)
+        except subprocess.TimeoutExpired:
+            raise QAError("o segundo processo não fechou (abriu outra janela?)")
+        expect(segundo.returncode == 0, f"o segundo processo saiu com {segundo.returncode}")
+        log(f"o segundo processo entregou o convite e fechou em {time.time() - t0:.2f} s")
+        conv.wait(lambda st: st["status"] == "connected", 10, "a janela aberta entrar pelo convite")
+
+
+@test
 def relatorio_de_travamento():
     """O app cai (falha de memória e panic): na próxima abertura pergunta se manda o relatório; mandando, o gofile (de mentira) recebe o motivo e a pilha."""
     with Session("travou") as s:

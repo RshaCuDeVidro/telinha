@@ -42,6 +42,7 @@ const fonts_mod = @import("fonts.zig");
 const codec = @import("codec.zig");
 const pctest = @import("pctest.zig");
 const crash = @import("crash.zig");
+const single = @import("single.zig");
 /// Windows: registro do protocolo telinha:// (urlproto_win.c); no Linux o install.sh cuida.
 const urlproto = if (sync.is_windows) struct {
     extern fn urlproto_register() c_int;
@@ -1146,6 +1147,7 @@ pub const App = struct {
         frame_cap_fps = uiCap(&a.cfg);
         codec.setHwEffort(@intCast(a.cfg.hw_effort));
         codec.av1_enabled.store(a.cfg.av1, .release);
+        single.listen(wakeUi); // convites de links clicados com esta janela aberta
         // Windows: convite telinha:// clicado (Discord, navegador) abre aqui; só
         // escreve no registro quando o caminho do app mudou
         if (sync.is_windows and a.cfg.url_handler and std.c.getenv("TELINHA_QA") == null) {
@@ -2803,6 +2805,21 @@ pub const App = struct {
         for (gone[0..n_gone]) |o| a.unwatch(o);
     }
 
+    /// Convite de um link clicado com esta janela aberta: entra (ou, numa
+    /// sala, deixa no campo de entrar e avisa) e traz a janela pra frente.
+    fn takeLinkInvite(a: *App) void {
+        var ib: [1025]u8 = undefined;
+        const inv = single.take(&ib) orelse return;
+        c.glfwRestoreWindow(a.window);
+        c.glfwFocusWindow(a.window);
+        c.glfwRequestWindowAttention(a.window);
+        debuglog.line("convite recebido de um link clicado", .{});
+        config.setStr(&a.cfg.join_addr, inv);
+        if (a.client == null and a.server == null) {
+            a.joinRoom();
+        } else a.toast("Convite recebido. Pra entrar nessa sala, saia desta: ele fica no campo de entrar.", .{}, false);
+    }
+
     /// O que vai no relatório de travamento como "agora:" (só formata quando
     /// muda: transmitindo, por qual encoder, quantas transmissões assistindo).
     fn updateCrashContext(a: *App) void {
@@ -2857,6 +2874,7 @@ pub const App = struct {
             a.audio_err_seen = aerr;
         }
         a.updateCrashContext();
+        a.takeLinkInvite();
         trace.enabled.store(debuglog.on(), .monotonic);
         if (debuglog.on()) a.debugTick();
         a.pollPttKey();

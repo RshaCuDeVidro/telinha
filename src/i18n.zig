@@ -258,6 +258,7 @@ const table = [_][2][]const u8{
     .{ "Desbanir", "Unban" },
     .{ "Desbanir todo mundo", "Unban everyone" },
     .{ "Auto", "Auto" },
+    .{ "Convite recebido. Pra entrar nessa sala, saia desta: ele fica no campo de entrar.", "Invite received. To join that room, leave this one: it stays in the join field." },
     .{ "Abrir links telinha:// no telinha", "Open telinha:// links in telinha" },
     .{ "{s}  Assistir {s}", "{s}  Watch {s}" },
     .{ "{s} começou a transmitir · clique pra assistir", "{s} started streaming · click to watch" },

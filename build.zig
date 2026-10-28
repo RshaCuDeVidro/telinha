@@ -661,6 +661,7 @@ fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: st
     mod.addCSourceFile(.{ .file = b.path("src/c/crash.c"), .flags = &.{"-O2"} });
     // atualização sozinha (baixar, trocar o executável, abrir de novo)
     mod.addCSourceFile(.{ .file = b.path("src/c/selfupdate.c"), .flags = &.{"-O2"} });
+    mod.addCSourceFile(.{ .file = b.path("src/c/single.c"), .flags = &.{"-O2"} });
     addChangelogs(b, mod);
     addImgui(b, deps, mod, target);
     linkOpenh264(b, deps, mod, target, optimize);

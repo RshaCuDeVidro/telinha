@@ -8,6 +8,7 @@ const gl = @import("gl.zig");
 const client_mod = @import("client.zig");
 const qa = @import("qa.zig");
 const crash = @import("crash.zig");
+const single = @import("single.zig");
 const config = @import("config.zig");
 const update = @import("update.zig");
 const debuglog = @import("debuglog.zig");
@@ -78,6 +79,11 @@ pub fn main(init: std.process.Init) !void {
     crash.install();
     // reiniciou depois de atualizar: espera a versão anterior fechar e apaga as sobras
     update.startup();
+    // link telinha:// clicado com o telinha já aberto: o convite vai pra janela
+    // aberta e este processo fecha (antes abria uma segunda janela)
+    for (args) |arg| if (std.mem.startsWith(u8, arg, "telinha://")) {
+        if (single.handoff(arg)) return;
+    };
     teste_minimizado = std.c.getenv("TELINHA_TESTE_MINIMIZADO") != null;
     // Windows: a thread da interface com nome no log (no Linux isso renomearia o processo)
     if (sync.is_windows) sync.nameThread("interface");
