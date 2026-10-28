@@ -10053,7 +10053,7 @@ pub const App = struct {
             extern fn glGetString(name: c_uint) callconv(.c) ?[*:0]const u8;
         };
         const r = gs.glGetString(0x1F01);
-        w.print("Desenho: {s}\n", .{if (r) |x| std.mem.span(x) else "?"}) catch {};
+        w.print("Desenho: {s} (cor das transmissões convertida {s})\n", .{ if (r) |x| std.mem.span(x) else "?", if (yuv_renderer != null) "na placa" else "na CPU" }) catch {};
         var eb: [256]u8 = undefined;
         w.print("Encoder da placa: {s}\n", .{sharer_mod.hwEncoderSummary(&eb)}) catch {};
         for ([_]?*Sharer{ a.sharer, a.camera }) |maybe| {
@@ -10526,6 +10526,7 @@ pub const App = struct {
         var ub: [32]u8 = undefined;
         try w.print(",\"opened\":{f},\"update\":{f},\"update_latest\":{f}", .{ s(qa_opened[0..qa_opened_len]), s(@tagName(update.getState())), s(update.latest(&ub)) });
         const un = update.notes();
+        try w.print(",\"gpu_yuv\":{}", .{yuv_renderer != null});
         try w.print(",\"pid\":{d},\"update_modal\":{},\"update_can\":{},\"update_why\":{f},\"update_err\":{f},\"update_notes\":{f},\"whatsnew\":{}", .{
             qaPid(), a.update_modal, update.canInstall(), s(update.whyNot()), s(update.installError()), s(un[0..@min(un.len, 600)]), a.whatsnew,
         });

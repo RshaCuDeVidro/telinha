@@ -99,6 +99,7 @@ const Fns = struct {
     useProgram: *const fn (c_uint) callconv(.c) void,
     getUniformLocation: *const fn (c_uint, [*:0]const u8) callconv(.c) c_int,
     uniform1i: *const fn (c_int, c_int) callconv(.c) void,
+    uniform2f: *const fn (c_int, f32, f32) callconv(.c) void,
     genFramebuffers: *const fn (c_int, [*]c_uint) callconv(.c) void,
     deleteFramebuffers: *const fn (c_int, [*]const c_uint) callconv(.c) void,
     bindFramebuffer: *const fn (c_uint, c_uint) callconv(.c) void,
@@ -128,12 +129,19 @@ const fragment_src =
     \\uniform sampler2D tu;
     \\uniform sampler2D tv;
     \\uniform int nv12;
+    \\uniform vec2 q; // 1/4 de pixel de saída (em uv) quando reduz mais de 1,5x; 0 = uma amostra
+    \\vec3 yuv(vec2 p) {
+    \\    vec2 c = (nv12 == 1) ? texture(tu, p).rg : vec2(texture(tu, p).r, texture(tv, p).r);
+    \\    return vec3(texture(ty, p).r, c);
+    \\}
     \\void main() {
-    \\    float y = texture(ty, uv).r;
-    \\    vec2 c = (nv12 == 1) ? texture(tu, uv).rg : vec2(texture(tu, uv).r, texture(tv, uv).r);
-    \\    float Y = 1.164383 * (y - 0.0627451);
-    \\    float U = c.x - 0.5;
-    \\    float V = c.y - 0.5;
+    \\    // reduzindo muito (1080p num quadradinho), um ponto bilinear por pixel
+    \\    // ignorava a maior parte da fonte e o texto trepidava: 4 pontos
+    \\    // espalhados pelo pixel (a média em YUV é a mesma que em RGB)
+    \\    vec3 s = (q.x > 0.0) ? 0.25 * (yuv(uv + vec2(-q.x, -q.y)) + yuv(uv + vec2(q.x, -q.y)) + yuv(uv + vec2(-q.x, q.y)) + yuv(uv + vec2(q.x, q.y))) : yuv(uv);
+    \\    float Y = 1.164383 * (s.x - 0.0627451);
+    \\    float U = s.y - 0.5;
+    \\    float V = s.z - 0.5;
     \\    color = vec4(Y + 1.596027 * V, Y - 0.391762 * U - 0.812968 * V, Y + 2.017232 * U, 1.0);
     \\}
 ;
@@ -178,6 +186,7 @@ pub const YuvRenderer = struct {
     program: c_uint,
     vao: c_uint,
     loc_nv12: c_int,
+    loc_q: c_int,
 
     /// null se o OpenGL não der conta (aí a CPU converte, como antes).
     pub fn init(getProc: *const fn ([*:0]const u8) callconv(.c) ?*const anyopaque) ?YuvRenderer {
@@ -213,7 +222,7 @@ pub const YuvRenderer = struct {
         f.useProgram(0);
         var vao: [1]c_uint = undefined;
         f.genVertexArrays(1, &vao);
-        return .{ .f = f, .program = prog, .vao = vao[0], .loc_nv12 = f.getUniformLocation(prog, "nv12") };
+        return .{ .f = f, .program = prog, .vao = vao[0], .loc_nv12 = f.getUniformLocation(prog, "nv12"), .loc_q = f.getUniformLocation(prog, "q") };
     }
 
     fn compile(f: *const Fns, kind: c_uint, src: [:0]const u8) ?c_uint {
@@ -366,6 +375,9 @@ pub const YuvRenderer = struct {
         glDisable(SCISSOR_TEST);
         r.f.useProgram(r.program);
         r.f.uniform1i(r.loc_nv12, @intFromBool(nv12));
+        // reduzindo mais de 1,5x: 4 amostras por pixel (ver o shader)
+        const many = @as(u64, t.w) * 2 > @as(u64, w) * 3 or @as(u64, t.h) * 2 > @as(u64, h) * 3;
+        if (many) r.f.uniform2f(r.loc_q, 0.25 / @as(f32, @floatFromInt(w)), 0.25 / @as(f32, @floatFromInt(h))) else r.f.uniform2f(r.loc_q, 0, 0);
         r.f.activeTexture(TEXTURE0);
         glBindTexture(TEXTURE_2D, t.ty);
         r.f.activeTexture(TEXTURE0 + 1);

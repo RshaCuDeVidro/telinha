@@ -2879,6 +2879,8 @@ def caminho_do_video():
         log("quem transmite:\n" + st["clipboard"])
         expect("Encoder da placa:" in st["clipboard"] and "Desenho:" in st["clipboard"], "faltou o encoder ou o desenho")
         st = conv.wait(lambda st: "Assistindo" in st["clipboard"], 5, "o texto de quem assiste")
+        # o shader de conversão de cor compilou (senão a CPU converte, em silêncio)
+        expect(st["gpu_yuv"], "a conversão de cor na placa não ligou (shader?)")
         log("quem assiste:\n" + st["clipboard"])
 
 
