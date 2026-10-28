@@ -25,13 +25,18 @@ ganha a coroa e pode expulsar gente (clique direito no membro).
 
 ```sh
 docker build -t telinha-server .
-docker run -d --name telinha -p 7777:7777/tcp -p 7777:7777/udp \
+docker run -d --name telinha -v telinha-dados:/data -p 7777:7777/tcp -p 7777:7777/udp \
   -e TELINHA_SENHA="uma senha boa" -e TELINHA_NOME="Sala da galera" -e TELINHA_ADMIN="token-secreto" \
   --restart unless-stopped telinha-server
 ```
 
-Ou com `docker compose up -d` usando o [`docker-compose.yml`](../docker-compose.yml).
-A imagem final é `FROM scratch` (só o binário). Funciona em amd64 e arm64.
+Ou com `docker compose up -d` usando o [`docker-compose.yml`](../docker-compose.yml):
+copie o [`.env.example`](../.env.example) pra `.env` e preencha a senha e o token de
+admin antes (sem eles o compose não sobe).
+A imagem final é `FROM scratch` (só o binário), roda sem root e funciona em amd64 e
+arm64. Mantenha o volume `/data`: nele ficam a identidade do servidor
+(`servidor.key`), o estado da sala e os arquivos; sem ele cada restart cria uma
+identidade nova e o app de todo mundo avisa que a identidade do servidor mudou.
 
 ## systemd
 

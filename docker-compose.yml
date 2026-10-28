@@ -3,10 +3,20 @@ services:
     build: .
     image: telinha-server
     restart: unless-stopped
+    volumes:
+      - telinha-dados:/data # identidade, estado e arquivos sobrevivem a restart/rebuild
     ports:
       - "7777:7777/tcp"
       - "7777:7777/udp" # vídeo, som e voz (sem ele tudo vai pelo TCP)
+    # repassa o SIGTERM do `docker stop` (sem isso o servidor, como PID 1, só
+    # morria no SIGKILL depois de 10 s)
+    init: true
+    # senha e token vêm do .env (copie .env.example): sem eles o compose nem sobe,
+    # em vez de subir uma sala com um token de admin que está no repositório
     environment:
-      TELINHA_NOME: "Sala da galera"
-      TELINHA_SENHA: "troque-esta-senha"
-      TELINHA_ADMIN: "troque-este-token"
+      TELINHA_NOME: "${TELINHA_NOME:-Sala da galera}"
+      TELINHA_SENHA: "${TELINHA_SENHA:?defina TELINHA_SENHA no .env (veja .env.example)}"
+      TELINHA_ADMIN: "${TELINHA_ADMIN:?defina TELINHA_ADMIN no .env (veja .env.example)}"
+
+volumes:
+  telinha-dados:

@@ -1,6 +1,6 @@
 # Servidor dedicado do telinha. Imagem final: só o binário estático (FROM scratch).
 #   docker build -t telinha-server .
-#   docker run -p 7777:7777/tcp -p 7777:7777/udp -e TELINHA_SENHA=... telinha-server
+#   docker run -v telinha-dados:/data -p 7777:7777/tcp -p 7777:7777/udp -e TELINHA_SENHA=... telinha-server
 FROM --platform=$BUILDPLATFORM alpine:3.20 AS build
 ARG ZIG_VERSION=0.16.0
 ARG BUILDARCH
@@ -17,10 +17,18 @@ COPY assets ./assets
 # -Dserver-only: não baixa as dependências do app (openh264, imgui...)
 RUN zig build server -Dserver-only=true -Doptimize=ReleaseSafe \
  && case "$TARGETARCH" in arm64) A=aarch64 ;; *) A=x86_64 ;; esac \
- && cp "zig-out/bin/telinha-server-$A" /telinha-server
+ && cp "zig-out/bin/telinha-server-$A" /telinha-server \
+ && mkdir -p /data
 
 FROM scratch
 COPY --from=build /telinha-server /telinha-server
+# identidade (servidor.key), estado.txt e arquivos/ ficam em /data: sem isso a
+# imagem (scratch, sem /var/lib) criava uma identidade nova a cada subida e o
+# app de todo mundo avisava "a identidade do servidor mudou"
+COPY --from=build --chown=65532:65532 /data /data
+ENV STATE_DIRECTORY=/data
+VOLUME /data
+USER 65532:65532
 # TCP (controle, chat) e UDP na mesma porta (vídeo, som e voz)
 EXPOSE 7777/tcp 7777/udp
 ENTRYPOINT ["/telinha-server"]

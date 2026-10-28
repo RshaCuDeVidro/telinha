@@ -26,13 +26,18 @@ the crown and can kick people (right-click the member).
 
 ```sh
 docker build -t telinha-server .
-docker run -d --name telinha -p 7777:7777/tcp -p 7777:7777/udp \
+docker run -d --name telinha -v telinha-dados:/data -p 7777:7777/tcp -p 7777:7777/udp \
   -e TELINHA_SENHA="a good password" -e TELINHA_NOME="The gang's room" -e TELINHA_ADMIN="secret-token" \
   --restart unless-stopped telinha-server
 ```
 
-Or with `docker compose up -d` using [`docker-compose.yml`](../docker-compose.yml).
-The final image is `FROM scratch` (just the binary). It works on amd64 and arm64.
+Or with `docker compose up -d` using [`docker-compose.yml`](../docker-compose.yml):
+copy [`.env.example`](../.env.example) to `.env` and fill in the password and the
+admin token first (without them compose refuses to start).
+The final image is `FROM scratch` (just the binary), runs as an unprivileged user and
+works on amd64 and arm64. Keep the `/data` volume: it holds the server identity
+(`servidor.key`), the room state and the files; without it every restart creates a new
+identity and everyone's app warns that the server identity changed.
 
 ## systemd
 

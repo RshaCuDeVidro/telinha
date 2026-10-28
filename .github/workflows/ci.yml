@@ -48,7 +48,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config nasm libgl-dev libportal-dev libpipewire-0.3-dev \
             libx11-dev libxext-dev libxfixes-dev \
-            libwayland-dev libxkbcommon-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
+            libwayland-dev libxkbcommon-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            ffmpeg # os testes de MP4 conferem os arquivos com o ffprobe (antes vinha depois e eles passavam sem conferir)
 
       - uses: mlugg/setup-zig@v2
         with:
@@ -75,7 +76,8 @@ jobs:
           exit 1
 
       - name: Testes
-        run: zig build test --summary all
+        # mesma CPU-alvo da release (sem AVX2): o SIMD testado é o que o .exe e o binário Linux rodam
+        run: zig build test -Dcpu=x86_64_v2 --summary all
 
       - name: Build (Windows, servidor)
         # x86_64_v2 = qualquer CPU x86-64 de ~2009 pra cá (openh264 e RNNoise
@@ -86,7 +88,6 @@ jobs:
         # cada teste sobe uma sala própria em 127.0.0.1 com o telinha-server do zig-out
         timeout-minutes: 15 # um teste preso (ffmpeg, rede) segurou o job da tag v3.5.0 por 1h30
         run: |
-          sudo apt-get install -y --no-install-recommends ffmpeg
           python3 -m venv "$RUNNER_TEMP/sdk"
           "$RUNNER_TEMP/sdk/bin/pip" install --quiet "cryptography>=42"
           "$RUNNER_TEMP/sdk/bin/python" -m unittest discover -s sdk/python/tests -v
