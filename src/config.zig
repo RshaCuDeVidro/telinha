@@ -34,6 +34,7 @@ pub const Config = struct {
     hardware: bool = true, // encoder na placa de vídeo (NVENC) quando der
     audio: bool = true, // compartilhar o som do computador junto
     admin_token: [65]u8 = zstr("", 65), // pra entrar como admin num servidor dedicado
+    admin_token_for: [256]u8 = zstr("", 256), // ...e o endereço em que ele vale (não vai pra outro servidor)
     public_addr: [256]u8 = zstr("", 256), // endereço do túnel (pra montar o convite)
     tunnel_host: [128]u8 = zstr("bore.pub", 128), // servidor do link público (protocolo do bore)
     // voz
@@ -361,6 +362,8 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         setStr(&cfg.join_fp, v);
     } else if (std.mem.eql(u8, k, "join_fp_for")) {
         setStr(&cfg.join_fp_for, v);
+    } else if (std.mem.eql(u8, k, "admin_token_for")) {
+        setStr(&cfg.admin_token_for, v);
     } else if (std.mem.eql(u8, k, "join_channel")) {
         setStr(&cfg.join_channel, v);
     } else if (std.mem.eql(u8, k, "auto_quality")) {
@@ -374,9 +377,41 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
     }
 }
 
+/// Grava num config.ini.tmp e troca pelo config.ini de uma vez (rename): uma
+/// queda no meio da escrita zerava a configuração e perdia a client_key (OP,
+/// criador de canal, bans).
 pub fn save(cfg: *const Config) void {
-    const f = openFile(true) orelse return;
-    defer _ = c.fclose(f);
+    const f = openNamed("config.ini.tmp", true) orelse return;
+    const ok = writeAll(cfg, f);
+    const flushed = c.fflush(f) == 0;
+    _ = c.fclose(f);
+    if (ok and flushed) _ = commitNamed("config.ini.tmp", "config.ini");
+}
+
+/// Troca `tmp_name` por `name` na pasta de configuração (rename atômico).
+pub fn commitNamed(comptime tmp_name: []const u8, comptime name: []const u8) bool {
+    var db: [600]u8 = undefined;
+    const dir = dirPath(&db) orelse return false;
+    const sep = if (is_windows) "\\" else "/";
+    var a: [700]u8 = undefined;
+    var b: [700]u8 = undefined;
+    const from = std.fmt.bufPrintZ(&a, "{s}" ++ sep ++ tmp_name, .{dir}) catch return false;
+    const to = std.fmt.bufPrintZ(&b, "{s}" ++ sep ++ name, .{dir}) catch return false;
+    if (is_windows) {
+        var wa: [700:0]u16 = undefined;
+        var wb: [700:0]u16 = undefined;
+        const na = std.unicode.utf8ToUtf16Le(&wa, from) catch return false;
+        const nb = std.unicode.utf8ToUtf16Le(&wb, to) catch return false;
+        if (na >= wa.len or nb >= wb.len) return false;
+        wa[na] = 0;
+        wb[nb] = 0;
+        return c.MoveFileExW(&wa, &wb, c.MOVEFILE_REPLACE_EXISTING | c.MOVEFILE_WRITE_THROUGH) != 0;
+    }
+    return c.rename(from.ptr, to.ptr) == 0;
+}
+
+fn writeAll(cfg: *const Config, f: *c.FILE) bool {
+    var ok = true;
     var buf: [4096]u8 = undefined;
     const s = std.fmt.bufPrint(&buf,
         \\name={s}
@@ -411,34 +446,35 @@ pub fn save(cfg: *const Config) void {
         @intFromBool(cfg.stats_always),      @intFromBool(cfg.hardware), @intFromBool(cfg.audio),       getStr(&cfg.admin_token),
         getStr(&cfg.public_addr),            getStr(&cfg.tunnel_host),   getStr(&cfg.mic_device),       @intFromBool(cfg.noise_suppression),
         @intFromBool(cfg.echo_cancellation), cfg.voice_sensitivity,      @intFromBool(cfg.mic_on_join), @intFromBool(cfg.sounds),
-    }) catch return;
-    _ = c.fwrite(s.ptr, 1, s.len, f);
+    }) catch return false;
+    ok = ok and c.fwrite(s.ptr, 1, s.len, f) == s.len;
     var more: [1280]u8 = undefined;
     const m = std.fmt.bufPrint(&more, "client_key={x}\nnotifications={d}\nclips={d}\ncamera_device={s}\ncamera_res={d}\ncheck_updates={d}\naudio_app={s}\nlanguage={s}\ntheme={s}\ncustom_theme={s}\nauto_quality={d}\nui_zoom={d}\ncrt={d}\nclip_secs={d}\nhotkeys_on={d}\ncursor_apart={d}\nview_size={d}\nui_fps_cap={d}\nhw_effort={d}\nvoice_ptt={d}\nptt_key={d}\nptt_scancode={d}\nptt_mouse={d}\ndebug_log={d}\ndebug_send={d}\ndebug_webhook={s}\nmic_agc={d}\nmic_gain={d}\n", .{
         cfg.client_key, @intFromBool(cfg.notifications), @intFromBool(cfg.clips), getStr(&cfg.camera_device), cfg.camera_res, @intFromBool(cfg.check_updates), getStr(&cfg.audio_app), getStr(&cfg.language), getStr(&cfg.theme), getStr(&cfg.custom_theme), @intFromBool(cfg.auto_quality), cfg.ui_zoom, @intFromBool(cfg.crt), cfg.clip_secs, @intFromBool(cfg.hotkeys_on), @intFromBool(cfg.cursor_apart), @intFromBool(cfg.view_size), cfg.ui_fps_cap, cfg.hw_effort, @intFromBool(cfg.voice_ptt), cfg.ptt_key, cfg.ptt_scancode, cfg.ptt_mouse, @intFromBool(cfg.debug_log), cfg.debug_send, getStr(&cfg.debug_webhook), @intFromBool(cfg.mic_agc), cfg.mic_gain,
-    }) catch return;
-    _ = c.fwrite(m.ptr, 1, m.len, f);
+    }) catch return false;
+    ok = ok and c.fwrite(m.ptr, 1, m.len, f) == m.len;
     // (um format só aceita 32 valores: o resto vai aqui)
-    var more2: [700]u8 = undefined;
-    const m2 = std.fmt.bufPrint(&more2, "animations={d}\neco={d}\npanel_w={d}\nmood={d}\njoin_channel={s}\ndraw_color={d}\ndraw_size={d}\nshow_drawings={d}\njoin_fp={s}\njoin_fp_for={s}\nupdate_auto={d}\nupdate_skip={s}\nlast_version={s}\nav1={d}\nchat_h={d}\n", .{
+    var more2: [1000]u8 = undefined;
+    const m2 = std.fmt.bufPrint(&more2, "animations={d}\neco={d}\npanel_w={d}\nmood={d}\njoin_channel={s}\ndraw_color={d}\ndraw_size={d}\nshow_drawings={d}\njoin_fp={s}\njoin_fp_for={s}\nupdate_auto={d}\nupdate_skip={s}\nlast_version={s}\nav1={d}\nchat_h={d}\nadmin_token_for={s}\n", .{
         @intFromBool(cfg.animations), @intFromBool(cfg.eco), cfg.panel_w, @intFromBool(cfg.mood), getStr(&cfg.join_channel), cfg.draw_color, cfg.draw_size, @intFromBool(cfg.show_drawings), getStr(&cfg.join_fp), getStr(&cfg.join_fp_for),
-        @intFromBool(cfg.update_auto), getStr(&cfg.update_skip), getStr(&cfg.last_version), @intFromBool(cfg.av1), cfg.chat_h,
-    }) catch return;
-    _ = c.fwrite(m2.ptr, 1, m2.len, f);
+        @intFromBool(cfg.update_auto), getStr(&cfg.update_skip), getStr(&cfg.last_version), @intFromBool(cfg.av1), cfg.chat_h, getStr(&cfg.admin_token_for),
+    }) catch return false;
+    ok = ok and c.fwrite(m2.ptr, 1, m2.len, f) == m2.len;
     inline for (@typeInfo(HotkeyId).@"enum".fields) |fl| {
         const hk = cfg.hk[fl.value];
         var hb: [64]u8 = undefined;
         const hl = std.fmt.bufPrint(&hb, "hk_{s}={d},{d},{d},{d}\n", .{ fl.name, hk.key, hk.scancode, hk.mouse, hk.mods }) catch "";
-        _ = c.fwrite(hl.ptr, 1, hl.len, f);
+        ok = ok and c.fwrite(hl.ptr, 1, hl.len, f) == hl.len;
     }
     var excl: [512]u8 = cfg.audio_exclude;
     std.mem.replaceScalar(u8, &excl, '\n', '|');
     var eb: [560]u8 = undefined;
-    const e = std.fmt.bufPrint(&eb, "audio_exclude={s}\n", .{getStr(&excl)}) catch return;
-    _ = c.fwrite(e.ptr, 1, e.len, f);
+    const e = std.fmt.bufPrint(&eb, "audio_exclude={s}\n", .{getStr(&excl)}) catch return false;
+    ok = ok and c.fwrite(e.ptr, 1, e.len, f) == e.len;
     var cb: [560]u8 = undefined;
-    const cs = std.fmt.bufPrint(&cb, "custom_css={s}\n", .{getStr(&cfg.custom_css)}) catch return;
-    _ = c.fwrite(cs.ptr, 1, cs.len, f);
+    const cs = std.fmt.bufPrint(&cb, "custom_css={s}\n", .{getStr(&cfg.custom_css)}) catch return false;
+    ok = ok and c.fwrite(cs.ptr, 1, cs.len, f) == cs.len;
+    return ok;
 }
 
 /// Volume da voz de cada pessoa, lembrado pelo nome entre uma sala e outra

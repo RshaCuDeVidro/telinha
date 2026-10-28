@@ -27,6 +27,8 @@ const cio = @cImport(@cInclude("stdio.h"));
 
 /// Mais que isso na fila de um espectador = ele está lento demais.
 pub const max_viewer_backlog = 3 * 1024 * 1024;
+/// Sem mensagem nenhuma por esse tempo: a conexão morreu sem avisar.
+const silent_ms = 60_000;
 /// ...ou se acumulou esse atraso (µs) acima do normal da conexão dele.
 pub const max_viewer_excess_us = 500_000;
 /// Atrasado pelo menos isso e sem escoar (a fila não diminuiu 50 ms em 1 s):
@@ -140,6 +142,10 @@ const Conn = struct {
     last_img_ms: u64 = 0, // última imagem no chat (limite)
     dismissed: bool = false, // já recebeu o aviso de saída (não manda outro)
     reader_done: std.atomic.Value(bool) = .init(false),
+    // última mensagem recebida (ms): quem some sem RST (Wi-Fi caiu, notebook
+    // dormiu) ficava na sala por até 2 h, derrubando a taxa de quem transmite
+    last_rx_ms: std.atomic.Value(u64) = .init(0),
+    silent: bool = false, // já derrubado por silêncio (mutex)
     refs: std.atomic.Value(u32) = .init(1), // leitora (+ escritora quando existir)
 
     fn nameSlice(self: *const Conn) []const u8 {
@@ -850,6 +856,16 @@ pub const Server = struct {
             if (ticks % 40 == 0) _ = s.files.expire(now_ms);
             // canais vazios há dias, a cada minuto
             if (ticks % 240 == 0) s.expireChans(now_ms);
+            // calado demais: o app pinga a cada 2 s, o navegador a cada 5, o SDK
+            // a cada 10; sem nada há 60 s a conexão morreu sem avisar
+            if (ticks % 4 == 0) for (s.conns.items) |o| {
+                const last = o.last_rx_ms.load(.monotonic);
+                if (o.authed and !o.silent and last != 0 and now_ms -| last > silent_ms) {
+                    o.silent = true;
+                    s.log("{s} sumiu sem avisar ({d} s sem mandar nada): tirando da sala", .{ o.nameSlice(), (now_ms -| last) / 1000 });
+                    net.shutdown(o.sock);
+                }
+            };
             // estatísticas pra quem pediu (o dono olhando), a cada 2 s
             if (ticks % 8 == 0) for (s.conns.items) |o| {
                 if (o.stats_on) {
@@ -1284,6 +1300,7 @@ pub const Server = struct {
     }
 
     fn handle(s: *Server, cn: *Conn, typ: proto.Type, payload: []const u8) !void {
+        cn.last_rx_ms.store(sync.nowMs(), .monotonic);
         var r: proto.Reader = .{ .data = payload };
         switch (typ) {
             .log_chunk => try s.onLogChunk(cn, &r),
@@ -1479,7 +1496,7 @@ pub const Server = struct {
                 const m = try proto.Msg.alloc(.pong, 16);
                 std.mem.writeInt(u64, m.payload()[0..8], t, .little);
                 std.mem.writeInt(u64, m.payload()[8..16], s.nowUs(), .little);
-                cn.queue.pushOwned(m);
+                cn.queue.pushUrgentOwned(m);
             },
             .kick => {
                 const target = try r.u32_();
@@ -3292,7 +3309,7 @@ pub const Server = struct {
         s.n_keyreqs +%= 1;
         const m = proto.Msg.alloc(.keyreq, 1) catch return;
         m.payload()[0] = kind;
-        o.queue.pushOwned(m);
+        o.queue.pushUrgentOwned(m);
     }
 
     /// Áudio (da tela) vai pra quem assiste; não espera IDR e só é descartado

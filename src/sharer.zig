@@ -1271,8 +1271,9 @@ const Pipeline = struct {
         defer out.deinit(gpa);
         var msg: proto.Builder = .{};
         defer msg.deinit();
-        var seq: u32 = 0;
         const kind = s.kind;
+        var seq: u32 = s.client.next_seq[kind].load(.monotonic);
+        defer s.client.next_seq[kind].store(seq, .monotonic);
         s.client.resetInflight(kind);
         var bw: RateControl = .{};
         var stat_since = sync.nowUs();

@@ -47,6 +47,21 @@ fn setOpt(s: Socket, level: c_int, name: c_int, value: c_int) void {
 fn tune(s: Socket) void {
     setOpt(s, c.IPPROTO_TCP, c.TCP_NODELAY, 1);
     setOpt(s, c.SOL_SOCKET, c.SO_KEEPALIVE, 1);
+    // o padrão do sistema só testa a conexão depois de 2 h parada, e um send
+    // sem resposta segurava ~15 min (Linux): o outro lado sumia sem RST e a
+    // conexão fantasma derrubava a taxa da sala. Aqui: testa depois de 10 s,
+    // a cada 5 s, desiste em 3; dado sem confirmação por 30 s derruba.
+    if (is_windows) {
+        setOpt(s, c.IPPROTO_TCP, 3, 10); // TCP_KEEPALIVE (= KEEPIDLE), Windows 10 1709+
+        setOpt(s, c.IPPROTO_TCP, 17, 5); // TCP_KEEPINTVL
+        setOpt(s, c.IPPROTO_TCP, 16, 3); // TCP_KEEPCNT
+        setOpt(s, c.IPPROTO_TCP, 5, 30); // TCP_MAXRT (s)
+    } else {
+        setOpt(s, c.IPPROTO_TCP, c.TCP_KEEPIDLE, 10);
+        setOpt(s, c.IPPROTO_TCP, c.TCP_KEEPINTVL, 5);
+        setOpt(s, c.IPPROTO_TCP, c.TCP_KEEPCNT, 3);
+        setOpt(s, c.IPPROTO_TCP, c.TCP_USER_TIMEOUT, 30_000);
+    }
     // Linux: o kernel segura no máximo 32 KB ainda não enviados; o resto
     // espera na nossa fila, onde dá pra descartar quadro velho em vez de ficar
     // escondido no kernel. O que já está na rede (janela do TCP) continua com

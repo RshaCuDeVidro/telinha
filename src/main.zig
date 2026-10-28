@@ -178,7 +178,7 @@ pub fn main(init: std.process.Init) !void {
             if (timeout > 0) c.glfwWaitEventsTimeout(timeout) else c.glfwPollEvents();
         } else c.glfwPollEvents();
         ui.redraw_at = std.math.inf(f64);
-        const t_frame = sync.nowUs();
+        var t_frame = sync.nowUs();
 
         c.ImGui_ImplOpenGL3_NewFrame();
         c.ImGui_ImplGlfw_NewFrame();
@@ -205,7 +205,14 @@ pub fn main(init: std.process.Init) !void {
             glClearColor(bg.x, bg.y, bg.z, 1);
             glClear(0x4000);
             c.ImGui_ImplOpenGL3_RenderDrawData(c.igGetDrawData());
+            // o swap espera o vsync (ou o frame callback no Wayland): fora do
+            // "trabalho", senão o log media o monitor (~16 ms) e não a interface
+            const t_swap = sync.nowUs();
             c.glfwSwapBuffers(win);
+            const swap = sync.nowUs() - t_swap;
+            ui.frame_swap_us += swap;
+            ui.frame_swap_max_us = @max(ui.frame_swap_max_us, swap);
+            t_frame += swap;
         }
         app.drawPips(); // janelas flutuantes (cada uma com o contexto dela)
         const work = sync.nowUs() - t_frame;

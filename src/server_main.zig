@@ -367,11 +367,11 @@ pub fn main(init: std.process.Init) !void {
     }
 
     net.init();
-    var pw_buf: [8]u8 = undefined;
+    var pw_buf: [16]u8 = undefined; // ~79 bits: 8 letras caíam por força bruta offline
     if ((public_host != null or use_upnp) and password.len == 0) {
         // endereço público sem senha: qualquer um que achasse a porta entraria
         const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
-        var rnd: [8]u8 = undefined;
+        var rnd: [16]u8 = undefined;
         sync.osRandom(&rnd);
         for (&pw_buf, rnd) |*ch, r| ch.* = alphabet[r % alphabet.len];
         password = &pw_buf;

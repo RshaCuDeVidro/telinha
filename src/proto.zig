@@ -621,7 +621,11 @@ pub const SendQueue = struct {
     }
 
     fn isUrgent(t: Type) bool {
-        return t == .ack or t == .viewer_slow or t == .voice or t == .pointer or t == .audio or t == .draw or t == .cursor;
+        // ping/pong: o RTT medido é o da rede, não o da fila de quadros (o ping
+        // "pulava" de 20 pra 300 ms e o relógio da sala demorava a acertar);
+        // keyreq: o IDR de quem acabou de entrar não espera atrás de quadros
+        return t == .ack or t == .viewer_slow or t == .voice or t == .pointer or t == .audio or t == .draw or t == .cursor or
+            t == .ping or t == .pong or t == .keyreq;
     }
 
     pub fn pushUrgentOwned(q: *SendQueue, m: *Msg) void {

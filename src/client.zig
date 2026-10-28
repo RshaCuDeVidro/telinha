@@ -825,6 +825,10 @@ pub const Client = struct {
     /// Nossos frames que o servidor ainda não confirmou (controle de banda), por tipo.
     inflight_mutex: sync.Mutex = .{},
     inflight: [2]proto.AckWindow = .{ .{}, .{} },
+    // número do próximo quadro (tela, câmera): não volta a 0 quando a
+    // transmissão recomeça, senão acks atrasados da anterior confirmavam
+    // quadros novos e comiam a folga do IDR
+    next_seq: [2]std.atomic.Value(u32) = .{ .init(0), .init(0) },
     /// Relógio da sala = relógio local + offset (µs). Sincronizado pelo ping.
     clock_offset: std.atomic.Value(i64) = .init(0),
     best_rtt_us: u64 = std.math.maxInt(u64),
@@ -885,6 +889,9 @@ pub const Client = struct {
     /// O servidor já aceitou (welcome). Antes disso, voz não sai: o primeiro
     /// pacote tem que ser o hello, e a voz fura a fila.
     welcomed: std.atomic.Value(bool) = .init(false),
+    // última mensagem da sala (TCP ou UDP): sem nada há 12 s a conexão morreu
+    // sem avisar (no Linux o kernel levava ~15 min pra desistir)
+    last_rx_us: std.atomic.Value(u64) = .init(0),
     voice_seq: std.atomic.Value(u32) = .init(0),
     // canais (servidor antigo não manda: chans_supported fica false)
     chans_supported: bool = false,
@@ -926,6 +933,8 @@ pub const Client = struct {
         hw_decode: bool = true,
         /// Canal pra entrar (vazio = o padrão do servidor).
         channel: []const u8 = "",
+        /// Senha desse canal (reconexão: sem ela a pessoa caía no canal padrão).
+        channel_password: []const u8 = "",
         /// Impressão da identidade que o servidor tem que provar (do convite,
         /// ou a vista da última vez: `tofu`). Vazio = aceita a que vier.
         expect_fp: []const u8 = "",
@@ -945,6 +954,10 @@ pub const Client = struct {
         copyInto(&cl.pass, &cl.pass_len, o.password);
         copyInto(&cl.admin_token, &cl.admin_token_len, o.admin_token);
         copyInto(&cl.want_chan, &cl.want_chan_len, o.channel);
+        if (o.channel_password.len > 0 and o.channel_password.len <= cl.pw.len) {
+            copyInto(&cl.pw_chan, &cl.pw_chan_len, std.mem.trimStart(u8, o.channel, "#"));
+            copyInto(&cl.pw, &cl.pw_len, o.channel_password);
+        }
         copyInto(&cl.expect_fp, &cl.expect_fp_len, o.expect_fp);
         cl.tofu = o.tofu;
         _ = cl.refs.fetchAdd(1, .monotonic); // thread de conexão/leitura
@@ -1168,11 +1181,14 @@ pub const Client = struct {
                 }
                 break;
             };
+            cl.last_rx_us.store(sync.nowUs(), .monotonic);
             cl.handle(typ, proto.payloadOf(&rb)) catch break;
             // quadro/som/voz não mudam a tela por si (o quadro acorda depois
             // de decodificado; a voz, quando alguém começa a falar)
+            // (pedaço de arquivo/log: o cartão já se redesenha 4×/s durante a
+            // transferência; acordar a cada 32 KB redesenhava a 30-60 q/s)
             switch (typ) {
-                .frame, .audio, .voice, .ack => {},
+                .frame, .audio, .voice, .ack, .file_data, .file_ack, .log_chunk => {},
                 else => cl.wake(),
             }
         }
@@ -1262,7 +1278,10 @@ pub const Client = struct {
     fn deliverUdp(ctx: *anyopaque, typ: proto.Type, payload: []const u8) void {
         const cl: *Client = @ptrCast(@alignCast(ctx));
         switch (typ) {
-            .frame, .audio, .voice => cl.handle(typ, payload) catch {},
+            .frame, .audio, .voice => {
+                cl.last_rx_us.store(sync.nowUs(), .monotonic);
+                cl.handle(typ, payload) catch {};
+            },
             else => {},
         }
     }
@@ -1296,13 +1315,20 @@ pub const Client = struct {
         while (!cl.closing.load(.acquire)) : (n += 1) {
             const m = proto.Msg.alloc(.ping, 8) catch return;
             std.mem.writeInt(u64, m.payload()[0..8], sync.nowUs(), .little);
-            cl.queue.pushOwned(m);
+            cl.queue.pushUrgentOwned(m);
             // os primeiros pings vêm rápido pra sincronizar o relógio logo
             // (em fatias de 500 ms: só pra perceber a saída da sala)
             const wait: u32 = if (n < 5) 1 else 4;
             const slice: u32 = if (n < 5) 200 else 500;
             var i: u32 = 0;
             while (i < wait and !cl.closing.load(.acquire)) : (i += 1) sync.sleepMs(slice);
+            // a sala responde todo ping (a cada 2 s): 12 s sem nada = caiu
+            const last = cl.last_rx_us.load(.monotonic);
+            if (cl.welcomed.load(.acquire) and last != 0 and sync.nowUs() -| last > 12_000_000) {
+                cl.setError("A conexão com a sala caiu.", .{});
+                net.shutdown(cl.sock); // a leitora sai e a interface reconecta
+                return;
+            }
         }
     }
 
@@ -1690,7 +1716,7 @@ pub const Client = struct {
                 defer v.release();
                 v.cursor_x.store(try r.u16_(), .monotonic);
                 v.cursor_y.store(try r.u16_(), .monotonic);
-                cl.wake();
+                // (quem acorda a interface é o laço de leitura, uma vez só)
             },
             .frame => {
                 const stream = try r.u32_();
@@ -2337,7 +2363,7 @@ pub const Client = struct {
         const m = proto.Msg.alloc(.keyreq, 5) catch return;
         std.mem.writeInt(u32, m.payload()[0..4], stream, .little);
         m.payload()[4] = reason;
-        cl.queue.pushOwned(m);
+        cl.queue.pushUrgentOwned(m);
     }
 
     /// Transmissor: frame `seq` (tela ou câmera) entrou na fila de envio.

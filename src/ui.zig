@@ -767,7 +767,9 @@ const Reconnect = struct {
     watch_kind: [16]u8 = undefined, // tela ou câmera
     n_watch: usize = 0,
 };
-const max_reconnect = 6;
+// 1, 2, 4, 8, 10 s e depois a cada 15 s: ~10 min (roteador reiniciando, troca
+// de rede, servidor atualizando levam 1-2 min; 6 tentativas em 35 s desistiam)
+const max_reconnect = 40;
 
 const ChatH = struct { h: f32, header: bool, width: f32 };
 const gpa_ui = std.heap.c_allocator;
@@ -953,6 +955,10 @@ pub const App = struct {
     // quem voltar a assistir assim que aparecer ao vivo de novo
     rewatch: Reconnect = .{},
     rewatch_until: f64 = 0,
+    // senha do canal em que estava, pra reconexão (vai no hello do Client novo)
+    carry_pw: [64]u8 = undefined,
+    carry_pw_len: usize = 0,
+    admin_bound: [65]u8 = [_]u8{0} ** 65, // o token de admin quando foi amarrado ao endereço
 
     settings_modal: bool = false,
     show_advanced: bool = false,
@@ -1107,6 +1113,7 @@ pub const App = struct {
 
     pub fn init(window: *c.GLFWwindow) App {
         var a: App = .{ .window = window, .cfg = config.load(), .volumes = config.VoiceVolumes.load() };
+        a.admin_bound = a.cfg.admin_token; // (--admin, ou digitar outro, amarra o token ao endereço da vez)
         i18n.init(config.getStr(&a.cfg.language));
         cssfile.on_change = wakeUi;
         if (config.getStr(&a.cfg.custom_css).len > 0) cssfile.watch(config.getStr(&a.cfg.custom_css));
@@ -1282,9 +1289,13 @@ pub const App = struct {
         const frames = frame_count - a.debug_frames_seen;
         const work = frame_work_us;
         const work_max = frame_work_max_us;
+        const swap = frame_swap_us;
+        const swap_max = frame_swap_max_us;
         a.debug_frames_seen = frame_count;
         frame_work_us = 0;
         frame_work_max_us = 0;
+        frame_swap_us = 0;
+        frame_swap_max_us = 0;
         const u = debuglog.usage();
         if (first) return; // a primeira amostra só zera as contas
         var tb: [256]u8 = undefined;
@@ -1293,8 +1304,9 @@ pub const App = struct {
             const w = std.fmt.bufPrint(tb[tl..], " {s}={d:.0}%", .{ t.name[0..t.len], t.pct }) catch break;
             tl += w.len;
         }
-        debuglog.line("cpu app={d:.0}% (100% = 1 núcleo) pc={d:.0}% | ram app={d} MB, livre={d} MB | interface {d:.1} q/s, {d:.1} ms/quadro (máx {d:.1}){s}{s}", .{
-            u.proc_pct, u.sys_pct, u.rss_mb, u.ram_free_mb, @as(f32, @floatFromInt(frames)) / 2, if (frames > 0) @as(f32, @floatFromInt(work)) / @as(f32, @floatFromInt(frames)) / 1000 else 0, @as(f32, @floatFromInt(work_max)) / 1000, if (tl > 0) " | threads:" else "", tb[0..tl],
+        debuglog.line("cpu app={d:.0}% (100% = 1 núcleo) pc={d:.0}% | ram app={d} MB, livre={d} MB | interface {d:.1} q/s, trabalho {d:.1} ms/quadro (máx {d:.1}), vsync {d:.1} ms (máx {d:.1}){s}{s}", .{
+            u.proc_pct, u.sys_pct, u.rss_mb, u.ram_free_mb, @as(f32, @floatFromInt(frames)) / 2, if (frames > 0) @as(f32, @floatFromInt(work)) / @as(f32, @floatFromInt(frames)) / 1000 else 0, @as(f32, @floatFromInt(work_max)) / 1000,
+            if (frames > 0) @as(f32, @floatFromInt(swap)) / @as(f32, @floatFromInt(frames)) / 1000 else 0, @as(f32, @floatFromInt(swap_max)) / 1000, if (tl > 0) " | threads:" else "", tb[0..tl],
         });
         const cl = a.client orelse return;
         cl.mutex.lock();
@@ -1380,7 +1392,16 @@ pub const App = struct {
             expect = &kb;
             tofu = true;
         }
-        a.connect(addrs, config.getStr(&a.cfg.join_pass), config.getStr(&a.cfg.admin_token), std.mem.trim(u8, config.getStr(&a.cfg.join_channel), " #"), expect, tofu);
+        // o token de admin só vai pro servidor em que foi posto (antes ia no
+        // hello de qualquer sala: um convite de outra pessoa levava o token da
+        // sua VPS). Token novo (ou de antes dessa regra) vale pro endereço da vez.
+        const tok = config.getStr(&a.cfg.admin_token);
+        if (tok.len > 0 and (config.getStr(&a.cfg.admin_token_for).len == 0 or !std.mem.eql(u8, tok, config.getStr(&a.admin_bound)))) {
+            config.setStr(&a.cfg.admin_token_for, addrs);
+            a.admin_bound = a.cfg.admin_token;
+        }
+        const send_tok = if (tok.len > 0 and std.mem.eql(u8, config.getStr(&a.cfg.admin_token_for), addrs)) tok else "";
+        a.connect(addrs, config.getStr(&a.cfg.join_pass), send_tok, std.mem.trim(u8, config.getStr(&a.cfg.join_channel), " #"), expect, tofu);
     }
 
     fn createRoom(a: *App) void {
@@ -1650,9 +1671,11 @@ pub const App = struct {
     fn ensureRoomPassword(a: *App) bool {
         if (config.getStr(&a.cfg.host_pass).len > 0) return false;
         const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
-        var rnd: [8]u8 = undefined;
+        // 16 letras (~79 bits): com 8 (~40 bits) a senha caía por força bruta
+        // offline em minutos a partir de uma conexão (ver o handshake)
+        var rnd: [16]u8 = undefined;
         sync.osRandom(&rnd);
-        var pw: [8]u8 = undefined;
+        var pw: [16]u8 = undefined;
         for (&pw, rnd) |*ch, r| ch.* = alphabet[r % alphabet.len];
         config.setStr(&a.cfg.host_pass, &pw);
         config.save(&a.cfg);
@@ -1729,7 +1752,9 @@ pub const App = struct {
         a.stats_open = false;
         a.stats_hist_n = 0;
         a.stats_seen = 0;
-        a.client = Client.create(.{ .addrs = addrs, .name = a.myName(), .password = pass, .admin_token = admin_token, .client_key = a.cfg.client_key, .hw_decode = a.cfg.hardware, .channel = channel, .expect_fp = expect_fp, .tofu = tofu, .wake = wakeUi }) catch {
+        const chan_pw = a.carry_pw[0..a.carry_pw_len];
+        a.carry_pw_len = 0;
+        a.client = Client.create(.{ .addrs = addrs, .name = a.myName(), .password = pass, .admin_token = admin_token, .client_key = a.cfg.client_key, .hw_decode = a.cfg.hardware, .channel = channel, .channel_password = chan_pw, .expect_fp = expect_fp, .tofu = tofu, .wake = wakeUi }) catch {
             a.setHomeError(tr("Endereço inválido."));
             return;
         };
@@ -1816,7 +1841,7 @@ pub const App = struct {
         r.attempt += 1;
         r.waiting = true;
         const exp: u5 = @intCast(@min(r.attempt - 1, 4));
-        r.at = c.igGetTime() + @min(10.0, @as(f64, @floatFromInt(@as(u32, 1) << exp)));
+        r.at = c.igGetTime() + if (r.attempt > 5) 15.0 else @min(10.0, @as(f64, @floatFromInt(@as(u32, 1) << exp)));
     }
 
     fn doReconnect(a: *App) void {
@@ -1838,6 +1863,12 @@ pub const App = struct {
             // volta pro canal em que estava
             cl.mutex.lock();
             if (cl.chans_supported) config.setStr(&a.cfg.join_channel, cl.chan_name[0..cl.chan_name_len]);
+            // o canal tinha senha: leva junto (antes caía no canal padrão)
+            a.carry_pw_len = 0;
+            if (cl.pw_len > 0 and std.ascii.eqlIgnoreCase(std.mem.trimStart(u8, cl.chan_name[0..cl.chan_name_len], "#"), cl.pw_chan[0..cl.pw_chan_len])) {
+                a.carry_pw_len = cl.pw_len;
+                @memcpy(a.carry_pw[0..cl.pw_len], cl.pw[0..cl.pw_len]);
+            }
             cl.mutex.unlock();
             cl.close();
         }
@@ -1856,7 +1887,7 @@ pub const App = struct {
         if (r.camera) a.toggleCamera();
         a.applyVoice("reconectou");
         a.rewatch = r;
-        a.rewatch_until = c.igGetTime() + 20;
+        a.rewatch_until = c.igGetTime() + 180; // quem transmitia pode demorar pra voltar também
         a.toast("Reconectado!", .{}, false);
     }
 
@@ -2826,7 +2857,9 @@ pub const App = struct {
         // um campo em uso), em foco; parada, a tela congela onde estava e o
         // telinha volta a dormir até o próximo evento
         const io = c.igGetIO_Nil();
-        const active = now - a.mouse_moved_at < 12 or c.igIsAnyItemActive() or io.*.InputQueueCharacters.Size > 0;
+        // (sem igIsAnyItemActive: um campo com foco mantinha a vitrine a 30 q/s
+        // pra sempre; digitar continua animando)
+        const active = now - a.mouse_moved_at < 12 or io.*.InputQueueCharacters.Size > 0;
         const animate = a.animOn() and !a.away() and active;
         if (animate) a.home_anim_t += @min(io.*.DeltaTime, 0.1);
         const t = a.home_anim_t;
@@ -4857,8 +4890,14 @@ pub const App = struct {
         c.igSetCursorPosX(S(8));
         const p = c.igGetCursorScreenPos();
         const row_w = width - S(16);
-        _ = c.igInvisibleButton("m", v2(row_w, h), c.ImGuiButtonFlags_MouseButtonLeft | c.ImGuiButtonFlags_MouseButtonRight);
+        const left_click = c.igInvisibleButton("m", v2(row_w, h), c.ImGuiButtonFlags_MouseButtonLeft | c.ImGuiButtonFlags_MouseButtonRight) and c.igIsMouseReleased_Nil(0);
         const hovered = c.igIsItemHovered(0);
+        // quem está ao vivo: clicar assiste (o clique não fazia nada, e a lista
+        // é o primeiro lugar onde o recém-chegado clica); de novo, para
+        const live_stream: ?u32 = if (m.id == my_id) null else if (m.streaming) proto.streamId(m.id, proto.kind_screen) else if (m.camera()) proto.streamId(m.id, proto.kind_camera) else null;
+        if (left_click) if (live_stream) |st| {
+            if (a.findView(st) != null) a.unwatch(st) else a.watch(st);
+        };
         if (a.n_member_rects < a.member_rects.len) {
             a.member_rects[a.n_member_rects] = .{ .id = m.id, .x0 = p.x, .y0 = p.y, .x1 = p.x + row_w, .y1 = p.y + h };
             a.n_member_rects += 1;
@@ -4875,7 +4914,9 @@ pub const App = struct {
                 i18n.bufPrint(&ob, "OP do #{s}: manda no canal", .{op.where}) catch ""
             else
                 "";
-            const t = std.fmt.bufPrintZ(&tip, "{s}{s}{s}{s}{s}{s}", .{
+            const watch_line: []const u8 = if (live_stream) |st| (if (a.findView(st) != null) tr("Clique: parar de assistir") else tr("Clique: assistir")) else "";
+            const t = std.fmt.bufPrintZ(&tip, "{s}{s}{s}{s}{s}{s}{s}{s}", .{
+                watch_line,                       if (watch_line.len > 0 and op_line.len + route.len + action.len > 0) "\n" else "",
                 op_line,                          if (op_line.len > 0 and route.len + action.len > 0) "\n" else "",
                 if (route.len > 0) tr("Conectado: ") else "", route, if (route.len > 0 and action.len > 0) "\n" else "", action,
             }) catch "";
@@ -6726,7 +6767,7 @@ pub const App = struct {
         const ts = textSizeF(font_bold, 20, title);
         drawTextF(d, font_bold, 20, v2(cx - ts.x / 2, y), col.header, title);
         y += ts.y + S(6);
-        const sub = if (n_live > 0) tr("Escolhe quem assistir. Dá pra assistir várias telas ao mesmo tempo.") else if (host) tr("Clica em Compartilhar tela pra começar, ou espera alguém da sala.") else tr("A sala está pronta. Funciona assim:");
+        const sub = if (n_live > 0) tr("Escolhe quem assistir. Dá pra assistir várias telas ao mesmo tempo.") else if (host) tr("Clica em Compartilhar tela pra começar, ou espera alguém da sala.") else tr("Quando alguém compartilhar a tela, ela aparece aqui com o botão Assistir. Enquanto isso, o chat fica do lado.");
         const ss = textSizeF(font_regular, 14, sub);
         if (ss.x <= cw) {
             drawTextF(d, font_regular, 14, v2(cx - ss.x / 2, y), col.muted, sub);
@@ -6791,14 +6832,15 @@ pub const App = struct {
                 }
                 y += S(10);
             }
-            if (host) {
-                // quem hospeda: o cartão de chamar a galera de fora (embaixo) já é o passo 1
-                c.igSetCursorScreenPos(v2(cx - S(100), y));
-                c.igPushStyleVar_Float(c.ImGuiStyleVar_FrameRounding, S(12) * col.round);
-                if (primaryButton(fmtZ("{s}   Compartilhar tela###shareempty", .{ic.desktop}), v2(S(200), S(42)), col.blurple, col.blurple_hover, col.blurple_active)) a.openShareModal();
-                c.igPopStyleVar(1);
-                y += S(42);
-            } else y = a.drawSteps(y, cx, cw);
+            // quem hospeda: o cartão de chamar a galera de fora (embaixo) já é o
+            // passo 1. Quem entrou veio (quase sempre) pra assistir: os passos de
+            // quem transmite ("manda o convite", "compartilha a tela") confundiam;
+            // o texto acima diz que a transmissão aparece aqui, e o botão fica
+            c.igSetCursorScreenPos(v2(cx - S(100), y));
+            c.igPushStyleVar_Float(c.ImGuiStyleVar_FrameRounding, S(12) * col.round);
+            if (primaryButton(fmtZ("{s}   Compartilhar tela###shareempty", .{ic.desktop}), v2(S(200), S(42)), col.blurple, col.blurple_hover, col.blurple_active)) a.openShareModal();
+            c.igPopStyleVar(1);
+            y += S(42);
             y += if (short) S(24) else S(36);
             if (a.server) |s| {
                 c.igSetCursorScreenPos(v2(cx - cw / 2, y));
@@ -6809,51 +6851,6 @@ pub const App = struct {
         }
     }
 
-    /// Os três passos de quem chega numa sala sem ninguém ao vivo: chamar a
-    /// galera, compartilhar a tela, a galera clica em Assistir. Lado a lado
-    /// (ou um embaixo do outro em janela estreita). Devolve onde terminou.
-    fn drawSteps(a: *App, top: f32, cx: f32, cw: f32) f32 {
-        const d = drawList();
-        const gap = S(12);
-        const side = cw >= S(600);
-        const sw = if (side) @min(S(232), (cw - gap * 2) / 3) else @min(cw, S(360));
-        const total_w = if (side) sw * 3 + gap * 2 else sw;
-        const Step = struct { t: []const u8, b: []const u8 };
-        const steps = [3]Step{
-            .{ .t = tr("Chama a galera"), .b = tr("Copia o convite e manda pra quem vai assistir: é só colar no telinha.") },
-            .{ .t = tr("Compartilha a tela"), .b = tr("Escolhe a janela ou o monitor. O som vai junto, se você quiser.") },
-            .{ .t = tr("Eles clicam em Assistir"), .b = tr("Ninguém vê sem querer: cada um escolhe quem assistir, e dá pra ver várias telas.") },
-        };
-        // todos da altura do texto mais comprido (o botão logo embaixo)
-        var text_h: f32 = 0;
-        pushFont(font_regular, 12.5);
-        for (steps) |st| text_h = @max(text_h, c.igCalcTextSize(st.b.ptr, st.b.ptr + st.b.len, false, sw - S(32)).y);
-        popFont();
-        const sh = S(68) + text_h + S(60);
-        var bottom = top;
-        for (steps, 0..) |st, i| {
-            const fi: f32 = @floatFromInt(i);
-            const x = if (side) cx - total_w / 2 + fi * (sw + gap) else cx - sw / 2;
-            const y = if (side) top else top + fi * (sh + gap);
-            rectFill(d, x, y, x + sw, y + sh, col.bg_side, S(12));
-            c.ImDrawList_AddRect(d, v2(x, y), v2(x + sw, y + sh), withAlpha(col.blurple, if (i == 1) 160 else 60), S(12) * col.round, S(1), 0);
-            drawTextF(d, font_bold, 22, v2(x + S(16), y + S(12)), withAlpha(col.blurple, 230), fmtZ("0{d}", .{i + 1}));
-            drawTextF(d, font_bold, 14.5, v2(x + S(16), y + S(44)), col.header, st.t);
-            drawTextWrapF(d, font_regular, 12.5, v2(x + S(16), y + S(68)), col.muted, st.b, sw - S(32));
-            const bw = sw - S(32);
-            c.igSetCursorScreenPos(v2(x + S(16), y + sh - S(46)));
-            c.igPushStyleVar_Float(c.ImGuiStyleVar_FrameRounding, S(8) * col.round);
-            if (i == 0) {
-                if (secondaryButton(fmtZ("{s}  Copiar convite###stepinvite", .{ic.user_plus}), v2(bw, S(32)))) a.copyInvite();
-            } else if (i == 1) {
-                if (primaryButton(fmtZ("{s}  Compartilhar tela###shareempty", .{ic.desktop}), v2(bw, S(32)), col.blurple, col.blurple_hover, col.blurple_active)) a.openShareModal();
-            }
-            c.igPopStyleVar(1);
-            bottom = y + sh;
-        }
-        c.igSetCursorScreenPos(v2(cx - total_w / 2, bottom));
-        return bottom;
-    }
 
     /// Um cartão com fundo atrás do conteúdo (o fundo é desenhado depois de
     /// medir, num canal de baixo). `h_min`: altura mínima (cartões lado a lado
@@ -10425,6 +10422,8 @@ fn nativeWindow(w: *c.GLFWwindow) ?*anyopaque {
 pub var frame_work_us: u64 = 0;
 pub var frame_count: u64 = 0;
 pub var frame_work_max_us: u64 = 0;
+pub var frame_swap_us: u64 = 0; // esperando o vsync no glfwSwapBuffers (fora do trabalho)
+pub var frame_swap_max_us: u64 = 0;
 
 /// Limite de quadros por segundo da interface (0 = o do monitor).
 pub var frame_cap_fps: u64 = 60;
