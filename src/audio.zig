@@ -36,6 +36,7 @@ pub const Ring = struct {
     cuts: u32 = 0, // atrasou demais e jogou o excesso fora (pulo)
     fill_samples: usize = 0, // quanto tinha na fila na última mixagem
     over_since_us: u64 = 0, // a fila passou do alvo (+20 ms) desde (0 = não)
+    cur_gain: f32 = 1.0, // o ganho do último bloco (a rampa sai dele; só o mixer mexe)
     drift_dropped: u64 = 0, // amostras (por canal) descartadas pra voltar ao alvo
 
     pub fn deinit(rg: *Ring) void {
@@ -167,6 +168,7 @@ pub const Ring = struct {
         if (!rg.primed) {
             if (rg.len < target_samples) return;
             rg.primed = true;
+            rg.cur_gain = gain; // começa (ou recomeça) já no volume certo
         }
         // atrasou demais: joga fora o excesso e volta pro alvo
         if (rg.len > max_samples) {
@@ -179,7 +181,15 @@ pub const Ring = struct {
         rg.fill_samples = rg.len;
         const n = @min(rg.len, out.len);
         const cap = rg.buf.len;
-        for (0..n) |i| out[i] += rg.buf[(rg.r + i) % cap] * gain;
+        // volume/silenciar em rampa pelo bloco (~10 ms): o degrau estalava
+        const g0 = rg.cur_gain;
+        rg.cur_gain = gain;
+        if (g0 == gain or n == 0) {
+            for (0..n) |i| out[i] += rg.buf[(rg.r + i) % cap] * gain;
+        } else {
+            const step = (gain - g0) / @as(f32, @floatFromInt(n / channels));
+            for (0..n) |i| out[i] += rg.buf[(rg.r + i) % cap] * (g0 + step * @as(f32, @floatFromInt(i / channels + 1)));
+        }
         rg.r = (rg.r + n) % cap;
         rg.len -= n;
         // acabou o áudio no meio: espera encher de novo antes de voltar a tocar
