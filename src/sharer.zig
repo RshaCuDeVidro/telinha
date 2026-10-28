@@ -855,7 +855,11 @@ const Pipeline = struct {
     fn captureLoop(p: *Pipeline) !void {
         const s = p.s;
         sync.nameThread("captura");
-        sync.lowerThreadPriority();
+        // prioridade baixa só quando a CPU faz o trabalho pesado (openh264): com
+        // o encoder da placa a captura quase não gasta CPU, e abaixo do normal ela
+        // perdia a vez pro jogo a 100% (fps da transmissão quebrando, o soluço
+        // dos APUs AMD)
+        if (!p.use_hw.load(.acquire)) sync.lowerThreadPriority();
         var next_us: u64 = 0;
         const started_us = sync.nowUs();
         var got_any = false;
@@ -1290,7 +1294,7 @@ const Pipeline = struct {
 
     fn encodeLoop(p: *Pipeline) void {
         sync.nameThread("encoder");
-        sync.lowerThreadPriority();
+        if (!p.use_hw.load(.acquire)) sync.lowerThreadPriority(); // ver captureLoop
         p.encodeLoopInner() catch |e| {
             if (debugEnabled()) std.debug.print("[telinha] o encoder parou com erro: {s}\n", .{@errorName(e)});
             p.s.fail(Sharer.errorText(e));
@@ -1456,6 +1460,7 @@ const Pipeline = struct {
                         // NVENC falhou nessa resolução: segue em software daqui pra frente
                         if (debugEnabled()) std.debug.print("[telinha] NVENC falhou ({s}), usando software\n", .{std.mem.sliceTo(&err, 0)});
                         p.use_hw.store(false, .release);
+                        sync.lowerThreadPriority(); // agora é a CPU que codifica
                         p.doneWith(i, false);
                         s.client.keyreq[kind].store(true, .release);
                         continue;
@@ -1522,6 +1527,7 @@ const Pipeline = struct {
                 enc.?.deinit();
                 enc = null;
                 p.use_hw.store(false, .release);
+                sync.lowerThreadPriority(); // agora é a CPU que codifica
                 s.client.keyreq[kind].store(true, .release);
                 break :blk null;
             } orelse {
