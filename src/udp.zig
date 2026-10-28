@@ -199,6 +199,8 @@ pub const Endpoint = struct {
         defer ep.mutex.unlock();
         if (ep.partials.items.len > 0) return true;
         for (ep.rx.items) |*ch| if (ch.held.items.len > 0) return true;
+        // a última mensagem de algum canal ainda vai ser repetida (ver tick)
+        for (ep.tx.items) |*t| if (!t.tail_done) return true;
         return false;
     }
 
