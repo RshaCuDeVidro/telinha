@@ -124,6 +124,8 @@ pub fn parseRequest(head: []const u8) ?Request {
     var r: Request = .{ .path = path };
     var upgrade_ws = false;
     var conn_upgrade = false;
+    var xff: ?[]const u8 = null;
+    var cf: ?[]const u8 = null;
     while (lines.next()) |line| {
         const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
         const k = std.mem.trim(u8, line[0..colon], " ");
@@ -131,10 +133,14 @@ pub fn parseRequest(head: []const u8) ?Request {
         if (std.ascii.eqlIgnoreCase(k, "upgrade")) upgrade_ws = std.ascii.eqlIgnoreCase(v, "websocket");
         if (std.ascii.eqlIgnoreCase(k, "connection")) conn_upgrade = std.ascii.indexOfIgnoreCase(v, "upgrade") != null;
         if (std.ascii.eqlIgnoreCase(k, "sec-websocket-key")) r.ws_key = v;
-        // o IP de quem está do outro lado do proxy (Cloudflare; ou o padrão)
-        if (std.ascii.eqlIgnoreCase(k, "cf-connecting-ip")) r.client_ip = v;
-        if (r.client_ip == null and std.ascii.eqlIgnoreCase(k, "x-forwarded-for")) r.client_ip = std.mem.trim(u8, v[0 .. std.mem.indexOfScalar(u8, v, ',') orelse v.len], " ");
+        // o IP de quem está do outro lado do proxy (a porta só escuta em
+        // 127.0.0.1: sempre vem de um). No X-Forwarded-For o proxy ACRESCENTA o
+        // IP no fim: o primeiro item é o que o navegador mandou (forjável, e
+        // aí ban por IP e log mentiam). Cloudflare também acrescenta no fim.
+        if (std.ascii.eqlIgnoreCase(k, "x-forwarded-for")) xff = std.mem.trim(u8, v[if (std.mem.lastIndexOfScalar(u8, v, ',')) |i| i + 1 else 0..], " ");
+        if (std.ascii.eqlIgnoreCase(k, "cf-connecting-ip")) cf = v;
     }
+    r.client_ip = if (xff) |x| (if (x.len > 0) x else cf) else cf;
     r.upgrade = upgrade_ws and conn_upgrade and std.mem.eql(u8, path, "/ws");
     return r;
 }
@@ -213,6 +219,10 @@ test "web: pedido HTTP (página, WebSocket, IP do proxy)" {
     try testing.expect(r.upgrade);
     try testing.expectEqualStrings("dGhlIHNhbXBsZSBub25jZQ==", r.ws_key.?);
     try testing.expectEqualStrings("203.0.113.9", r.client_ip.?);
+    // X-Forwarded-For: vale o último (o que o proxy acrescentou); o primeiro o navegador forja
+    const x = parseRequest("GET /ws HTTP/1.1\r\nX-Forwarded-For: 9.9.9.9, 198.51.100.7\r\n").?;
+    try testing.expectEqualStrings("198.51.100.7", x.client_ip.?);
+    try testing.expect(parseRequest("GET / HTTP/1.1\r\nHost: x\r\n").?.client_ip == null);
     const p = parseRequest("GET /app.js?v=2 HTTP/1.1\r\nHost: x\r\n").?;
     try testing.expectEqualStrings("/app.js", p.path);
     try testing.expect(!p.upgrade);

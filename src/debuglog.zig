@@ -448,7 +448,7 @@ fn sendJob(j: *Job) void {
         appendTail(w, cp, 1024 * 1024) catch return setResult(.failed, "não consegui ler o relatório");
         // só o log da execução que travou (o arquivo tem várias)
         appendRunLog(w, cp, p, max - 1024 * 1024);
-    } else snapshot(p, sp, max) catch return setResult(.failed, "não consegui ler o log (está vazio?)");
+    } else snapshotRun(p, sp, max) catch return setResult(.failed, "não consegui ler o log (está vazio?)");
     if (j.method == .room) return sendRoom(j, sp);
     var out: [8192]u8 = undefined;
     const url_z = blk: {
@@ -561,6 +561,19 @@ pub fn gofileLink(body: []const u8) ?[]const u8 {
 }
 
 /// Copia o fim do log (até `max` bytes) pra outro arquivo.
+/// O log desta execução: o arquivo junta sessões (só é cortado acima de 24 MB)
+/// e mandar a cauda dele levava horas de sessões antigas, cortando o começo
+/// desta. Sem o cabeçalho desta execução no arquivo: a cauda, como antes.
+fn snapshotRun(src: [:0]const u8, dst: [:0]const u8, max: usize) !void {
+    const log = readAll(src) orelse return snapshot(src, dst, max);
+    defer gpa.free(log);
+    var part = runSection(log, &crash.run_id) orelse return snapshot(src, dst, max);
+    if (part.len > max) part = part[part.len - max ..];
+    const w = mp4.openFile(dst, "wb") orelse return error.Open;
+    defer _ = cio.fclose(w);
+    if (cio.fwrite(part.ptr, 1, part.len, w) != part.len) return error.Write;
+}
+
 fn snapshot(src: [:0]const u8, dst: [:0]const u8, max: usize) !void {
     const w = mp4.openFile(dst, "wb") orelse return error.Open;
     defer _ = cio.fclose(w);

@@ -39,6 +39,15 @@ pub fn init() void {
     }
 }
 
+/// Sockets não passam pros processos que o app abre (curl, xdg-open → o
+/// navegador, cloudflared): antes eles herdavam a conexão da sala e o socket
+/// de escuta da sala hospedada ("porta em uso" depois de fechar o app).
+extern "c" fn accept4(fd: c_int, addr: ?*anyopaque, len: ?*c_uint, flags: c_int) c_int; // (o header só declara com _GNU_SOURCE)
+
+fn cloexec(t: c_int) c_int {
+    return if (is_windows) t else t | c.SOCK_CLOEXEC;
+}
+
 fn setOpt(s: Socket, level: c_int, name: c_int, value: c_int) void {
     var v = value;
     _ = c.setsockopt(s, level, name, @ptrCast(&v), @sizeOf(c_int));
@@ -73,7 +82,7 @@ fn tune(s: Socket) void {
 /// Escuta em todas as interfaces (IPv6 + IPv4 quando der).
 pub fn listen(port: u16) Error!Socket {
     // tenta dual-stack
-    const s6 = c.socket(c.AF_INET6, c.SOCK_STREAM, c.IPPROTO_TCP);
+    const s6 = c.socket(c.AF_INET6, cloexec(c.SOCK_STREAM), c.IPPROTO_TCP);
     if (s6 != invalid) {
         setOpt(s6, c.SOL_SOCKET, c.SO_REUSEADDR, 1);
         setOpt(s6, c.IPPROTO_IPV6, c.IPV6_V6ONLY, 0);
@@ -81,7 +90,7 @@ pub fn listen(port: u16) Error!Socket {
         if (c.bind(s6, @ptrCast(&a6), @sizeOf(SockAddrIn6)) == 0 and c.listen(s6, 64) == 0) return s6;
         close(s6);
     }
-    const s4 = c.socket(c.AF_INET, c.SOCK_STREAM, c.IPPROTO_TCP);
+    const s4 = c.socket(c.AF_INET, cloexec(c.SOCK_STREAM), c.IPPROTO_TCP);
     if (s4 == invalid) return error.ListenFailed;
     setOpt(s4, c.SOL_SOCKET, c.SO_REUSEADDR, 1);
     var a4 = std.mem.zeroes(c.struct_sockaddr_in);
@@ -96,7 +105,7 @@ pub fn listen(port: u16) Error!Socket {
 
 /// Escuta só nesta máquina (127.0.0.1): o que fica atrás de um proxy/túnel.
 pub fn listenLocal(port: u16) Error!Socket {
-    const s4 = c.socket(c.AF_INET, c.SOCK_STREAM, c.IPPROTO_TCP);
+    const s4 = c.socket(c.AF_INET, cloexec(c.SOCK_STREAM), c.IPPROTO_TCP);
     if (s4 == invalid) return error.ListenFailed;
     setOpt(s4, c.SOL_SOCKET, c.SO_REUSEADDR, 1);
     const a4 = sockaddr4(.{ 127, 0, 0, 1 }, port);
@@ -121,7 +130,7 @@ pub fn parseIp(s: []const u8, out: *[16]u8) []u8 {
 }
 
 pub fn accept(ls: Socket) Error!Socket {
-    const s = c.accept(ls, null, null);
+    const s = if (is_windows) c.accept(ls, null, null) else accept4(ls, null, null, c.SOCK_CLOEXEC);
     if (s == invalid) return error.AcceptFailed;
     tune(s);
     return s;
@@ -145,7 +154,7 @@ pub fn connect(host: []const u8, port: u16) Error!Socket {
     var refused = false;
     var it = res;
     while (it) |ai| : (it = ai.ai_next) {
-        const s = c.socket(ai.ai_family, ai.ai_socktype, ai.ai_protocol);
+        const s = c.socket(ai.ai_family, cloexec(ai.ai_socktype), ai.ai_protocol);
         if (s == invalid) continue;
         if (c.connect(s, ai.ai_addr, @intCast(ai.ai_addrlen)) == 0) {
             tune(s);
@@ -229,7 +238,7 @@ pub fn close(s: Socket) void {
 /// Socket UDP IPv4 (descoberta do roteador por SSDP). Multicast com TTL 2:
 /// não passa do roteador.
 pub fn udpOpen() Error!Socket {
-    const s = c.socket(c.AF_INET, c.SOCK_DGRAM, c.IPPROTO_UDP);
+    const s = c.socket(c.AF_INET, cloexec(c.SOCK_DGRAM), c.IPPROTO_UDP);
     if (s == invalid) return error.ConnectFailed;
     setOpt(s, c.IPPROTO_IP, c.IP_MULTICAST_TTL, 2);
     return s;
@@ -264,7 +273,7 @@ pub fn udpRecv(s: Socket, buf: []u8) ?usize {
 
 /// Pra testes: socket UDP escutando em 127.0.0.1:porta.
 pub fn udpBindLocal(port: u16) Error!Socket {
-    const s = c.socket(c.AF_INET, c.SOCK_DGRAM, c.IPPROTO_UDP);
+    const s = c.socket(c.AF_INET, cloexec(c.SOCK_DGRAM), c.IPPROTO_UDP);
     if (s == invalid) return error.ListenFailed;
     const a = sockaddr4(.{ 127, 0, 0, 1 }, port);
     if (c.bind(s, @ptrCast(&a), @sizeOf(c.struct_sockaddr_in)) != 0) {
@@ -330,7 +339,7 @@ fn bigBuffers(s: Socket) void {
 
 /// Servidor: UDP na mesma porta do TCP (IPv6 + IPv4 quando der).
 pub fn udpListen(port: u16) Error!Socket {
-    const s6 = c.socket(c.AF_INET6, c.SOCK_DGRAM, c.IPPROTO_UDP);
+    const s6 = c.socket(c.AF_INET6, cloexec(c.SOCK_DGRAM), c.IPPROTO_UDP);
     if (s6 != invalid) {
         setOpt(s6, c.IPPROTO_IPV6, c.IPV6_V6ONLY, 0);
         var a6: SockAddrIn6 = .{ .family = c.AF_INET6, .port = std.mem.nativeToBig(u16, port) };
@@ -340,7 +349,7 @@ pub fn udpListen(port: u16) Error!Socket {
         }
         close(s6);
     }
-    const s4 = c.socket(c.AF_INET, c.SOCK_DGRAM, c.IPPROTO_UDP);
+    const s4 = c.socket(c.AF_INET, cloexec(c.SOCK_DGRAM), c.IPPROTO_UDP);
     if (s4 == invalid) return error.ListenFailed;
     const a4 = sockaddr4(.{ 0, 0, 0, 0 }, port);
     if (c.bind(s4, @ptrCast(&a4), @sizeOf(c.struct_sockaddr_in)) != 0) {
@@ -357,7 +366,7 @@ pub fn udpConnectLike(tcp: Socket) Error!Socket {
     var len: if (is_windows) c_int else c.socklen_t = st.len;
     if (c.getpeername(tcp, @ptrCast(&st), &len) != 0) return error.ConnectFailed;
     const family = std.mem.readInt(u16, st[0..2], .little);
-    const s = c.socket(@intCast(family), c.SOCK_DGRAM, c.IPPROTO_UDP);
+    const s = c.socket(@intCast(family), cloexec(c.SOCK_DGRAM), c.IPPROTO_UDP);
     if (s == invalid) return error.ConnectFailed;
     if (c.connect(s, @ptrCast(&st), len) != 0) {
         close(s);
@@ -529,7 +538,7 @@ pub fn globalIp6(out: [][16]u8) usize {
 
 /// IPv4 desta máquina do jeito que `to` a vê (a rota até ele). Não manda pacote.
 pub fn localIp4To(to: [4]u8) ?[4]u8 {
-    const s = c.socket(c.AF_INET, c.SOCK_DGRAM, c.IPPROTO_UDP);
+    const s = c.socket(c.AF_INET, cloexec(c.SOCK_DGRAM), c.IPPROTO_UDP);
     if (s == invalid) return null;
     defer close(s);
     const a = sockaddr4(to, 9);
@@ -540,7 +549,7 @@ pub fn localIp4To(to: [4]u8) ?[4]u8 {
 /// IPv4 desta máquina na rede local (o da rota padrão). Não manda pacote:
 /// "conectar" UDP só escolhe a rota.
 pub fn primaryIp4() ?[4]u8 {
-    const s = c.socket(c.AF_INET, c.SOCK_DGRAM, c.IPPROTO_UDP);
+    const s = c.socket(c.AF_INET, cloexec(c.SOCK_DGRAM), c.IPPROTO_UDP);
     if (s == invalid) return null;
     defer close(s);
     const a = sockaddr4(.{ 192, 0, 2, 1 }, 9); // TEST-NET-1: nunca recebe nada

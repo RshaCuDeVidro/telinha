@@ -131,8 +131,17 @@ pub const Mixer = struct {
     mutex: sync.Mutex = .{},
     rings: std.ArrayList(*Ring) = .empty,
     dev: ?*c.audio_dev = null,
-    failed: bool = false,
+    failed: bool = false, // TELINHA_SEM_SOM: nunca abre
     opening: bool = false, // alguém está abrindo o dispositivo (fora do lock)
+    // a saída não abriu (fone Bluetooth ainda desligado, dock fora, outro app
+    // em modo exclusivo): antes ficava muda a sessão inteira, sem aviso nem
+    // log; agora tenta de novo (5 s, 15 s, depois a cada 60 s) e a interface
+    // mostra o motivo (err_gen muda a cada falha)
+    retry_at_ms: u64 = 0,
+    tries: u32 = 0,
+    err_text: [256]u8 = undefined,
+    err_len: usize = 0,
+    err_gen: std.atomic.Value(u32) = .init(0),
     /// Quem transmite áudio no Linux escuta a si mesmo na captura: silencia a saída (sem eco).
     self_mute: std.atomic.Value(bool) = .init(false),
     /// "Surdo" (como no Discord): não toca nada da sala, nem voz nem transmissão.
@@ -145,6 +154,18 @@ pub const Mixer = struct {
     /// Uma vez por quadro da interface: 5 s sem nada pra tocar → para o
     /// dispositivo (a saída aberta custa CPU e não deixa a placa/fone dormir).
     pub fn housekeep(m: *Mixer) void {
+        // a saída não abriu: tenta de novo na hora marcada, se ainda tem som pra tocar
+        if (m.tries > 0) {
+            m.mutex.lock();
+            const retry = m.dev == null and !m.failed and !m.opening and m.rings.items.len > 0 and sync.nowMs() >= m.retry_at_ms;
+            if (retry) m.opening = true;
+            m.mutex.unlock();
+            if (retry) sync.spawn(openOutput, .{m}) catch {
+                m.mutex.lock();
+                m.opening = false;
+                m.mutex.unlock();
+            };
+        }
         if (m.paused.load(.acquire)) return;
         const last = m.last_sound_us.load(.monotonic);
         if (last == 0 or sync.nowUs() -| last < 5_000_000) return;
@@ -185,12 +206,36 @@ pub const Mixer = struct {
     }
 
     fn openOutput(m: *Mixer) void {
-        var err: [256]u8 = undefined;
+        var err: [256]u8 = std.mem.zeroes([256]u8);
         const d = c.audio_output_open(onPlay, m, &err, err.len);
         m.mutex.lock();
-        if (d) |dev| m.dev = dev else m.failed = true;
+        if (d) |dev| {
+            m.dev = dev;
+            m.tries = 0;
+        } else {
+            m.tries += 1;
+            m.retry_at_ms = sync.nowMs() + @as(u64, switch (m.tries) {
+                1 => 5_000,
+                2 => 15_000,
+                else => 60_000,
+            });
+            const e = std.mem.sliceTo(&err, 0);
+            const msg = if (e.len > 0) e else "o sistema não abriu o dispositivo";
+            m.err_len = @min(msg.len, m.err_text.len);
+            @memcpy(m.err_text[0..m.err_len], msg[0..m.err_len]);
+            _ = m.err_gen.fetchAdd(1, .release);
+        }
         m.opening = false;
         m.mutex.unlock();
+    }
+
+    /// O motivo da última falha ao abrir a saída (com o mutex: copia).
+    pub fn lastError(m: *Mixer, out: []u8) []const u8 {
+        m.mutex.lock();
+        defer m.mutex.unlock();
+        const n = @min(m.err_len, out.len);
+        @memcpy(out[0..n], m.err_text[0..n]);
+        return out[0..n];
     }
 
     pub fn remove(m: *Mixer, rg: *Ring) void {

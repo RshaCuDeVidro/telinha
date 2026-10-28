@@ -879,6 +879,10 @@ pub const Client = struct {
     /// Traços desenhados por cima das transmissões (somem sozinhos; ver ui.zig).
     strokes: std.ArrayList(Stroke) = .empty,
     views: std.ArrayList(*View) = .empty,
+    // trava só da lista de views: a entrega de cada quadro de vídeo procura a
+    // View aqui, e com o cl.mutex ela esperava a interface desenhar o chat
+    // inteiro (que segura o cl.mutex) ou decodificar a imagem aberta
+    views_mutex: sync.Mutex = .{},
     ping_ms: u32 = 0,
     /// Voz de cada pessoa da sala (criada quando chega o primeiro pacote).
     voice_peers: std.ArrayList(*voice.Peer) = .empty,
@@ -2410,15 +2414,15 @@ pub const Client = struct {
     /// Acha a view de um stream e segura uma referência (a UI pode parar de
     /// assistir a qualquer momento).
     fn viewRetained(cl: *Client, stream: u32) ?*View {
-        cl.mutex.lock();
-        defer cl.mutex.unlock();
+        cl.views_mutex.lock();
+        defer cl.views_mutex.unlock();
         for (cl.views.items) |v| if (v.stream == stream) return v.retain();
         return null;
     }
 
     pub fn findView(cl: *Client, stream: u32) ?*View {
-        cl.mutex.lock();
-        defer cl.mutex.unlock();
+        cl.views_mutex.lock();
+        defer cl.views_mutex.unlock();
         for (cl.views.items) |v| if (v.stream == stream) return v;
         return null;
     }
@@ -2434,18 +2438,18 @@ pub const Client = struct {
             gpa.destroy(v);
             return error.ThreadFailed;
         };
-        cl.mutex.lock();
+        cl.views_mutex.lock();
         cl.views.append(gpa, v) catch {};
-        cl.mutex.unlock();
+        cl.views_mutex.unlock();
         cl.sendWatch(stream, true, opts);
         return v;
     }
 
     /// Para de assistir. A UI tem que apagar a textura antes.
     pub fn unwatch(cl: *Client, v: *View) void {
-        cl.mutex.lock();
+        cl.views_mutex.lock();
         if (std.mem.findScalar(*View, cl.views.items, v)) |i| _ = cl.views.orderedRemove(i);
-        cl.mutex.unlock();
+        cl.views_mutex.unlock();
         cl.sendWatch(v.stream, false, 0);
         v.shutdown();
         v.release();

@@ -1086,7 +1086,7 @@ test "mp4: clipe (H.264 + Opus, duração variável) abre e decodifica no ffmpeg
     const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/telinha-teste-clipe-{d}.mp4", .{getpid()});
     defer _ = unlink(path.ptr);
     try mp4.writeClip(path, 320, 240, m.video.items, m.audio.items);
-    if (access("/usr/bin/ffprobe", 0) != 0) return; // sem ffmpeg na máquina: só confere que escreveu
+    if (access("/usr/bin/ffprobe", 0) != 0) return error.SkipZigTest; // sem ffmpeg: aparece como pulado (antes passava sem conferir nada)
     var cmd_buf: [256]u8 = undefined;
     var out: [2048]u8 = undefined;
     const probe = run(try std.fmt.bufPrintZ(&cmd_buf, "ffprobe -v error -count_frames -show_entries stream=codec_name,width,height,nb_read_frames -of csv=p=0 {s} 2>&1", .{path}), &out);
@@ -1115,7 +1115,7 @@ test "mp4: gravação fragmentada abre e decodifica no ffmpeg (inclusive sem o f
     }
     try testing.expect(r.durationMs() > 1500);
     r.finish();
-    if (access("/usr/bin/ffprobe", 0) != 0) return;
+    if (access("/usr/bin/ffprobe", 0) != 0) return error.SkipZigTest;
     var cmd_buf: [256]u8 = undefined;
     var out: [2048]u8 = undefined;
     const probe = run(try std.fmt.bufPrintZ(&cmd_buf, "ffprobe -v error -count_frames -show_entries stream=codec_name,nb_read_frames -of csv=p=0 {s} 2>&1", .{path}), &out);
@@ -1161,7 +1161,7 @@ test "mp4: HEVC (NVENC) vira hvc1 que o ffmpeg abre e decodifica, clipe e grava�
     const r = try mp4.Recorder.start(rec_path, w, h, video.items[0], false);
     for (video.items[1..]) |v| try r.addVideo(v);
     r.finish();
-    if (access("/usr/bin/ffprobe", 0) != 0) return;
+    if (access("/usr/bin/ffprobe", 0) != 0) return error.SkipZigTest;
     var cmd_buf: [256]u8 = undefined;
     var res: [2048]u8 = undefined;
     for ([_][:0]const u8{ clip_path, rec_path }) |path| {
@@ -1232,7 +1232,7 @@ test "mp4: AV1 (OBUs) vira av01 + av1C que o ffmpeg abre e decodifica, clipe e g
     const r = try mp4.Recorder.start(rec_path, 640, 360, video.items[0], false);
     for (video.items[1..]) |v| try r.addVideo(v);
     r.finish();
-    if (access("/usr/bin/ffprobe", 0) != 0) return;
+    if (access("/usr/bin/ffprobe", 0) != 0) return error.SkipZigTest;
     for ([_][:0]const u8{ clip_path, rec_path }) |path| {
         const probe = run(try std.fmt.bufPrintZ(&cmd_buf, "ffprobe -v error -count_frames -show_entries stream=codec_name,codec_tag_string,width,height,nb_read_frames -of csv=p=0 {s} 2>&1", .{path}), &res);
         if (std.mem.find(u8, probe, "av1,av01,640,360,40") == null) std.debug.print("ffprobe: {s}\n", .{probe});
@@ -1587,7 +1587,7 @@ test "VA-API: decoder com referências de longo prazo e MMCO (openh264 em modo t
     try testing.expect(st.long_term > 0 and st.mmco > 0 and st.reorder > 0);
     // CABAC: o decoder do openh264 diverge do ffmpeg nesse fluxo (o VA-API bate
     // com o ffmpeg); a referência aqui é o ffmpeg, se tiver
-    if (access("/usr/bin/ffmpeg", 0) != 0) return;
+    if (access("/usr/bin/ffmpeg", 0) != 0) return error.SkipZigTest;
     var path_buf: [96]u8 = undefined;
     const path = try std.fmt.bufPrintZ(&path_buf, "/tmp/telinha-teste-va-ltr-{d}.h264", .{getpid()});
     defer _ = unlink(path.ptr);

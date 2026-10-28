@@ -419,7 +419,10 @@ fn downLoop(cl: *Client, t: *Transfer) void {
     if (ok) {
         var db: [1024]u8 = undefined;
         const dest = std.fmt.bufPrintZ(&db, "{s}", .{t.pathSlice()}) catch "";
-        if (renameFile(part, dest)) t.state.store(.done, .release) else t.fail("não consegui dar o nome final ao arquivo", .{});
+        if (renameFile(part, dest)) {
+            markFromInternet(dest);
+            t.state.store(.done, .release);
+        } else t.fail("não consegui dar o nome final ao arquivo", .{});
     } else files.removeFile(part);
     t.mutex.unlock();
 }
@@ -513,6 +516,19 @@ fn fileSize(f: *cio.FILE) u64 {
     const n = ftello(f);
     _ = fseeko(f, 0, cio.SEEK_SET);
     return @intCast(@max(0, n));
+}
+
+/// Windows: marca o arquivo baixado como vindo da internet (Mark-of-the-Web):
+/// o Office abre na Visão Protegida e o SmartScreen avalia antes de rodar,
+/// independente da extensão. Em FAT/exFAT o stream não existe: ignora.
+fn markFromInternet(dest: [:0]const u8) void {
+    if (builtin.os.tag != .windows) return;
+    var b: [1100]u8 = undefined;
+    const ads = std.fmt.bufPrintZ(&b, "{s}:Zone.Identifier", .{dest}) catch return;
+    const f = files.openFile(ads, "wb") orelse return;
+    const text = "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=about:internet\r\n";
+    _ = cio.fwrite(text.ptr, 1, text.len, f);
+    _ = cio.fclose(f);
 }
 
 fn renameFile(from: [:0]const u8, to: [:0]const u8) bool {

@@ -48,8 +48,15 @@ int img_write_png(const char *path_utf8, const uint8_t *rgba, int w, int h) {
     return ok && closed == 0 ? 0 : -1;
 }
 
+// Teto de área antes de decodificar: um PNG de poucos KB declarando 16384x16384
+// alocava 1 GiB de RGBA (e travava a thread de envio por segundos). 64 MP cobre
+// foto de celular de 50 MP; o chat reduz tudo pra 1600 px de qualquer jeito.
+#define IMG_MAX_PIXELS (64ll * 1000 * 1000)
+
 uint8_t *img_decode(const uint8_t *data, int len, int *w, int *h) {
-    int n = 0;
+    int n = 0, iw = 0, ih = 0;
+    if (!stbi_info_from_memory(data, len, &iw, &ih, &n)) return NULL;
+    if (iw <= 0 || ih <= 0 || (long long)iw * ih > IMG_MAX_PIXELS) return NULL;
     return stbi_load_from_memory(data, len, w, h, &n, 4);
 }
 

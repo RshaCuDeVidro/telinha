@@ -1297,6 +1297,7 @@ const Pipeline = struct {
         var redo_later = false;
         var redo_us: u64 = 0;
         var enc_quality: u8 = 0;
+        var hw_errs: u8 = 0; // erros seguidos do encoder da placa
 
         while (true) {
             // espera um quadro novo (ou um pedido de IDR)
@@ -1308,7 +1309,12 @@ const Pipeline = struct {
             }
             // clipe da própria transmissão: um IDR a cada 20 s (o clipe começa num)
             const clip_key_us = @min(20_000_000, @as(u64, clip.keep_secs.load(.monotonic)) * 500_000);
-            const clip_key = s.clip != null and !s.idle.load(.acquire) and last_key_us != 0 and sync.nowUs() - last_key_us > clip_key_us;
+            // com o link apertado (o controle de taxa abaixo do alvo) o IDR do
+            // clipe (VBV ×10) virava soluço de 100-300 ms na fila de todo mundo a
+            // cada 15 s: espera folgar, até o dobro do intervalo
+            const since_key = sync.nowUs() -| last_key_us;
+            const tight = bw.target > 0 and @as(u64, bw.bps) * 10 < @as(u64, bw.target) * 9;
+            const clip_key = s.clip != null and !s.idle.load(.acquire) and last_key_us != 0 and since_key > clip_key_us and (!tight or since_key > 2 * clip_key_us);
             const key = s.client.keyreq[kind].swap(false, .acq_rel) or clip_key or key_later;
             key_later = false;
             const redo = redo_later and sync.nowUs() >= redo_us;
@@ -1445,6 +1451,16 @@ const Pipeline = struct {
             out.clearRetainingCapacity();
             const is_key = enc.?.encode(sl, key, &out) catch |e| blk: {
                 if (enc.? != .hw) return e;
+                // um erro isolado (soluço do driver; o VA-API já se prepara pra
+                // recomeçar num IDR): pede o IDR e segue na placa. Dois seguidos:
+                // aí sim cai pro software pelo resto da transmissão
+                hw_errs += 1;
+                if (hw_errs < 2) {
+                    if (debugEnabled()) std.debug.print("[telinha] encoder em hardware ({s}) falhou uma vez: {s}; tentando de novo com um IDR\n", .{ enc.?.hw.name(), @errorName(e) });
+                    s.client.keyreq[kind].store(true, .release);
+                    p.doneWith(i, true);
+                    continue;
+                }
                 if (debugEnabled()) std.debug.print("[telinha] encoder em hardware ({s}) falhou no meio: {s}; seguindo em software\n", .{ enc.?.hw.name(), @errorName(e) });
                 // erro no NVENC no meio da transmissão: cai pro software
                 enc.?.deinit();
@@ -1457,6 +1473,7 @@ const Pipeline = struct {
                 p.doneWith(i, enc != null);
                 continue;
             };
+            hw_errs = 0;
             // cada IDR conta (o log mostra o resumo); só o estranho vira linha
             if (key and is_key) _ = (if (clip_key) &s.idr_clip else &s.idr_room).fetchAdd(1, .monotonic);
             if (key and !is_key and debugEnabled()) std.debug.print("[telinha] IDR pedido, mas o encoder fez um P ({d} bytes)\n", .{out.items.len});

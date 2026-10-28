@@ -514,6 +514,7 @@ const table = [_][2][]const u8{
     .{ "Clique direito: volume da voz e ações de OP", "Right-click: voice volume and OP actions" },
     .{ "Clique direito: volume da voz", "Right-click: voice volume" },
     .{ "Clique: assistir", "Click: watch" },
+    .{ "Não consegui abrir a saída de som ({s}). Tento de novo sozinho.", "Couldn't open the sound output ({s}). I'll keep trying." },
     .{ "Clique: parar de assistir", "Click: stop watching" },
     .{ "Conectado: ", "Connected: " },
     .{ "(você)", "(you)" },

@@ -293,6 +293,17 @@ pub const Buffer = struct {
         };
     }
 
+    /// Quanto já foi gravado até `now_room_us` (relógio da sala). Com a tela
+    /// parada não chega quadro (captura por evento) e o "REC" pelo último quadro
+    /// parava de andar, como se a gravação tivesse travado.
+    pub fn recMsAt(b: *Buffer, now_room_us: u64) u64 {
+        b.mutex.lock();
+        defer b.mutex.unlock();
+        const r = b.recorder orelse return b.rec_done_ms;
+        if (r.last_video_us == 0) return b.rec_done_ms;
+        return b.rec_done_ms + (@max(r.last_video_us, now_room_us) -| r.start_us) / 1000;
+    }
+
     /// Termina a gravação. Retorna a duração (ms), 0 se não tinha nada.
     /// `end_us`: a hora de parar, no relógio dos quadros (o da sala); 0 = no último quadro.
     pub fn stopRecording(b: *Buffer, end_us: u64) u64 {

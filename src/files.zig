@@ -232,10 +232,35 @@ pub fn cleanName(raw: []const u8, out: []u8) []const u8 {
     for (base[0..n], 0..) |ch, i| {
         out[i] = if (ch < 0x20 or std.mem.indexOfScalar(u8, "<>:\"/\\|?*", ch) != null) '_' else ch;
     }
+    // controles de direção do texto (U+202A..E, U+2066..9): "fotoexe.png" que
+    // na tela aparece como "fotognp.exe"
+    var i: usize = 0;
+    while (i + 3 <= n) : (i += 1) {
+        if (out[i] == 0xE2 and ((out[i + 1] == 0x80 and out[i + 2] >= 0xAA and out[i + 2] <= 0xAE) or (out[i + 1] == 0x81 and out[i + 2] >= 0xA6 and out[i + 2] <= 0xA9))) {
+            @memset(out[i .. i + 3], '_');
+            i += 2;
+        }
+    }
     var s = std.mem.trimEnd(u8, out[0..n], ". ");
     s = std.mem.trimStart(u8, s, " ");
     if (s.len == 0 or std.mem.eql(u8, s, "..") or std.mem.eql(u8, s, ".")) return "arquivo";
+    // nome de dispositivo do Windows (NUL, CON, COM1... com qualquer extensão):
+    // "nul.txt" baixado ia pro dispositivo, não pro disco
+    const stem = s[0 .. std.mem.indexOfScalar(u8, s, '.') orelse s.len];
+    if (reservedWindowsName(std.mem.trimEnd(u8, stem, " "))) {
+        if (s.len + 1 > out.len) return "arquivo";
+        const off = @intFromPtr(s.ptr) - @intFromPtr(out.ptr);
+        std.mem.copyBackwards(u8, out[1 .. s.len + 1], out[off .. off + s.len]);
+        out[0] = '_';
+        return out[0 .. s.len + 1];
+    }
     return s;
+}
+
+fn reservedWindowsName(stem: []const u8) bool {
+    for ([_][]const u8{ "con", "prn", "aux", "nul" }) |r| if (std.ascii.eqlIgnoreCase(stem, r)) return true;
+    if (stem.len == 4 and (std.ascii.startsWithIgnoreCase(stem, "com") or std.ascii.startsWithIgnoreCase(stem, "lpt")) and stem[3] >= '0' and stem[3] <= '9') return true;
+    return false;
 }
 
 fn copy(dst: []u8, len: *usize, src: []const u8) void {
@@ -367,4 +392,8 @@ test "arquivos: nome seguro pra qualquer sistema" {
     try testing.expectEqualStrings("arquivo", cleanName("", &b));
     try testing.expectEqualStrings("nome", cleanName("nome. . ", &b));
     try testing.expectEqualStrings("relatório final.pdf", cleanName("relatório final.pdf", &b));
+    try testing.expectEqualStrings("_nul.txt", cleanName("nul.txt", &b));
+    try testing.expectEqualStrings("_COM1", cleanName("COM1", &b));
+    try testing.expectEqualStrings("com10.txt", cleanName("com10.txt", &b));
+    try testing.expectEqualStrings("foto___gnp.exe", cleanName("foto\u{202E}gnp.exe", &b));
 }

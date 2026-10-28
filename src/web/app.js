@@ -70,7 +70,10 @@ const CODECS = [ // o que pedir ao WebCodecs pra cada codec do protocolo (0 H.26
 // vira MP4 fragmentado, um pedaço por quadro, e toca num <video> comum. Atraso
 // um pouco maior, e o som da transmissão só onde tiver AudioDecoder.
 const MS = window.ManagedMediaSource || window.MediaSource;
-const USE_MSE = !!MS && (!('VideoDecoder' in window) || new URLSearchParams(location.hash.slice(1)).get('mse') === '1');
+// (muda em decodable(): tem VideoDecoder mas sem H.264, como no Firefox do
+// Android, também vai pelo <video>; antes ficava em tela preta)
+let USE_MSE = !!MS && (!('VideoDecoder' in window) || new URLSearchParams(location.hash.slice(1)).get('mse') === '1');
+let H264 = CODECS[0]; // o que o configure() pede pro H.264 (o perfil/nível que o navegador aceitar)
 
 function box(type, ...parts) {
   let n = 8;
@@ -237,13 +240,34 @@ function send(u8) { if (st.ws && st.ws.readyState === 1) st.ws.send(u8); }
 function color(id) { const c = ['#e5484d', '#f76b15', '#ffc53d', '#30a46c', '#12a594', '#0090ff', '#6e56cf', '#d6409f']; return c[id % c.length]; }
 
 // ---------------------------------------------------------- conexão
+async function supported(codec) {
+  try { return (await VideoDecoder.isConfigSupported({ codec, optimizeForLatency: true })).supported; } catch (e) { return false; }
+}
+
 async function decodable() {
   let bits = 0;
   if (USE_MSE || !('VideoDecoder' in window)) return 1; // MP4 pelo <video>: só H.264
-  for (let i = 0; i < CODECS.length; i++) {
-    try { const r = await VideoDecoder.isConfigSupported({ codec: CODECS[i], optimizeForLatency: true }); if (r.supported) bits |= 1 << i; } catch (e) { /* não tem */ }
+  // H.264: o nível mais alto que o navegador disser que aceita (o decoder
+  // segue o que vem no fluxo); nenhum: vai pelo <video> (MSE)
+  H264 = null;
+  for (const c of [CODECS[0], 'avc1.640028', 'avc1.4D401F', 'avc1.42E01F']) if (await supported(c)) { H264 = c; break; }
+  if (!H264) {
+    H264 = CODECS[0];
+    if (MS) { USE_MSE = true; $('video').hidden = true; $('mvideo').hidden = false; return 1; }
   }
-  return bits | 1; // H.264 o servidor sempre manda
+  bits |= 1;
+  for (let i = 1; i < CODECS.length; i++) if (await supported(CODECS[i])) bits |= 1 << i;
+  return bits; // H.264 o servidor sempre manda
+}
+
+// tela do celular acesa enquanto assiste (canvas não conta como mídia tocando)
+async function keepAwake(on) {
+  try {
+    if (on && !st.wake && 'wakeLock' in navigator && !document.hidden) {
+      st.wake = await navigator.wakeLock.request('screen');
+      st.wake.addEventListener('release', () => { st.wake = null; });
+    } else if (!on && st.wake) { const w = st.wake; st.wake = null; await w.release(); }
+  } catch (e) { /* sem permissão ou sem suporte */ }
 }
 
 async function connect(name, pass) {
@@ -259,6 +283,11 @@ async function connect(name, pass) {
   ws.onmessage = (e) => onMessage(new Uint8Array(e.data));
   ws.onclose = () => {
     stopVideo();
+    // conexão nova não assiste nada: lembra o que era e volta a assistir no
+    // members (antes o vídeo ficava congelado pra sempre depois de cair)
+    if (st.watching) st.wantWatching = st.watching;
+    st.watching = 0; st.sentH = -1;
+    keepAwake(false);
     if (st.denied || st.closedByUs) return;
     status(L.offline, 'bad');
     setTimeout(() => connect(name, pass), st.retry);
@@ -325,8 +354,11 @@ function onMembers(r) {
   }
   st.streams = streams;
   renderPeople(list); renderStreams(streams);
+  // reconectou: volta a assistir a mesma; aba escondida: espera ela voltar;
   // a que eu assistia acabou: a próxima; nada assistindo: a primeira
-  if (!streams.some((s) => s.id === st.watching)) watch(streams.length ? streams[0].id : 0);
+  if (st.wantWatching && streams.some((s) => s.id === st.wantWatching)) { const w = st.wantWatching; st.wantWatching = 0; watch(w); }
+  else if (st.hiddenPaused) return;
+  else if (!streams.some((s) => s.id === st.watching)) watch(streams.length ? streams[0].id : 0);
 }
 
 function renderPeople(list) {
@@ -364,7 +396,7 @@ function watch(id) {
   if (st.watching) send(new W(T.watch).u32(st.watching).u8(0).u8(0).done());
   stopVideo();
   st.watching = id;
-  if (!id) { clearCanvas(); renderStreams(st.streams || []); return; }
+  if (!id) { clearCanvas(); renderStreams(st.streams || []); keepAwake(false); return; }
   send(new W(T.watch).u32(id).u8(1).u8(0).done());
   st.sentH = -1; sendViewSize();
   $('empty').hidden = false; $('empty').textContent = L.waiting_key;
@@ -398,7 +430,7 @@ function newDecoder(codec) {
       frame.close();
       st.decoded++;
       st.fpsCount++;
-      if (st.decoded === 1) $('empty').hidden = true;
+      if (st.decoded === 1) { $('empty').hidden = true; keepAwake(true); }
       if (QA && !st.qaSent && st.decoded >= 30) {
         st.qaSent = true;
         send(new W(T.chat).str(`[qa] ${st.decoded} quadros decodificados ${c.width}x${c.height} codec ${st.decCodec}`).done());
@@ -406,7 +438,7 @@ function newDecoder(codec) {
     },
     error: () => { requestKey(); },
   });
-  st.dec.configure({ codec: CODECS[codec], optimizeForLatency: true, hardwareAcceleration: 'no-preference' });
+  st.dec.configure({ codec: codec === 0 ? H264 : CODECS[codec], optimizeForLatency: true, hardwareAcceleration: 'no-preference' });
   st.decCodec = codec;
   st.waitKey = true;
 }
@@ -424,6 +456,7 @@ function onFrame(r) {
   // confirma na hora (antes de decodificar): é como o servidor mede o atraso
   send(new W(T.ack).u32(stream).u32(seq).done());
   if (stream !== st.watching) return;
+  const prevAt = st.lastFrameAt || 0;
   st.lastFrameAt = performance.now();
   st.frameW = w; st.frameH = h;
   const key = (flags & 1) !== 0;
@@ -433,7 +466,7 @@ function onFrame(r) {
     if (codec !== 0) return; // só H.264 (o servidor sabe: a página disse)
     if (!st.mp4) st.mp4 = new Mp4Feed($('mvideo'));
     if (st.mp4.push(key, time, r.rest(), w, h)) {
-      if (++st.decoded === 1) { $('empty').hidden = true; sizeCursor(w, h); }
+      if (++st.decoded === 1) { $('empty').hidden = true; sizeCursor(w, h); keepAwake(true); }
       st.fpsCount++;
       // teste: o <video> tocando de verdade (imagem com tamanho, o tempo andando)
       const v = $('mvideo');
@@ -456,6 +489,10 @@ function onFrame(r) {
   // Pelo tempo, não pela fila: o decoder da placa do celular segura vários
   // quadros de propósito, e "fila > 6" pedia IDR sem parar (o vídeo engasgava)
   const now = performance.now();
+  // a tela de quem transmite parou (nada chegou por 300 ms): os quadros que o
+  // decoder do celular segura de propósito envelheceram sem culpa dele. Sem
+  // isso cada pausa virava IDR pedido, decoder novo e a sala inteira afinada
+  if (now - prevAt > 300) st.pending.fill(now);
   if (st.dec.decodeQueueSize > 60 || (st.pending.length > 2 && now - st.pending[0] > 700)) { requestKey(); return; }
   try {
     st.dec.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: time, data: r.rest() }));
@@ -484,12 +521,24 @@ function drawCursor() {
 }
 
 // a altura em que o vídeo aparece aqui: o servidor manda no máximo isso (economiza a banda de todo mundo)
+// (com espera: a barra de endereço e o teclado do celular mudam a altura o
+// tempo todo, e cada degrau novo virava resolução nova e IDR pra todo mundo)
 function sendViewSize() {
   if (!st.watching) return;
-  const stage = $('stage');
+  clearTimeout(sendViewSize.t);
+  sendViewSize.t = setTimeout(sendViewSizeNow, st.sentH === -1 ? 0 : 500);
+}
+function sendViewSizeNow() {
+  if (!st.watching) return;
+  const dpr = window.devicePixelRatio || 1;
+  // tela cheia: a altura da tela (não "a original": 1440p/4K pra um celular)
   const full = document.fullscreenElement != null;
-  const want = full ? 0xffff : Math.round(stage.clientHeight * (window.devicePixelRatio || 1));
-  const h = want === 0xffff ? want : (STEPS.find((s) => s >= want) || 0xffff);
+  const want = Math.round((full ? Math.min(screen.width, screen.height) : $('stage').clientHeight) * dpr);
+  // 2% de folga: 1080 px com DPR quebrado dava 1083 e pedia 1440p
+  let h = STEPS.find((s) => s * 1.02 >= want) || 0xffff;
+  if (TOUCH) h = Math.min(h, 1080);
+  // diminuiu pouco (barra/teclado): fica no degrau que já estava
+  if (st.sentH > 0 && st.sentH !== 0xffff && h < st.sentH && want > st.sentH * 0.8) return;
   if (h === st.sentH) return;
   st.sentH = h;
   send(new W(T.view_size).u32(st.watching).u16(h).done());
@@ -774,6 +823,24 @@ function start() {
   $('stage').ondblclick = () => $('btn-full').onclick();
   // vivo: ping a cada 5 s (o túnel fecha conexão parada) e o fps no canto
   setInterval(() => send(new W(T.ping).u64(Date.now()).done()), 5000);
+  // aba escondida / celular bloqueado: para de receber a transmissão (banda e
+  // bateria; quem hospeda pelo link público mandava uma cópia inteira por
+  // ninguém); com o som ligado continua (o som vem junto). Volta sozinho.
+  document.addEventListener('visibilitychange', () => {
+    clearTimeout(st.hideT);
+    if (document.hidden) {
+      st.hideT = setTimeout(() => {
+        if (!document.hidden || st.soundOn || !st.watching) return;
+        st.hiddenPaused = st.watching;
+        watch(0);
+        keepAwake(false);
+      }, 3000);
+    } else if (st.hiddenPaused) {
+      const w = st.hiddenPaused; st.hiddenPaused = 0;
+      if ((st.streams || []).some((s) => s.id === w)) watch(w);
+      else if (st.streams && st.streams.length) watch(st.streams[0].id);
+    } else if (st.watching && st.decoded) keepAwake(true); // o sistema solta a trava ao esconder
+  });
   setInterval(() => {
     if (!st.watching || !st.decoded) { $('info').textContent = ''; return; }
     $('info').textContent = `${st.frameW}×${st.frameH} · ${st.fpsCount} fps`;

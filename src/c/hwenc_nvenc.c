@@ -54,6 +54,7 @@ struct nvenc {
     CUdevice dev;
     int retained, pushed; // contexto primário retido / empurrado nessa thread
     int layers;         // camadas temporais (1 ou 2)
+    int reconfig_warned; // já avisou que o driver recusou um reconfigure
     uint32_t since_idr; // quadros desde o último IDR (com 2 camadas)
     // quadros que já estão na placa (cudagl.c): registrados uma vez por buffer
     struct { uint64_t ptr; NV_ENC_REGISTERED_PTR reg; } regs[8];
@@ -77,6 +78,10 @@ static void configure_rc(nvenc *e, int bitrate) {
     rc->rateControlMode = NV_ENC_PARAMS_RC_VBR;
     rc->averageBitRate = (uint32_t)bitrate;
     rc->maxBitRate = (uint32_t)bitrate;
+    // sem B-frames: o SPS diz num_reorder_frames = 0 (sem isso decoders que
+    // seguem o DPB, como o do Chrome e o MediaCodec do celular, seguravam
+    // quadros esperando uma reordenação que nunca vem)
+    rc->zeroReorderDelay = 1;
     // VBV de ~1 quadro: cada quadro sai sem esperar os próximos (latência mínima)
     rc->vbvBufferSize = (uint32_t)(bitrate / (e->fps > 0 ? e->fps : 30));
     rc->vbvInitialDelay = rc->vbvBufferSize;
@@ -89,7 +94,13 @@ static void reconfigure(nvenc *e) {
     rp.reInitEncodeParams.encodeConfig = &e->cfg;
     rp.resetEncoder = 0;
     rp.forceIDR = 0;
-    e->api.nvEncReconfigureEncoder(e->enc, &rp);
+    NVENCSTATUS st = e->api.nvEncReconfigureEncoder(e->enc, &rp);
+    // recusado: o boost do IDR e a troca de taxa não acontecem (o controle de
+    // taxa acharia que cortou); avisa no log de depuração uma vez
+    if (st != NV_ENC_SUCCESS && !e->reconfig_warned) {
+        e->reconfig_warned = 1;
+        if (getenv("TELINHA_DEBUG")) fprintf(stderr, "[telinha] NVENC recusou mudar a configuração em voo (status %d)\n", (int)st);
+    }
 }
 
 void nvenc_close(nvenc *e) {
@@ -273,6 +284,7 @@ nvenc *nvenc_open(int codec, int width, int height, int fps, int bitrate, int sc
         h->outputAUD = 0;
         h->chromaFormatIDC = 1;
         h->pixelBitDepthMinus8 = 0;
+        h->hevcVUIParameters.bitstreamRestrictionFlag = 1; // (ver zeroReorderDelay)
     } else {
         NV_ENC_CONFIG_H264 *h = &e->cfg.encodeCodecConfig.h264Config;
         h->idrPeriod = NVENC_INFINITE_GOPLENGTH;
@@ -283,6 +295,7 @@ nvenc *nvenc_open(int codec, int width, int height, int fps, int bitrate, int sc
         // pra decodificar em software (openh264), o NVDEC nem sente
         h->entropyCodingMode = NV_ENC_H264_ENTROPY_CODING_MODE_CABAC;
         h->adaptiveTransformMode = NV_ENC_H264_ADAPTIVE_TRANSFORM_ENABLE;
+        h->h264VUIParameters.bitstreamRestrictionFlag = 1; // max_dec_frame_buffering/num_reorder_frames no SPS
     }
 #endif
 

@@ -363,10 +363,14 @@ fn percentEncode(w: *std.Io.Writer, s: []const u8) !void {
 }
 
 /// Programa/script (o cartão não oferece "Abrir": só a pasta).
-fn looksRunnable(name: []const u8) bool {
+/// O que dá pra "Abrir" direto do chat: lista do que é seguro abrir (imagem,
+/// vídeo, som, PDF, texto, compactado, documento sem macro). Era o contrário,
+/// uma lista do que não abrir, e .url/.chm/.iso/.docm/.settingcontent-ms
+/// abriam com um clique. O resto só tem o botão "Pasta".
+fn canOpen(name: []const u8) bool {
     const dot = std.mem.lastIndexOfScalar(u8, name, '.') orelse return false;
     const ext = name[dot + 1 ..];
-    for ([_][]const u8{ "exe", "bat", "cmd", "com", "scr", "msi", "ps1", "vbs", "vbe", "js", "jse", "wsf", "jar", "sh", "appimage", "lnk", "pif", "reg", "hta", "cpl", "desktop", "run" }) |e| {
+    for ([_][]const u8{ "png", "jpg", "jpeg", "gif", "webp", "bmp", "avif", "heic", "mp4", "mkv", "webm", "mov", "avi", "mp3", "ogg", "opus", "wav", "flac", "m4a", "aac", "pdf", "txt", "md", "log", "csv", "srt", "zip", "7z", "rar", "tar", "gz", "xz", "docx", "xlsx", "pptx", "odt", "ods", "odp" }) |e| {
         if (std.ascii.eqlIgnoreCase(ext, e)) return true;
     }
     return false;
@@ -959,6 +963,7 @@ pub const App = struct {
     carry_pw: [64]u8 = undefined,
     carry_pw_len: usize = 0,
     admin_bound: [65]u8 = [_]u8{0} ** 65, // o token de admin quando foi amarrado ao endereço
+    audio_err_seen: u32 = 0, // falhas da saída de som já avisadas (audio.mixer.err_gen)
 
     settings_modal: bool = false,
     show_advanced: bool = false,
@@ -2666,7 +2671,16 @@ pub const App = struct {
             a.trim_at = 0;
             sync.trimMemory();
         } else if (a.trim_at > 0) redrawIn(a.trim_at - c.igGetTime());
-        audio.mixer.housekeep(); // saída de som parada depois de 5 s de silêncio
+        audio.mixer.housekeep(); // saída de som parada depois de 5 s de silêncio (e nova tentativa se não abriu)
+        // a saída de som não abriu: no log sempre, e um aviso na primeira vez
+        const aerr = audio.mixer.err_gen.load(.acquire);
+        if (aerr != a.audio_err_seen) {
+            var eb: [256]u8 = undefined;
+            const why = audio.mixer.lastError(&eb);
+            debuglog.line("saída de som não abriu ({d}ª vez): {s}", .{ aerr, why });
+            if (a.audio_err_seen == 0) a.toast("Não consegui abrir a saída de som ({s}). Tento de novo sozinho.", .{why}, true);
+            a.audio_err_seen = aerr;
+        }
         if (debuglog.on()) a.debugTick();
         a.pollPttKey();
         a.pollHotkeys();
@@ -5822,7 +5836,8 @@ pub const App = struct {
         if (t.clipbuf) |cb| {
             const rs = cb.recState();
             if (rs.active) {
-                const secs = rs.ms / 1000;
+                const now_room: u64 = if (a.client) |cl| cl.serverNowUs() else 0;
+                const secs = (if (rs.waiting or now_room == 0) rs.ms else cb.recMsAt(now_room)) / 1000;
                 const rt = if (rs.waiting) fmtZ("REC (esperando quadro completo)", .{}) else fmtZ("REC {d:0>2}:{d:0>2}", .{ secs / 60, secs % 60 });
                 const rts = textSizeF(font_bold, 11, rt);
                 const rx0 = x + w - rts.x - S(28);
@@ -7630,8 +7645,7 @@ pub const App = struct {
             },
             .done => {
                 drawTextF(d, font_regular, 12, v2(p.x + S(42), p.y + S(31)), col.green, fmtZ("{s}  {s}", .{ ic.download, humanSize(line.file_size, &sb) }));
-                const runnable = looksRunnable(name);
-                if (!runnable) {
+                if (canOpen(name)) {
                     c.igSetCursorScreenPos(v2(bx - S(44), by));
                     if (iconButton(fmtZ("##dlopen{d}", .{line.file_id}), ic.file, S(30), col.muted, col.hover, tr("Abrir"))) _ = openPath(t.pathSlice());
                     c.igSetCursorScreenPos(v2(bx, by));
@@ -9467,6 +9481,9 @@ pub const App = struct {
             rectFill(d, mp.x, mp.y + S(4), mp.x + w, mp.y + S(10), col.input, S(3));
             rectFill(d, mp.x, mp.y + S(4), mp.x + w * lvl, mp.y + S(10), if (m.speaking.load(.monotonic)) col.green else col.faint, S(3));
             c.igDummy(v2(w, S(14)));
+            // a barra só andava quando o mouse mexia (2 q/s): parecia que o mic
+            // não pegava. Só com esta página aberta e o microfone ligado.
+            redrawIn(1.0 / 30.0);
         } else {
             pushFont(font_regular, 12);
             textColored(col.faint, tr("Liga o microfone pra ver o medidor."));
