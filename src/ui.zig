@@ -1134,6 +1134,20 @@ pub const App = struct {
     pub fn init(window: *c.GLFWwindow) App {
         var a: App = .{ .window = window, .cfg = config.load(), .volumes = config.VoiceVolumes.load() };
         a.admin_bound = a.cfg.admin_token; // (--admin, ou digitar outro, amarra o token ao endereço da vez)
+        // sem nome (primeira vez): o do usuário do sistema, em vez de entrar como
+        // "anônimo" sem perceber (um link clicado entra direto)
+        if (std.mem.trim(u8, config.getStr(&a.cfg.name), " ").len == 0) {
+            const env_user = if (sync.is_windows) std.c.getenv("USERNAME") else std.c.getenv("USER");
+            if (env_user) |u| {
+                const us = std.mem.span(u);
+                if (us.len > 0 and us.len <= 32 and !std.mem.eql(u8, us, "root")) {
+                    var nb: [33]u8 = undefined;
+                    @memcpy(nb[0..us.len], us);
+                    nb[0] = std.ascii.toUpper(nb[0]); // "rsha" → "Rsha"
+                    config.setStr(&a.cfg.name, nb[0..us.len]);
+                }
+            }
+        }
         i18n.init(config.getStr(&a.cfg.language));
         cssfile.on_change = wakeUi;
         if (config.getStr(&a.cfg.custom_css).len > 0) cssfile.watch(config.getStr(&a.cfg.custom_css));
