@@ -104,7 +104,8 @@
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     const visible = () => new Promise((r) => { if (!document.hidden) r(); else document.addEventListener('visibilitychange', function f() { if (!document.hidden) { document.removeEventListener('visibilitychange', f); r(); } }); });
     (async function play() {
-      for (;;) {
+      // duas vezes e para (com o texto inteiro na tela): nada fica animando pra sempre
+      for (let round = 0; round < 2; round++) {
         term.textContent = '';
         for (const l of lines) {
           await visible();
@@ -118,7 +119,7 @@
           }
         }
         const c = caret(); term.append(c);
-        await wait(6500);
+        if (round === 0) await wait(6500);
       }
     })();
   }

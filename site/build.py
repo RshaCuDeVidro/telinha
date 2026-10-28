@@ -309,7 +309,8 @@ class Site:
             repo_path = posixpath.normpath(posixpath.join(srcdir, unquote(path))) if path else src
             if repo_path.startswith("docs/img/") or repo_path.startswith("assets/"):
                 self.images.add(repo_path)
-                return base + "img/" + repo_path.split("/", 1)[1] if repo_path.startswith("docs/") else base + repo_path
+                # docs/img/X é copiado pra <out>/img/X (passo 4)
+                return base + "img/" + repo_path[len("docs/img/"):] if repo_path.startswith("docs/img/") else base + repo_path
             key = re.sub(r"\.pt\.md$", ".md", repo_path)
             if key in self.src_to_slug:
                 return base + self.page_path(lang, self.src_to_slug[key]) + (f"#{frag}" if frag else "")
@@ -436,6 +437,12 @@ def sidebar(site, lang, base, current):
 # ------------------------------------------------------------------ build
 def build(out):
     if os.path.isdir(out):
+        # apaga só o que parece um site gerado: "--out ." apagava o repositório
+        real = os.path.realpath(out)
+        forbidden = {os.path.realpath(p) for p in (TOP, HERE, "/", os.path.expanduser("~"))}
+        built = not os.listdir(out) or os.path.exists(os.path.join(out, "index.html")) or os.path.exists(os.path.join(out, "404.html"))
+        if real in forbidden or os.path.exists(os.path.join(out, ".git")) or not built:
+            sys.exit(f"build.py: {out} não parece uma pasta do site gerado; não vou apagar")
         shutil.rmtree(out)
     os.makedirs(out)
     site = Site(out)
