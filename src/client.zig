@@ -429,6 +429,8 @@ pub const View = struct {
     // áudio (a thread de rede decodifica, o mixer toca)
     audio_ring: audio.Ring = .{},
     audio_dec: ?audio.Decoder = null,
+    audio_last_seq: ?u32 = null, // sequência do último pacote de som tocado (perda e ordem)
+    audio_concealed: u32 = 0, // pacotes perdidos remendados pelo Opus (estatística)
     audio_registered: bool = false,
 
     /// Buffers na placa (nv12_dev), reaproveitados; só a thread de decode
@@ -618,12 +620,22 @@ pub const View = struct {
     }
 
     /// Pacote Opus recebido (thread de rede), com a hora da captura.
-    fn pushAudio(v: *View, packet: []const u8, ts_us: u64) void {
+    fn pushAudio(v: *View, seq: u32, packet: []const u8, ts_us: u64) void {
         if (v.clip) |cb| cb.addAudio(packet, ts_us);
         v.amutex.lock();
         defer v.amutex.unlock();
         if (v.audio_stop) return;
+        // como na voz: pacote velho (um reenvio do UDP que chegou depois do
+        // seguinte) ou repetido fica de fora em vez de tocar fora de ordem; um
+        // buraco pequeno vira o "remendo" do Opus em vez de um clique
+        const plan = voice.gapPlan(v.audio_last_seq, seq);
+        if (plan.drop) return;
+        v.audio_last_seq = seq;
         if (v.audio_dec == null) v.audio_dec = audio.Decoder.init() catch return;
+        for (0..plan.conceal) |_| {
+            v.audio_ring.write(v.audio_dec.?.conceal(audio.frame_len) catch break);
+            v.audio_concealed += 1;
+        }
         const pcm = v.audio_dec.?.decode(packet) catch return;
         v.audio_ring.write(pcm);
         if (!v.audio_registered) {
@@ -1904,9 +1916,9 @@ pub const Client = struct {
             .audio => {
                 const v = cl.viewRetained(try r.u32_()) orelse return;
                 defer v.release();
-                _ = try r.u32_(); // seq
+                const seq = try r.u32_();
                 const ts = try r.u64_(); // hora da captura
-                v.pushAudio(r.rest(), ts);
+                v.pushAudio(seq, r.rest(), ts);
             },
             .keyreq => {
                 const kind: u8 = r.u8_() catch proto.kind_screen;
