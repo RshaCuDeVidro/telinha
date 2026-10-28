@@ -1112,7 +1112,7 @@ pub const Client = struct {
             return;
         };
 
-        cl.transcript = crypto.transcript(crypto.myHello(&won.hs, proto.version), won.peer);
+        cl.transcript = crypto.transcriptFor(won.version, crypto.myHello(&won.hs, won.version), won.peer);
 
         // escritora
         _ = cl.refs.fetchAdd(1, .monotonic);
@@ -1125,9 +1125,31 @@ pub const Client = struct {
 
         var rb: proto.RecvBuf = .{};
         defer rb.deinit();
-        // tem identidade esperada: o servidor prova quem é antes de a gente
-        // mandar nome e token (quem estiver no meio não leva nada)
-        if (cl.expect_fp_len > 0) {
+        // protocolo 7: a identidade vem em claro, sempre, antes de tudo; a
+        // gente confere e só então manda o hello (cifrado com a senha)
+        if (won.version >= 7) {
+            net.setRecvTimeout(cl.sock, 8000);
+            const ok = blk: {
+                const id = proto.recvIdentityPlain(cl.sock) catch {
+                    cl.setFinal();
+                    cl.setError("O servidor não provou quem é (alguém no meio do caminho?). Não mandei nada.", .{});
+                    break :blk false;
+                };
+                if (id) |b| break :blk cl.checkIdentity(&b);
+                if (cl.expect_fp_len > 0) {
+                    cl.setFinal();
+                    cl.setError("O servidor não provou quem é (versão antiga do telinha, ou alguém no meio do caminho). Não mandei nada.", .{});
+                    break :blk false;
+                }
+                break :blk true;
+            };
+            if (!ok) {
+                cl.queue.close();
+                net.shutdown(cl.sock);
+                return;
+            }
+            net.setRecvTimeout(cl.sock, 0);
+        } else if (cl.expect_fp_len > 0) {
             net.setRecvTimeout(cl.sock, 8000);
             const ok = blk: {
                 const typ = proto.recvMsg(cl.sock, &cl.channel, &rb) catch |e| {

@@ -715,6 +715,36 @@ class InviteTest(unittest.TestCase):
         self.assertRegex(fp, "^[a-z2-7]{24}$")
 
 
+class OldServerTest(unittest.IsolatedAsyncioTestCase):
+    """Servidor de antes da 3.8 (protocolo 6): o SDK conecta de novo falando o 6."""
+
+    async def test_volta_pro_protocolo_6(self):
+        from telinha import connection, crypto
+        seen = []
+
+        async def handle(reader, writer):
+            hello = crypto.Hello.parse(await reader.readexactly(crypto.HELLO_LEN))
+            seen.append(hello.version)
+            writer.write(crypto.Handshake(wire.PROTOCOL_VERSION_OLD).hello.to_bytes())
+            await writer.drain()
+            if hello.version != wire.PROTOCOL_VERSION_OLD:
+                writer.close()  # como o servidor antigo: versão diferente, fecha
+                return
+            await asyncio.sleep(1)
+            writer.close()
+
+        srv = await asyncio.start_server(handle, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        try:
+            conn = await connection.race(Invite.parse(f"telinha://127.0.0.1:{port}"))
+            self.assertEqual(conn.version, wire.PROTOCOL_VERSION_OLD)
+            self.assertEqual(seen, [wire.PROTOCOL_VERSION, wire.PROTOCOL_VERSION_OLD])
+            await conn.close()
+        finally:
+            srv.close()
+            await srv.wait_closed()
+
+
 def _collect(into: list):
     async def f(msg):
         into.append(msg)

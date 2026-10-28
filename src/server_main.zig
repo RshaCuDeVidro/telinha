@@ -33,6 +33,9 @@ const usage =
     \\                         (some quando esvazia)
     \\  --sem-canais-novos     ninguém cria canal: só os da lista
     \\  --sem-bots             recusa bots (o sdk/python e afins; $TELINHA_SEM_BOTS=1)
+    \\  --so-protocolo-novo    recusa apps de antes da 3.8 (protocolo 6: a senha deles
+    \\                         dá pra testar offline a partir de uma conexão;
+    \\                         $TELINHA_SO_PROTOCOLO_NOVO=1)
     \\  --token-bots TXT       só aceita bots que mandarem esse token
     \\                         ($TELINHA_TOKEN_BOTS); sem isso, qualquer bot com
     \\                         a senha da sala entra. Bot nunca vira admin
@@ -312,6 +315,7 @@ pub fn main(init: std.process.Init) !void {
     var channels: []const u8 = env("TELINHA_CANAIS") orelse "";
     var new_channels = true;
     var no_bots = if (env("TELINHA_SEM_BOTS")) |v| std.mem.eql(u8, v, "1") else false;
+    var only_new = if (env("TELINHA_SO_PROTOCOLO_NOVO")) |v| std.mem.eql(u8, v, "1") else false;
     var bot_token: []const u8 = env("TELINHA_TOKEN_BOTS") orelse "";
     var key_path: []const u8 = env("TELINHA_CHAVE") orelse "";
     var state_path: []const u8 = env("TELINHA_ESTADO") orelse "";
@@ -346,6 +350,10 @@ pub fn main(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, a, "--sem-bots")) {
             no_bots = true;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--so-protocolo-novo")) {
+            only_new = true;
             continue;
         }
         if (std.mem.eql(u8, a, "--publico")) {
@@ -405,7 +413,7 @@ pub fn main(init: std.process.Init) !void {
         const z = std.fmt.bufPrintZ(&lb, "{s}", .{logs_dir}) catch die("pasta de logs longa demais", .{});
         _ = mkdir(z.ptr, 0o750);
     }
-    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir, .channels = channels, .new_channels = new_channels, .identity_seed = loadKey(key_path, &key_used), .state_path = statePath(state_path, key_used[0..key_used_len]), .files_dir = filesDir(files_dir, statePath(state_path, key_used[0..key_used_len])), .no_bots = no_bots, .bot_token = bot_token }) catch
+    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir, .channels = channels, .new_channels = new_channels, .identity_seed = loadKey(key_path, &key_used), .state_path = statePath(state_path, key_used[0..key_used_len]), .files_dir = filesDir(files_dir, statePath(state_path, key_used[0..key_used_len])), .no_bots = no_bots, .bot_token = bot_token, .accept_old = !only_new }) catch
         die("não consegui abrir a porta {d} (já está em uso?)", .{port});
 
     var buf: [256]u8 = undefined;

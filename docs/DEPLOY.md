@@ -132,6 +132,11 @@ room password and show up with a BOT tag; they never become admin. To decide
 who gets in:
 
 - `--sem-bots` (`TELINHA_SEM_BOTS=1`): refuses every bot.
+- `--so-protocolo-novo` (`TELINHA_SO_PROTOCOLO_NOVO=1`): refuses apps older than
+  3.8 (protocol 6). With protocol 6, anyone who reaches the port can get, from
+  one connection, something to test the room password against offline; turn
+  this on once everyone has updated (the app updates itself; bots need the SDK
+  from 3.8 on).
 - `--token-bots SECRET` (`TELINHA_TOKEN_BOTS`): only bots sending this token
   (`Bot(..., bot_token="SECRET")`, `--token-bots` in the music bot). People
   still join with just the password.

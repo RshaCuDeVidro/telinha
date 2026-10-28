@@ -36,8 +36,10 @@ const Conn = struct {
         try net.sendAll(s, &hs.helloBytes(proto.version));
         var hb: [crypto.hello_len]u8 = undefined;
         try net.recvAll(s, &hb);
+        const peer = try crypto.parseHello(&hb);
+        if (peer.version >= 7) _ = try proto.recvIdentityPlain(s);
         const c = try gpa.create(Conn);
-        c.* = .{ .sock = s, .ch = try crypto.Channel.derive(&hs, try crypto.parseHello(&hb), true, "") };
+        c.* = .{ .sock = s, .ch = try crypto.Channel.derive(&hs, peer, true, "") };
         var b: proto.Builder = .{};
         defer b.deinit();
         try b.begin(.hello);

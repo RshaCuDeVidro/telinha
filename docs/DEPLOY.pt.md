@@ -131,6 +131,11 @@ entram com a senha da sala e aparecem com a etiqueta BOT; nunca viram admin.
 Pra decidir quem entra:
 
 - `--sem-bots` (`TELINHA_SEM_BOTS=1`): recusa todos os bots.
+- `--so-protocolo-novo` (`TELINHA_SO_PROTOCOLO_NOVO=1`): recusa apps de antes da
+  3.8 (protocolo 6). No protocolo 6, quem alcança a porta consegue, com uma
+  conexão, algo pra testar a senha da sala offline; ligue quando todo mundo tiver
+  atualizado (o app se atualiza sozinho; os bots precisam do SDK da 3.8 em
+  diante).
 - `--token-bots SEGREDO` (`TELINHA_TOKEN_BOTS`): só bot que mandar esse token
   (`Bot(..., bot_token="SEGREDO")`, `--token-bots` no bot de música). Gente
   comum continua entrando só com a senha.

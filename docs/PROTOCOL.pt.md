@@ -1,4 +1,4 @@
-# Protocolo (versão 6)
+# Protocolo (versão 7)
 
 <sub>[🇺🇸 English](PROTOCOL.md) · [🇧🇷 Português](PROTOCOL.pt.md)</sub>
 
@@ -22,12 +22,15 @@ Os dois lados mandam, ao mesmo tempo, 54 bytes:
 | campo | tamanho | |
 |---|---|---|
 | `"TLNH"` | 4 | identifica o protocolo |
-| versão | u16 | hoje `6` |
+| versão | u16 | hoje `7` (o `6` ainda é aceito, veja abaixo) |
 | chave pública X25519 | 32 | efêmera, nova a cada conexão |
 | nonce | 16 | aleatório |
 
 Se as versões forem diferentes, o servidor ainda manda o hello dele (pro
-cliente poder avisar "versão diferente") e fecha.
+cliente poder avisar "versão diferente") e fecha. Servidor no 7 responde no 6 a
+um cliente no 6 (apps de antes da 3.8), a não ser que tenha subido com
+`--so-protocolo-novo`; app no 7 que recebe um hello `6` (servidor de antes da
+3.8, que fecha) conecta de novo falando o 6.
 
 ### Convite e vários caminhos
 
@@ -80,12 +83,24 @@ e fecha. Até o `hello` cifrado chegar, cada leitura do servidor tem prazo de
 ### Identidade do servidor
 
 O servidor tem uma chave Ed25519 fixa (a semente de 32 bytes num arquivo:
-`--chave`). Logo depois do handshake, antes de ler qualquer coisa, ele manda
-`identity` (31): a chave pública e a assinatura de
+`--chave`).
+
+**Versão 7:** logo depois do handshake, antes de ler qualquer coisa, ele manda
+**em claro** `u32 0xFFFFFFFE`, `u8 tem_identidade` e, se 1, a chave pública (32)
+e a assinatura (64) de
 
 ```
-transcrito = SHA-256("telinha-identidade-v1" || pública_cliente || nonce_cliente || pública_servidor || nonce_servidor)
+transcrito = SHA-256("telinha-identidade-v2" || u16 versão || pública_cliente || nonce_cliente || pública_servidor || nonce_servidor)
 ```
+
+Nada cifrado com a chave da senha sai do servidor antes de o `hello` do cliente
+decifrar. (Na versão 6 a identidade ia cifrada, como a mensagem `identity`
+abaixo: quem conectasse uma vez levava um texto pra testar senhas offline.)
+Senha errada repetida do mesmo IP espera 2, 4, 8… até 60 s pra próxima tentativa.
+
+**Versão 6:** o mesmo, como a primeira mensagem cifrada, `identity` (31), com o
+transcrito `SHA-256("telinha-identidade-v1" || pública_cliente || nonce_cliente
+|| pública_servidor || nonce_servidor)`.
 
 Quem estiver no meio tem um handshake diferente com cada lado, então a
 assinatura do servidor de verdade não serve pra ele. A **impressão** é o base32

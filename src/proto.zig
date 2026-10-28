@@ -13,13 +13,43 @@ const net = @import("net.zig");
 const crypto = @import("crypto.zig");
 const udp = @import("udp.zig");
 
-pub const version: u16 = 6;
+/// 7: a identidade do servidor vem em claro (assinada) logo depois do
+/// handshake, e nada cifrado com a chave da senha sai do servidor antes de o
+/// cliente provar a senha. No 6 ela vinha cifrada: quem conectasse uma vez
+/// levava um texto pra testar senhas offline, na velocidade do SHA-256.
+pub const version: u16 = 7;
+/// O anterior (servidor e app ainda falam com ele; o servidor pode recusar).
+pub const version_old: u16 = 6;
 /// Versão do app (vai no hello/welcome/members pra avisar quem está desatualizado).
 pub const app_version = "3.7.0";
 pub const max_msg = 32 * 1024 * 1024;
 /// Marcador em claro no lugar do tamanho: "senha errada" (o servidor não
 /// conseguiu decifrar a primeira mensagem).
 pub const wrong_password_marker: u32 = 0xFFFF_FFFF;
+/// v7: em claro, logo depois do handshake: este marcador, 1 byte (tem
+/// identidade?) e, se tiver, chave pública (32) + assinatura do transcript (64).
+pub const identity_plain_marker: u32 = 0xFFFF_FFFE;
+
+pub fn identityPlainBytes(id: ?[96]u8, out: *[101]u8) []const u8 {
+    std.mem.writeInt(u32, out[0..4], identity_plain_marker, .little);
+    out[4] = @intFromBool(id != null);
+    if (id) |b| {
+        @memcpy(out[5..101], &b);
+        return out[0..101];
+    }
+    return out[0..5];
+}
+
+/// Lê o bloco da identidade em claro (v7). null = servidor sem identidade.
+pub fn recvIdentityPlain(s: net.Socket) !?[96]u8 {
+    var hdr: [5]u8 = undefined;
+    try net.recvAll(s, &hdr);
+    if (std.mem.readInt(u32, hdr[0..4], .little) != identity_plain_marker) return error.Protocol;
+    if (hdr[4] == 0) return null;
+    var id: [96]u8 = undefined;
+    try net.recvAll(s, &id);
+    return id;
+}
 pub const gpa = std.heap.c_allocator;
 
 pub const Type = enum(u8) {

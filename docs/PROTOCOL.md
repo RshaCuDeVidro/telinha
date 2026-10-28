@@ -1,4 +1,4 @@
-# Protocol (version 6)
+# Protocol (version 7)
 
 <sub>[🇺🇸 English](PROTOCOL.md) · [🇧🇷 Português](PROTOCOL.pt.md)</sub>
 
@@ -25,12 +25,15 @@ Both sides send, at the same time, 54 bytes:
 | field | size | |
 |---|---|---|
 | `"TLNH"` | 4 | identifies the protocol |
-| version | u16 | today `6` |
+| version | u16 | today `7` (`6` is still accepted, see below) |
 | X25519 public key | 32 | ephemeral, new for every connection |
 | nonce | 16 | random |
 
 If the versions differ, the server still sends its hello (so the client can
-report "different version") and closes.
+report "different version") and closes. A server on 7 answers a client on 6 in
+version 6 (apps before 3.8), unless started with `--so-protocolo-novo`; an app
+on 7 that gets a hello `6` back (a server before 3.8, which closes) connects
+again speaking 6.
 
 ### Invite and several paths
 
@@ -83,13 +86,25 @@ deadline.
 
 ### Server identity
 
-The server has a fixed Ed25519 key (a 32-byte seed in a file: `--chave`). Right
-after the handshake, before reading anything, it sends `identity` (31): its
-public key and a signature over
+The server has a fixed Ed25519 key (a 32-byte seed in a file: `--chave`).
+
+**Version 7:** right after the handshake, before reading anything, it sends **in
+the clear** `u32 0xFFFFFFFE`, `u8 has_identity` and, if 1, its public key (32)
+and a signature (64) over
 
 ```
-transcript = SHA-256("telinha-identidade-v1" || client_public || client_nonce || server_public || server_nonce)
+transcript = SHA-256("telinha-identidade-v2" || u16 version || client_public || client_nonce || server_public || server_nonce)
 ```
+
+Nothing encrypted with the password-derived key leaves the server before the
+client's `hello` decrypts. (In version 6 the identity went encrypted, as the
+`identity` message below: anyone who connected once got a ciphertext to test
+passwords against offline.) Repeated wrong passwords from one IP wait 2, 4, 8 …
+up to 60 s before the next try.
+
+**Version 6:** the same, as the first encrypted message, `identity` (31), with
+the transcript `SHA-256("telinha-identidade-v1" || client_public || client_nonce
+|| server_public || server_nonce)`.
 
 Someone in the middle has a different handshake with each side, so the real
 server's signature is useless to them. The **fingerprint** is base32 (lowercase,

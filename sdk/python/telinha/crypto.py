@@ -100,6 +100,13 @@ def transcript(client: Hello, server: Hello) -> bytes:
     return hashlib.sha256(b"telinha-identidade-v1" + client.public + client.nonce + server.public + server.nonce).digest()
 
 
+def transcript_for(version: int, client: Hello, server: Hello) -> bytes:
+    """O transcript da versão do protocolo: do 7 em diante leva a versão junto."""
+    if version < 7:
+        return transcript(client, server)
+    return hashlib.sha256(b"telinha-identidade-v2" + struct.pack("<H", version) + client.public + client.nonce + server.public + server.nonce).digest()
+
+
 def verify_identity(public: bytes, signature: bytes, t: bytes) -> bool:
     try:
         Ed25519PublicKey.from_public_bytes(public).verify(signature, t)

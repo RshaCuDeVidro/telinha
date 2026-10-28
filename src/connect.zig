@@ -11,6 +11,7 @@ const std = @import("std");
 const sync = @import("sync.zig");
 const net = @import("net.zig");
 const crypto = @import("crypto.zig");
+const proto = @import("proto.zig");
 const gpa = std.heap.c_allocator;
 
 pub const max_targets = 8;
@@ -98,6 +99,7 @@ pub const Winner = struct {
     hs: crypto.Handshake,
     peer: crypto.Hello,
     index: usize, // qual endereço da lista ganhou
+    version: u16, // a versão do protocolo combinada (a nossa, ou a antiga com servidor antigo)
 };
 
 const Race = struct {
@@ -119,6 +121,50 @@ const Race = struct {
     }
 };
 
+/// Uma tentativa num endereço: conecta, troca os hellos. `error.OldServer`
+/// (em `err`): o servidor fala o protocolo antigo e a gente pediu o novo.
+fn tryOnce(t: *const Target, version: u16, err: *anyerror, r: *Race) ?Winner {
+    const s = net.connect(t.hostSlice(), t.port) catch |e| {
+        err.* = e;
+        return null;
+    };
+    net.setRecvTimeout(s, 8000);
+    const hs = crypto.Handshake.init() catch {
+        net.close(s);
+        return null;
+    };
+    net.sendAll(s, &hs.helloBytes(version)) catch |e| {
+        err.* = e;
+        net.close(s);
+        return null;
+    };
+    var hb: [crypto.hello_len]u8 = undefined;
+    net.recvAll(s, &hb) catch |e| {
+        err.* = e;
+        net.close(s);
+        return null;
+    };
+    const peer = crypto.parseHello(&hb) catch |e| {
+        err.* = e;
+        net.close(s);
+        return null;
+    };
+    if (peer.version != version) {
+        net.close(s);
+        if (peer.version == proto.version_old and version == proto.version) {
+            err.* = error.OldServer;
+            return null;
+        }
+        err.* = error.VersionMismatch;
+        r.mutex.lock();
+        r.version_mismatch = peer.version;
+        r.mutex.unlock();
+        return null;
+    }
+    net.setRecvTimeout(s, 0);
+    return .{ .sock = s, .hs = hs, .peer = peer, .index = 0, .version = version };
+}
+
 fn attempt(r: *Race, i: usize, delay_ms: u32, version: u16) void {
     defer r.release();
     // escalonamento: dá vantagem pros primeiros da lista (os diretos)
@@ -126,48 +172,19 @@ fn attempt(r: *Race, i: usize, delay_ms: u32, version: u16) void {
     while (waited < delay_ms and !r.cancel.load(.acquire)) : (waited += 10) sync.sleepMs(10);
     var result: ?Winner = null;
     var err: anyerror = error.Cancelled;
-    if (!r.cancel.load(.acquire)) blk: {
-        const t = &r.targets[i];
-        const s = net.connect(t.hostSlice(), t.port) catch |e| {
-            err = e;
-            break :blk;
-        };
-        net.setRecvTimeout(s, 8000);
-        const hs = crypto.Handshake.init() catch {
-            net.close(s);
-            break :blk;
-        };
-        net.sendAll(s, &hs.helloBytes(version)) catch |e| {
-            err = e;
-            net.close(s);
-            break :blk;
-        };
-        var hb: [crypto.hello_len]u8 = undefined;
-        net.recvAll(s, &hb) catch |e| {
-            err = e;
-            net.close(s);
-            break :blk;
-        };
-        const peer = crypto.parseHello(&hb) catch |e| {
-            err = e;
-            net.close(s);
-            break :blk;
-        };
-        if (peer.version != version) {
-            err = error.VersionMismatch;
-            r.mutex.lock();
-            r.version_mismatch = peer.version;
-            r.mutex.unlock();
-            net.close(s);
-            break :blk;
-        }
-        net.setRecvTimeout(s, 0);
-        result = .{ .sock = s, .hs = hs, .peer = peer, .index = i };
+    if (!r.cancel.load(.acquire)) {
+        // servidor antigo (protocolo 6) recusa o nosso hello e fecha: conecta
+        // de novo falando o 6 (uma vez só)
+        result = tryOnce(&r.targets[i], version, &err, r);
+        if (result == null and err == error.OldServer and !r.cancel.load(.acquire)) result = tryOnce(&r.targets[i], proto.version_old, &err, r);
+        if (err == error.OldServer) err = error.VersionMismatch;
     }
     r.mutex.lock();
     defer r.mutex.unlock();
     r.finished += 1;
-    if (result) |w| {
+    if (result) |res| {
+        var w = res;
+        w.index = i;
         if (r.winner == null and !r.cancel.load(.acquire)) {
             r.winner = w;
             r.cancel.store(true, .release); // as outras desistem

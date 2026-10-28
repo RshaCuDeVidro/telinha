@@ -104,6 +104,23 @@ pub fn transcript(client: Hello, server: Hello) [32]u8 {
     return out;
 }
 
+/// O transcript da versão do protocolo: do 7 em diante leva a versão junto.
+pub fn transcriptFor(version: u16, client: Hello, server: Hello) [32]u8 {
+    if (version < 7) return transcript(client, server);
+    var h = Sha256.init(.{});
+    h.update("telinha-identidade-v2");
+    var vb: [2]u8 = undefined;
+    std.mem.writeInt(u16, &vb, version, .little);
+    h.update(&vb);
+    h.update(&client.public);
+    h.update(&client.nonce);
+    h.update(&server.public);
+    h.update(&server.nonce);
+    var out: [32]u8 = undefined;
+    h.final(&out);
+    return out;
+}
+
 pub fn verifyIdentity(public: [32]u8, sig: [64]u8, t: [32]u8) bool {
     const pk = Ed25519.PublicKey.fromBytes(public) catch return false;
     Ed25519.Signature.fromBytes(sig).verify(&t, pk) catch return false;

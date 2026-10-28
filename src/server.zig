@@ -568,6 +568,9 @@ pub const Options = struct {
     new_channels: bool = true,
     /// A sala roda dentro do app (as estatísticas avisam que a CPU é do app todo).
     hosted: bool = false,
+    /// Aceita o protocolo 6 (apps de antes da 3.8): a senha dele dá pra
+    /// testar offline a partir de uma conexão; desligue quando todo mundo atualizar.
+    accept_old: bool = true,
     /// Semente da identidade fixa (Ed25519; ver crypto.Identity). null = sem
     /// identidade (o app não tem como conferir quem é o servidor).
     identity_seed: ?[32]u8 = null,
@@ -746,6 +749,7 @@ pub const Server = struct {
     dms_head: usize = 0,
     stopped: std.atomic.Value(bool) = .init(false),
     gate: Gate = .{},
+    accept_old: bool = true, // aceita o protocolo 6 (apps de antes da 3.8)
     /// Dono (quem chamou start) + uma por thread do servidor + uma por conexão
     /// + o túnel: o último a soltar libera tudo (histórico do chat, imagens...).
     refs: std.atomic.Value(u32) = .init(1),
@@ -761,7 +765,7 @@ pub const Server = struct {
     pub fn start(opts: Options) !*Server {
         const ls = try net.listen(opts.port);
         const s = try gpa.create(Server);
-        s.* = .{ .listen_sock = ls, .port = opts.port, .max_members = opts.max_members, .clip_key_ms = opts.clip_key_interval_ms, .log_fn = opts.log, .start_us = sync.nowUs(), .new_channels = opts.new_channels, .hosted = opts.hosted };
+        s.* = .{ .listen_sock = ls, .port = opts.port, .max_members = opts.max_members, .clip_key_ms = opts.clip_key_interval_ms, .log_fn = opts.log, .start_us = sync.nowUs(), .new_channels = opts.new_channels, .hosted = opts.hosted, .accept_old = opts.accept_old };
         if (opts.identity_seed) |seed| s.identity = crypto.Identity.fromSeed(seed) catch null;
         // canais fixos (o primeiro é o padrão)
         var it = std.mem.tokenizeScalar(u8, opts.channels, ',');
@@ -1276,21 +1280,35 @@ pub const Server = struct {
         try net.recvAll(cn.sock, &hello_buf);
         const peer = try crypto.parseHello(&hello_buf);
         const hs = try crypto.Handshake.init();
-        try net.sendAll(cn.sock, &hs.helloBytes(proto.version));
-        if (peer.version != proto.version) return error.VersionMismatch; // o cliente vê nossa versão e avisa
+        // fala a versão do cliente quando sabe (7, e o 6 dos apps de antes,
+        // se a sala ainda aceita); senão responde a nossa e o cliente avisa
+        const v: u16 = if (peer.version == proto.version or (peer.version == proto.version_old and s.accept_old)) peer.version else proto.version;
+        try net.sendAll(cn.sock, &hs.helloBytes(v));
+        if (peer.version != v) return error.VersionMismatch; // o cliente vê nossa versão e avisa
         var pw: [128]u8 = undefined;
         s.mutex.lock();
         const pw_len = s.password_len;
         @memcpy(pw[0..pw_len], s.password[0..pw_len]);
         s.mutex.unlock();
         cn.channel = try crypto.Channel.derive(&hs, peer, false, pw[0..pw_len]);
-        // quem eu sou, provado já: o app confere antes de mandar nome e token
+        // quem eu sou, provado já: o app confere antes de mandar nome e token.
+        // No 7 vai em claro (só tem dado público) e nada cifrado com a chave
+        // da senha sai antes do hello do cliente decifrar; no 6 ia cifrado, e
+        // quem conectasse uma vez levava um texto pra testar senhas offline
+        const t = crypto.transcriptFor(v, peer, crypto.myHello(&hs, v));
+        var id_bytes: ?[96]u8 = null;
         if (s.identity) |*id| {
-            const t = crypto.transcript(peer, crypto.myHello(&hs, proto.version));
-            const sig = try id.sign(t);
+            var b: [96]u8 = undefined;
+            @memcpy(b[0..32], &id.publicKey());
+            @memcpy(b[32..96], &(try id.sign(t)));
+            id_bytes = b;
+        }
+        if (v >= 7) {
+            var pb: [101]u8 = undefined;
+            try net.sendAll(cn.sock, proto.identityPlainBytes(id_bytes, &pb));
+        } else if (id_bytes) |b| {
             const m = try proto.Msg.alloc(.identity, 96);
-            @memcpy(m.payload()[0..32], &id.publicKey());
-            @memcpy(m.payload()[32..96], &sig);
+            @memcpy(m.payload()[0..96], &b);
             try proto.sendNow(cn.sock, &cn.channel, m);
         }
         // caminho UDP (o cliente abre mandando um hello pro mesmo endereço);

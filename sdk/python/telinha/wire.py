@@ -8,9 +8,11 @@ from __future__ import annotations
 import enum
 import struct
 
-PROTOCOL_VERSION = 6
+PROTOCOL_VERSION = 7  # 7: identidade em claro antes de tudo (ver connection.secure)
+PROTOCOL_VERSION_OLD = 6  # servidores de antes da 3.8
 MAX_MESSAGE = 32 * 1024 * 1024
 WRONG_PASSWORD = 0xFFFFFFFF
+IDENTITY_PLAIN = 0xFFFFFFFE  # v7: marcador da identidade em claro (+ u8 tem? + 96 bytes)
 MAX_TEXT = 4000  # bytes; quem monta corta aí
 
 

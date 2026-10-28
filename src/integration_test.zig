@@ -77,7 +77,8 @@ const TestClient = struct {
         var hb: [crypto.hello_len]u8 = undefined;
         try net.recvAll(s, &hb);
         const peer = try crypto.parseHello(&hb);
-        return .{ .sock = s, .ch = try crypto.Channel.derive(&hs, peer, true, password), .transcript = crypto.transcript(crypto.myHello(&hs, proto.version), peer) };
+        if (peer.version >= 7) _ = try proto.recvIdentityPlain(s); // identidade em claro (v7)
+        return .{ .sock = s, .ch = try crypto.Channel.derive(&hs, peer, true, password), .transcript = crypto.transcriptFor(peer.version, crypto.myHello(&hs, peer.version), peer) };
     }
 
     fn connectFull(port: u16, name: []const u8, password: []const u8, token: []const u8, key: u64, codecs: u8, chan: ?[]const u8) !TestClient {
@@ -93,7 +94,8 @@ const TestClient = struct {
         var hb: [crypto.hello_len]u8 = undefined;
         try net.recvAll(s, &hb);
         const peer = try crypto.parseHello(&hb);
-        var c: TestClient = .{ .sock = s, .ch = try crypto.Channel.derive(&hs, peer, true, password), .transcript = crypto.transcript(crypto.myHello(&hs, proto.version), peer) };
+        if (peer.version >= 7) _ = try proto.recvIdentityPlain(s); // identidade em claro (v7)
+        var c: TestClient = .{ .sock = s, .ch = try crypto.Channel.derive(&hs, peer, true, password), .transcript = crypto.transcriptFor(peer.version, crypto.myHello(&hs, peer.version), peer) };
         var b: proto.Builder = .{};
         defer b.deinit();
         try b.begin(.hello);
@@ -1854,6 +1856,7 @@ test "vários caminhos: entra pelo que responde (fechado, mudo e lixo ficam pra 
     var out: [256]u8 = undefined;
     std.mem.writeInt(u32, out[0..4], @intCast(plain.len + crypto.tag_len), .little);
     ch.seal(plain, out[4..][0 .. plain.len + crypto.tag_len]);
+    if (w.version >= 7) _ = try proto.recvIdentityPlain(w.sock);
     try net.sendAll(w.sock, out[0 .. 4 + plain.len + crypto.tag_len]);
     var rb: proto.RecvBuf = .{};
     defer rb.deinit();
@@ -1863,6 +1866,58 @@ test "vários caminhos: entra pelo que responde (fechado, mudo e lixo ficam pra 
     const only_bad = try std.fmt.bufPrint(&list_buf, "127.0.0.1:{d},127.0.0.1:{d}", .{ closed_port, junk_port });
     const nb = connect_mod.parseList(only_bad, &targets);
     try testing.expectError(error.NotTelinha, connect_mod.race(targets[0..nb], proto.version, 5_000, &cancel, &fail));
+}
+
+/// Servidor de antes (protocolo 6) de mentira: responde o hello com o 6 e,
+/// se o cliente falou outro, fecha (como o de verdade faz).
+fn oldServer(ls: net.Socket, done: *std.atomic.Value(bool)) void {
+    var held: [4]net.Socket = undefined;
+    var n_held: usize = 0;
+    while (!done.load(.acquire) and n_held < held.len) {
+        const s = net.accept(ls) catch break;
+        net.setRecvTimeout(s, 3000);
+        var hb: [crypto.hello_len]u8 = undefined;
+        net.recvAll(s, &hb) catch {
+            net.close(s);
+            continue;
+        };
+        const peer = crypto.parseHello(&hb) catch {
+            net.close(s);
+            continue;
+        };
+        const hs = crypto.Handshake.init() catch break;
+        net.sendAll(s, &hs.helloBytes(proto.version_old)) catch {};
+        if (peer.version != proto.version_old) {
+            net.close(s);
+            continue;
+        }
+        held[n_held] = s;
+        n_held += 1;
+    }
+    while (!done.load(.acquire)) sync.sleepMs(20);
+    for (held[0..n_held]) |s| net.close(s);
+}
+
+test "conexão: com servidor de antes (protocolo 6) o app conecta de novo falando o 6" {
+    const port = freshPort();
+    const ls = try net.listenLocal(port);
+    defer net.close(ls);
+    var done = std.atomic.Value(bool).init(false);
+    const th = try std.Thread.spawn(.{}, oldServer, .{ ls, &done });
+    defer {
+        done.store(true, .release);
+        net.shutdown(ls);
+        th.join();
+    }
+    var list_buf: [64]u8 = undefined;
+    var targets: [connect_mod.max_targets]connect_mod.Target = undefined;
+    const n = connect_mod.parseList(try std.fmt.bufPrint(&list_buf, "127.0.0.1:{d}", .{port}), &targets);
+    var cancel = std.atomic.Value(bool).init(false);
+    var fail: connect_mod.Failure = .{ .err = error.ConnectFailed };
+    const w = try connect_mod.race(targets[0..n], proto.version, 5_000, &cancel, &fail);
+    defer net.close(w.sock);
+    try testing.expectEqual(proto.version_old, w.version);
+    try testing.expectEqual(proto.version_old, w.peer.version);
 }
 
 test "canais: nome normalizado (sem #, minúsculas, espaço vira -, acento ok, até 24 bytes)" {
@@ -2096,17 +2151,37 @@ test "identidade: o servidor prova quem é antes do hello (assinatura deste hand
     var hb: [crypto.hello_len]u8 = undefined;
     try net.recvAll(s, &hb);
     const peer = try crypto.parseHello(&hb);
-    var ch = try crypto.Channel.derive(&hs, peer, true, "");
-    var rb: proto.RecvBuf = .{};
-    defer rb.deinit();
-    try testing.expectEqual(proto.Type.identity, try proto.recvMsg(s, &ch, &rb));
-    const pl = proto.payloadOf(&rb);
-    const t = crypto.transcript(crypto.myHello(&hs, proto.version), peer);
+    try testing.expectEqual(proto.version, peer.version);
+    // protocolo 7: em claro, e nada cifrado vem antes do nosso hello (no 6
+    // vinha cifrada com a chave da senha: um texto pra testar senha offline)
+    const pl = (try proto.recvIdentityPlain(s)).?;
+    const t = crypto.transcriptFor(proto.version, crypto.myHello(&hs, proto.version), peer);
     try testing.expect(crypto.verifyIdentity(pl[0..32].*, pl[32..96].*, t));
     try testing.expectEqualSlices(u8, &want.publicKey(), pl[0..32]);
+    net.setRecvTimeout(s, 300);
+    var extra: [1]u8 = undefined;
+    try testing.expectError(error.ConnectionLost, net.recvAll(s, &extra));
     // a assinatura é desta conexão: com outro handshake ela não vale
     const other = try crypto.Handshake.init();
-    try testing.expect(!crypto.verifyIdentity(pl[0..32].*, pl[32..96].*, crypto.transcript(crypto.myHello(&other, proto.version), peer)));
+    try testing.expect(!crypto.verifyIdentity(pl[0..32].*, pl[32..96].*, crypto.transcriptFor(proto.version, crypto.myHello(&other, proto.version), peer)));
+    // app de antes (protocolo 6): a sala ainda fala com ele, identidade cifrada como antes
+    {
+        const s6 = try net.connect("127.0.0.1", port);
+        defer net.close(s6);
+        net.setRecvTimeout(s6, 5000);
+        const hs6 = try crypto.Handshake.init();
+        try net.sendAll(s6, &hs6.helloBytes(proto.version_old));
+        var hb6: [crypto.hello_len]u8 = undefined;
+        try net.recvAll(s6, &hb6);
+        const peer6 = try crypto.parseHello(&hb6);
+        try testing.expectEqual(proto.version_old, peer6.version);
+        var ch6 = try crypto.Channel.derive(&hs6, peer6, true, "");
+        var rb6: proto.RecvBuf = .{};
+        defer rb6.deinit();
+        try testing.expectEqual(proto.Type.identity, try proto.recvMsg(s6, &ch6, &rb6));
+        const pl6 = proto.payloadOf(&rb6);
+        try testing.expect(crypto.verifyIdentity(pl6[0..32].*, pl6[32..96].*, crypto.transcript(crypto.myHello(&hs6, proto.version_old), peer6)));
+    }
 
     // servidor sem chave: a primeira mensagem já é o welcome
     const p2 = freshPort();
@@ -2116,6 +2191,22 @@ test "identidade: o servidor prova quem é antes do hello (assinatura deste hand
     var c = try TestClient.connect(p2, "Ana", "", "");
     defer c.close();
     try testing.expectEqual(proto.Type.welcome, try proto.recvMsg(c.sock, &c.ch, &c.rb));
+}
+
+test "protocolo: sala só com o protocolo novo recusa o app de antes (e diz a versão dela)" {
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port, .accept_old = false });
+    defer srv.stop();
+    const s = try net.connect("127.0.0.1", port);
+    defer net.close(s);
+    net.setRecvTimeout(s, 5000);
+    const hs = try crypto.Handshake.init();
+    try net.sendAll(s, &hs.helloBytes(proto.version_old));
+    var hb: [crypto.hello_len]u8 = undefined;
+    try net.recvAll(s, &hb);
+    try testing.expectEqual(proto.version, (try crypto.parseHello(&hb)).version);
+    var b: [1]u8 = undefined;
+    try testing.expectError(error.ConnectionLost, net.recvAll(s, &b));
 }
 
 fn sendCall(c: *TestClient, name: []const u8, pw: []const u8) !void {

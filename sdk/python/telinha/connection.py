@@ -34,6 +34,7 @@ class Connection:
         self.server_hello = server
         self.address = address
         self.channel: crypto.Channel | None = None
+        self.version = server.version  # o protocolo combinado
         self.fingerprint: str | None = None  # do servidor (se ele tiver identidade)
         self._send_lock = asyncio.Lock()
 
@@ -63,7 +64,11 @@ class Connection:
             pass
 
 
-async def _try(addr: Address, version: int) -> Connection:
+class _OldServer(Exception):
+    pass
+
+
+async def _try_once(addr: Address, version: int) -> Connection:
     reader, writer = await asyncio.open_connection(addr.host, addr.port)
     try:
         hs = crypto.Handshake(version)
@@ -71,11 +76,21 @@ async def _try(addr: Address, version: int) -> Connection:
         await writer.drain()
         server = crypto.Hello.parse(await asyncio.wait_for(reader.readexactly(crypto.HELLO_LEN), HELLO_TIMEOUT))
         if server.version != version:
+            if server.version == wire.PROTOCOL_VERSION_OLD and version == wire.PROTOCOL_VERSION:
+                raise _OldServer
             raise ConnectError(f"a sala usa o protocolo {server.version}; este SDK fala o {version}")
         return Connection(reader, writer, hs, server, addr)
     except BaseException:
         writer.close()
         raise
+
+
+async def _try(addr: Address, version: int) -> Connection:
+    try:
+        return await _try_once(addr, version)
+    except _OldServer:
+        # servidor de antes da 3.8: ele fecha quando ouve o 7; de novo falando o 6
+        return await _try_once(addr, wire.PROTOCOL_VERSION_OLD)
 
 
 async def race(invite: Invite, version: int = wire.PROTOCOL_VERSION) -> Connection:
@@ -122,6 +137,24 @@ async def secure(conn: Connection, invite: Invite, password: str) -> None:
     """Deriva as chaves e confere a identidade do servidor, que vem antes de
     tudo. Com impressão no convite, ela tem que bater."""
     conn.channel = conn.hs.channel(conn.server_hello, password)
+    if conn.version >= 7:
+        # protocolo 7: a identidade vem em claro, antes de qualquer coisa cifrada
+        head = await asyncio.wait_for(conn.reader.readexactly(5), 10)
+        (marker,) = struct.unpack_from("<I", head)
+        if marker != wire.IDENTITY_PLAIN:
+            raise IdentityMismatch("o servidor não mandou a identidade no começo")
+        if head[4] == 0:
+            if invite.fingerprint is not None:
+                raise IdentityMismatch("o servidor não mandou identidade, mas o convite pede uma")
+            return
+        ident = await asyncio.wait_for(conn.reader.readexactly(96), 10)
+        public, sig = ident[:32], ident[32:]
+        if not crypto.verify_identity(public, sig, crypto.transcript_for(conn.version, conn.hs.hello, conn.server_hello)):
+            raise IdentityMismatch("a assinatura do servidor não confere (alguém no meio do caminho?)")
+        conn.fingerprint = crypto.fingerprint(public)
+        if invite.fingerprint is not None and conn.fingerprint != invite.fingerprint:
+            raise IdentityMismatch(f"impressão do servidor {conn.fingerprint}, o convite pede {invite.fingerprint}")
+        return
     if invite.fingerprint is None:
         return  # sem impressão no convite: aceita (quem chama pode conferir conn.fingerprint)
     try:
