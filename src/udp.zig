@@ -80,6 +80,12 @@ pub const Stats = struct {
     late_drops: u64 = 0,
 };
 
+/// Quanto tempo uma mensagem pode levar pra chegar inteira (ms): 8 ms por
+/// pedaço (~1,2 Mbit/s), entre 1 s e 5 s.
+fn maxAgeMs(count: usize) u64 {
+    return std.math.clamp(@as(u64, count) * 8, 1000, 5000);
+}
+
 const Sent = struct { channel: u32 = 0, id: u32 = 0, msg: ?*proto.Msg = null, at_ms: u64 = 0 };
 const TxChan = struct { channel: u32, next: u32 };
 
@@ -559,8 +565,11 @@ pub const Endpoint = struct {
             while (i > 0) {
                 i -= 1;
                 const p = ep.partials.items[i];
-                // desiste quando para de chegar pedaço (ou demorou demais no total)
-                if (now - p.last_ms > give_up or now - p.first_ms > 1000) {
+                // desiste quando para de chegar pedaço (ou demorou demais no
+                // total: proporcional ao tamanho, 8 ms por pedaço, até 5 s; o
+                // teto fixo de 1 s fazia um IDR grande num link de 2 Mbit/s
+                // nunca completar, e virava laço de pedidos de IDR)
+                if (now - p.last_ms > give_up or now - p.first_ms > maxAgeMs(p.count)) {
                     ep.stats.lost_msgs += 1;
                     _ = ep.partials.swapRemove(i);
                     p.free();
@@ -616,9 +625,10 @@ pub const Endpoint = struct {
                     }
                 }
             }
-            // o que já foi enviado há mais de 1,5 s não vai mais ser pedido
+            // o que já foi enviado há mais que o prazo de quem recebe (+ meio
+            // segundo) não vai mais ser pedido
             for (&ep.sent) |*s| {
-                if (s.msg != null and now - s.at_ms > 1500) {
+                if (s.msg != null and now - s.at_ms > maxAgeMs((s.msg.?.data.len + chunk - 1) / chunk) + 500) {
                     s.msg.?.release();
                     s.msg = null;
                 }
@@ -920,4 +930,10 @@ fn pump(a: *Endpoint, b: *Endpoint, sa: net.Socket, sb: net.Socket, wa: Wire, wb
         b.tick(wb, TestSide.deliver, side);
         a.tick(wa, TestSide.deliver, dummy);
     }
+}
+
+test "udp: prazo da remontagem cresce com o tamanho (IDR grande em link lento completa)" {
+    try std.testing.expectEqual(@as(u64, 1000), maxAgeMs(1)); // quadro pequeno: 1 s como antes
+    try std.testing.expectEqual(@as(u64, 2400), maxAgeMs(300)); // ~350 KB: 2,4 s
+    try std.testing.expectEqual(@as(u64, 5000), maxAgeMs(5000)); // teto
 }
