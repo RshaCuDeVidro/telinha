@@ -75,7 +75,7 @@ const Timing = struct {
 pub const Settings = struct {
     source: i32 = 0,
     camera_id: [160]u8 = [_]u8{0} ** 160, // câmera (vazio = a primeira)
-    fps: u32 = 30,
+    fps: u32 = 30, // 0 = auto: 60 com o encoder da placa, 30 sem
     quality: u8 = 60, // 20..100
     max_height: u32 = 0, // 0 = resolução original
     cursor: bool = true,
@@ -103,6 +103,12 @@ pub fn targetBitrate(w: u32, h: u32, fps: u32, quality: u8) u32 {
     const bpp = 0.02 + (q - 20.0) / 80.0 * 0.16; // bits por pixel
     const bps = @as(f64, @floatFromInt(w)) * @as(f64, @floatFromInt(h)) * @as(f64, @floatFromInt(fps)) * bpp;
     return @intFromFloat(std.math.clamp(bps, 250_000, 30_000_000));
+}
+
+/// O fps que conta pra taxa: no automático em modo tela, no máximo 30 (texto
+/// a 60 q/s são quadros pequenos; dobrar a taxa só gastaria banda).
+fn rateFps(fps: u32, mode: codec.Mode, auto: bool) u32 {
+    return if (auto and mode == .screen) @min(fps, 30) else fps;
 }
 
 /// Tamanho de saída respeitando o limite de altura (dimensões pares).
@@ -253,6 +259,7 @@ pub const Sharer = struct {
     idr_clip: std.atomic.Value(u32) = .init(0),
     cursor_msgs: std.atomic.Value(u64) = .init(0),
     encode_ms: f32 = 0,
+    target_fps: std.atomic.Value(u32) = .init(30), // o fps que o encoder usa agora (o automático resolvido)
     bitrate_kbps: u32 = 0,
     congested: bool = false,
     slow_viewer: bool = false, // algum espectador pediu menos nos últimos segundos
@@ -490,6 +497,7 @@ const Pipeline = struct {
     audio_seq: u32 = 0,
     fps_gen: u32 = 0, // muda quando fps/modo mudam (encoder recria; a qualidade só muda a taxa)
     fps: u32 = 30,
+    fps_auto: bool = false, // fps escolhido pelo encoder (60 na placa, 30 sem)
     quality: u8 = 60,
     mode: codec.Mode = .screen,
 
@@ -504,10 +512,10 @@ const Pipeline = struct {
         }
         const before = p.auto.cap;
         const load = @max(p.enc_ema_us.load(.monotonic), p.ing_ema_us);
-        if (!p.auto.step(now, load, p.settings.fps, p.h, p.settings.max_height, p.src_h)) return;
+        if (!p.auto.step(now, load, p.wantFps(), p.h, p.settings.max_height, p.src_h)) return;
         s.auto_from.store(if (before != 0) before else p.h, .release);
         s.auto_cap.store(p.auto.cap, .release);
-        if (debugEnabled()) std.debug.print("[telinha] qualidade automática: {d}p -> {s}{d} (encode {d:.1} ms, captura {d:.1} ms, fps {d})\n", .{ p.h, if (p.auto.cap == 0) "sem teto, " else "", p.auto.cap, @as(f32, @floatFromInt(p.enc_ema_us.load(.monotonic))) / 1000, @as(f32, @floatFromInt(p.ing_ema_us)) / 1000, p.settings.fps });
+        if (debugEnabled()) std.debug.print("[telinha] qualidade automática: {d}p -> {s}{d} (encode {d:.1} ms, captura {d:.1} ms, fps {d})\n", .{ p.h, if (p.auto.cap == 0) "sem teto, " else "", p.auto.cap, @as(f32, @floatFromInt(p.enc_ema_us.load(.monotonic))) / 1000, @as(f32, @floatFromInt(p.ing_ema_us)) / 1000, p.wantFps() });
     }
 
     fn errSlice(p: *Pipeline) []const u8 {
@@ -709,7 +717,8 @@ const Pipeline = struct {
         const s = p.s;
         p.settings = s.settings;
         p.applySettings();
-        const fps: c_int = @intCast(std.math.clamp(p.settings.fps, 1, 60));
+        // automático: a captura aceita até 60 (o encoder escolhe depois de ver a placa)
+        const fps: c_int = if (p.settings.fps == 0) 60 else @intCast(std.math.clamp(p.settings.fps, 1, 60));
         if (s.kind == proto.kind_camera) {
             try p.openCamera();
         } else {
@@ -760,7 +769,7 @@ const Pipeline = struct {
     }
 
     fn openCamera(p: *Pipeline) !void {
-        const fps: c_int = @intCast(std.math.clamp(p.settings.fps, 1, 60));
+        const fps: c_int = @intCast(p.wantFps());
         const want_h: c_int = if (p.settings.max_height > 0) @intCast(p.settings.max_height) else 720;
         const cam = c.cam_open(@ptrCast(&p.settings.camera_id), @divTrunc(want_h * 16, 9), want_h, fps, &p.err, p.err.len) orelse return error.Capture;
         p.cap = .{ .camera = cam };
@@ -793,10 +802,18 @@ const Pipeline = struct {
         s.mutex.unlock();
     }
 
+    /// O fps que vale agora: o escolhido, ou no automático 60 com o encoder da
+    /// placa (quase não custa CPU) e 30 sem (o openh264 a 60 pesa no PC fraco).
+    fn wantFps(p: *const Pipeline) u32 {
+        if (p.settings.fps == 0) return if (p.use_hw.load(.acquire)) 60 else 30;
+        return std.math.clamp(p.settings.fps, 1, 60);
+    }
+
     fn applySettings(p: *Pipeline) void {
         p.mutex.lock();
         defer p.mutex.unlock();
-        const fps = std.math.clamp(p.settings.fps, 1, 60);
+        const fps = p.wantFps();
+        p.fps_auto = p.settings.fps == 0;
         // só fps e modo pedem encoder novo (IDR pra todo mundo e o controle de
         // taxa do zero); mexer em cursor, som, recorte ou no tamanho de quem
         // assiste recriava o encoder a cada clique. Qualidade muda só a taxa.
@@ -846,7 +863,7 @@ const Pipeline = struct {
             }
 
             // respeita o fps configurado (ninguém assistindo: 5 q/s, só pra prévia)
-            const base_us: u64 = if (s.idle.load(.acquire)) 200_000 else 1_000_000 / std.math.clamp(p.settings.fps, 1, 60);
+            const base_us: u64 = if (s.idle.load(.acquire)) 200_000 else 1_000_000 / p.wantFps();
             // encoder mais lento que o fps pedido (openh264 numa CPU fraca):
             // captura no ritmo dele (um pouco antes, pra ter quadro pronto)
             const interval_us: u64 = @max(base_us, p.enc_ema_us.load(.monotonic) * 9 / 10);
@@ -1325,10 +1342,20 @@ const Pipeline = struct {
             p.ready_was_null = p.ready == null;
             if (p.ready != null) p.ready = null;
             p.encoding = idx;
+            // automático: o encoder da placa abriu (ou caiu pro software) e o fps muda junto
+            if (p.fps_auto) {
+                const af = p.wantFps();
+                if (af != p.fps) {
+                    p.fps = af;
+                    p.fps_gen +%= 1;
+                }
+            }
             const fps = p.fps;
+            s.target_fps.store(fps, .monotonic);
             const quality = p.quality;
             const mode = p.mode;
             const gen = p.fps_gen;
+            const fps_auto = p.fps_auto;
             p.mutex.unlock();
             const i = idx orelse continue;
             const sl = &p.slots[i];
@@ -1375,7 +1402,7 @@ const Pipeline = struct {
             if (enc == null or enc.?.width() != sl.w or enc.?.height() != sl.h or gen != enc_gen or enc.?.isHw() != want_hw or enc.?.codecOf() != want_codec or renew) {
                 if (enc) |*e| e.deinit();
                 enc = null;
-                const target = targetBitrate(sl.w, sl.h, fps, quality);
+                const target = targetBitrate(sl.w, sl.h, rateFps(fps, mode, fps_auto), quality);
                 if (gen != enc_gen) bw.reset(target) else bw.retarget(target);
                 enc_quality = quality;
                 _ = bw.takeChange(); // o encoder novo já nasce com a taxa certa
@@ -1443,7 +1470,7 @@ const Pipeline = struct {
             // qualidade mudou: só a taxa-alvo (o encoder segue o mesmo)
             if (quality != enc_quality) {
                 enc_quality = quality;
-                bw.retarget(targetBitrate(sl.w, sl.h, fps, quality));
+                bw.retarget(targetBitrate(sl.w, sl.h, rateFps(fps, mode, fps_auto), quality));
             }
             bw.rampUp(sync.nowUs(), up.excess_us -| up.key_allowance_us);
             if (bw.takeChange()) |b| enc.?.setBitrate(b);

@@ -1170,7 +1170,8 @@ pub const App = struct {
                 config.setStr(&a.cfg.join_addr, next.?);
                 i += 1;
             } else if (std.mem.eql(u8, arg, "--fps") and next != null) {
-                a.cfg.fps = std.math.clamp(std.fmt.parseInt(i32, next.?, 10) catch 30, 1, 60);
+                // 0 = automático (60 com a placa de vídeo, 30 sem)
+                a.cfg.fps = std.math.clamp(std.fmt.parseInt(i32, next.?, 10) catch 0, 0, 60);
                 i += 1;
             } else if (std.mem.eql(u8, arg, "--qualidade") and next != null) {
                 a.cfg.quality = std.math.clamp(std.fmt.parseInt(i32, next.?, 10) catch 60, 20, 100);
@@ -2154,7 +2155,7 @@ pub const App = struct {
         const heights = [_]u32{ 0, 1080, 720, 480 };
         var st: sharer_mod.Settings = .{
             .source = if (a.n_sources > 0) a.sources[@intCast(std.math.clamp(a.source_idx, 0, @as(i32, @intCast(a.n_sources)) - 1))].id else 0,
-            .fps = @intCast(std.math.clamp(a.cfg.fps, 1, 60)),
+            .fps = @intCast(std.math.clamp(a.cfg.fps, 0, 60)), // 0 = automático
             .quality = @intCast(std.math.clamp(a.cfg.quality, 20, 100)),
             .max_height = heights[@intCast(a.cfg.resolution)],
             .cursor = a.cfg.cursor,
@@ -2186,7 +2187,7 @@ pub const App = struct {
             return;
         }
         const st = a.shareSettings();
-        debuglog.line("começou a transmitir: fonte {d}, {d} q/s, qualidade {d}, altura máx {d}, modo {s}, placa={}, som={} ({s} pid {d}), cursor={}", .{ st.source, st.fps, st.quality, st.max_height, @tagName(st.mode), st.hardware, st.audio, std.mem.sliceTo(&st.audio_app, 0), st.audio_pid, st.cursor });
+        debuglog.line("começou a transmitir: fonte {d}, {d} q/s (0 = automático), qualidade {d}, altura máx {d}, modo {s}, placa={}, som={} ({s} pid {d}), cursor={}", .{ st.source, st.fps, st.quality, st.max_height, @tagName(st.mode), st.hardware, st.audio, std.mem.sliceTo(&st.audio_app, 0), st.audio_pid, st.cursor });
         a.sharer = Sharer.start(cl, st) catch {
             a.toast("Não consegui iniciar a transmissão.", .{}, true);
             return;
@@ -5481,7 +5482,7 @@ pub const App = struct {
     /// Quem transmite: a rede pra subir, o encoder e quem assiste devagar.
     fn shareHealth(s: *const Sharer) Health {
         if (s.congested) return .{ .level = 2, .cause = tr("sua internet (subindo devagar)") };
-        const fps: f32 = @floatFromInt(@max(s.settings.fps, 1));
+        const fps: f32 = @floatFromInt(@max(s.target_fps.load(.monotonic), 1));
         if (s.encode_ms > 900 / fps) return .{ .level = 1, .cause = tr("seu PC (o encoder não dá conta)") };
         if (s.slow_viewer) return .{ .level = 1, .cause = tr("alguém assistindo com PC ou internet lenta") };
         return .{};
@@ -8788,18 +8789,24 @@ pub const App = struct {
 
         fieldLabel("QUADROS POR SEGUNDO");
         var fps_preset: i32 = switch (a.cfg.fps) {
-            15 => 0,
-            30 => 1,
-            60 => 2,
+            0 => 0,
+            15 => 1,
+            30 => 2,
+            60 => 3,
             else => -1,
         };
-        if (segmented("fps", &.{ "15", "30", "60" }, &fps_preset, w)) a.cfg.fps = switch (fps_preset) {
-            0 => 15,
-            1 => 30,
+        if (segmented("fps", &.{ "Auto", "15", "30", "60" }, &fps_preset, w)) a.cfg.fps = switch (fps_preset) {
+            0 => 0,
+            1 => 15,
+            2 => 30,
             else => 60,
         };
         c.igDummy(v2(0, S(4)));
-        sliderStyled("##fps", &a.cfg.fps, 1, 60, "%d fps", w);
+        if (a.cfg.fps == 0) {
+            pushFont(font_regular, 12.5);
+            textColored(col.faint, tr("60 com a placa de vídeo, 30 sem (o PC fraco agradece)."));
+            popFont();
+        } else sliderStyled("##fps", &a.cfg.fps, 1, 60, "%d fps", w);
         c.igDummy(v2(0, S(9)));
 
         fieldLabel("QUALIDADE");
@@ -8811,7 +8818,7 @@ pub const App = struct {
             3 => 480,
             else => 1080,
         };
-        const est = sharer_mod.targetBitrate(est_h * 16 / 9, est_h, @intCast(std.math.clamp(a.cfg.fps, 1, 60)), @intCast(std.math.clamp(a.cfg.quality, 20, 100)));
+        const est = sharer_mod.targetBitrate(est_h * 16 / 9, est_h, if (a.cfg.fps == 0) 30 else @intCast(std.math.clamp(a.cfg.fps, 1, 60)), @intCast(std.math.clamp(a.cfg.quality, 20, 100)));
         const mbit10 = (est + 50_000) / 100_000; // décimos de Mbit/s
         sliderStyled("##q", &a.cfg.quality, 20, 100, fmtZ("%d — {s} · até {d},{d} Mbit/s", .{ qname, mbit10 / 10, mbit10 % 10 }), w);
         c.igPushTextWrapPos(c.igGetCursorPosX() + w);

@@ -257,6 +257,8 @@ const table = [_][2][]const u8{
     .{ "Ninguém.", "Nobody." },
     .{ "Desbanir", "Unban" },
     .{ "Desbanir todo mundo", "Unban everyone" },
+    .{ "Auto", "Auto" },
+    .{ "60 com a placa de vídeo, 30 sem (o PC fraco agradece).", "60 with the graphics card, 30 without (easier on a weak PC)." },
     .{ "({d} mais antigos não aparecem)", "({d} older ones not shown)" },
     .{ "{d} dias", "{d} days" },
     .{ "{d} min", "{d} min" },

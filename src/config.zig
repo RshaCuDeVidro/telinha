@@ -24,7 +24,7 @@ pub const Config = struct {
     room_name: [65]u8 = zstr("", 65),
     host_port: i32 = 7777,
     host_pass: [129]u8 = zstr("", 129),
-    fps: i32 = 30,
+    fps: i32 = 0, // 0 = auto: 60 com o encoder da placa, 30 sem (no arquivo: fps=30 + fps_auto=1)
     quality: i32 = 60,
     mode: i32 = 0, // 0 tela/texto, 1 jogo/vídeo
     resolution: i32 = 0, // 0 original, 1 1080p, 2 720p, 3 480p
@@ -255,6 +255,10 @@ fn loadFile() Config {
     var cfg: Config = .{};
     const f = openFile(false) orelse return cfg;
     defer _ = c.fclose(f);
+    // fps automático: "fps_auto=1"; arquivo de antes (sem a chave) com o 30 de
+    // sempre também vira automático. No arquivo o fps continua de 1 a 60 (uma
+    // versão anterior lendo "fps=0" ficaria a 1 q/s)
+    var fps_auto: ?bool = null;
     var line: [1024]u8 = undefined; // webhook, exclusões e caminho do CSS chegam a ~530
     while (c.fgets(&line, line.len, f) != null) {
         const l = std.mem.trimEnd(u8, std.mem.sliceTo(&line, 0), "\r\n");
@@ -262,8 +266,9 @@ fn loadFile() Config {
         const k = l[0..eq];
         const v = l[eq + 1 ..];
         const int = std.fmt.parseInt(i32, v, 10) catch 0;
-        if (std.mem.eql(u8, k, "name")) setStr(&cfg.name, v) else if (std.mem.eql(u8, k, "join_addr")) setStr(&cfg.join_addr, v) else if (std.mem.eql(u8, k, "join_pass")) setStr(&cfg.join_pass, v) else if (std.mem.eql(u8, k, "room_name")) setStr(&cfg.room_name, v) else if (std.mem.eql(u8, k, "host_pass")) setStr(&cfg.host_pass, v) else if (std.mem.eql(u8, k, "host_port")) cfg.host_port = std.math.clamp(int, 1, 65535) else if (std.mem.eql(u8, k, "fps")) cfg.fps = std.math.clamp(int, 1, 60) else if (std.mem.eql(u8, k, "quality")) cfg.quality = std.math.clamp(int, 20, 100) else if (std.mem.eql(u8, k, "mode")) cfg.mode = std.math.clamp(int, 0, 1) else if (std.mem.eql(u8, k, "stats_always")) cfg.stats_always = int != 0 else if (std.mem.eql(u8, k, "hardware")) cfg.hardware = int != 0 else if (std.mem.eql(u8, k, "admin_token")) setStr(&cfg.admin_token, v) else if (std.mem.eql(u8, k, "public_addr")) setStr(&cfg.public_addr, v) else if (std.mem.eql(u8, k, "resolution")) cfg.resolution = std.math.clamp(int, 0, 3) else if (std.mem.eql(u8, k, "cursor")) cfg.cursor = int != 0 else if (std.mem.eql(u8, k, "show_chat")) cfg.show_chat = int != 0 else if (std.mem.eql(u8, k, "audio")) cfg.audio = int != 0 else if (std.mem.eql(u8, k, "tunnel_host")) setStr(&cfg.tunnel_host, v) else if (std.mem.eql(u8, k, "mic_device")) setStr(&cfg.mic_device, v) else if (std.mem.eql(u8, k, "noise_suppression")) cfg.noise_suppression = int != 0 else if (std.mem.eql(u8, k, "echo_cancellation")) cfg.echo_cancellation = int != 0 else if (std.mem.eql(u8, k, "voice_sensitivity")) cfg.voice_sensitivity = std.math.clamp(int, 0, 100) else if (std.mem.eql(u8, k, "mic_on_join")) cfg.mic_on_join = int != 0 else if (std.mem.eql(u8, k, "sounds")) cfg.sounds = int != 0 else loadMore(&cfg, k, v, int);
+        if (std.mem.eql(u8, k, "name")) setStr(&cfg.name, v) else if (std.mem.eql(u8, k, "join_addr")) setStr(&cfg.join_addr, v) else if (std.mem.eql(u8, k, "join_pass")) setStr(&cfg.join_pass, v) else if (std.mem.eql(u8, k, "room_name")) setStr(&cfg.room_name, v) else if (std.mem.eql(u8, k, "host_pass")) setStr(&cfg.host_pass, v) else if (std.mem.eql(u8, k, "host_port")) cfg.host_port = std.math.clamp(int, 1, 65535) else if (std.mem.eql(u8, k, "fps")) cfg.fps = std.math.clamp(int, 1, 60) else if (std.mem.eql(u8, k, "fps_auto")) fps_auto = int != 0 else if (std.mem.eql(u8, k, "quality")) cfg.quality = std.math.clamp(int, 20, 100) else if (std.mem.eql(u8, k, "mode")) cfg.mode = std.math.clamp(int, 0, 1) else if (std.mem.eql(u8, k, "stats_always")) cfg.stats_always = int != 0 else if (std.mem.eql(u8, k, "hardware")) cfg.hardware = int != 0 else if (std.mem.eql(u8, k, "admin_token")) setStr(&cfg.admin_token, v) else if (std.mem.eql(u8, k, "public_addr")) setStr(&cfg.public_addr, v) else if (std.mem.eql(u8, k, "resolution")) cfg.resolution = std.math.clamp(int, 0, 3) else if (std.mem.eql(u8, k, "cursor")) cfg.cursor = int != 0 else if (std.mem.eql(u8, k, "show_chat")) cfg.show_chat = int != 0 else if (std.mem.eql(u8, k, "audio")) cfg.audio = int != 0 else if (std.mem.eql(u8, k, "tunnel_host")) setStr(&cfg.tunnel_host, v) else if (std.mem.eql(u8, k, "mic_device")) setStr(&cfg.mic_device, v) else if (std.mem.eql(u8, k, "noise_suppression")) cfg.noise_suppression = int != 0 else if (std.mem.eql(u8, k, "echo_cancellation")) cfg.echo_cancellation = int != 0 else if (std.mem.eql(u8, k, "voice_sensitivity")) cfg.voice_sensitivity = std.math.clamp(int, 0, 100) else if (std.mem.eql(u8, k, "mic_on_join")) cfg.mic_on_join = int != 0 else if (std.mem.eql(u8, k, "sounds")) cfg.sounds = int != 0 else loadMore(&cfg, k, v, int);
     }
+    if (fps_auto orelse (cfg.fps == 30)) cfg.fps = 0;
     return cfg;
 }
 
@@ -441,7 +446,7 @@ fn writeAll(cfg: *const Config, f: *c.FILE) bool {
         \\
     , .{
         getStr(&cfg.name),                   getStr(&cfg.join_addr),     getStr(&cfg.join_pass),        getStr(&cfg.room_name),
-        getStr(&cfg.host_pass),              cfg.host_port,              cfg.fps,                       cfg.quality,
+        getStr(&cfg.host_pass),              cfg.host_port,              if (cfg.fps == 0) 30 else cfg.fps, cfg.quality,
         cfg.resolution,                      @intFromBool(cfg.cursor),   @intFromBool(cfg.show_chat),   cfg.mode,
         @intFromBool(cfg.stats_always),      @intFromBool(cfg.hardware), @intFromBool(cfg.audio),       getStr(&cfg.admin_token),
         getStr(&cfg.public_addr),            getStr(&cfg.tunnel_host),   getStr(&cfg.mic_device),       @intFromBool(cfg.noise_suppression),
@@ -455,9 +460,9 @@ fn writeAll(cfg: *const Config, f: *c.FILE) bool {
     ok = ok and c.fwrite(m.ptr, 1, m.len, f) == m.len;
     // (um format só aceita 32 valores: o resto vai aqui)
     var more2: [1000]u8 = undefined;
-    const m2 = std.fmt.bufPrint(&more2, "animations={d}\neco={d}\npanel_w={d}\nmood={d}\njoin_channel={s}\ndraw_color={d}\ndraw_size={d}\nshow_drawings={d}\njoin_fp={s}\njoin_fp_for={s}\nupdate_auto={d}\nupdate_skip={s}\nlast_version={s}\nav1={d}\nchat_h={d}\nadmin_token_for={s}\n", .{
+    const m2 = std.fmt.bufPrint(&more2, "animations={d}\neco={d}\npanel_w={d}\nmood={d}\njoin_channel={s}\ndraw_color={d}\ndraw_size={d}\nshow_drawings={d}\njoin_fp={s}\njoin_fp_for={s}\nupdate_auto={d}\nupdate_skip={s}\nlast_version={s}\nav1={d}\nchat_h={d}\nadmin_token_for={s}\nfps_auto={d}\n", .{
         @intFromBool(cfg.animations), @intFromBool(cfg.eco), cfg.panel_w, @intFromBool(cfg.mood), getStr(&cfg.join_channel), cfg.draw_color, cfg.draw_size, @intFromBool(cfg.show_drawings), getStr(&cfg.join_fp), getStr(&cfg.join_fp_for),
-        @intFromBool(cfg.update_auto), getStr(&cfg.update_skip), getStr(&cfg.last_version), @intFromBool(cfg.av1), cfg.chat_h, getStr(&cfg.admin_token_for),
+        @intFromBool(cfg.update_auto), getStr(&cfg.update_skip), getStr(&cfg.last_version), @intFromBool(cfg.av1), cfg.chat_h, getStr(&cfg.admin_token_for), @intFromBool(cfg.fps == 0),
     }) catch return false;
     ok = ok and c.fwrite(m2.ptr, 1, m2.len, f) == m2.len;
     inline for (@typeInfo(HotkeyId).@"enum".fields) |fl| {
