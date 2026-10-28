@@ -530,7 +530,7 @@ pub const View = struct {
                 v.frames.clearRetainingCapacity();
                 v.arrivals.clearRetainingCapacity();
                 v.waiting_key = true;
-                v.client.sendKeyreq(v.stream);
+                v.client.sendKeyreqReason(v.stream, proto.keyreq_behind);
                 _ = v.backlog_flushes.fetchAdd(1, .monotonic);
             }
         }
@@ -899,6 +899,9 @@ pub const Client = struct {
     /// Algum espectador não está dando conta da nossa taxa de bits: piso (% do
     /// alvo) até onde baixar. 0 = nenhum aviso pendente. Por tipo.
     viewer_slow: [2]std.atomic.Value(u8) = .{ .init(0), .init(0) },
+    /// Até quando (ms) alguém não decodifica a tempo (proto.slow_decoder): o
+    /// fps automático fica em 30.
+    decoder_slow_until: [2]std.atomic.Value(u64) = .{ .init(0), .init(0) },
     /// Nossos frames que o servidor ainda não confirmou (controle de banda), por tipo.
     inflight_mutex: sync.Mutex = .{},
     inflight: [2]proto.AckWindow = .{ .{}, .{} },
@@ -1858,6 +1861,11 @@ pub const Client = struct {
                 const kind = try r.u8_();
                 const floor = try r.u8_();
                 if (kind > proto.kind_camera) return;
+                const flags = r.u8_() catch 0;
+                if (flags & proto.slow_decoder != 0) {
+                    cl.decoder_slow_until[kind].store(sync.nowMs() + 5 * 60_000, .release);
+                    return; // a taxa não muda (o piso vem 100 só pro app antigo ignorar)
+                }
                 cl.viewer_slow[kind].store(std.math.clamp(floor, 1, 100), .release);
             },
             .audio => {

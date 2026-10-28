@@ -68,7 +68,7 @@ pub const Type = enum(u8) {
     kick = 13, // C→S u32 alvo (só admin; o mesmo que admin/admin_kick)
     audio = 14, // C→S áudio | S→C u32 stream + áudio
     ack = 15, // S→C u8 tipo, u32 seq (servidor recebeu seu frame) | C→S u32 stream, u32 seq (espectador recebeu)
-    viewer_slow = 16, // S→C u8 tipo, u8 piso: espectador não dá conta; baixe a taxa (até piso% do alvo)
+    viewer_slow = 16, // S→C u8 tipo, u8 piso, [u8 slow_*]: espectador não dá conta; baixe a taxa (até piso% do alvo)
     voice = 17, // C→S u32 seq, Opus | S→C u32 de, u32 seq, Opus (voz da sala)
     voice_state = 18, // C→S u8 flags (1 = microfone ligado, 2 = surdo)
     admin = 19, // C→S u8 ação (admin_*), u32 alvo, u8 valor (só admin)
@@ -272,6 +272,14 @@ pub const keyreq_record: u8 = 1; // gravação começando (sem efeito no control
 /// o servidor só passa a mandar metade dos quadros pra ele. Servidor antigo
 /// trata como keyreq_lost (IDR + metade), o mesmo de antes.
 pub const keyreq_slow: u8 = 2;
+/// Jogou a fila do decoder fora porque ele não deu conta (não por erro): o
+/// mesmo que keyreq_lost, e o servidor avisa quem transmite (slow_decoder).
+pub const keyreq_behind: u8 = 3;
+/// viewer_slow, terceiro byte: alguém não decodifica a tempo uma transmissão
+/// sem quadros puláveis (o servidor não tem como afinar). Quem transmite com
+/// fps automático desce pra 30. Vem com piso 100 (a taxa não muda: app antigo
+/// ignora).
+pub const slow_decoder: u8 = 1;
 
 /// watch: opções
 pub const watch_clips: u8 = 1; // guardando os últimos segundos pra clipe: quer IDR de vez em quando

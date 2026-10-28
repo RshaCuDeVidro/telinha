@@ -136,7 +136,7 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 8 | frame | S→C | `u32 stream`, frame |
 | 9 | watch | C→S | `u32 stream`, `u8 ligado`, `u8 opções` (1 = clipes: quer IDR de vez em quando) |
 | 10 | keyreq | S→C | `u8 tipo` (mande um IDR dessa transmissão) |
-| 10 | keyreq | C→S | `u32 stream`, `u8 motivo` (0 = perdi a referência, 1 = gravação começando, 2 = o decoder está atrasando mas se virou largando os quadros puláveis: sem IDR, só me afina; servidor antigo trata como 0) |
+| 10 | keyreq | C→S | `u32 stream`, `u8 motivo` (0 = perdi a referência, 1 = gravação começando, 2 = o decoder está atrasando mas se virou largando os quadros puláveis: sem IDR, só me afina, 3 = joguei a fila do decoder fora porque ele não deu conta: como o 0, e sem quadros puláveis o servidor avisa quem transmite (`viewer_slow` byte 3); servidor antigo trata 2 e 3 como 0) |
 | 11 | ping | C→S | `u64 t` |
 | 12 | pong | S→C | `u64 t` (eco), `u64 relógio_µs` |
 | 13 | kick | C→S | `u32 alvo` (o mesmo que `admin` com ação 1; ainda aceito) |
@@ -144,7 +144,7 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 14 | audio | S→C | `u32 stream` (sempre o da tela), áudio |
 | 15 | ack | S→C | `u8 tipo`, `u32 seq` (o servidor recebeu esse frame seu) |
 | 15 | ack | C→S | `u32 stream`, `u32 seq` (recebi esse frame de `stream`) |
-| 16 | viewer_slow | S→C | `u8 tipo`, `u8 piso` (espectador não dá conta: baixe a taxa, até `piso`% do alvo) |
+| 16 | viewer_slow | S→C | `u8 tipo`, `u8 piso` (espectador não dá conta: baixe a taxa, até `piso`% do alvo) Terceiro byte opcional: 1 = alguém não decodifica a tempo uma transmissão sem quadros puláveis (vem com piso 100, pro app antigo ignorar); quem transmite com fps automático desce pra 30 por 5 minutos. |
 | 17 | voice | C→S | `u32 seq`, pacote Opus (voz: 48 kHz mono, 20 ms) |
 | 17 | voice | S→C | `u32 de`, `u32 seq`, pacote Opus |
 | 18 | voice_state | C→S | `u8 flags` (1 = microfone ligado, 2 = surdo) |

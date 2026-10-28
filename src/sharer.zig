@@ -828,7 +828,11 @@ const Pipeline = struct {
     /// O fps que vale agora: o escolhido, ou no automático 60 com o encoder da
     /// placa (quase não custa CPU) e 30 sem (o openh264 a 60 pesa no PC fraco).
     fn wantFps(p: *const Pipeline) u32 {
-        if (p.settings.fps == 0) return if (p.use_hw.load(.acquire)) 60 else 30;
+        if (p.settings.fps == 0) {
+            // alguém não decodifica 60 a tempo (e não tem como afinar só pra ele): 30
+            const slow = sync.nowMs() < p.s.client.decoder_slow_until[p.s.kind].load(.acquire);
+            return if (p.use_hw.load(.acquire) and !slow) 60 else 30;
+        }
         return std.math.clamp(p.settings.fps, 1, 60);
     }
 

@@ -2818,6 +2818,35 @@ def decoder_lento():
 
 
 @test
+def decoder_lento_tela():
+    """Tela com movimento a 60 q/s pela placa (fps automático, sem quadros puláveis) e quem assiste com o decoder lento: o servidor avisa quem transmite e o fps automático desce pra 30, em vez de o espectador ficar recomeçando de IDR."""
+    with Session("decoder-lento-tela") as s:
+        p = port()
+        dono = s.app("dono", 91, ["--nome", "Dono", "--criar", str(p)])
+        dono.wait(lambda st: st["status"] == "connected", 10, "o dono entrar")
+        did = dono.state()["my_id"]
+        # algo mexendo na tela de quem transmite (as engrenagens do glxgears)
+        s.spawn("gears", ["glxgears", "-geometry", "900x600+0+0"], dict(os.environ, DISPLAY=f":{dono.num}", vblank_mode="0"))
+        time.sleep(1.0)
+        dono.click(contains="Compartilhar tela##share")
+        dono.wait(lambda st: st["share_modal"], 3, "abrir o compartilhar tela")
+        dono.click(contains="Ao vivo", window="Compartilhar")
+        st = dono.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 15, "ficar ao vivo")
+        if "NVENC" not in st["sharer"]["encoder"]:
+            log(f"sem encoder da placa aqui ({st['sharer']['encoder']}): o fps automático já é 30, nada a testar")
+            return
+        dono.wait(lambda st: st["sharer"]["target_fps"] == 60, 10, "o fps automático em 60 (encoder da placa)")
+        conv = s.app("conv", 92, ["--nome", "Conv", "--entrar", f"127.0.0.1:{p}", "--assistir"], extra_env={"TELINHA_TESTE_DECODE_LENTO": "24"})
+        conv.wait(lambda st: any(v["stream"] == did and v["shown"] for v in st["views"]), 15, "ver a tela")
+        st = dono.wait(lambda st: st["sharer"]["target_fps"] == 30, 25, "o fps automático descer pra 30 (alguém não decodifica a tempo)")
+        log(f"quem transmite: {st['sharer']}")
+        time.sleep(6)
+        v = next(v for v in conv.state()["views"] if v["stream"] == did)
+        log(f"quem assiste: {v['fps']} q/s, aliviou {v['relieved']}x, jogou tudo fora {v['flushes']}x")
+        expect(v["fps"] >= 15, f"quem assiste quase não vê nada: {v['fps']} q/s")
+
+
+@test
 def relatorio_de_travamento():
     """O app cai (falha de memória e panic): na próxima abertura pergunta se manda o relatório; mandando, o gofile (de mentira) recebe o motivo e a pilha."""
     with Session("travou") as s:

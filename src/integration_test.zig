@@ -1079,6 +1079,13 @@ test "assistir: decoder devagar que se virou sozinho (keyreq_slow) não faz pedi
     // perdeu a referência (keyreq_lost): aí sim pede IDR
     try keyreq(&a, t.id, proto.keyreq_lost);
     _ = try t.expect(.keyreq);
+    // jogou a fila fora porque o decoder não deu conta, numa transmissão sem
+    // quadros puláveis: quem transmite fica sabendo (o fps automático desce)
+    try keyreq(&a, t.id, proto.keyreq_behind);
+    var r: proto.Reader = .{ .data = try t.expect(.viewer_slow) };
+    try testing.expectEqual(proto.kind_screen, try r.u8_());
+    try testing.expectEqual(@as(u8, 100), try r.u8_());
+    try testing.expectEqual(proto.slow_decoder, try r.u8_());
 }
 
 test "sala: membro comum não expulsa ninguém; o dono sim" {

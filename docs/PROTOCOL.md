@@ -140,7 +140,7 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | 8 | frame | S→C | `u32 stream`, frame |
 | 9 | watch | C→S | `u32 stream`, `u8 ligado`, `u8 opções` (1 = clips: wants an IDR now and then) |
 | 10 | keyreq | S→C | `u8 tipo` (send an IDR for that stream) |
-| 10 | keyreq | C→S | `u32 stream`, `u8 motivo` (0 = I lost the reference, 1 = recording starting, 2 = my decoder is behind but caught up by dropping droppable frames: no IDR, just thin me; an older server treats it as 0) |
+| 10 | keyreq | C→S | `u32 stream`, `u8 motivo` (0 = I lost the reference, 1 = recording starting, 2 = my decoder is behind but caught up by dropping droppable frames: no IDR, just thin me, 3 = I threw the decoder queue away because it couldn't keep up: like 0, and with no droppable frames the server tells the streamer (`viewer_slow` byte 3); an older server treats 2 and 3 as 0) |
 | 11 | ping | C→S | `u64 t` |
 | 12 | pong | S→C | `u64 t` (echo), `u64 relógio_µs` |
 | 13 | kick | C→S | `u32 alvo` (the same as `admin` with action 1; still accepted) |
@@ -148,7 +148,7 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | 14 | audio | S→C | `u32 stream` (always the screen's), audio |
 | 15 | ack | S→C | `u8 tipo`, `u32 seq` (the server received that frame of yours) |
 | 15 | ack | C→S | `u32 stream`, `u32 seq` (I received that frame of `stream`) |
-| 16 | viewer_slow | S→C | `u8 tipo`, `u8 piso` (the viewer can't keep up: lower the rate, down to `piso`% of the target) |
+| 16 | viewer_slow | S→C | `u8 tipo`, `u8 piso` (the viewer can't keep up: lower the rate, down to `piso`% of the target) Optional third byte: 1 = someone can't decode a stream that has no droppable frames in time (comes with floor 100, so an older app ignores it); a streamer with automatic fps drops to 30 for 5 minutes. |
 | 17 | voice | C→S | `u32 seq`, Opus packet (voice: 48 kHz mono, 20 ms) |
 | 17 | voice | S→C | `u32 de`, `u32 seq`, Opus packet |
 | 18 | voice_state | C→S | `u8 flags` (1 = microphone on, 2 = deafened) |

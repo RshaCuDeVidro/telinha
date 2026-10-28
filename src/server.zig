@@ -76,6 +76,7 @@ const StreamState = struct {
     last_keyreq_ms: u64 = 0,
     last_watch_keyreq_ms: u64 = 0, // IDR pedido porque alguém começou a assistir (limite próprio, mais curto)
     last_slow_ms: u64 = 0,
+    last_decoder_hint_ms: u64 = 0, // último "alguém não decodifica a tempo" mandado pra quem transmite
     last_key_ms: u64 = 0, // último IDR que passou
     codecs_sent: u8 = 0, // codecs liberados que o transmissor já sabe (0 = ainda nada)
     features_sent: u8 = 0, // recursos (feat_*) que todo mundo que assiste entende, já avisados
@@ -1681,8 +1682,21 @@ pub const Server = struct {
                 f.decoder_behind = true;
                 // metade dos quadros alivia o decoder dele sem mexer em ninguém
                 if (s.findConn(proto.memberOf(stream))) |sh| {
-                    if (now -| sh.streams[proto.kindOf(stream)].last_droppable_ms < 2000 and f.thinOut(now))
-                        s.log("{s} não deu conta de decodificar {s}: recebendo só metade dos quadros por {d} s", .{ cn.nameSlice(), sh.nameSlice(), f.thin_ms / 1000 });
+                    const ss = &sh.streams[proto.kindOf(stream)];
+                    if (now -| ss.last_droppable_ms < 2000) {
+                        if (f.thinOut(now))
+                            s.log("{s} não deu conta de decodificar {s}: recebendo só metade dos quadros por {d} s", .{ cn.nameSlice(), sh.nameSlice(), f.thin_ms / 1000 });
+                    } else if (reason == proto.keyreq_behind and now -| ss.last_decoder_hint_ms > 10_000) {
+                        // sem quadros puláveis não dá pra afinar: avisa quem
+                        // transmite (o fps automático desce pra 30)
+                        ss.last_decoder_hint_ms = now;
+                        const hint = try proto.Msg.alloc(.viewer_slow, 3);
+                        hint.payload()[0] = proto.kindOf(stream);
+                        hint.payload()[1] = 100;
+                        hint.payload()[2] = proto.slow_decoder;
+                        sh.queue.pushUrgentOwned(hint);
+                        s.log("{s} não decodifica {s} a tempo (sem quadros puláveis): avisando quem transmite", .{ cn.nameSlice(), sh.nameSlice() });
+                    }
                 }
             },
             .ping => {
