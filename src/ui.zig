@@ -9880,7 +9880,52 @@ pub const App = struct {
     }
 
     /// Log de depuração: grava tudo num arquivo e manda (gofile.io ou webhook).
+    /// "Por qual caminho o vídeo está passando" (placa ou CPU, e por quê):
+    /// o que perguntar primeiro quando alguém diz que trava. Texto puro, só
+    /// enquanto a página está aberta.
+    fn videoPathText(a: *App, buf: []u8) []const u8 {
+        var w: std.Io.Writer = .fixed(buf);
+        const gs = struct {
+            extern fn glGetString(name: c_uint) callconv(.c) ?[*:0]const u8;
+        };
+        const r = gs.glGetString(0x1F01);
+        w.print("Desenho: {s}\n", .{if (r) |x| std.mem.span(x) else "?"}) catch {};
+        var eb: [256]u8 = undefined;
+        w.print("Encoder da placa: {s}\n", .{sharer_mod.hwEncoderSummary(&eb)}) catch {};
+        for ([_]?*Sharer{ a.sharer, a.camera }) |maybe| {
+            const s = maybe orelse continue;
+            w.print("{s}: captura {s}, encoder {s}, {d}x{d} a {d} q/s\n", .{ if (s.kind == proto.kind_camera) "Câmera" else "Transmitindo", s.backendSlice(), s.encoder_name, s.w, s.h, s.target_fps.load(.monotonic) }) catch {};
+        }
+        for (a.views.items) |v| {
+            const why = std.mem.sliceTo(&v.decoder_why, 0);
+            w.print("Assistindo {x}: {s} pelo {s}{s}{s}{s}\n", .{ v.stream, v.codec.name(), v.decoder_name, if (why.len > 0) " (na placa não: " else "", why, if (why.len > 0) ")" else "" }) catch {};
+        }
+        if (a.views.items.len > 0) w.print("Do decoder direto pra textura (NVIDIA): {s}\n", .{if (client_mod.gpu_interop.load(.acquire)) "sim" else "não"}) catch {};
+        return w.buffered();
+    }
+
     fn drawDebug(a: *App, w: f32) void {
+        {
+            fieldLabel("COMO O VÍDEO ESTÁ PASSANDO");
+            var vb: [2048]u8 = undefined;
+            const txt = a.videoPathText(&vb);
+            c.igPushTextWrapPos(c.igGetCursorPosX() + w);
+            pushFont(font_regular, 12.5);
+            var it = std.mem.splitScalar(u8, std.mem.trimEnd(u8, txt, "\n"), '\n');
+            while (it.next()) |line| textColored(col.muted, fmtZ("{s}", .{line}));
+            popFont();
+            c.igPopTextWrapPos();
+            if (secondaryButton(fmtZ("{s}  Copiar###vpathcopy", .{ic.copy}), v2(S(140), S(30)))) {
+                var zb: [2049]u8 = undefined;
+                const n = @min(txt.len, zb.len - 1);
+                @memcpy(zb[0..n], txt[0..n]);
+                zb[n] = 0;
+                c.igSetClipboardText(@ptrCast(&zb));
+                a.toast("Copiado.", .{}, false);
+            }
+            redrawIn(1.0); // muda quando a transmissão começa ou cai pro software
+            c.igDummy(v2(0, S(8)));
+        }
         c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
         var on = debuglog.on();
         if (c.igCheckbox(tr("Gravar log de depuração (desempenho, rede, vídeo, erros: tudo)###debuglog"), &on)) {

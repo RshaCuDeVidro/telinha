@@ -441,6 +441,17 @@ var view_down_ms: u64 = 10_000;
 const HwProbe = struct { cuda: bool, va: bool, mf: bool, hevc: bool, av1: bool, av1_checked: bool };
 var hw_probe_mutex: sync.Mutex = .{};
 var hw_probe: ?HwProbe = null;
+var hw_probe_err: [200]u8 = [_]u8{0} ** 200; // por que não tem encoder na placa (a última sondagem)
+
+/// Pra tela de Depuração: o encoder da placa (sondado na primeira transmissão).
+pub fn hwEncoderSummary(buf: []u8) []const u8 {
+    hw_probe_mutex.lock();
+    defer hw_probe_mutex.unlock();
+    if (hw_probe) |hp| return std.fmt.bufPrint(buf, "sim (H.264{s}{s})", .{ if (hp.hevc) ", HEVC" else "", if (hp.av1) ", AV1" else "" }) catch "sim";
+    const why = std.mem.sliceTo(&hw_probe_err, 0);
+    if (why.len > 0) return std.fmt.bufPrint(buf, "não: {s}", .{why}) catch "não";
+    return "ainda não testado (aparece depois da primeira transmissão)";
+}
 
 fn probeHw() ?HwProbe {
     hw_probe_mutex.lock();
@@ -453,6 +464,10 @@ fn probeHw() ?HwProbe {
     var r: HwProbe = if (hw_probe) |hp| hp else blk: {
         var pr = codec.HwEncoder.init(.{ .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000 }, &err) catch {
             if (debugEnabled()) std.debug.print("[telinha] sem encoder em hardware: {s}\n", .{std.mem.sliceTo(&err, 0)});
+            const e = std.mem.sliceTo(&err, 0);
+            const n = @min(e.len, hw_probe_err.len - 1);
+            @memcpy(hw_probe_err[0..n], e[0..n]);
+            hw_probe_err[n] = 0;
             return null; // não guarda: um driver que volta (ou outro processo largando a sessão) dá certo da próxima vez
         };
         const base: HwProbe = .{ .cuda = pr.acceptsCuda(), .va = pr.isVa(), .mf = pr.isMf(), .hevc = false, .av1 = false, .av1_checked = false };

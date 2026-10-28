@@ -2847,6 +2847,30 @@ def decoder_lento_tela():
 
 
 @test
+def caminho_do_video():
+    """Configurações → Depuração mostra por onde o vídeo passa (encoder da placa ou não, decoder de cada transmissão e, se não é na placa, por quê) e copia o texto."""
+    with Session("caminho", audio=True) as s:
+        s.fake_camera()
+        p = port()
+        dono = s.app("dono", 91, ["--nome", "Dono", "--criar", str(p)])
+        dono.wait(lambda st: st["status"] == "connected", 10, "o dono entrar")
+        dono.click("##camera")
+        dono.wait(lambda st: st["camera"] and st["camera"]["state"] == "live", 15, "a câmera ficar ao vivo")
+        conv = s.app("conv", 92, ["--nome", "Conv", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        conv.wait(lambda st: any(v["shown"] for v in st["views"]), 15, "ver a câmera")
+        for who in (dono, conv):
+            who.click("##gear")
+            who.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+            who.click("##cfg-depuracao")
+            settings_click(who, "###vpathcopy")
+        st = dono.wait(lambda st: "Câmera: captura" in st["clipboard"], 5, "o texto de quem transmite")
+        log("quem transmite:\n" + st["clipboard"])
+        expect("Encoder da placa:" in st["clipboard"] and "Desenho:" in st["clipboard"], "faltou o encoder ou o desenho")
+        st = conv.wait(lambda st: "Assistindo" in st["clipboard"], 5, "o texto de quem assiste")
+        log("quem assiste:\n" + st["clipboard"])
+
+
+@test
 def relatorio_de_travamento():
     """O app cai (falha de memória e panic): na próxima abertura pergunta se manda o relatório; mandando, o gofile (de mentira) recebe o motivo e a pilha."""
     with Session("travou") as s:

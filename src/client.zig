@@ -396,6 +396,9 @@ pub const View = struct {
     relief_until_us: u64 = 0, // descartou os puláveis: espera o decoder alcançar até aqui
     // tempos por quadro pro log de depuração (trace.zig)
     t_decode: trace.Hist = .{}, // decodificar
+    /// Por que não está decodificando na placa (vazio = está). Só diagnóstico:
+    /// escrito pela thread do decoder, lido pela tela de Depuração.
+    decoder_why: [128]u8 = [_]u8{0} ** 128,
     t_lat: trace.Hist = .{}, // da captura até subir pra tela (relógio da sala)
     t_gap: trace.Hist = .{}, // entre dois quadros novos na tela (o engasgo aparece aqui)
     last_up_us: u64 = 0, // último quadro novo que subiu pra tela (só a UI)
@@ -643,21 +646,30 @@ pub const View = struct {
         }
 
         /// Decoder pra esse codec: H.264 na placa (se der) ou openh264; HEVC/AV1 só na placa.
-        fn open(cd: codec.Codec, hw_ok: bool) Decoder {
-            var err: [256]u8 = undefined;
+        fn open(cd: codec.Codec, hw_ok: bool, why: *View) Decoder {
+            var err: [256]u8 = [_]u8{0} ** 256;
             if (hw_ok or cd != .h264) {
-                if (codec.HwDecoder.init(cd, &err)) |h| return .{ .hw = h } else |_| {}
-            }
+                if (codec.HwDecoder.init(cd, &err)) |h| {
+                    why.setDecoderWhy("");
+                    return .{ .hw = h };
+                } else |_| why.setDecoderWhy(std.mem.sliceTo(&err, 0));
+            } else why.setDecoderWhy("placa de vídeo desligada nas configurações");
             if (cd != .h264) return .none;
             return .{ .sw = codec.Decoder.init() catch return .none };
         }
     };
 
+    fn setDecoderWhy(v: *View, why: []const u8) void {
+        const n = @min(why.len, v.decoder_why.len - 1);
+        @memcpy(v.decoder_why[0..n], why[0..n]);
+        v.decoder_why[n] = 0;
+    }
+
     fn decodeLoop(v: *View) void {
         sync.nameThread("decoder");
         defer v.release();
         var dec_codec: codec.Codec = .h264;
-        var dec = Decoder.open(.h264, v.client.hw_decode);
+        var dec = Decoder.open(.h264, v.client.hw_decode, v);
         if (dec == .none) return;
         defer dec.deinit();
         v.decoder_name = switch (dec) {
@@ -674,7 +686,7 @@ pub const View = struct {
                 const cd = codec.Codec.fromFlags(frame[4]);
                 if (cd != dec_codec) {
                     dec.deinit();
-                    dec = Decoder.open(cd, v.client.hw_decode);
+                    dec = Decoder.open(cd, v.client.hw_decode, v);
                     dec_codec = cd;
                     v.decoder_name = switch (dec) {
                         .hw => |*h| h.name(),
@@ -696,6 +708,7 @@ pub const View = struct {
                         dec.deinit();
                         dec = .{ .sw = sw };
                         v.decoder_name = "openh264";
+                        v.setDecoderWhy("o decoder da placa deu erro no meio");
                     } else |_| {}
                 }
                 v.qmutex.lock();
