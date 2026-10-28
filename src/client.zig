@@ -2504,7 +2504,14 @@ pub const Client = struct {
         if (data.len == 0 or data.len > proto.log_max) return false;
         const id = cl.log_seq.fetchAdd(1, .monotonic);
         var off: usize = 0;
+        const t0 = sync.nowMs();
         while (off < data.len) {
+            // no ritmo da conexão: o próximo pedaço só entra com a fila de
+            // envio baixa (o log inteiro, até 8 MB, entrava de uma vez na
+            // frente dos quadros e a transmissão travava). Quem chama é a
+            // thread do envio do log, que pode esperar
+            while (cl.queue.queuedBytes() > 128 * 1024 and !cl.closing.load(.acquire) and sync.nowMs() - t0 < 120_000) sync.sleepMs(20);
+            if (cl.closing.load(.acquire)) return false;
             const n = @min(proto.log_chunk_max, data.len - off);
             const m = proto.Msg.alloc(.log_chunk, 13 + n) catch return false;
             const p = m.payload();
