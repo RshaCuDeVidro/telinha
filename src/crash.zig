@@ -55,6 +55,35 @@ pub fn install() void {
     c.crash_install(p.ptr, s.ptr);
 }
 
+/// Depois que a janela abriu: placa e driver (o OpenGL), a sessão gráfica e,
+/// com NVIDIA, a versão do driver. Uma vez.
+pub fn noteSystem(gl_vendor: []const u8, gl_renderer: []const u8, gl_version: []const u8) void {
+    var b: [512]u8 = undefined;
+    if (std.fmt.bufPrintZ(&b, "OpenGL: {s} | {s} | {s}", .{ gl_vendor, gl_renderer, gl_version })) |l| c.crash_add_info(l.ptr) else |_| {}
+    if (!sync.is_windows) {
+        const st = if (std.c.getenv("XDG_SESSION_TYPE")) |v| std.mem.span(v) else "?";
+        const de = if (std.c.getenv("XDG_CURRENT_DESKTOP")) |v| std.mem.span(v) else "?";
+        if (std.fmt.bufPrintZ(&b, "sessão: {s}, {s}", .{ st, de })) |l| c.crash_add_info(l.ptr) else |_| {}
+        // "NVRM version: NVIDIA UNIX x86_64 Kernel Module  580.xx ..."
+        if (cio.fopen("/proc/driver/nvidia/version", "rb")) |f| {
+            defer _ = cio.fclose(f);
+            var line: [200]u8 = undefined;
+            const n = cio.fread(&line, 1, line.len, f);
+            const first = std.mem.sliceTo(line[0..n], '\n');
+            if (std.fmt.bufPrintZ(&b, "driver: {s}", .{std.mem.trim(u8, first, " \t\r")})) |l| c.crash_add_info(l.ptr) else |_| {}
+        }
+    }
+}
+
+/// O que o app está fazendo agora (vai no relatório). Chame só quando mudar.
+pub fn setContext(text: []const u8) void {
+    var b: [256]u8 = undefined;
+    const n = @min(text.len, b.len - 1);
+    @memcpy(b[0..n], text[0..n]);
+    b[n] = 0;
+    c.crash_set_context(@ptrCast(&b));
+}
+
 /// Panic do Zig: anota a mensagem (o abort que vem depois anota a pilha).
 pub fn note(msg: []const u8) void {
     var b: [512]u8 = undefined;

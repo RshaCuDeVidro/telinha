@@ -19,6 +19,25 @@
 
 static char g_path[1024];
 static char g_info[1536];
+// o que o app estava fazendo (transmitindo pela placa, assistindo 2...): muda
+// de vez em quando, vai no relatório depois da pilha
+static char g_ctx[256];
+
+void crash_add_info(const char *line) {
+    const size_t n = strlen(g_info);
+    if (n + 2 + strlen(line) >= sizeof g_info) return;
+    g_info[n] = '\n';
+    strcpy(g_info + n + 1, line);
+}
+
+void crash_set_context(const char *ctx) {
+    size_t n = strlen(ctx);
+    if (n >= sizeof g_ctx) n = sizeof g_ctx - 1;
+    g_ctx[0] = 0; // durante a troca, quem escreve o relatório vê vazio
+    memcpy(g_ctx + 1, ctx + 1, n > 0 ? n - 1 : 0);
+    g_ctx[n] = 0;
+    g_ctx[0] = ctx[0]; // por último: o texto aparece inteiro de uma vez
+}
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -97,6 +116,10 @@ static LONG WINAPI on_exception(EXCEPTION_POINTERS *ep) {
     put_hex(h, GetCurrentThreadId());
     put(h, "\r\n");
     put(h, g_info);
+    if (g_ctx[0]) {
+        put(h, "\r\nagora: ");
+        put(h, g_ctx);
+    }
     put(h, "\r\npilha:\r\n");
 #if defined(_M_X64) || defined(__x86_64__)
     CONTEXT ctx = *ep->ContextRecord;
@@ -141,6 +164,10 @@ void crash_note(const char *msg) {
     put(h, msg);
     put(h, "\r\n");
     put(h, g_info);
+    if (g_ctx[0]) {
+        put(h, "\r\nagora: ");
+        put(h, g_ctx);
+    }
     // no Windows o panic termina sem exceção (o filtro não vê): a pilha vai daqui
     put(h, "\r\npilha:\r\n");
     void *frames[48];
@@ -236,6 +263,10 @@ static void on_signal(int sig, siginfo_t *si, void *uc) {
             }
             put(fd, "\n");
             put(fd, g_info);
+            if (g_ctx[0]) {
+                put(fd, "\nagora: ");
+                put(fd, g_ctx);
+            }
             // se desenrolar a pilha travar (pilha corrompida), sai mesmo assim
             alarm(5);
             void *frames[64];
@@ -289,6 +320,10 @@ void crash_note(const char *msg) {
     put(fd, msg);
     put(fd, "\n");
     put(fd, g_info);
+    if (g_ctx[0]) {
+        put(fd, "\nagora: ");
+        put(fd, g_ctx);
+    }
     put(fd, "\n");
     close(fd);
 }

@@ -141,6 +141,18 @@ pub fn main(init: std.process.Init) !void {
     _ = c.glfwSetWindowContentScaleCallback(win, inputCb.float2);
     _ = c.ImGui_ImplGlfw_InitForOpenGL(win, true);
     _ = c.ImGui_ImplOpenGL3_Init("#version 130");
+    {
+        // placa e driver no relatório de travamento (o OpenGL só responde agora)
+        const gs = struct {
+            extern fn glGetString(name: c_uint) callconv(.c) ?[*:0]const u8;
+        };
+        const span = struct {
+            fn f(p: ?[*:0]const u8) []const u8 {
+                return if (p) |x| std.mem.span(x) else "?";
+            }
+        }.f;
+        crash.noteSystem(span(gs.glGetString(0x1F00)), span(gs.glGetString(0x1F01)), span(gs.glGetString(0x1F02)));
+    }
 
     // conversão de cor das transmissões na GPU (se o OpenGL der conta)
     ui.yuv_renderer = gl.YuvRenderer.init(@ptrCast(&c.glfwGetProcAddress));

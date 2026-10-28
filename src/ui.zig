@@ -942,6 +942,7 @@ pub const App = struct {
     debug_next: f64 = 0, // próxima amostra do log de depuração
     debug_frames_seen: u64 = 0,
     debug_fast_seen: u64 = 0,
+    crash_ctx_sig: u64 = 0,
     debug_status_seen: ?client_mod.Status = null,
     debug_size: usize = 0, // tamanho do arquivo (lido de vez em quando, nas configurações)
     debug_size_at: f64 = -10,
@@ -2749,6 +2750,36 @@ pub const App = struct {
         for (gone[0..n_gone]) |o| a.unwatch(o);
     }
 
+    /// O que vai no relatório de travamento como "agora:" (só formata quando
+    /// muda: transmitindo, por qual encoder, quantas transmissões assistindo).
+    fn updateCrashContext(a: *App) void {
+        var h = std.hash.Wyhash.init(0);
+        const in_room = a.client != null;
+        h.update(std.mem.asBytes(&in_room));
+        if (a.sharer) |s| {
+            h.update(std.mem.asBytes(&s.state));
+            h.update(s.encoder_name);
+            h.update(std.mem.asBytes(&s.w));
+        }
+        if (a.camera) |s| h.update(std.mem.asBytes(&s.state));
+        const nv = a.views.items.len;
+        h.update(std.mem.asBytes(&nv));
+        for (a.views.items) |v| h.update(v.decoder_name);
+        const sig = h.final();
+        if (sig == a.crash_ctx_sig) return;
+        a.crash_ctx_sig = sig;
+        var b: [256]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&b);
+        w.print("{s}", .{if (in_room) "na sala" else "na tela inicial"}) catch {};
+        if (a.sharer) |s| w.print(", transmitindo {d}x{d} ({s}, {s})", .{ s.w, s.h, @tagName(s.state), s.encoder_name }) catch {};
+        if (a.camera) |s| w.print(", câmera ({s})", .{@tagName(s.state)}) catch {};
+        if (nv > 0) {
+            w.print(", assistindo {d}:", .{nv}) catch {};
+            for (a.views.items) |v| w.print(" {s}", .{v.decoder_name}) catch {};
+        }
+        crash.setContext(w.buffered());
+    }
+
     pub fn frame(a: *App) void {
         a.frame_no += 1;
         // log pela sala: vale a conexão de agora (se conectado)
@@ -2772,6 +2803,7 @@ pub const App = struct {
             if (a.audio_err_seen == 0) a.toast("Não consegui abrir a saída de som ({s}). Tento de novo sozinho.", .{why}, true);
             a.audio_err_seen = aerr;
         }
+        a.updateCrashContext();
         if (debuglog.on()) a.debugTick();
         a.pollPttKey();
         a.pollHotkeys();

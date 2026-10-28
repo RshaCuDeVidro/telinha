@@ -2856,6 +2856,7 @@ def relatorio_de_travamento():
         rep = open(os.path.join(a.cfg, "telinha", "telinha-travou.txt"), errors="replace").read()
         log("relatório:\n" + rep[:1500])
         expect("SIGSEGV" in rep and "pilha:" in rep and "telinha 3." in rep, "relatório incompleto")
+        expect("OpenGL: " in rep and "sessão: " in rep, "relatório sem a placa e a sessão")
         # binário PIE: a pilha vem em deslocamentos, que o simbolos.py traduz com o .debug deste build
         expect(re.search(r"^  telinha\+0x[0-9a-f]+$", rep, re.M), "pilha sem os deslocamentos no telinha")
         sym = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "..", "simbolos.py"), os.path.join(a.cfg, "telinha", "telinha-travou.txt")],
