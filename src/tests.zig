@@ -165,6 +165,39 @@ test "NVENC: um IDR sozinho já vira imagem (sem atraso de reordenação)" {
     }
 }
 
+test "decoder da placa: quadro de referência perdido vira LostRef, e o IDR seguinte volta" {
+    var err: [256]u8 = undefined;
+    const w = 320;
+    const h = 192;
+    var enc = codec.HwEncoder.init(.{ .width = w, .height = h, .fps = 30, .bitrate = 1_000_000, .temporal_layers = 1 }, &err) catch return error.SkipZigTest;
+    defer enc.deinit();
+    var dec = codec.HwDecoder.init(.h264, &err) catch return error.SkipZigTest;
+    defer dec.deinit();
+    const gpa = std.heap.c_allocator;
+    const img = try gpa.alloc(u8, w * h * 4);
+    defer gpa.free(img);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    var lost: u32 = 0;
+    var after_idr_ok = false;
+    for (0..12) |i| {
+        @memset(img, @intCast(40 + i * 15));
+        out.clearRetainingCapacity();
+        _ = try enc.encode(img.ptr, w * 4, .bgrx, i == 0 or i == 8, &out);
+        if (i == 3) continue; // esse P se perdeu no caminho
+        const r = dec.decode(out.items);
+        if (r) |_| {
+            if (i >= 8) after_idr_ok = true;
+        } else |e| {
+            try testing.expectEqual(error.LostRef, e); // não é erro do decoder
+            try testing.expect(i > 3 and i < 8);
+            lost += 1;
+        }
+    }
+    try testing.expect(lost >= 1); // percebeu o buraco
+    try testing.expect(after_idr_ok); // e voltou no IDR
+}
+
 /// PSNR do brilho de 20 quadros de "texto" rolando, codificado e decodificado na placa.
 fn hwRoundTrip(cd: codec.Codec, w: u32, h: u32) !struct { psnr: f64, bytes: usize } {
     var err: [256]u8 = undefined;

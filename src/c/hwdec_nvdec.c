@@ -31,6 +31,10 @@ struct nvdec {
     cudaVideoCodec codec;
     CUdevice dev;
     int retained; // contexto primário retido (solta no close)
+    // H.264: referência perdida (buraco no frame_num). O NVDEC decodifica o
+    // quadro mesmo assim e a imagem fica corrompida até o próximo IDR; aqui o
+    // quadro é recusado (quem chama pede um IDR) até o IDR chegar
+    int cur_idr, prev_ref_fn, have_ref, lost;
 };
 
 static void set_err(char *err, int errlen, const char *msg, int code) {
@@ -92,8 +96,27 @@ static int CUDAAPI on_sequence(void *ud, CUVIDEOFORMAT *f) {
 
 static int CUDAAPI on_decode(void *ud, CUVIDPICPARAMS *pp) {
     struct nvdec *d = ud;
+    if (d->codec == cudaVideoCodec_H264) {
+        const CUVIDH264PICPARAMS *h = &pp->CodecSpecific.h264;
+        const int max_fn = 1 << (h->log2_max_frame_num_minus4 + 4);
+        if (d->cur_idr) {
+            d->have_ref = 1;
+        } else if (!d->have_ref || h->frame_num != (d->prev_ref_fn + 1) % max_fn) {
+            d->have_ref = 0; // até o próximo IDR
+            d->lost = 1;
+            return 1; // não decodifica: sairia corrompido
+        }
+        if (pp->ref_pic_flag) d->prev_ref_fn = h->frame_num;
+    }
     if (!d->dec || d->cv->cuvidDecodePicture(d->dec, pp) != CUDA_SUCCESS) d->err = 1;
     return 1;
+}
+
+// O quadro (Annex B) tem um NAL de IDR (tipo 5)?
+static int has_idr(const uint8_t *p, int len) {
+    for (int i = 0; i + 3 < len; i++)
+        if (p[i] == 0 && p[i + 1] == 0 && p[i + 2] == 1 && (p[i + 3] & 0x1f) == 5) return 1;
+    return 0;
 }
 
 static int CUDAAPI on_display(void *ud, CUVIDPARSERDISPINFO *di) {
@@ -284,6 +307,8 @@ int nvdec_decode_to(nvdec *d, const uint8_t *data, int len, hwdec_frame *out,
 int nvdec_decode(nvdec *d, const uint8_t *data, int len, hwdec_frame *out) {
     d->have = 0;
     d->err = 0;
+    d->lost = 0;
+    d->cur_idr = d->codec == cudaVideoCodec_H264 && has_idr(data, len);
     out->on_device = 0;
     d->cu->cuCtxPushCurrent(d->ctx);
     CUVIDSOURCEDATAPACKET pkt;
@@ -295,6 +320,7 @@ int nvdec_decode(nvdec *d, const uint8_t *data, int len, hwdec_frame *out) {
     CUcontext dummy;
     d->cu->cuCtxPopCurrent(&dummy);
     if (r != CUDA_SUCCESS || d->err) return -1;
+    if (d->lost) return HWDEC_LOST_REF;
     if (!d->have) return 0;
     out->y = d->host;
     out->uv = d->host + (size_t)d->w * d->h;

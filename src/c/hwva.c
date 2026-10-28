@@ -1008,14 +1008,14 @@ static int pic_start(vadec *d, const h264_slice *sh) {
         d->active = *s;
         d->ready = 1;
     } else {
-        if (!d->ready) return -1;
+        if (!d->ready) return -2; // esperando um IDR (depois de perder referência)
         // SPS trocado sem IDR: tamanho/estrutura diferentes do que está em uso
         if (s->mb_w != d->active.mb_w || s->map_h != d->active.map_h || s->log2_max_frame_num != d->active.log2_max_frame_num ||
             s->poc_type != d->active.poc_type || s->max_num_ref_frames > d->active.max_num_ref_frames)
             return -1;
         // buraco no frame_num = perdeu quadro de referência (gaps_in_frame_num não é suportado)
         const int max_fn = 1 << d->active.log2_max_frame_num;
-        if (sh->frame_num != (d->prev_ref_frame_num + 1) % max_fn) return -1;
+        if (sh->frame_num != (d->prev_ref_frame_num + 1) % max_fn) return -2;
     }
     const h264_sps *as = &d->active;
     // superfície livre (nenhuma referência usando)
@@ -1479,8 +1479,11 @@ static void handle_nal(vadec *d, const uint8_t *nal, int len, int *err) {
         }
     }
     if (!d->in_pic) {
-        if (pic_start(d, sh) < 0) {
-            *err = 1;
+        const r = pic_start(d, sh);
+        if (r < 0) {
+            // -2: perdeu referência (rede) ou ainda esperando o IDR: só pedir um
+            // IDR, não é defeito do decoder
+            *err |= r == -2 ? 2 : 1;
             d->ready = 0; // sem referência confiável até o próximo IDR
             return;
         }
@@ -1509,7 +1512,7 @@ int vadec_decode(vadec *d, const uint8_t *data, int len, hwdec_frame *out) {
         err = 1;
         d->ready = 0;
     }
-    if (err) return -1;
+    if (err) return (err & 1) ? -1 : HWDEC_LOST_REF;
     if (!d->have) return 0;
     out->y = d->host;
     out->uv = d->host + (size_t)d->out_w * d->out_h;

@@ -678,6 +678,8 @@ pub const View = struct {
             .none => "nenhum",
         };
         v.stat_since = sync.nowMs();
+        var hw_errs: u32 = 0; // erros do decoder da placa desde hw_err_since
+        var hw_err_since: u64 = 0;
         while (v.pop()) |item| {
             const frame, const behind = item;
             defer gpa.free(frame);
@@ -700,16 +702,24 @@ pub const View = struct {
                 }
             }
             if (dec == .none) continue; // espera um codec que dê
-            v.decodeFrame(&dec, frame, behind) catch {
+            v.decodeFrame(&dec, frame, behind) catch |e| {
                 // perdeu referência ou veio lixo: recomeça do próximo IDR
-                if (dec == .hw) {
-                    // erro no decoder em hardware: segue com o openh264 daqui pra frente
-                    if (codec.Decoder.init()) |sw| {
+                // (quadro perdido na rede não é defeito do decoder: antes uma
+                // perda de UDP já trocava a placa pelo openh264 até o fim)
+                if (dec == .hw and e != error.LostRef) {
+                    const now = sync.nowMs();
+                    if (now -| hw_err_since > 10_000) {
+                        hw_err_since = now;
+                        hw_errs = 0;
+                    }
+                    hw_errs += 1;
+                    // 3 erros do decoder da placa em 10 s: segue com o openh264
+                    if (hw_errs >= 3) if (codec.Decoder.init()) |sw| {
                         dec.deinit();
                         dec = .{ .sw = sw };
                         v.decoder_name = "openh264";
-                        v.setDecoderWhy("o decoder da placa deu erro no meio");
-                    } else |_| {}
+                        v.setDecoderWhy("o decoder da placa deu erro 3 vezes em 10 s");
+                    } else |_| {};
                 }
                 v.qmutex.lock();
                 v.waiting_key = true;

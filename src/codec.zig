@@ -889,6 +889,7 @@ pub const HwDecoder = struct {
     pub fn decode(d: *HwDecoder, data: []const u8) !?Frame {
         var f: hw.hwdec_frame = undefined;
         const r = hw.hwdec_decode(d.h, data.ptr, @intCast(data.len), &f);
+        if (r == hw.HWDEC_LOST_REF) return error.LostRef; // perdeu referência no caminho: só um IDR
         if (r < 0) return error.Decode;
         if (r == 0) return null;
         return .{ .y = f.y, .uv = f.uv, .w = @intCast(f.width), .h = @intCast(f.height) };
@@ -899,6 +900,7 @@ pub const HwDecoder = struct {
     pub fn decodeTo(d: *HwDecoder, data: []const u8, dst_y: u64, dst_uv: u64, pitch: u32, w: u32, h: u32) !?Frame {
         var f: hw.hwdec_frame = undefined;
         const r = hw.hwdec_decode_to(d.h, data.ptr, @intCast(data.len), &f, dst_y, dst_uv, @intCast(pitch), @intCast(w), @intCast(h));
+        if (r == hw.HWDEC_LOST_REF) return error.LostRef; // perdeu referência no caminho: só um IDR
         if (r < 0) return error.Decode;
         if (r == 0) return null;
         return .{ .y = f.y, .uv = f.uv, .w = @intCast(f.width), .h = @intCast(f.height), .on_device = f.on_device != 0 };

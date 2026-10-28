@@ -28,7 +28,10 @@ typedef struct hwdec_frame {
 hwdec *hwdec_open(int codec, char *err, int errlen);
 
 // Decodifica um quadro completo. 1 = imagem em *out (válida até a próxima
-// chamada), 0 = nenhuma imagem ainda, <0 = erro (recomece de um IDR).
+// chamada), 0 = nenhuma imagem ainda, HWDEC_LOST_REF = quadro de referência
+// perdido no caminho (peça um IDR; o decoder está bem), outro <0 = erro do
+// decoder (recomece de um IDR).
+#define HWDEC_LOST_REF (-2)
 int hwdec_decode(hwdec *d, const uint8_t *data, int len, hwdec_frame *out);
 
 // Igual, mas o NVDEC copia o quadro pra memória da placa (ponteiro CUDA do
