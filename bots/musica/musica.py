@@ -291,15 +291,29 @@ class MusicBot(Bot):
 
     async def _follow(self, ctx: Context) -> None:
         """!play em privado de quem está numa call: o bot vai pra lá (sem
-        precisar do !join antes). Tocando pra outra call, fica onde está."""
+        precisar do !join antes). Tocando pra outra call, fica onde está.
+        Fora de call (depois de um !leave) o som não chega a ninguém: aí até o
+        !play no canal leva o bot pra call de quem pediu."""
         m = ctx.message
         target = m.author_call
-        if not m.private or not target or target == self.call:
+        if not self.call and not target:
+            raise CommandError(f"I'm not in a call. Join a call and `{self.prefix}play` again, or `{self.prefix}join` brings me to your call.")
+        if not target or target == self.call or (not m.private and self.call):
             return
         if self.call and (self.current or self.queue):
             await ctx.send(f"I'm playing in #{self.call} right now; it goes to the queue there. `{self.prefix}join` brings me to your call.")
             return
-        await self._go(target)
+        if not await self._go(target):
+            raise CommandError(f"Couldn't join #{target} (it may have a password or be locked).")
+
+    async def _follow_click(self, click: Click) -> bool:
+        """Botão de busca/rádio com o bot fora de call: vai pra call de quem clicou."""
+        if self.call:
+            return True
+        if click.call and await self._go(click.call):
+            return True
+        await click.whisper(f"I'm not in a call. Join a call and click again, or `{self.prefix}join` brings me to your call.")
+        return False
 
     # ---------------------------------------------------------------- comandos
     def _register(self) -> None:
@@ -332,7 +346,7 @@ class MusicBot(Bot):
 
             def pick(t: Track):
                 async def go(click: Click):
-                    if not sent:
+                    if not sent or not await self._follow_click(click):
                         return
                     t.requested_by = click.member_name
                     pos = self.enqueue([t])
@@ -372,7 +386,7 @@ class MusicBot(Bot):
         @cmd("skip", aliases=["s", "next", "pular"], help="skips to the next one")
         async def skip(ctx: Context):
             if not self.current:
-                raise CommandError("Nothing is playing.")
+                return  # parado: fica quieto (o !skip pode ser pro Telão no mesmo canal)
             await self.player.stop()
 
         @cmd("pause", aliases=["pausar"], help="pauses")
@@ -445,6 +459,7 @@ class MusicBot(Bot):
                 if not r:
                     raise CommandError(f'No radio called "{name}". Try `{self.prefix}radios`.')
                 r.requested_by = ctx.message.author
+                await self._follow(ctx)
                 return await self._added(ctx, [r])
             if not self.src.radios:
                 raise CommandError("No radios configured.")
@@ -455,6 +470,8 @@ class MusicBot(Bot):
 
             def start(n: str):
                 async def go(click: Click):
+                    if not await self._follow_click(click):
+                        return
                     r = self.src.radio(n)
                     r.requested_by = click.member_name
                     self.enqueue([r])

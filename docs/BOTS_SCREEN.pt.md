@@ -49,7 +49,7 @@ python3 -m venv .venv && .venv/bin/pip install ./sdk/python yt-dlp
 
 | Comando | Também | |
 |---|---|---|
-| `!watch nome ou link` | `!w`, `!play`, `!assistir`, `!ver` | passa o vídeo, ou põe na fila |
+| `!watch nome ou link` | `!w`, `!assistir`, `!ver` | passa o vídeo, ou põe na fila |
 | `!watch` respondendo um vídeo | | passa o vídeo mandado na sala |
 | `!search nome` | `!find`, `!buscar` | cinco resultados, com um botão pra cada |
 | `!queue` | `!q`, `!fila` | o que está passando e o que vem depois |

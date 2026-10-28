@@ -126,6 +126,16 @@ class MusicBotTest(unittest.IsolatedAsyncioTestCase):
         await self.ana.send("!buscar")
         await until(lambda: any(m.author_id == self.bot.me and "Usage" in m.text for m in self.got), 5, "o uso do comando")
 
+    async def test_fora_de_call_o_play_no_canal_traz_o_bot(self):
+        # depois de um !leave o som não chegava a ninguém: o !play no canal traz o bot de volta pra call de quem pediu
+        await self.ana.send("!leave")
+        await until(lambda: self.bot.call == "", 5, "o bot sair da call")
+        self.assertTrue(self.ana.call)
+        await self.ana.send("!play tom de teste")
+        await until(lambda: self.bot.call == self.ana.call, 5, "o bot voltar pra call da Ana")
+        n = len(self.voice)
+        await until(lambda: len(self.voice) > n + 10, 10, "o som chegar")
+
     async def test_busca_responde_na_hora_e_vira_o_resultado(self):
         async def nada(query, n=5):
             await asyncio.sleep(0.5)

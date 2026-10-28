@@ -359,7 +359,8 @@ class ScreenBot(Bot):
         """!watch em privado de quem está numa call: o bot vai pra lá."""
         m = ctx.message
         target = m.author_call
-        if not m.private or not target or target == self.call:
+        # fora de call ninguém vê a tela do bot: aí até o !watch no canal o leva
+        if not target or target == self.call or (not m.private and self.call):
             return
         if self.call and (self.current or self.queue):
             await ctx.send(f"I'm showing something in #{self.call} right now; it goes to the queue there.")
@@ -369,7 +370,8 @@ class ScreenBot(Bot):
     def _register(self) -> None:
         cmd = self.command
 
-        @cmd("watch", aliases=["w", "play", "p", "assistir", "ver"], help="plays a video (name or link) on the bot's screen, or queues it")
+        # sem "play"/"p": o bot de música costuma estar no mesmo canal e os dois respondiam ao mesmo !play
+        @cmd("watch", aliases=["w", "assistir", "ver"], help="plays a video (name or link) on the bot's screen, or queues it")
         async def watch(ctx: Context, query: str = ""):
             if not query and self.player.paused:
                 self.player.resume()
@@ -394,8 +396,9 @@ class ScreenBot(Bot):
 
             def pick(v: Video):
                 async def go(click: Click):
-                    v.requested_by = click.name
-                    if not self.call:
+                    v.requested_by = click.member_name
+                    if not self.call and not (click.call and await self._go(click.call)):
+                        await click.whisper(f"I'm not in a call. Join a call and click again, or `{self.prefix}join` brings me to your call.")
                         return
                     was_idle = self.current is None and not self.queue
                     self.queue.append(v)
@@ -410,7 +413,7 @@ class ScreenBot(Bot):
         @cmd("queue", aliases=["q", "fila"], help="what's showing and what's next")
         async def queue(ctx: Context):
             if not self.current and not self.queue:
-                raise CommandError("Nothing in the queue.")
+                return  # parado: fica quieto (o bot de música no mesmo canal responde ao dele)
             lines = [f"**Now:** {self.current.title}"] if self.current else []
             lines += [f"**{i + 1}.** {v.title[:90]}" for i, v in enumerate(self.queue[:SHOW])]
             if len(self.queue) > SHOW:
@@ -421,13 +424,13 @@ class ScreenBot(Bot):
         @cmd("skip", aliases=["s", "next", "pular"], help="skips to the next video")
         async def skip(ctx: Context):
             if not self.current:
-                raise CommandError("Nothing is showing.")
+                return  # parado: fica quieto (o !skip pode ser pro bot de música)
             await self.player.stop()
 
         @cmd("pause", aliases=["pausar"], help="pauses")
         async def pause(ctx: Context):
             if not self.player.playing:
-                raise CommandError("Nothing is showing.")
+                return
             self.player.pause()
             await self._refresh_card()
 

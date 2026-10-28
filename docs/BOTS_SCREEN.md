@@ -49,7 +49,7 @@ python3 -m venv .venv && .venv/bin/pip install ./sdk/python yt-dlp
 
 | Command | Also | |
 |---|---|---|
-| `!watch name or link` | `!w`, `!play` | plays the video, or queues it |
+| `!watch name or link` | `!w` | plays the video, or queues it |
 | `!watch` replying to a video | | plays the video sent in the room |
 | `!search name` | `!find` | five results, with a button for each |
 | `!queue` | `!q` | what's playing and what's next |
