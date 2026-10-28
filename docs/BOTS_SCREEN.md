@@ -131,6 +131,14 @@ EnvironmentFile=/etc/telinha-telao.env
 ExecStart=/opt/telinha/.venv/bin/python bots/telao/telao.py
 Restart=on-failure
 RestartSec=10
+# behind the server when fighting for CPU (on a 2-core VPS the relay comes first)
+Nice=10
+CPUWeight=50
+MemoryMax=2G
+# no writing to the system, no privilege gain
+NoNewPrivileges=yes
+ProtectSystem=full
+PrivateTmp=yes
 
 [Install]
 WantedBy=multi-user.target

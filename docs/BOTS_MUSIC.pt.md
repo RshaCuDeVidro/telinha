@@ -160,6 +160,14 @@ EnvironmentFile=/etc/telinha-musica.env
 ExecStart=/opt/telinha/.venv/bin/python bots/musica/musica.py
 Restart=on-failure
 RestartSec=10
+# atrás do servidor na disputa pela CPU (numa VPS de 2 núcleos o relay vem primeiro)
+Nice=10
+CPUWeight=50
+MemoryMax=1G
+# sem poder escrever no sistema nem ganhar privilégio
+NoNewPrivileges=yes
+ProtectSystem=full
+PrivateTmp=yes
 
 [Install]
 WantedBy=multi-user.target
