@@ -157,3 +157,6 @@ a.ce-title:hover { color: var(--c); text-decoration: underline; }
   background: rgba(5, 5, 12, .82); border: 1px solid #2a2440; border-radius: 6px; padding: 6px 8px; }
 .dbg pre { margin: 0; font: 11px/1.35 ui-monospace, Menlo, Consolas, monospace; color: #c8c4d8; white-space: pre-wrap; word-break: break-all; }
 .dbg .ctl { margin-top: 4px; font-size: 11px; }
+/* o vídeo tem som e ele está desligado: à vista, em cima do vídeo */
+.sound-pill { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 4;
+  background: var(--accent); color: #fff; border: 0; border-radius: 999px; padding: 8px 16px; font-weight: 600; cursor: pointer; }

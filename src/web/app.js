@@ -16,6 +16,8 @@ const PT = {
   insecure: 'A página precisa ser aberta por https:// pra mostrar o vídeo.',
   waiting_key: 'esperando o primeiro quadro...', image: '[imagem]', screen: 'tela', camera: 'câmera',
   you: '(você)', live: 'AO VIVO',
+  tap_sound: 'Toque pra ativar o som',
+  no_audio_dec: 'Este navegador não toca o som da transmissão (falta o AudioDecoder). O Chrome e o Edge tocam; ou use o app.',
 };
 const EN = {
   join_title: 'Watch in your browser', join_sub: 'Nothing to install. To stream and talk, use the telinha app.',
@@ -27,6 +29,8 @@ const EN = {
   insecure: 'The page must be opened over https:// to show the video.',
   waiting_key: 'waiting for the first frame...', image: '[image]', screen: 'screen', camera: 'camera',
   you: '(you)', live: 'LIVE',
+  tap_sound: 'Tap to turn on sound',
+  no_audio_dec: "This browser can't play the stream's sound (no AudioDecoder). Chrome and Edge can; or use the app.",
 };
 const L = (navigator.language || 'pt').toLowerCase().startsWith('pt') ? PT : EN;
 const $ = (id) => document.getElementById(id);
@@ -369,11 +373,11 @@ function onMembers(r) {
   const streams = [];
   for (const m of list) {
     if (m.id === st.me || !(m.route & 0x20)) continue;
-    if (m.flags & 1) streams.push({ id: m.id, name: m.name, kind: 0 });
+    if (m.flags & 1) streams.push({ id: m.id, name: m.name, kind: 0, audio: (m.flags & 4) !== 0 });
     if (m.flags & 64) streams.push({ id: (m.id | 0x80000000) >>> 0, name: m.name, kind: 1 });
   }
   st.streams = streams;
-  renderPeople(list); renderStreams(streams);
+  renderPeople(list); renderStreams(streams); soundPill();
   // reconectou: volta a assistir a mesma; aba escondida: espera ela voltar;
   // a que eu assistia acabou: a próxima; nada assistindo: a primeira
   if (st.wantWatching && streams.some((s) => s.id === st.wantWatching)) { const w = st.wantWatching; st.wantWatching = 0; watch(w); }
@@ -427,6 +431,7 @@ function stopVideo() {
   if (st.dec) { try { st.dec.close(); } catch (e) { /* já fechado */ } }
   if (st.mp4) st.mp4.close();
   st.dec = null; st.decCodec = -1; st.waitKey = true; st.decoded = 0; st.cursor = null; st.pending = [];
+  soundPill();
 }
 
 function clearCanvas() {
@@ -455,7 +460,7 @@ function newDecoder(codec) {
       frame.close();
       st.decoded++;
       st.fpsCount++;
-      if (st.decoded === 1) { $('empty').hidden = true; keepAwake(true); }
+      if (st.decoded === 1) { $('empty').hidden = true; keepAwake(true); soundPill(); }
       if (QA && !st.qaSent && st.decoded >= 30) {
         st.qaSent = true;
         send(new W(T.chat).str(`[qa] ${st.decoded} quadros decodificados ${c.width}x${c.height} codec ${st.decCodec}`).done());
@@ -493,7 +498,7 @@ function onFrame(r) {
     if (codec !== 0) return; // só H.264 (o servidor sabe: a página disse)
     if (!st.mp4) st.mp4 = new Mp4Feed($('mvideo'));
     if (st.mp4.push(key, time, r.rest(), w, h)) {
-      if (++st.decoded === 1) { $('empty').hidden = true; sizeCursor(w, h); keepAwake(true); }
+      if (++st.decoded === 1) { $('empty').hidden = true; sizeCursor(w, h); keepAwake(true); soundPill(); }
       st.fpsCount++;
       // teste: o <video> tocando de verdade (imagem com tamanho, o tempo andando)
       const v = $('mvideo');
@@ -575,7 +580,12 @@ document.addEventListener('fullscreenchange', () => { st.sentH = -1; sendViewSiz
 
 // -------------------------------------------------------------- som
 async function enableSound() {
-  if (st.audio) { st.soundOn = !st.soundOn; st.gain.gain.value = st.soundOn ? $('vol').value / 100 : 0; soundButton(); return; }
+  // sem AudioDecoder (Firefox, Safari antigo): "ligar" não tocaria nada; avisa uma vez
+  if (!('AudioDecoder' in window)) { if (!st.warnedNoAudio) { st.warnedNoAudio = true; toast(L.no_audio_dec); } $('sound-pill').hidden = true; return; }
+  if (st.audio) {
+    if (st.audio.state === 'suspended') st.audio.resume().catch(() => {});
+    st.soundOn = !st.soundOn; st.gain.gain.value = st.soundOn ? $('vol').value / 100 : 0; soundButton(); return;
+  }
   st.audio = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
   await st.audio.audioWorklet.addModule('audio-worklet.js');
   st.node = new AudioWorkletNode(st.audio, 'telinha-mix', { outputChannelCount: [2] });
@@ -584,7 +594,16 @@ async function enableSound() {
   st.soundOn = true; st.gain.gain.value = $('vol').value / 100;
   soundButton();
 }
+// o vídeo assistido tem som e ele está desligado: um aviso à vista (o botão
+// de som só aparece com o mouse em cima, e no celular ninguém achava)
+function soundPill() {
+  const s = (st.streams || []).find((x) => x.id === st.watching);
+  const p = $('sound-pill');
+  p.textContent = L.tap_sound;
+  p.hidden = !(s && s.audio && !st.soundOn && st.decoded > 0 && !st.warnedNoAudio);
+}
 function soundButton() {
+  soundPill();
   const b = $('btn-sound');
   // sem som ainda (o navegador só deixa tocar depois de um clique): o convite pra ligar
   b.textContent = !st.audio ? L.sound_on : st.soundOn ? '🔊' : L.sound_off;
@@ -857,6 +876,7 @@ function start() {
     $('chat-in').value = '';
   };
   $('btn-sound').onclick = () => enableSound();
+  $('sound-pill').onclick = (e) => { e.stopPropagation(); enableSound(); };
   $('vol').oninput = () => { if (st.gain && st.soundOn) st.gain.gain.value = $('vol').value / 100; };
   $('btn-full').onclick = () => {
     if (document.fullscreenElement) { document.exitFullscreen(); return; }
@@ -886,6 +906,8 @@ function start() {
       if ((st.streams || []).some((s) => s.id === w)) watch(w);
       else if (st.streams && st.streams.length) watch(st.streams[0].id);
     } else if (st.watching && st.decoded) keepAwake(true); // o sistema solta a trava ao esconder
+    // o celular suspende o som com a tela escondida: volta junto
+    if (!document.hidden && st.audio && st.audio.state === 'suspended' && st.soundOn) st.audio.resume().catch(() => {});
   });
   setInterval(() => {
     if (!st.watching || !st.decoded) { $('info').textContent = ''; return; }
