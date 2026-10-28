@@ -31,12 +31,12 @@
   --bg-dark: #050505;
   --bg-card: #0a050f;
   --bg-raised: rgba(8, 4, 14, 0.7);
-  --bg-header: rgba(3, 2, 8, 0.92);
+  --bg-header: rgba(3, 2, 8, 0.96); /* sem o desfoque: mais opaco */
   --text-main: #e5e7eb;
   --text-body: #d1d5db;
   --text-strong: #f5f5f5;
   --text-dim: #8b8f9a;
-  --text-faint: #5b5f6b;
+  --text-faint: #7c818d; /* 5:1 no fundo escuro (o #5b5f6b dava 3:1) */
   --line: rgba(147, 51, 234, 0.2);
   --line-soft: rgba(147, 51, 234, 0.12);
   --code-bg: #0a0a0a;
@@ -156,7 +156,6 @@ a { color: var(--neon-fuchsia); }
   position: sticky; top: 0; z-index: 100; height: var(--head-h);
   border-bottom: 1px solid var(--line);
   background: var(--bg-header);
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
 }
 .site-header::after {
   content: ""; position: absolute; bottom: -1px; left: 0; right: 0; height: 1px;
@@ -742,7 +741,9 @@ a.article-card:hover { transform: translateY(-2px); }
   .logo .logo-path { display: none; }
 }
 @media (max-width: 768px) {
-  html { font-size: 13px; }
+  /* 13 px deixava o texto pequeno com 9-10 px no celular */
+  html { font-size: 15px; }
+  .tag-badge, .tk-tree-link .soon, .code-copy-btn, .markdown-body pre[data-lang]::before { font-size: 11px; }
   .markdown-body pre { font-size: 0.72rem; padding: 0.8em; padding-top: 2.2em; }
   .article-header-card { padding: 1rem; }
   .article-header-card h1 { font-size: 1.55rem; }

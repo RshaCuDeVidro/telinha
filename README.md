@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Low-latency group screen sharing for Linux and Windows.</strong><br>
-  A Discord-style room where anyone can go live and everyone can watch, talk and chat.
+  Anyone can share their screen; everyone watches together, talks and chats.
 </p>
 
 <p align="center">

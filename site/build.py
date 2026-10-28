@@ -539,7 +539,7 @@ def build(out):
         if lang == "pt":
             # primeira visita, navegador em outra língua: vai pro inglês (escolher no seletor vale pra sempre)
             redirect = "\n<script>(function(){try{if(localStorage.getItem('telinha-lang'))return}catch(e){}var l=(navigator.languages||[navigator.language||''])" \
-                       ".join(',').toLowerCase();if(l&&l.indexOf('pt')<0)location.replace('en/')})();</script>"
+                       ".join(',').toLowerCase();if(l&&l.indexOf('pt')<0)location.replace('en/'+location.hash)})();</script>"
         page = head(lang, "telinha", UI[lang]["desc"], base, path, redirect) + header(lang, base, "home", path)
         page += f'\n<main class="home" id="conteudo">\n{content}\n</main>\n' + footer(lang, base)
         write(os.path.join(out, path, "index.html"), page)

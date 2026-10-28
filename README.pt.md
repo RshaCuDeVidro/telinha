@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Compartilhamento de tela em grupo, com pouca latência, pra Linux e Windows.</strong><br>
-  Uma sala com cara de Discord: qualquer um transmite, todo mundo assiste, conversa e manda mensagem.
+  Qualquer um transmite a tela, todo mundo assiste junto, fala e conversa.
 </p>
 
 <p align="center">
