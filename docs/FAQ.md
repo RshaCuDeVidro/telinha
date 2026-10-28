@@ -140,6 +140,51 @@ happening, look at that person's stats over the video (latency and bandwidth)
 and see the [connection guide](CONNECTING.md): a direct path (an opened port) is
 almost always better than the public link.
 
+### I joined the room and see no video
+
+Nobody sees anything by accident: click whoever is **LIVE** (in the list of
+people in the room, or in the pills above the stage). If nobody is live, the
+stage says so. To start watching as soon as you join, use `--assistir` on the
+command line.
+
+### Watching stutters (especially on laptops with AMD or Intel graphics)
+
+1. In **Settings → Debugging**, the **How the video is flowing** block shows
+   which decoder is in use (and, if it isn't the GPU's, why). The **Copy**
+   button takes the text so you can send it along.
+2. Record a debug log while it stutters (see [Send a log](#send-a-log)): the
+   `tempos ...: entre quadros na tela` line has median/p95/max, which shows the
+   hiccups an average hides.
+3. On Windows, compare by opening the app with the openh264 decoder instead of
+   Media Foundation, from a Command Prompt:
+
+   ```
+   set TELINHA_SEM_HWDEC_ALT=1
+   telinha.exe
+   ```
+
+   If it gets better, the problem is Media Foundation's decoder on that GPU:
+   send the log both ways.
+
+Whoever streams with automatic fps already drops from 60 to 30 on their own when
+someone can't decode in time.
+
+### On a phone, in the browser, it stutters or flickers
+
+Add `&debug=1` to the end of the link (after whatever already comes after the
+`#`): the page shows a panel with the video path (WebCodecs or `<video>`), the
+latency, frames requested again, decoder errors and the browser. The **copy**
+button takes everything; send it to the room owner.
+
+### I can't hear the stream's sound
+
+- The streamer needs to turn on **sound** in Share screen (the sound icon shows
+  on the tile of whoever has it).
+- In the browser, tap **Turn on sound** (browsers don't let pages play on their
+  own).
+- If the PC's sound output doesn't open, the app tells you once and retries on
+  its own; the reason goes to the debug log.
+
 ## Sound and voice
 
 ### There's echo
@@ -172,8 +217,13 @@ When something goes wrong, the log helps a lot:
 
 1. **Settings → Debugging → Record a debug log**.
 2. Do whatever went wrong again.
-3. Under **Send the log**, send it to the room owner (or save the file and attach
-   it to an issue).
+3. Under **Send the log**, pick **gofile.io** (makes a link to paste),
+   **Webhook** (a Discord channel, for example) or **To the room owner** (goes
+   through the room itself). Or save the file and attach it to an issue.
+
+The file is `telinha-debug.log`, in the settings folder (`~/.config/telinha` on
+Linux, `%APPDATA%\telinha` on Windows; the **Open folder** button takes you
+there). Only this run's part gets sent.
 
 The log contains no passwords. If the app crashes, it asks the next time it
 opens whether it can send the crash report.

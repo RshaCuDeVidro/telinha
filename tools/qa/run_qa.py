@@ -830,7 +830,7 @@ def navegador_sem_webcodecs():
                     'user_pref("app.update.enabled", false);\nuser_pref("media.volume_scale", "0.0");\n')
         env = {"HOME": home, "PATH": os.environ["PATH"], "XDG_CONFIG_HOME": os.path.join(home, ".config"), "XDG_CACHE_HOME": os.path.join(home, ".cache"),
                "MOZ_HEADLESS": "1", "LANG": "pt_BR.UTF-8"}
-        ff = s.spawn("firefox", ["firefox", "--headless", "--no-remote", "--profile", prof, f"http://127.0.0.1:{wp}/#s=pw&n=Navegador&qa=1&mse=1"], env)
+        ff = s.spawn("firefox", ["firefox", "--headless", "--no-remote", "--profile", prof, f"http://127.0.0.1:{wp}/#s=pw&n=Navegador&qa=1&mse=1&debug=1"], env)
         try:
             try:
                 st = b.wait(lambda st: any(l["text"].startswith("[qa]") and "pelo MSE" in l["text"] for l in st["chat"]), 40, "o navegador tocar pelo MSE")
@@ -843,6 +843,11 @@ def navegador_sem_webcodecs():
             log(f"navegador: {line['text']}")
             late = float(line["text"].rsplit(" ", 1)[1])
             expect(0 <= late < 0.6, f"atraso demais no <video>: {line['text']}")
+            # #debug=1: o painel de diagnóstico da página
+            st = b.wait(lambda st: any(l["text"].startswith("[qa-painel]") for l in st["chat"]), 15, "o painel de diagnóstico (#debug=1)")
+            painel = next(l["text"] for l in st["chat"] if l["text"].startswith("[qa-painel]"))
+            log(f"painel: {painel}")
+            expect("caminho: MSE" in painel and "IDR pedidos" in painel, f"painel incompleto: {painel}")
         finally:
             try:
                 os.killpg(ff.pid, signal.SIGTERM)

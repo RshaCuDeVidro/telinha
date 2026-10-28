@@ -141,6 +141,50 @@ em cima do vídeo (atraso e banda) da pessoa e veja o
 [guia de conexão](CONNECTING.pt.md): um caminho direto (porta aberta) quase
 sempre é melhor que o link público.
 
+### Entrei na sala e não vejo vídeo nenhum
+
+Ninguém vê nada sem querer: clique em quem está **AO VIVO** (na lista de quem
+está na sala, ou nas pílulas em cima do palco). Se ninguém estiver ao vivo, o
+palco diz isso. Pra assistir sozinho assim que entrar, use `--assistir` na
+linha de comando.
+
+### Assistir trava (principalmente em notebook com AMD ou Intel)
+
+1. Em **Configurações → Depuração**, o bloco **Como o vídeo está passando**
+   mostra qual decoder está em uso (e, se não é o da placa, por quê). O botão
+   **Copiar** leva o texto pra mandar junto do relato.
+2. Grave o log de depuração enquanto trava (ver [Mandar um log](#mandar-um-log)):
+   a linha `tempos ...: entre quadros na tela` traz mediana/p95/máximo, o que
+   mostra o engasgo que a média esconde.
+3. No Windows, compare abrindo o app com o decoder do openh264 em vez do Media
+   Foundation, num Prompt de Comando:
+
+   ```
+   set TELINHA_SEM_HWDEC_ALT=1
+   telinha.exe
+   ```
+
+   Se melhorar, o problema é o decoder do Media Foundation nessa placa: mande o
+   log dos dois jeitos.
+
+Quem transmite com o fps automático já desce de 60 pra 30 sozinho quando alguém
+não consegue decodificar a tempo.
+
+### No celular, pelo navegador, trava ou pisca
+
+Acrescente `&debug=1` no fim do link (depois do que já vem depois do `#`): a
+página mostra um painel com o caminho do vídeo (WebCodecs ou `<video>`), o
+atraso, os quadros pedidos de novo, os erros do decoder e o navegador. O botão
+**copiar** leva tudo; mande pro dono da sala.
+
+### Não ouço o som da transmissão
+
+- Quem transmite precisa ligar o **som** no Compartilhar tela (o ícone de som
+  aparece no quadro de quem tem).
+- No navegador, toque em **Ativar som** (o navegador não deixa tocar sozinho).
+- Se a saída de som do PC não abrir, o app avisa uma vez e tenta de novo
+  sozinho; o motivo vai pro log de depuração.
+
 ## Som e voz
 
 ### Tem eco
@@ -173,8 +217,13 @@ Quando algo dá errado, o log ajuda muito a consertar:
 
 1. **Configurações → Depuração → Gravar log de depuração**.
 2. Repita o que deu errado.
-3. Em **Mandar o log**, mande pro dono da sala (ou salve o arquivo e anexe numa
-   issue).
+3. Em **Mandar o log**, escolha: **gofile.io** (gera um link pra colar),
+   **Webhook** (um canal do Discord, por exemplo) ou **Pro dono da sala** (vai
+   pela própria sala). Ou salve o arquivo e anexe numa issue.
+
+O arquivo é o `telinha-debug.log`, na pasta de configurações (`~/.config/telinha`
+no Linux, `%APPDATA%\telinha` no Windows; o botão **Abrir pasta** leva lá). Só
+o trecho desta execução é mandado.
 
 O log não tem senha nenhuma. Se o app cair, na próxima vez que abrir ele
 pergunta se pode mandar o relatório do travamento.

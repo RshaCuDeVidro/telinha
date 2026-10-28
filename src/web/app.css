@@ -152,3 +152,8 @@ a.ce-title:hover { color: var(--c); text-decoration: underline; }
 .ce-btn.primary:hover, .ce-btn.danger:hover, .ce-btn.success:hover { filter: brightness(1.12); box-shadow: 0 0 14px color-mix(in srgb, var(--c) 45%, transparent); }
 .ce-btn:disabled { opacity: .45; cursor: default; }
 .ce-footer { font-size: 11px; color: var(--faint); }
+/* #debug=1: o que o navegador está fazendo (canto de cima, sem cobrir os controles) */
+.dbg { position: absolute; top: 8px; left: 8px; right: 8px; max-height: 45%; overflow: auto; z-index: 5;
+  background: rgba(5, 5, 12, .82); border: 1px solid #2a2440; border-radius: 6px; padding: 6px 8px; }
+.dbg pre { margin: 0; font: 11px/1.35 ui-monospace, Menlo, Consolas, monospace; color: #c8c4d8; white-space: pre-wrap; word-break: break-all; }
+.dbg .ctl { margin-top: 4px; font-size: 11px; }

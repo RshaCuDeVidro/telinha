@@ -221,6 +221,17 @@ function same(a, b) { if (a.length !== b.length) return false; for (let i = 0; i
 // ------------------------------------------------------------- estado
 const hash = new URLSearchParams(location.hash.slice(1));
 const QA = hash.get('qa') === '1';
+// #debug=1 no link: painel com o que o navegador está fazendo (pra quem
+// assiste pelo celular mandar junto do "trava"/"pisca")
+const DEBUG = new URLSearchParams(location.hash.slice(1)).get('debug') === '1';
+const dbg = { keyreqs: 0, decErrors: 0, reconnects: 0, rttMs: -1, latMs: -1, offsetUs: null, errors: [] };
+function dbgError(what) {
+  dbg.errors.push(`${new Date().toLocaleTimeString()} ${what}`);
+  if (dbg.errors.length > 5) dbg.errors.shift();
+}
+window.addEventListener('error', (e) => dbgError(`erro: ${e.message}`));
+window.addEventListener('unhandledrejection', (e) => dbgError(`promessa: ${e.reason}`));
+
 const st = {
   ws: null, me: 0, chan: '', members: new Map(), watching: 0, closedByUs: false, denied: false, retry: 1000,
   dec: null, decCodec: -1, waitKey: true, decoded: 0, qaSent: false, lastFrameAt: 0, fps: 0, fpsCount: 0, fpsAt: 0,
@@ -274,6 +285,7 @@ async function connect(name, pass) {
   const codecs = await decodable();
   st.closedByUs = false;
   status(L.connecting);
+  if (st.ws) dbg.reconnects++;
   const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
   ws.binaryType = 'arraybuffer';
   st.ws = ws;
@@ -312,6 +324,14 @@ function onMessage(u8) {
       $('join-err').textContent = why === 'Senha errada.' ? L.wrong_pass : why;
       $('pw-row').hidden = false;
       status('', 'bad');
+      break;
+    }
+    case T.pong: {
+      // ida e volta, e o relógio da sala (o atraso dos quadros sai dele)
+      const t = r.u64(), serverUs = r.u64();
+      const now = Date.now();
+      dbg.rttMs = now - t;
+      dbg.offsetUs = serverUs + dbg.rttMs * 500 - now * 1000;
       break;
     }
     case T.members: onMembers(r); break;
@@ -427,6 +447,11 @@ function newDecoder(codec) {
         const cc = $('cursor'); cc.width = c.width; cc.height = c.height;
       }
       ctx.drawImage(frame, 0, 0);
+      if (dbg.offsetUs !== null) {
+        // da captura até a tela (relógio da sala)
+        const lat = (Date.now() * 1000 + dbg.offsetUs - frame.timestamp) / 1000;
+        if (lat > -1000 && lat < 30000) dbg.latMs = dbg.latMs < 0 ? lat : dbg.latMs * 0.9 + lat * 0.1;
+      }
       frame.close();
       st.decoded++;
       st.fpsCount++;
@@ -436,7 +461,7 @@ function newDecoder(codec) {
         send(new W(T.chat).str(`[qa] ${st.decoded} quadros decodificados ${c.width}x${c.height} codec ${st.decCodec}`).done());
       }
     },
-    error: () => { requestKey(); },
+    error: (e) => { dbg.decErrors++; dbgError(`decoder: ${e && e.message}`); requestKey(); },
   });
   st.dec.configure({ codec: codec === 0 ? H264 : CODECS[codec], optimizeForLatency: true, hardwareAcceleration: 'no-preference' });
   st.decCodec = codec;
@@ -444,6 +469,7 @@ function newDecoder(codec) {
 }
 
 function requestKey() {
+  dbg.keyreqs++;
   const id = st.watching;
   stopVideo();
   st.watching = id;
@@ -461,6 +487,7 @@ function onFrame(r) {
   st.frameW = w; st.frameH = h;
   const key = (flags & 1) !== 0;
   const codec = (flags >> 2) & 3;
+  st.lastCodec = codec;
   if (flags & 0x10) { st.cursor = cx === 0xffff ? null : [cx, cy]; }
   if (USE_MSE) {
     if (codec !== 0) return; // só H.264 (o servidor sabe: a página disse)
@@ -782,6 +809,25 @@ function onChatEdit(r) {
 }
 
 // --------------------------------------------------------------- início
+function showDebug(fps) {
+  const d = st.dec;
+  const ac = st.audio && st.audio.state ? st.audio.state : 'sem';
+  const v = $('mvideo');
+  const lines = [
+    `caminho: ${USE_MSE ? 'MSE (<video>)' : 'WebCodecs'} · codec ${['H.264', 'HEVC', 'AV1', '?'][st.lastCodec] || '-'} (H.264 pedido como ${H264})`,
+    `vídeo: ${st.frameW || 0}×${st.frameH || 0} · ${fps} fps · decodificados ${st.decoded || 0}` +
+      (d ? ` · fila do decoder ${d.decodeQueueSize} · esperando ${st.pending.length}` : '') +
+      (USE_MSE && v.buffered.length ? ` · buffer ${(v.buffered.end(v.buffered.length - 1) - v.currentTime).toFixed(2)} s` : ''),
+    `atraso ${dbg.latMs >= 0 ? Math.round(dbg.latMs) + ' ms' : '-'} · ida e volta ${dbg.rttMs >= 0 ? dbg.rttMs + ' ms' : '-'} · IDR pedidos ${dbg.keyreqs} · erros do decoder ${dbg.decErrors}`,
+    `conexão: ${st.ws ? ['abrindo', 'aberta', 'fechando', 'fechada'][st.ws.readyState] : '-'} · reconexões ${dbg.reconnects} · assistindo ${st.watching || '-'} · altura pedida ${st.sentH}`,
+    `som: ${st.soundOn ? 'ligado' : 'desligado'} (AudioContext ${ac}, AudioDecoder ${'AudioDecoder' in window ? 'sim' : 'não'})`,
+    `tela: ${screen.width}×${screen.height} @${devicePixelRatio} · ${TOUCH ? 'toque' : 'mouse'} · ${document.hidden ? 'escondida' : 'à mostra'} · wake lock ${st.wake ? 'sim' : 'não'}`,
+    `navegador: ${navigator.userAgent}`,
+    ...dbg.errors,
+  ];
+  $('dbg-text').textContent = lines.join('\n');
+}
+
 function start() {
   document.documentElement.lang = L === PT ? 'pt-BR' : 'en';
   $('t-join-title').textContent = L.join_title; $('t-join-sub').textContent = L.join_sub;
@@ -843,13 +889,22 @@ function start() {
   });
   setInterval(() => {
     if (!st.watching || !st.decoded) { $('info').textContent = ''; return; }
-    $('info').textContent = `${st.frameW}×${st.frameH} · ${st.fpsCount} fps`;
+    const lat = dbg.latMs >= 0 && !USE_MSE ? ` · ${Math.round(dbg.latMs)} ms` : '';
+    $('info').textContent = `${st.frameW}×${st.frameH} · ${st.fpsCount} fps${lat}`;
+    if (DEBUG) showDebug(st.fpsCount);
     st.fpsCount = 0;
   }, 1000);
+  if (DEBUG) {
+    $('dbg').hidden = false;
+    $('dbg-copy').onclick = () => { navigator.clipboard.writeText($('dbg-text').textContent).then(() => toast('copiado'), () => {}); };
+    showDebug(0);
+  }
   // entra direto se o link já trouxe tudo (nome salvo e senha)
   if (QA || (hash.has('s') && $('in-name').value)) $('join-form').requestSubmit();
 }
 start();
+// teste: o painel de #debug=1 aparece e tem o que importa
+if (QA && DEBUG) setTimeout(() => send(new W(T.chat).str('[qa-painel] ' + $('dbg-text').textContent.split('\n').slice(0, 4).join(' | ')).done()), 9000);
 // teste: se o vídeo não andou, conta no chat onde parou (o navegador headless não tem console à mão)
 if (QA) {
   window.addEventListener('error', (e) => send(new W(T.chat).str(`[qa-dbg] erro ${e.message}`).done()));
