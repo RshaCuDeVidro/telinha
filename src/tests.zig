@@ -30,6 +30,7 @@ test {
     _ = @import("autoq.zig");
     _ = @import("pctest.zig");
     _ = @import("arrow.zig");
+    _ = @import("simlink.zig");
 }
 
 fn initPool() void {
@@ -490,23 +491,23 @@ test "RateControl: sobe rápido até 90% do teto, segura, e depois só sonda" {
     rc.last_congestion_us = 1;
     rc.last_adjust_us = 1;
     // atraso não zerado: segura
-    rc.rampUp(10_000_000, 80_000);
+    rc.rampUp(5_000_000, 80_000);
     try testing.expectEqual(@as(u32, 1_000_000), rc.bps);
     // longe do teto: +12% +50 kbit/s
-    rc.rampUp(10_000_000, 0);
+    rc.rampUp(5_000_000, 0);
     try testing.expectEqual(@as(u32, 1_170_000), rc.bps);
     // não passa de 90% do teto rápido
     rc.bps = 1_700_000;
-    rc.rampUp(11_100_000, 0);
+    rc.rampUp(6_100_000, 0);
     try testing.expectEqual(@as(u32, 1_800_000), rc.bps);
-    // em 90%: segura até 15 s sem problema...
-    rc.rampUp(12_200_000, 0);
+    // em 90%: segura até 10 s sem problema...
+    rc.rampUp(7_200_000, 0);
     try testing.expectEqual(@as(u32, 1_800_000), rc.bps);
     // ...depois sonda devagar (+2%)
-    rc.rampUp(16_000_000, 0);
+    rc.rampUp(11_000_000, 0);
     try testing.expectEqual(@as(u32, 1_836_000), rc.bps);
-    // 30 s sem problema: esquece o teto e volta a subir rápido
-    rc.rampUp(31_000_000, 0);
+    // 20 s sem problema: esquece o teto e volta a subir rápido
+    rc.rampUp(21_000_000, 0);
     try testing.expectEqual(@as(u32, 0), rc.ceiling);
     try testing.expectEqual(@as(u32, 2_106_320), rc.bps);
 }

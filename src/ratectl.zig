@@ -8,14 +8,21 @@
 //!   - atrasado de verdade (> 250 ms): pula quadros (não empilha) e, se não
 //!     for só um soluço, desce 25%;
 //!   - atraso zerado e 2 s sem problema: sobe rápido até 90% do "teto" (a
-//!     taxa em que deu problema da última vez), segura aí e, depois de 15 s
-//!     sem problema, sonda devagar (+2%/s). Depois de 30 s sem problema,
-//!     esquece o teto (o link pode ter melhorado).
+//!     taxa no começo do último episódio de congestionamento; os cortes
+//!     dentro dele não rebaixam o teto), segura aí e, depois de 10 s sem
+//!     problema, sonda devagar (+2%/s). Depois de 20 s sem problema, esquece
+//!     o teto (o link pode ter melhorado). Medido no simlink.zig: com o teto
+//!     rebaixado a cada corte e 15/30 s, um link de 3 Mbit/s rendia 2,5 e a
+//!     volta pra 10 Mbit/s levava 16 s; agora 2,97 e 11 s.
 //!
 //! Espectador que não dá conta também pede menos (aviso do servidor com um
 //! piso): -20% a cada 2 s no máximo, até o piso pedido, e a taxa não sobe por
 //! 12 s (o tempo de ele recomeçar de um IDR e mostrar se agora dá conta).
 const std = @import("std");
+/// Calma (sem congestionar nem aviso de espectador) antes de sondar acima do
+/// teto, e antes de esquecer o teto.
+const PROBE_AFTER: u64 = 10_000_000;
+const PROBE_FORGET: u64 = 20_000_000;
 
 pub const RateControl = struct {
     target: u32 = 0,
@@ -70,6 +77,13 @@ pub const RateControl = struct {
         return rc.bps;
     }
 
+    /// Congestionou: o teto é a taxa do começo do episódio (um episódio novo
+    /// começa depois de 2 s sem problema), não a já cortada.
+    fn noteCongestion(rc: *RateControl, now: u64) void {
+        if (rc.last_congestion_us == 0 or now - rc.last_congestion_us > 2_000_000) rc.ceiling = rc.bps;
+        rc.last_congestion_us = now;
+    }
+
     fn set(rc: *RateControl, bps: u32, now: u64) void {
         rc.last_adjust_us = now;
         if (bps != rc.bps) rc.changed = true;
@@ -95,8 +109,7 @@ pub const RateControl = struct {
             rc.congested_since_us = 0;
             if (unexplained > soft_excess_us and now - rc.last_adjust_us > 500_000) {
                 // começando a acumular: desce de leve antes de ter que pular quadro
-                rc.ceiling = rc.bps;
-                rc.last_congestion_us = now;
+                rc.noteCongestion(now);
                 rc.set(@max(min_bps, rc.bps / 100 * 93), now);
             }
             return false;
@@ -108,10 +121,9 @@ pub const RateControl = struct {
             rc.congested_since_us = now;
             rc.repeated = now - rc.last_congestion_us < 1_000_000;
         }
-        rc.last_congestion_us = now;
+        rc.noteCongestion(now);
         const persistent = rc.repeated or now - rc.congested_since_us > 300_000 or unexplained > 600_000;
         if (persistent and now - rc.last_adjust_us > 400_000) {
-            rc.ceiling = rc.bps;
             rc.set(@max(min_bps, rc.bps / 100 * 75), now);
         }
         return true;
@@ -124,11 +136,11 @@ pub const RateControl = struct {
         if (now - rc.last_congestion_us < 2_000_000 or now - rc.last_adjust_us < 1_000_000) return;
         if (rc.last_slow_us != 0 and now - rc.last_slow_us < 12_000_000) return;
         const calm = now - @max(rc.last_congestion_us, rc.last_slow_us); // tempo sem problema
-        if (calm > 30_000_000) rc.ceiling = 0;
+        if (calm > PROBE_FORGET) rc.ceiling = 0;
         const limit = if (rc.ceiling == 0) rc.target else rc.ceiling / 100 * 90;
         const next = if (rc.bps < limit)
             @min(limit, rc.bps / 100 * 112 + 50_000)
-        else if (calm > 15_000_000)
+        else if (calm > PROBE_AFTER)
             rc.bps / 100 * 102
         else
             return;
