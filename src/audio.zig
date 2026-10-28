@@ -225,6 +225,7 @@ pub const Mixer = struct {
     last_sound_us: std.atomic.Value(u64) = .init(0),
     pause_mutex: sync.Mutex = .{}, // parar/retomar não podem se cruzar
     resuming: std.atomic.Value(bool) = .init(false), // uma thread ligando a saída de novo
+    lim_gain: f32 = 1.0, // ganho do limitador (só a thread do som mexe)
 
     /// Uma vez por quadro da interface: 5 s sem nada pra tocar → para o
     /// dispositivo (a saída aberta custa CPU e não deixa a placa/fone dormir).
@@ -332,6 +333,25 @@ pub const Mixer = struct {
         if (std.mem.findScalar(*Ring, m.rings.items, rg)) |i| _ = m.rings.swapRemove(i);
     }
 
+    /// Limitador: a soma (volume por fonte até 200%, várias fontes) passava de
+    /// ±1 e saturava (distorção). Abaixa na hora o que passaria do teto e
+    /// volta devagar (~200 ms), em rampa pelo bloco. Na thread do som.
+    pub fn limit(m: *Mixer, out: []f32) void {
+        var peak: f32 = 0;
+        for (out) |v| peak = @max(peak, @abs(v));
+        const ceiling: f32 = 0.98;
+        const want: f32 = if (peak * m.lim_gain > ceiling) ceiling / peak else 1.0;
+        const g0 = m.lim_gain;
+        const g1 = if (want < g0) want else g0 + (want - g0) * 0.05;
+        m.lim_gain = g1;
+        if (g0 == 1.0 and g1 == 1.0) return;
+        const frames = out.len / channels;
+        if (frames == 0) return;
+        const step = (g1 - g0) / @as(f32, @floatFromInt(frames));
+        // descendo: o bloco inteiro já no ganho novo (senão o começo satura)
+        for (out, 0..) |*v, i| v.* *= if (g1 < g0) g1 else g0 + step * @as(f32, @floatFromInt(i / channels + 1));
+    }
+
     fn onPlay(user: ?*anyopaque, samples: [*c]f32, frames: c_int) callconv(.c) void {
         const m: *Mixer = @ptrCast(@alignCast(user));
         const out = samples[0..@intCast(frames * channels)];
@@ -348,6 +368,7 @@ pub const Mixer = struct {
             rg.mixInto(out, gain);
         }
         if (any or m.last_sound_us.load(.monotonic) == 0) m.last_sound_us.store(sync.nowUs(), .monotonic);
+        m.limit(out);
         for (out) |*v| v.* = std.math.clamp(v.*, -1.0, 1.0);
         // o que vai sair na caixa de som: referência pro cancelamento de eco
         aec.reference.pushStereo(out);

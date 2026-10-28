@@ -574,6 +574,22 @@ test "som: fila acima do alvo volta devagar com som tocando e de uma vez no sil�
     try testing.expectEqual(zeros.len - block, quiet.len);
 }
 
+test "som: limitador não deixa a soma passar do teto e volta devagar" {
+    var m: audio.Mixer = .{};
+    var loud = [_]f32{1.6} ** (480 * audio.channels);
+    m.limit(&loud);
+    for (loud) |v| try testing.expect(v <= 0.981);
+    // depois, som baixo: o ganho volta aos poucos (não de uma vez)
+    var soft = [_]f32{0.1} ** (480 * audio.channels);
+    m.limit(&soft);
+    try testing.expect(m.lim_gain < 0.7);
+    for (0..200) |_| {
+        var b = [_]f32{0.1} ** (480 * audio.channels);
+        m.limit(&b);
+    }
+    try testing.expect(m.lim_gain > 0.99);
+}
+
 test "RateControl: aviso de espectador lento respeita o piso" {
     var rc: RateControl = .{};
     rc.reset(4_000_000);
