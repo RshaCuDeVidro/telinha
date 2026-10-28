@@ -101,6 +101,8 @@ const Partial = struct {
     last_ms: u64,
     nacked_ms: u64 = 0,
     nacks: u8 = 0,
+    hi: u16 = 0, // o maior pedaço que já chegou (os depois dele podem estar a caminho)
+    got_at_nack: u16 = 0, // quantos tinham chegado no último pedido (andou = pedidos zeram)
 
     fn has(p: *const Partial, k: usize) bool {
         return p.got[k / 64] & (@as(u64, 1) << @intCast(k % 64)) != 0;
@@ -341,14 +343,21 @@ pub const Endpoint = struct {
         defer m.release();
         const plain = m.data[4..];
         const count = @max(1, (plain.len + chunk - 1) / chunk);
+        // no máximo 64 pedaços (~75 KB) por pedido: o reenvio sai sem o ritmo
+        // do envio normal (quem chama é a thread que recebe, que não pode
+        // dormir); o resto, quem pediu pede de novo
+        const max_burst = 64;
+        var sent_n: usize = 0;
         if (all) {
-            for (0..count) |k| ep.sendFrag(wire, channel, id, plain, k, count);
-            ep.stats.resent_pkts += count;
+            for (0..@min(count, max_burst)) |k| ep.sendFrag(wire, channel, id, plain, k, count);
+            sent_n = @min(count, max_burst);
         } else for (frags) |k| {
             if (k >= count) continue;
+            if (sent_n == max_burst) break;
             ep.sendFrag(wire, channel, id, plain, k, count);
-            ep.stats.resent_pkts += 1;
+            sent_n += 1;
         }
+        ep.stats.resent_pkts += sent_n;
     }
 
     // ------------------------------------------------------------ recepção
@@ -455,6 +464,7 @@ pub const Endpoint = struct {
         if (p.count != count or p.has(k)) return;
         p.got[k / 64] |= @as(u64, 1) << @intCast(k % 64);
         p.got_n += 1;
+        if (k > p.hi) p.hi = @intCast(k);
         p.last_ms = now;
         @memcpy(p.buf[@as(usize, k) * chunk ..][0..bytes.len], bytes);
         if (k + 1 == count) p.last_len = bytes.len;
@@ -575,17 +585,26 @@ pub const Endpoint = struct {
                     p.free();
                     continue;
                 }
+                // pedido que trouxe pedaço novo não conta pro limite (o reenvio
+                // vai em lotes de 64: uma mensagem grande precisa de vários)
+                if (p.got_n != p.got_at_nack) p.nacks = 0;
                 // espera um pouco (pode estar só fora de ordem) e não repete cedo demais
                 if (now - p.last_ms < @max(5, rtt / 4) or now - p.nacked_ms < nack_every or p.nacks >= 6) continue;
                 var nk: Nack = .{ .channel = p.channel, .id = p.id };
+                // só os buracos antes do maior que chegou: os depois dele ainda
+                // podem estar a caminho (pedir de novo dobrava o tráfego de um
+                // IDR grande num link lento). Parou de chegar: pede o fim também
+                const stalled = now - p.last_ms > give_up / 2;
                 for (0..p.count) |k| {
                     if (p.has(k)) continue;
+                    if (k > p.hi and !stalled) break;
                     if (nk.n == nk.frags.len) break;
                     nk.frags[nk.n] = @intCast(k);
                     nk.n += 1;
                 }
                 p.nacked_ms = now;
                 p.nacks += 1;
+                p.got_at_nack = p.got_n;
                 nacks.append(gpa, nk) catch {};
             }
             // mensagens inteiras faltando (nem um pedaço chegou) e desistência
@@ -875,7 +894,7 @@ test "udp: mensagem grande com quase tudo perdido pede reenvio de 500 pedaços s
         first = false;
     }
     var waited: usize = 0;
-    while (side.got.items.len < 1 and waited < 300) : (waited += 1) pump(pr.a, pr.b, pr.sa, pr.sb, wa, wb, &side, &dummy, 1);
+    while (side.got.items.len < 1 and waited < 1500) : (waited += 1) pump(pr.a, pr.b, pr.sa, pr.sb, wa, wb, &side, &dummy, 1);
     try std.testing.expect(pr.b.stats.nacks_sent > 0);
     try std.testing.expectEqual(@as(usize, 1), side.got.items.len);
     try std.testing.expectEqual(@as(usize, 600_000), side.got.items[0].len - 1);
