@@ -42,6 +42,16 @@ const fonts_mod = @import("fonts.zig");
 const codec = @import("codec.zig");
 const pctest = @import("pctest.zig");
 const crash = @import("crash.zig");
+/// Windows: registro do protocolo telinha:// (urlproto_win.c); no Linux o install.sh cuida.
+const urlproto = if (sync.is_windows) struct {
+    extern fn urlproto_register() c_int;
+    extern fn urlproto_unregister() void;
+} else struct {
+    fn urlproto_register() c_int {
+        return 0;
+    }
+    fn urlproto_unregister() void {}
+};
 const trace = @import("trace.zig");
 const ptt = @import("ptt.zig");
 const cssfile = @import("cssfile.zig");
@@ -1136,6 +1146,12 @@ pub const App = struct {
         frame_cap_fps = uiCap(&a.cfg);
         codec.setHwEffort(@intCast(a.cfg.hw_effort));
         codec.av1_enabled.store(a.cfg.av1, .release);
+        // Windows: convite telinha:// clicado (Discord, navegador) abre aqui; só
+        // escreve no registro quando o caminho do app mudou
+        if (sync.is_windows and a.cfg.url_handler and std.c.getenv("TELINHA_QA") == null) {
+            const r = urlproto.urlproto_register();
+            if (r != 0) debuglog.line("links telinha:// {s}", .{if (r > 0) "registrados pra este app" else "não deu pra registrar"});
+        }
         if (a.cfg.ui_zoom != 100) setZoom(@as(f32, @floatFromInt(a.cfg.ui_zoom)) / 100);
         a.crash_prompt = crash.pending();
         _ = std.fmt.bufPrintZ(&a.port_buf, "{d}", .{a.cfg.host_port}) catch {};
@@ -9117,6 +9133,9 @@ pub const App = struct {
         _ = c.igCheckbox(tr("Mostrar estatísticas sempre (não só com o mouse em cima)###stats"), &a.cfg.stats_always);
         _ = c.igCheckbox(tr("Notificações com o telinha em segundo plano (chat, ao vivo, quem entrou)###notif"), &a.cfg.notifications);
         _ = c.igCheckbox(tr("Assistir sozinho quando só uma pessoa estiver ao vivo###autowatch"), &a.cfg.auto_watch);
+        if (sync.is_windows and c.igCheckbox(tr("Abrir links telinha:// no telinha###urlhandler"), &a.cfg.url_handler)) {
+            if (a.cfg.url_handler) _ = urlproto.urlproto_register() else urlproto.urlproto_unregister();
+        }
         if (build_options.repo.len > 0 or update.getState() != .idle) {
             if (c.igCheckbox(tr("Avisar quando sair versão nova (pergunta ao GitHub ao abrir)###updates"), &a.cfg.check_updates) and a.cfg.check_updates)
                 update.checkAsync(build_options.repo, version_string, i18n.english());

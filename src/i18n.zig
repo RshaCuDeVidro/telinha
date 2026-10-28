@@ -258,6 +258,7 @@ const table = [_][2][]const u8{
     .{ "Desbanir", "Unban" },
     .{ "Desbanir todo mundo", "Unban everyone" },
     .{ "Auto", "Auto" },
+    .{ "Abrir links telinha:// no telinha", "Open telinha:// links in telinha" },
     .{ "{s}  Assistir {s}", "{s}  Watch {s}" },
     .{ "{s} começou a transmitir · clique pra assistir", "{s} started streaming · click to watch" },
     .{ "Assistir sozinho quando só uma pessoa estiver ao vivo", "Watch on my own when only one person is live" },
