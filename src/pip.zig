@@ -102,8 +102,12 @@ pub const Pip = struct {
                 ih = size.y;
                 iw = size.y * ar;
             }
-            const ix = (size.x - iw) / 2;
-            const iy = (size.y - ih) / 2;
+            // em pixels inteiros (coordenada fracionária borrava o texto)
+            const fbs = c.igGetIO_Nil().*.DisplayFramebufferScale;
+            iw = @round(iw * fbs.x) / fbs.x;
+            ih = @round(ih * fbs.y) / fbs.y;
+            const ix = @round((size.x - iw) / 2 * fbs.x) / fbs.x;
+            const iy = @round((size.y - ih) / 2 * fbs.y) / fbs.y;
             c.ImDrawList_AddImage(d, .{ ._TexData = null, ._TexID = tex }, .{ .x = ix, .y = iy }, .{ .x = ix + iw, .y = iy + ih }, .{ .x = 0, .y = 0 }, .{ .x = 1, .y = 1 }, 0xFFFFFFFF);
         } else {
             const t: []const u8 = i18n.tr("Carregando...");

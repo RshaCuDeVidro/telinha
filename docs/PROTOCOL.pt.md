@@ -219,7 +219,7 @@ Com qualquer um o cliente não tenta reconectar.
 **Imagem no chat:** `u8 tipo` — 0 = nenhuma; 1 = `u16 w`, `u16 h`, `u32 tamanho`,
 bytes; 2 = era uma imagem, mas o servidor já não guarda (histórico). Os bytes
 são **um quadro H.264 (IDR)**: quem manda lê o arquivo/área de transferência no
-próprio PC, reduz pra no máximo 1600 px e codifica com o openh264; quem
+próprio PC, reduz pra no máximo 1920 px e codifica com o openh264; quem
 recebe decodifica com o mesmo decoder do vídeo e confere que o tamanho bate.
 Assim nenhum leitor de PNG/JPEG fica exposto ao que vem da rede. Limites:
 lado entre 16 e 1920 px, até 1,5 MB, uma imagem a cada 1,5 s por pessoa

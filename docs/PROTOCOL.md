@@ -222,7 +222,7 @@ match). With any of them the client doesn't try to reconnect.
 **Image in the chat:** `u8 tipo` — 0 = none; 1 = `u16 w`, `u16 h`, `u32 tamanho`,
 bytes; 2 = it was an image, but the server no longer keeps it (history). The
 bytes are **one H.264 frame (IDR)**: the sender reads the file/clipboard on its
-own PC, shrinks it to at most 1600 px and encodes it with openh264; the receiver
+own PC, shrinks it to at most 1920 px and encodes it with openh264; the receiver
 decodes it with the same video decoder and checks that the size matches. That way
 no PNG/JPEG reader is exposed to what comes from the network. Limits: side
 between 16 and 1920 px, up to 1.5 MB, one image every 1.5 s per person (a burst

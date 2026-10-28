@@ -1,5 +1,5 @@
 //! Imagens no chat. Quem manda já tem a imagem decodificada (RGBA, do arquivo
-//! ou da área de transferência); aqui ela é reduzida pra caber em 1600 px e
+//! ou da área de transferência); aqui ela é reduzida pra caber em 1920 px e
 //! vira **um quadro H.264** (IDR) do openh264. Quem recebe decodifica com o
 //! mesmo decoder do vídeo — nenhum leitor de PNG/JPEG fica exposto ao que
 //! chega pela rede, e uma captura de tela típica sai com 100–400 KB.
@@ -8,7 +8,9 @@ const codec = @import("codec.zig");
 const proto = @import("proto.zig");
 const gpa = std.heap.c_allocator;
 
-pub const max_side = 1600;
+/// O máximo do protocolo: um print de tela 1080p vai sem reduzir (com 1600 o
+/// texto do print chegava borrado).
+pub const max_side = proto.chat_image_side;
 
 pub const Encoded = struct {
     data: []u8,
@@ -129,13 +131,13 @@ test "imagem do chat: codifica e volta parecida, dentro do limite" {
     try std.testing.expectError(error.Decode, decode(e.data, 800, 500));
 }
 
-test "imagem do chat: grande reduz pra 1600, minúscula aumenta pra 16" {
-    const big = try gpa.alloc(u8, 3200 * 1000 * 4);
+test "imagem do chat: grande reduz pra 1920, minúscula aumenta pra 16" {
+    const big = try gpa.alloc(u8, 3840 * 1000 * 4);
     defer gpa.free(big);
     @memset(big, 200);
-    var e = try encode(big, 3200, 1000);
+    var e = try encode(big, 3840, 1000);
     defer e.deinit();
-    try std.testing.expectEqual(@as(u16, 1600), e.w);
+    try std.testing.expectEqual(@as(u16, 1920), e.w);
     try std.testing.expectEqual(@as(u16, 500), e.h);
     var tiny = [_]u8{255} ** (4 * 4 * 4);
     var t = try encode(&tiny, 4, 4);

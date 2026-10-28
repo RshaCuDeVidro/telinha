@@ -5971,9 +5971,23 @@ pub const App = struct {
             ih = h;
             iw = h * ar;
         }
-        const ix = x + (w - iw) / 2;
-        const iy = y + (h - ih) / 2;
+        var ix = x + (w - iw) / 2;
+        var iy = y + (h - ih) / 2;
         const zm = a.zoomFor(t.stream);
+        if (zm.z <= 1.001) {
+            // sem zoom: o retângulo em pixels inteiros da tela. Em coordenada
+            // fracionária (o meio de um quadro de largura ímpar, escala 1,25)
+            // cada pixel do vídeo caía entre dois e o texto borrava mesmo em 1:1
+            const fbs = io.*.DisplayFramebufferScale;
+            const px0 = @round(ix * fbs.x);
+            const py0 = @round(iy * fbs.y);
+            const pw = @round(iw * fbs.x);
+            const ph = @round(ih * fbs.y);
+            ix = px0 / fbs.x;
+            iy = py0 / fbs.y;
+            iw = pw / fbs.x;
+            ih = ph / fbs.y;
+        }
         // o tamanho em que esse vídeo aparece (com o zoom): a conversão de cor sai nele
         if (t.view) |vw| {
             const fbs = io.*.DisplayFramebufferScale;
