@@ -646,17 +646,29 @@ static int parse_slice(br *b, h264_slice *sh, h264_pps *const *pps_tab, h264_sps
     sh->nal_ref_idc = (int)br_u(b, 2);
     sh->nal_type = (int)br_u(b, 5);
     sh->idr = sh->nal_type == 5;
-    sh->first_mb = (int)br_ue(b);
-    sh->slice_type = (int)(br_ue(b) % 5);
+    const uint32_t first_mb = br_ue(b);
+    const uint32_t slice_type = br_ue(b);
+    if (slice_type > 9) return -1;
+    sh->slice_type = (int)(slice_type % 5);
     sh->pps_id = (int)br_ue(b);
     if (b->err || sh->pps_id > 255 || !pps_tab[sh->pps_id]) return -1;
     const h264_pps *p = pps_tab[sh->pps_id];
     const h264_sps *s = sps_tab[p->sps_id];
     if (!s) return -1;
+    // tudo que vai pro driver é conferido antes: um valor fora da faixa do
+    // padrão chegava cru nos parâmetros da fatia (e o que o driver faz com isso
+    // depende do driver)
+    const uint32_t pic_mbs = (uint32_t)s->mb_w * (uint32_t)s->map_h * (s->frame_mbs_only ? 1u : 2u);
+    if (first_mb * (s->mbaff ? 2u : 1u) >= pic_mbs) return -1;
+    sh->first_mb = (int)first_mb;
     if (s->separate_colour_plane) br_u(b, 2);
     sh->frame_num = (int)br_u(b, s->log2_max_frame_num);
     if (!s->frame_mbs_only && br_u(b, 1)) return -1; // field_pic_flag: campos não são suportados
-    if (sh->idr) sh->idr_pic_id = (int)br_ue(b);
+    if (sh->idr) {
+        const uint32_t id = br_ue(b);
+        if (id > 65535) return -1;
+        sh->idr_pic_id = (int)id;
+    }
     if (s->poc_type == 0) {
         sh->poc_lsb = (int)br_u(b, s->log2_max_poc_lsb);
         if (p->bottom_field_pic_order) sh->delta_poc_bottom = br_se(b);
@@ -672,10 +684,12 @@ static int parse_slice(br *b, h264_slice *sh, h264_pps *const *pps_tab, h264_sps
     sh->num_ref_idx[1] = p->num_ref_idx_default[1];
     if (st == SL_P || st == SL_SP || st == SL_B) {
         if (br_u(b, 1)) {
-            sh->num_ref_idx[0] = 1 + (int)br_ue(b);
-            if (st == SL_B) sh->num_ref_idx[1] = 1 + (int)br_ue(b);
+            const uint32_t n0 = br_ue(b), n1 = st == SL_B ? br_ue(b) : 0;
+            if (n0 > 31 || n1 > 31) return -1;
+            sh->num_ref_idx[0] = 1 + (int)n0;
+            if (st == SL_B) sh->num_ref_idx[1] = 1 + (int)n1;
         }
-        if (sh->num_ref_idx[0] > 32 || sh->num_ref_idx[1] > 32) return -1;
+        if (sh->num_ref_idx[0] < 1 || sh->num_ref_idx[0] > 32 || sh->num_ref_idx[1] > 32) return -1;
     }
     if (st != SL_I && st != SL_SI) {
         // ref_pic_list_modification() (só a lista 0: fatias B não são suportadas)
@@ -686,8 +700,11 @@ static int parse_slice(br *b, h264_slice *sh, h264_pps *const *pps_tab, h264_sps
                 if (b->err || idc > 3) return -1;
                 if (idc == 3) break;
                 if (sh->nmod >= (int)(sizeof sh->mod / sizeof sh->mod[0])) return -1;
+                const uint32_t val = br_ue(b);
+                // abs_diff_pic_num_minus1 < MaxPicNum; long_term_pic_num < 2^16 aqui
+                if (val > 65535) return -1;
                 sh->mod[sh->nmod].idc = idc;
-                sh->mod[sh->nmod].val = (int)br_ue(b);
+                sh->mod[sh->nmod].val = (int)val;
                 sh->nmod++;
             }
         }
@@ -703,11 +720,13 @@ static int parse_slice(br *b, h264_slice *sh, h264_pps *const *pps_tab, h264_sps
             if ((sh->lw_flag[i] = (int)br_u(b, 1))) {
                 sh->lw[i] = br_se(b);
                 sh->lo[i] = br_se(b);
+                if (sh->lw[i] < -128 || sh->lw[i] > 127 || sh->lo[i] < -128 || sh->lo[i] > 127) return -1;
             }
             if (s->chroma_format_idc && (sh->cw_flag[i] = (int)br_u(b, 1))) {
                 for (int j = 0; j < 2; j++) {
                     sh->cw[i][j] = br_se(b);
                     sh->co[i][j] = br_se(b);
+                    if (sh->cw[i][j] < -128 || sh->cw[i][j] > 127 || sh->co[i][j] < -128 || sh->co[i][j] > 127) return -1;
                 }
             }
         }
@@ -723,29 +742,41 @@ static int parse_slice(br *b, h264_slice *sh, h264_pps *const *pps_tab, h264_sps
                 if (b->err || op > 6) return -1;
                 if (op == 0) break;
                 if (sh->nmmco >= (int)(sizeof sh->mmco / sizeof sh->mmco[0])) return -1;
-                int a = 0, bb = 0;
-                if (op == 1 || op == 3) a = (int)br_ue(b); // difference_of_pic_nums_minus1
-                if (op == 2) a = (int)br_ue(b);            // long_term_pic_num
+                uint32_t a = 0, bb = 0;
+                if (op == 1 || op == 3) a = br_ue(b); // difference_of_pic_nums_minus1
+                if (op == 2) a = br_ue(b);            // long_term_pic_num
                 if (op == 3 || op == 6) {
-                    if (op == 6) a = (int)br_ue(b); // long_term_frame_idx
-                    else bb = (int)br_ue(b);
+                    if (op == 6) a = br_ue(b); // long_term_frame_idx
+                    else bb = br_ue(b);
                 }
-                if (op == 4) a = (int)br_ue(b); // max_long_term_frame_idx_plus1
+                if (op == 4) a = br_ue(b); // max_long_term_frame_idx_plus1
+                if (a > 65535 || bb > 65535) return -1;
                 sh->mmco[sh->nmmco].op = op;
-                sh->mmco[sh->nmmco].a = a;
-                sh->mmco[sh->nmmco].b = bb;
+                sh->mmco[sh->nmmco].a = (int)a;
+                sh->mmco[sh->nmmco].b = (int)bb;
                 sh->nmmco++;
             }
         }
     }
-    if (p->cabac && st != SL_I && st != SL_SI) sh->cabac_init_idc = (int)br_ue(b);
+    if (p->cabac && st != SL_I && st != SL_SI) {
+        const uint32_t idc = br_ue(b);
+        if (idc > 2) return -1;
+        sh->cabac_init_idc = (int)idc;
+    }
     sh->slice_qp_delta = br_se(b);
+    {
+        const int qp = p->pic_init_qp + sh->slice_qp_delta;
+        if (qp < -6 * (s->bit_depth_luma - 8) || qp > 51) return -1;
+    }
     if (st == SL_SP || st == SL_SI) return -2;
     if (p->deblocking_filter_control_present) {
-        sh->disable_deblocking = (int)br_ue(b);
+        const uint32_t dis = br_ue(b);
+        if (dis > 2) return -1;
+        sh->disable_deblocking = (int)dis;
         if (sh->disable_deblocking != 1) {
             sh->alpha = br_se(b);
             sh->beta = br_se(b);
+            if (sh->alpha < -6 || sh->alpha > 6 || sh->beta < -6 || sh->beta > 6) return -1;
         }
     }
     sh->header_bits = b->pos;
@@ -2410,6 +2441,31 @@ int hwva_test_headers(char *err, int errlen) {
                     p.chroma_qp_index_offset == pp.chroma_qp_index_offset && !p.weighted_pred && !p.transform_8x8 && !p.bottom_field_pic_order &&
                     !p.redundant_pic_cnt_present && !p.constrained_intra_pred,
                 "PPS: campos diferentes dos parâmetros do quadro");
+        // fatias com bits aleatórios: nada fora da faixa passa pro driver
+        h264_pps *ptab[256] = {0};
+        ptab[p.id] = &p;
+        uint32_t x = 0x9e3779b9u ^ (uint32_t)i;
+        int ok = 0;
+        for (int k = 0; k < 10000; k++) {
+            uint8_t junk[48];
+            for (size_t j = 0; j < sizeof junk; j++) {
+                x ^= x << 13, x ^= x >> 17, x ^= x << 5;
+                junk[j] = (uint8_t)x;
+            }
+            junk[0] = (k & 1) ? 0x65 : 0x41; // IDR / P com referência
+            junk[1] |= 0x80;                  // first_mb = 0 de vez em quando (ue "1")
+            if (k & 2) junk[1] = 0xB8;        // first_mb 0, slice_type 0 ou 2..., pps 0
+            br fb = {junk, (int)sizeof junk, 0, 0};
+            h264_slice sh;
+            if (parse_slice(&fb, &sh, (h264_pps *const *)ptab, (h264_sps *const *)tab) != 0) continue;
+            ok++;
+            const int qp = p.pic_init_qp + sh.slice_qp_delta;
+            T_CHECK(sh.first_mb >= 0 && sh.first_mb < s.mb_w * s.map_h && sh.cabac_init_idc >= 0 && sh.cabac_init_idc <= 2 && qp >= 0 &&
+                        qp <= 51 && sh.disable_deblocking >= 0 && sh.disable_deblocking <= 2 && sh.alpha >= -6 && sh.alpha <= 6 &&
+                        sh.beta >= -6 && sh.beta <= 6 && sh.num_ref_idx[0] >= 1 && sh.num_ref_idx[0] <= 32 && sh.nmod <= 40 && sh.nmmco <= 72,
+                    "fatia aleatória passou com campo fora da faixa (first_mb %d, qp %d)", sh.first_mb, qp);
+        }
+        T_CHECK(ok > 0, "nenhuma fatia aleatória passou (o teste não testou nada)");
     }
     // nível: 1080p30 -> 4.0, 1080p60 -> 4.2, 4K60 -> 5.2, 720p30 -> 3.1
     T_CHECK(pick_level(120, 68, 30, 4000000) == 40 && pick_level(120, 68, 60, 8000000) == 42 && pick_level(240, 135, 60, 20000000) == 52 &&
