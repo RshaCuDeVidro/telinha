@@ -146,6 +146,8 @@ const Conn = struct {
     // dormiu) ficava na sala por até 2 h, derrubando a taxa de quem transmite
     last_rx_ms: std.atomic.Value(u64) = .init(0),
     silent: bool = false, // já derrubado por silêncio (mutex)
+    ctl_tokens: f32 = 120, // balde das mensagens de controle (thread de leitura)
+    ctl_ms: u64 = 0,
     refs: std.atomic.Value(u32) = .init(1), // leitora (+ escritora quando existir)
 
     fn nameSlice(self: *const Conn) []const u8 {
@@ -592,6 +594,104 @@ const StatsPrev = struct {
     slow: u32 = 0,
 };
 
+/// Porteiro de quem ainda não entrou (antes da senha não havia teto nenhum: uma
+/// thread e um descritor por conexão por até 10 s, sem limite por IP nem
+/// global, e tentativa de senha sem freio). Conta conexões em handshake, no
+/// total e por IP, e atrasa quem erra a senha várias vezes seguidas.
+pub const Gate = struct {
+    mutex: sync.Mutex = .{},
+    pending: u32 = 0,
+    slots: [128]Slot = [_]Slot{.{}} ** 128,
+
+    pub const max_pending = 64; // handshakes ao mesmo tempo, no total
+    pub const max_per_ip = 8; // ...de um IP só (NAT de família/escola cabe)
+    pub const free_fails = 3; // erros de senha sem castigo (dedo torto)
+    const forget_ms = 10 * 60 * 1000; // erro de senha esquecido depois de 10 min
+
+    const Slot = struct { ip: [16]u8 = undefined, ip_len: u8 = 0, pending: u16 = 0, fails: u16 = 0, last_fail_ms: u64 = 0, until_ms: u64 = 0 };
+
+    fn find(g: *Gate, ip: []const u8, now: u64, create: bool) ?*Slot {
+        var free: ?*Slot = null;
+        var oldest: ?*Slot = null;
+        for (&g.slots) |*sl| {
+            if (sl.ip_len == ip.len and std.mem.eql(u8, sl.ip[0..sl.ip_len], ip)) return sl;
+            const idle = sl.pending == 0 and (sl.fails == 0 or now -| sl.last_fail_ms > forget_ms);
+            if (free == null and (sl.ip_len == 0 or idle)) free = sl;
+            if (sl.pending == 0 and (oldest == null or sl.last_fail_ms < oldest.?.last_fail_ms)) oldest = sl;
+        }
+        if (!create) return null;
+        const sl = free orelse oldest orelse return null;
+        sl.* = .{};
+        sl.ip_len = @intCast(@min(ip.len, sl.ip.len));
+        @memcpy(sl.ip[0..sl.ip_len], ip[0..sl.ip_len]);
+        return sl;
+    }
+
+    /// Sem IP (veio pelo túnel) ou da própria máquina (sala hospedada no app,
+    /// cloudflared, testes): só o teto global vale.
+    fn perIp(ip: []const u8) bool {
+        if (ip.len == 4) return ip[0] != 127;
+        if (ip.len == 16) {
+            const v4_mapped = std.mem.allEqual(u8, ip[0..10], 0) and ip[10] == 0xff and ip[11] == 0xff;
+            if (v4_mapped) return ip[12] != 127;
+            return !(std.mem.allEqual(u8, ip[0..15], 0) and ip[15] == 1);
+        }
+        return false;
+    }
+
+    /// Entra uma conexão nova. false = recusa (cheio, ou IP castigado).
+    pub fn enter(g: *Gate, ip: []const u8, now: u64) bool {
+        g.mutex.lock();
+        defer g.mutex.unlock();
+        if (g.pending >= max_pending) return false;
+        if (perIp(ip)) {
+            const sl = g.find(ip, now, true) orelse return false;
+            if (now < sl.until_ms or sl.pending >= max_per_ip) return false;
+            sl.pending += 1;
+        }
+        g.pending += 1;
+        return true;
+    }
+
+    /// Saiu do handshake (entrou na sala ou desistiu).
+    pub fn leave(g: *Gate, ip: []const u8) void {
+        g.mutex.lock();
+        defer g.mutex.unlock();
+        g.pending -|= 1;
+        if (perIp(ip)) if (g.find(ip, 0, false)) |sl| {
+            sl.pending -|= 1;
+        };
+    }
+
+    /// Errou a senha: do 4º erro em diante, espera 2, 4, 8... até 60 s pra tentar de novo.
+    /// Devolve quanto tempo de castigo (0 = nenhum).
+    pub fn fail(g: *Gate, ip: []const u8, now: u64) u64 {
+        if (!perIp(ip)) return 0;
+        g.mutex.lock();
+        defer g.mutex.unlock();
+        const sl = g.find(ip, now, true) orelse return 0;
+        if (now -| sl.last_fail_ms > forget_ms) sl.fails = 0;
+        sl.fails +|= 1;
+        sl.last_fail_ms = now;
+        if (sl.fails <= free_fails) return 0;
+        const exp: u6 = @intCast(@min(sl.fails - free_fails, 6));
+        const wait = @min(@as(u64, 1000) << exp, 60_000);
+        sl.until_ms = now + wait;
+        return wait;
+    }
+
+    /// Acertou: zera os erros desse IP.
+    pub fn ok(g: *Gate, ip: []const u8) void {
+        if (!perIp(ip)) return;
+        g.mutex.lock();
+        defer g.mutex.unlock();
+        if (g.find(ip, 0, false)) |sl| {
+            sl.fails = 0;
+            sl.until_ms = 0;
+        }
+    }
+};
+
 pub const Server = struct {
     listen_sock: net.Socket,
     udp_sock: ?net.Socket = null, // vídeo/som por UDP, na mesma porta (null = só TCP)
@@ -645,6 +745,7 @@ pub const Server = struct {
     dms_len: usize = 0,
     dms_head: usize = 0,
     stopped: std.atomic.Value(bool) = .init(false),
+    gate: Gate = .{},
     /// Dono (quem chamou start) + uma por thread do servidor + uma por conexão
     /// + o túnel: o último a soltar libera tudo (histórico do chat, imagens...).
     refs: std.atomic.Value(u32) = .init(1),
@@ -1155,9 +1256,11 @@ pub const Server = struct {
             defer m.release();
             try proto.wsFrameInto(&out, m);
             net.sendAll(cn.sock, out.items) catch {};
-            s.log("navegador recusado: senha errada", .{});
+            const wait = s.gate.fail(cn.ip[0..cn.ip_len], sync.nowMs());
+            if (wait > 0) s.log("navegador recusado: senha errada (de novo: esse IP espera {d} s)", .{wait / 1000}) else s.log("navegador recusado: senha errada", .{});
             return error.AuthFailed;
         }
+        s.gate.ok(cn.ip[0..cn.ip_len]);
         net.setRecvTimeout(cn.sock, 0);
         _ = cn.refs.fetchAdd(1, .monotonic);
         sync.spawn(writerLoop, .{cn}) catch {
@@ -1199,15 +1302,19 @@ pub const Server = struct {
             if (udp.Link.create(token, cn.channel.send_key, cn.channel.recv_key, us, true)) |l| cn.udp.store(l, .release) else |_| {}
         };
 
-        const typ = proto.recvMsg(cn.sock, &cn.channel, rb) catch |e| {
+        // o hello tem < 1 KB: antes da senha não aceita mensagem grande (aceitava
+        // até 32 MiB e reservava a memória pelo tamanho que o outro declarava)
+        const typ = proto.recvMsgLimit(cn.sock, &cn.channel, rb, 16 * 1024) catch |e| {
             if (e == error.AuthFailed) {
                 var marker: [4]u8 = undefined;
                 std.mem.writeInt(u32, &marker, proto.wrong_password_marker, .little);
                 net.sendAll(cn.sock, &marker) catch {};
-                s.log("conexão recusada: senha errada", .{});
+                const wait = s.gate.fail(cn.ip[0..cn.ip_len], sync.nowMs());
+                if (wait > 0) s.log("conexão recusada: senha errada (de novo: esse IP espera {d} s)", .{wait / 1000}) else s.log("conexão recusada: senha errada", .{});
             }
             return e;
         };
+        s.gate.ok(cn.ip[0..cn.ip_len]);
         if (typ != .hello) return error.Protocol;
         net.setRecvTimeout(cn.sock, 0);
 
@@ -1267,10 +1374,27 @@ pub const Server = struct {
         const s = cn.server;
         var rb: proto.RecvBuf = .{};
         defer rb.deinit();
+        // (cópia: o cn pode ir embora antes do defer)
+        var ip_buf: [16]u8 = undefined;
+        const ip = ip_buf[0..cn.ip_len];
+        @memcpy(ip, cn.ip[0..cn.ip_len]);
+        if (!s.gate.enter(ip, sync.nowMs())) {
+            // cheio de gente sem entrar, ou esse IP errou a senha demais: nem lê
+            s.disconnect(cn);
+            cn.reader_done.store(true, .release);
+            net.shutdown(cn.sock);
+            cn.queue.close();
+            cn.release();
+            return;
+        }
+        var in_gate = true;
+        defer if (in_gate) s.gate.leave(ip);
         if (cn.web) {
             var wb: std.ArrayList(u8) = .empty;
             defer wb.deinit(gpa);
             if (s.webHandshake(cn, &wb)) {
+                s.gate.leave(ip);
+                in_gate = false;
                 while (true) {
                     const msg = (web.readMessage(cn.sock, &wb) catch break) orelse continue;
                     if (msg.len == 0) continue;
@@ -1284,6 +1408,8 @@ pub const Server = struct {
                 }
             } else |_| {}
         } else if (s.handshake(cn, &rb)) {
+            s.gate.leave(ip);
+            in_gate = false;
             while (true) {
                 const typ = proto.recvMsg(cn.sock, &cn.channel, &rb) catch break;
                 s.handle(cn, typ, proto.payloadOf(&rb)) catch break;
@@ -1300,7 +1426,30 @@ pub const Server = struct {
     }
 
     fn handle(s: *Server, cn: *Conn, typ: proto.Type, payload: []const u8) !void {
-        cn.last_rx_ms.store(sync.nowMs(), .monotonic);
+        const now_ms = sync.nowMs();
+        cn.last_rx_ms.store(now_ms, .monotonic);
+        // teto por tipo: voz de 1 MB a 100/s era copiada e repassada pra call
+        // inteira (fan-out N×) por qualquer membro ou bot com a senha
+        const cap: usize = switch (typ) {
+            .voice => 8 * 1024,
+            .audio => 16 * 1024,
+            .ack, .ping, .keyreq, .watch, .view_size, .cursor, .pointer, .voice_state, .stream_stop, .codec, .react, .kick, .file_cancel, .file_get => 1024,
+            else => proto.max_msg,
+        };
+        if (payload.len > cap) return error.BadMessage;
+        // mensagens de controle (cada uma refaz a lista de membros pra sala
+        // inteira, pede IDR...): balde de 120 com 30 por segundo; o excesso é
+        // ignorado (o app não chega nem perto disso)
+        switch (typ) {
+            .watch, .voice_state, .stream_start, .stream_stop, .channel, .call, .chan_admin, .admin, .react, .view_size, .codec => {
+                const refill = @as(f32, @floatFromInt(now_ms -| cn.ctl_ms)) * 0.03;
+                cn.ctl_ms = now_ms;
+                cn.ctl_tokens = @min(120, cn.ctl_tokens + refill);
+                if (cn.ctl_tokens < 1) return;
+                cn.ctl_tokens -= 1;
+            },
+            else => {},
+        }
         var r: proto.Reader = .{ .data = payload };
         switch (typ) {
             .log_chunk => try s.onLogChunk(cn, &r),

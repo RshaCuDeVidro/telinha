@@ -445,8 +445,8 @@ pub fn main(init: std.process.Init) !void {
     } else if (web_tunnel or web_link.len > 0) die("--web-tunel e --web-link precisam do --web PORTA", .{});
 
     // estatística a cada minuto; SIGTERM/SIGINT/SIGHUP (docker stop, systemctl
-    // stop, Ctrl+C) fecham direito: avisa quem está na sala, mata o cloudflared
-    // e apaga a porta do roteador (antes: docker stop esperava 10 s e matava,
+    // stop, Ctrl+C) fecham direito: mata o cloudflared e apaga a porta do
+    // roteador (antes: docker stop esperava 10 s e matava,
     // o cloudflared ficava órfão segurando a porta)
     var last_bytes: u64 = 0;
     while (true) {
@@ -456,7 +456,9 @@ pub fn main(init: std.process.Init) !void {
             const tp = tunnel_pid.load(.acquire);
             if (tp > 0) _ = kill(tp, SIGTERM);
             if (upnp_mapper) |m| m.stopAndWait(2000);
-            srv.stop();
+            // sem srv.stop(): ele avisa "o dono fechou a sala" e o app não
+            // tentaria voltar; num restart (atualização, systemctl restart) a
+            // conexão só cai e todo mundo reconecta sozinho
             std.process.exit(0);
         }
         const total = srv.relayed_bytes.load(.monotonic);

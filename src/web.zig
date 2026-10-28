@@ -48,6 +48,12 @@ pub const Listener = struct {
     }
 };
 
+/// Conexões lendo cabeçalho HTTP agora (antes de virar membro ou responder a
+/// página): a porta fica atrás de um link público, e sem teto mil conexões
+/// paradas eram mil threads e descritores (derrubando também a porta da sala).
+var web_pending = std.atomic.Value(u32).init(0);
+const max_web_pending = 64;
+
 fn acceptLoop(l: *Listener) void {
     sync.nameThread("web-aceita");
     defer gpa.destroy(l);
@@ -57,14 +63,26 @@ fn acceptLoop(l: *Listener) void {
             sync.sleepMs(20);
             continue;
         };
-        sync.spawn(serveOne, .{ l.ctx, l.adopt, c }) catch net.close(c);
+        if (web_pending.load(.acquire) >= max_web_pending) {
+            net.close(c);
+            continue;
+        }
+        _ = web_pending.fetchAdd(1, .acq_rel);
+        sync.spawn(serveOne, .{ l.ctx, l.adopt, c }) catch {
+            _ = web_pending.fetchSub(1, .acq_rel);
+            net.close(c);
+        };
     }
 }
 
 /// Uma conexão HTTP: a página, ou o WebSocket (que vira membro da sala).
 fn serveOne(ctx: *anyopaque, adopt: Adopt, c: net.Socket) void {
     sync.nameThread("web");
-    net.setRecvTimeout(c, 10_000);
+    var counted = true;
+    defer if (counted) {
+        _ = web_pending.fetchSub(1, .acq_rel);
+    };
+    net.setRecvTimeout(c, 5_000);
     var buf: [8192]u8 = undefined;
     var n: usize = 0;
     // cabeçalhos até a linha vazia (no máximo 8 KB)
@@ -87,6 +105,9 @@ fn serveOne(ctx: *anyopaque, adopt: Adopt, c: net.Socket) void {
         // o IP de verdade de quem está do outro lado (o proxy põe no cabeçalho)
         var ipb: [16]u8 = undefined;
         const ip = if (req.client_ip) |s| net.parseIp(s, &ipb) else net.peerAddress(c, &ipb);
+        // daqui pra frente é membro (o porteiro da sala conta ele)
+        _ = web_pending.fetchSub(1, .acq_rel);
+        counted = false;
         adopt(ctx, c, ip);
         return;
     }

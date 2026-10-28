@@ -447,11 +447,16 @@ pub const RecvBuf = struct {
 
 /// Lê e decifra uma mensagem. Retorna o tipo; o payload fica em `rb.plain.items[1..]`.
 pub fn recvMsg(s: net.Socket, ch: *crypto.Channel, rb: *RecvBuf) !Type {
+    return recvMsgLimit(s, ch, rb, max_msg);
+}
+
+/// recvMsg com teto de tamanho (antes da senha: o hello é pequeno).
+pub fn recvMsgLimit(s: net.Socket, ch: *crypto.Channel, rb: *RecvBuf, limit: u32) !Type {
     var hdr: [4]u8 = undefined;
     try net.recvAll(s, &hdr);
     const len = std.mem.readInt(u32, &hdr, .little);
     if (len == wrong_password_marker) return error.WrongPassword;
-    if (len < 1 + crypto.tag_len or len > max_msg) return error.BadMessage;
+    if (len < 1 + crypto.tag_len or len > @min(limit, max_msg)) return error.BadMessage;
     try rb.cipher.resize(gpa, len);
     try net.recvAll(s, rb.cipher.items);
     try rb.plain.resize(gpa, len - crypto.tag_len);

@@ -31,7 +31,10 @@ pub fn build(b: *std.Build) void {
     const server_step = b.step("server", "servidor dedicado (Linux x86_64 e aarch64, estático)");
     for ([_]std.Target.Cpu.Arch{ .x86_64, .aarch64 }) |arch| {
         const t = b.resolveTargetQuery(.{ .cpu_arch = arch, .os_tag = .linux, .abi = .musl });
-        const exe = serverExe(b, t, optimize);
+        // ReleaseSafe: o servidor lê bytes de qualquer um da internet; um
+        // índice fora do lugar vira panic com a linha (e o systemd reinicia),
+        // não corrupção de memória silenciosa (o Docker já usava ReleaseSafe)
+        const exe = serverExe(b, t, if (optimize == .ReleaseFast) .ReleaseSafe else optimize);
         const install = b.addInstallArtifact(exe, .{ .dest_sub_path = b.fmt("telinha-server-{s}", .{@tagName(arch)}) });
         server_step.dependOn(&install.step);
         if (!native_only) b.getInstallStep().dependOn(&install.step);

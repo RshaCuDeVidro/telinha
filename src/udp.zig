@@ -34,6 +34,8 @@ pub const chunk = 1150;
 const max_datagram = header_len + 1 + 12 + chunk + Aead.tag_length;
 /// Mensagem maior que isso vai pelo TCP (um IDR 4K absurdo).
 const max_frags = 4096;
+/// Bytes reservados pras mensagens ainda chegando, por ponta (IDR 4K cabe folgado).
+const max_pending_bytes = 24 * 1024 * 1024;
 /// Canal sem ordem (som, voz: cada um tem a própria sequência).
 pub const unordered: u32 = 0xFFFF_FFFF;
 
@@ -421,6 +423,14 @@ pub const Endpoint = struct {
         }
         const p = ep.findPartial(channel, id) orelse blk: {
             if (ep.partials.items.len >= 64) return; // lixo demais pendurado
+            // teto de memória das mensagens pela metade: 64 delas declarando
+            // 4096 pedaços reservavam ~300 MB com um datagrama cada
+            var pending: usize = 0;
+            for (ep.partials.items) |q| pending += @as(usize, q.count) * chunk;
+            if (pending + @as(usize, count) * chunk > max_pending_bytes) {
+                ep.stats.late_drops += 1;
+                return;
+            }
             const np = gpa.create(Partial) catch return;
             np.* = .{ .channel = channel, .id = id, .count = count, .got = gpa.alloc(u64, (count + 63) / 64) catch {
                 gpa.destroy(np);

@@ -151,23 +151,57 @@ pub fn connect(host: []const u8, port: u16) Error!Socket {
     if (c.getaddrinfo(&host_z, port_s.ptr, &hints, &res) != 0) return error.UnknownHost;
     defer c.freeaddrinfo(res);
 
+    // prazo por endereço: um caminho mudo (firewall que descarta, IPv6 sem
+    // rota) segurava o connect ~2 min no Linux e ~21 s no Windows, e o próximo
+    // endereço (o IPv4 que funcionava) nem era tentado
     var refused = false;
     var it = res;
     while (it) |ai| : (it = ai.ai_next) {
         const s = c.socket(ai.ai_family, cloexec(ai.ai_socktype), ai.ai_protocol);
         if (s == invalid) continue;
-        if (c.connect(s, ai.ai_addr, @intCast(ai.ai_addrlen)) == 0) {
-            tune(s);
-            return s;
-        }
         if (is_windows) {
-            if (c.WSAGetLastError() == c.WSAECONNREFUSED) refused = true;
+            if (connectWin(s, ai.ai_addr, @intCast(ai.ai_addrlen), &refused)) {
+                tune(s);
+                return s;
+            }
         } else {
+            setOpt(s, c.IPPROTO_TCP, c.TCP_SYNCNT, 2); // SYN + 2 tentativas: desiste em ~7 s
+            if (c.connect(s, ai.ai_addr, @intCast(ai.ai_addrlen)) == 0) {
+                tune(s);
+                return s;
+            }
             if (std.c._errno().* == @intFromEnum(std.c.E.CONNREFUSED)) refused = true;
         }
         close(s);
     }
     return if (refused) error.ConnectionRefused else error.ConnectFailed;
+}
+
+/// connect com prazo de 6 s (Windows: não tem TCP_SYNCNT; o padrão é ~21 s).
+fn connectWin(s: Socket, addr: anytype, len: c_int, refused: *bool) bool {
+    if (!is_windows) return false;
+    const fionbio: c_long = @bitCast(@as(c_ulong, 0x8004667E));
+    var nb: c_ulong = 1;
+    _ = c.ioctlsocket(s, fionbio, &nb);
+    defer {
+        nb = 0;
+        _ = c.ioctlsocket(s, fionbio, &nb);
+    }
+    if (c.connect(s, addr, len) == 0) return true;
+    const e = c.WSAGetLastError();
+    if (e == c.WSAECONNREFUSED) refused.* = true;
+    if (e != c.WSAEWOULDBLOCK) return false;
+    var wfds: c.fd_set = undefined;
+    wfds.fd_count = 1;
+    wfds.fd_array[0] = s;
+    var efds = wfds;
+    var tv: c.struct_timeval = .{ .tv_sec = 6, .tv_usec = 0 };
+    if (c.select(0, null, &wfds, &efds, &tv) <= 0) return false;
+    var err: c_int = 0;
+    var elen: c_int = @sizeOf(c_int);
+    _ = c.getsockopt(s, c.SOL_SOCKET, c.SO_ERROR, @ptrCast(&err), &elen);
+    if (err == c.WSAECONNREFUSED) refused.* = true;
+    return efds.fd_count == 0 and wfds.fd_count == 1 and err == 0;
 }
 
 pub fn sendAll(s: Socket, data: []const u8) Error!void {

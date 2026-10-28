@@ -388,6 +388,42 @@ fn liveRoom(streamer: *TestClient, viewer: *TestClient) !void {
     _ = try streamer.expect(.keyreq);
 }
 
+test "porteiro: teto de conexões sem entrar, por IP, e castigo crescente pra senha errada" {
+    var g: server_mod.Gate = .{};
+    const a = [_]u8{ 203, 0, 113, 7 };
+    const b = [_]u8{ 198, 51, 100, 2 };
+    const local = [_]u8{ 127, 0, 0, 1 };
+    var now: u64 = 1_000_000;
+    // por IP: 8 ao mesmo tempo; o próximo do mesmo IP não, de outro IP sim
+    for (0..server_mod.Gate.max_per_ip) |_| try testing.expect(g.enter(&a, now));
+    try testing.expect(!g.enter(&a, now));
+    try testing.expect(g.enter(&b, now));
+    g.leave(&a);
+    try testing.expect(g.enter(&a, now));
+    // a própria máquina (sala no app, cloudflared) só tem o teto global
+    var n_local: u32 = 0;
+    while (g.enter(&local, now)) n_local += 1;
+    try testing.expectEqual(@as(u32, server_mod.Gate.max_pending - server_mod.Gate.max_per_ip - 1), n_local);
+    // senha errada: 3 de graça, depois espera crescente; acertar zera
+    var g2: server_mod.Gate = .{};
+    for (0..server_mod.Gate.free_fails) |_| try testing.expectEqual(@as(u64, 0), g2.fail(&a, now));
+    try testing.expectEqual(@as(u64, 2000), g2.fail(&a, now));
+    try testing.expect(!g2.enter(&a, now + 1000));
+    try testing.expect(g2.enter(&a, now + 2001));
+    g2.leave(&a);
+    try testing.expectEqual(@as(u64, 4000), g2.fail(&a, now + 3000));
+    for (0..10) |_| _ = g2.fail(&a, now + 3000);
+    try testing.expectEqual(@as(u64, 60_000), g2.fail(&a, now + 3000));
+    g2.ok(&a);
+    try testing.expect(g2.enter(&a, now + 3001));
+    // 10 min depois do último erro, esquece
+    now += 3000;
+    _ = g2.fail(&b, now);
+    _ = g2.fail(&b, now);
+    _ = g2.fail(&b, now);
+    try testing.expectEqual(@as(u64, 0), g2.fail(&b, now + 11 * 60 * 1000));
+}
+
 test "sala: entrar, senha errada, chat" {
     net.init();
     const port = freshPort();
