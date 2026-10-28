@@ -87,7 +87,12 @@ fn maxAgeMs(count: usize) u64 {
 }
 
 const Sent = struct { channel: u32 = 0, id: u32 = 0, msg: ?*proto.Msg = null, at_ms: u64 = 0 };
-const TxChan = struct { channel: u32, next: u32 };
+const TxChan = struct {
+    channel: u32,
+    next: u32,
+    last_ms: u64 = 0, // quando saiu a última mensagem desse canal
+    tail_done: bool = true, // a última já foi repetida (ver tick)
+};
 
 const Partial = struct {
     channel: u32,
@@ -275,13 +280,16 @@ pub const Endpoint = struct {
     }
 
     fn nextId(ep: *Endpoint, channel: u32) u32 {
+        const now = sync.nowMs();
         for (ep.tx.items) |*t| {
             if (t.channel == channel) {
                 t.next +%= 1;
+                t.last_ms = now;
+                t.tail_done = false;
                 return t.next;
             }
         }
-        ep.tx.append(gpa, .{ .channel = channel, .next = 1 }) catch {};
+        ep.tx.append(gpa, .{ .channel = channel, .next = 1, .last_ms = now, .tail_done = false }) catch {};
         return 1;
     }
 
@@ -567,6 +575,23 @@ pub const Endpoint = struct {
         const Nack = struct { channel: u32, id: u32, frags: [max_nack]u16 = undefined, n: usize = 0, all: bool = false };
         var nacks: std.ArrayList(Nack) = .empty;
         defer nacks.deinit(gpa);
+        // a última mensagem de uma rajada (tela que parou de mudar): se ela se
+        // perde, quem recebe só descobre na próxima, que pode nunca vir (a
+        // imagem fica a de antes). Repete uma vez, 100 ms depois do último envio
+        var tails: [8][2]u32 = undefined;
+        var n_tails: usize = 0;
+        {
+            ep.mutex.lock();
+            defer ep.mutex.unlock();
+            for (ep.tx.items) |*t| {
+                if (t.tail_done or now - t.last_ms < 100) continue;
+                t.tail_done = true;
+                if (now - t.last_ms > 1000 or n_tails == tails.len) continue;
+                tails[n_tails] = .{ t.channel, t.next };
+                n_tails += 1;
+            }
+        }
+        for (tails[0..n_tails]) |tl| ep.resend(wire, tl[0], tl[1], &.{}, true);
         {
             ep.mutex.lock();
             defer ep.mutex.unlock();
@@ -955,4 +980,40 @@ test "udp: prazo da remontagem cresce com o tamanho (IDR grande em link lento co
     try std.testing.expectEqual(@as(u64, 1000), maxAgeMs(1)); // quadro pequeno: 1 s como antes
     try std.testing.expectEqual(@as(u64, 2400), maxAgeMs(300)); // ~350 KB: 2,4 s
     try std.testing.expectEqual(@as(u64, 5000), maxAgeMs(5000)); // teto
+}
+
+test "udp: a última mensagem de uma rajada que se perdeu chega sozinha (repetida depois de 100 ms)" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var pr = try testPair(0);
+    defer {
+        pr.a.destroy();
+        pr.b.destroy();
+        net.close(pr.sa);
+        net.close(pr.sb);
+    }
+    const addr_b = localAddr(net.localPortOf(pr.sb));
+    const addr_a = localAddr(net.localPortOf(pr.sa));
+    const wa: Wire = .{ .sock = pr.sa, .to = &addr_b };
+    const wb: Wire = .{ .sock = pr.sb, .to = &addr_a };
+    net.setRecvTimeout(pr.sa, 5);
+    net.setRecvTimeout(pr.sb, 5);
+    var side: TestSide = .{};
+    defer {
+        for (side.got.items) |g| gpa.free(g);
+        side.got.deinit(gpa);
+    }
+    var dummy: TestSide = .{};
+    // o último quadro (tela que parou) se perde inteiro
+    const m = try proto.Msg.alloc(.frame, 3000);
+    defer m.release();
+    m.from = 0x42;
+    @memset(m.payload(), 7);
+    try std.testing.expect(pr.a.sendMsg(wa, m, 0x42));
+    var buf: [2048]u8 = undefined;
+    while (net.udpRecvFrom(pr.sb, &buf, null)) |_| {}
+    // nada mais é enviado; só os relógios andam
+    var waited: usize = 0;
+    while (side.got.items.len < 1 and waited < 400) : (waited += 1) pump(pr.a, pr.b, pr.sa, pr.sb, wa, wb, &side, &dummy, 1);
+    try std.testing.expectEqual(@as(usize, 1), side.got.items.len);
+    try std.testing.expectEqual(@as(usize, 3000), side.got.items[0].len - 1);
 }
