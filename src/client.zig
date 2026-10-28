@@ -428,6 +428,8 @@ pub const View = struct {
     gl_stale: bool = false, // quadro novo que ainda não foi pra placa (não estava aparecendo)
     disp_px_w: u32 = 0, // tamanho em que apareceu no último desenho (pixels; 0 = não apareceu)
     disp_px_h: u32 = 0,
+    last_disp_w: u32 = 0, // o do último desenho completo (o redesenho só do vídeo usa)
+    last_disp_h: u32 = 0,
     tex: u32 = 0,
     tex_w: u32 = 0,
     tex_h: u32 = 0,
@@ -780,7 +782,7 @@ pub const View = struct {
             v.h = ph;
             v.mutex.unlock();
         }
-        v.client.wake();
+        v.client.wakeVideo();
 
         const dt = @as(f32, @floatFromInt(sync.nowUs() - t0)) / 1000.0;
         v.decode_ms = v.decode_ms * 0.9 + dt * 0.1;
@@ -812,6 +814,7 @@ pub const Client = struct {
     admin_token_len: usize = 0,
     client_key: u64 = 0,
     wake_fn: *const fn () void,
+    wake_video_fn: ?*const fn () void = null,
     hw_decode: bool = true,
 
     sock: net.Socket = undefined,
@@ -964,11 +967,14 @@ pub const Client = struct {
         expect_fp: []const u8 = "",
         tofu: bool = false,
         wake: *const fn () void,
+        /// Quadro de vídeo novo (só a textura muda: a interface pode reaproveitar o
+        /// desenho anterior). Sem ele, acorda como qualquer outra coisa.
+        wake_video: ?*const fn () void = null,
     };
 
     pub fn create(o: Options) !*Client {
         const cl = try gpa.create(Client);
-        cl.* = .{ .wake_fn = o.wake, .hw_decode = o.hw_decode, .client_key = o.client_key };
+        cl.* = .{ .wake_fn = o.wake, .wake_video_fn = o.wake_video, .hw_decode = o.hw_decode, .client_key = o.client_key };
         cl.n_targets = connect_mod.parseList(o.addrs, &cl.targets);
         if (cl.n_targets == 0) {
             gpa.destroy(cl);
@@ -995,6 +1001,10 @@ pub const Client = struct {
     fn copyInto(dst: []u8, len: *usize, src: []const u8) void {
         len.* = @min(src.len, dst.len);
         @memcpy(dst[0..len.*], src[0..len.*]);
+    }
+
+    pub fn wakeVideo(cl: *Client) void {
+        if (cl.wake_video_fn) |f| f() else cl.wake_fn();
     }
 
     pub fn wake(cl: *Client) void {

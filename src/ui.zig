@@ -941,6 +941,7 @@ pub const App = struct {
     trim_at: f64 = 0, // quando devolver a memória livre pro sistema (0 = nada pendente)
     debug_next: f64 = 0, // próxima amostra do log de depuração
     debug_frames_seen: u64 = 0,
+    debug_fast_seen: u64 = 0,
     debug_status_seen: ?client_mod.Status = null,
     debug_size: usize = 0, // tamanho do arquivo (lido de vez em quando, nas configurações)
     debug_size_at: f64 = -10,
@@ -1296,6 +1297,10 @@ pub const App = struct {
         a.debug_next = now + 2;
         redrawIn(2);
         const frames = frame_count - a.debug_frames_seen;
+        const fast = frame_fast_count - a.debug_fast_seen;
+        a.debug_fast_seen = frame_fast_count;
+        const build = frame_build_us;
+        frame_build_us = 0;
         const work = frame_work_us;
         const work_max = frame_work_max_us;
         const swap = frame_swap_us;
@@ -1313,8 +1318,8 @@ pub const App = struct {
             const w = std.fmt.bufPrint(tb[tl..], " {s}={d:.0}%", .{ t.name[0..t.len], t.pct }) catch break;
             tl += w.len;
         }
-        debuglog.line("cpu app={d:.0}% (100% = 1 núcleo) pc={d:.0}% | ram app={d} MB, livre={d} MB | interface {d:.1} q/s, trabalho {d:.1} ms/quadro (máx {d:.1}), vsync {d:.1} ms (máx {d:.1}){s}{s}", .{
-            u.proc_pct, u.sys_pct, u.rss_mb, u.ram_free_mb, @as(f32, @floatFromInt(frames)) / 2, if (frames > 0) @as(f32, @floatFromInt(work)) / @as(f32, @floatFromInt(frames)) / 1000 else 0, @as(f32, @floatFromInt(work_max)) / 1000,
+        debuglog.line("cpu app={d:.0}% (100% = 1 núcleo) pc={d:.0}% | ram app={d} MB, livre={d} MB | interface {d:.1} q/s ({d:.1} só de vídeo, montagem {d:.1} ms/s), trabalho {d:.1} ms/quadro (máx {d:.1}), vsync {d:.1} ms (máx {d:.1}){s}{s}", .{
+            u.proc_pct, u.sys_pct, u.rss_mb, u.ram_free_mb, @as(f32, @floatFromInt(frames)) / 2, @as(f32, @floatFromInt(fast)) / 2, @as(f32, @floatFromInt(build)) / 2000, if (frames > 0) @as(f32, @floatFromInt(work)) / @as(f32, @floatFromInt(frames)) / 1000 else 0, @as(f32, @floatFromInt(work_max)) / 1000,
             if (frames > 0) @as(f32, @floatFromInt(swap)) / @as(f32, @floatFromInt(frames)) / 1000 else 0, @as(f32, @floatFromInt(swap_max)) / 1000, if (tl > 0) " | threads:" else "", tb[0..tl],
         });
         const cl = a.client orelse return;
@@ -1763,7 +1768,7 @@ pub const App = struct {
         a.stats_seen = 0;
         const chan_pw = a.carry_pw[0..a.carry_pw_len];
         a.carry_pw_len = 0;
-        a.client = Client.create(.{ .addrs = addrs, .name = a.myName(), .password = pass, .admin_token = admin_token, .client_key = a.cfg.client_key, .hw_decode = a.cfg.hardware, .channel = channel, .channel_password = chan_pw, .expect_fp = expect_fp, .tofu = tofu, .wake = wakeUi }) catch {
+        a.client = Client.create(.{ .addrs = addrs, .name = a.myName(), .password = pass, .admin_token = admin_token, .client_key = a.cfg.client_key, .hw_decode = a.cfg.hardware, .channel = channel, .channel_password = chan_pw, .expect_fp = expect_fp, .tofu = tofu, .wake = wakeUi, .wake_video = wakeVideo }) catch {
             a.setHomeError(tr("Endereço inválido."));
             return;
         };
@@ -2404,7 +2409,35 @@ pub const App = struct {
         }
     }
 
+    /// Quadro só de vídeo: sobe as texturas novas e diz se o desenho anterior
+    /// ainda serve (as mesmas texturas, do mesmo tamanho). false = refazer a interface.
+    pub fn videoOnlyFrame(a: *App) bool {
+        const Snap = struct { tex: u32, w: u32, h: u32, ow: u32, oh: u32 };
+        var before: [16]Snap = undefined;
+        const n = a.views.items.len;
+        if (n > before.len or n == 0) return false;
+        for (a.views.items, 0..) |v, i| before[i] = .{ .tex = v.tex, .w = v.tex_w, .h = v.tex_h, .ow = v.yuv.ow, .oh = v.yuv.oh };
+        var prev_before: [2]u32 = .{ 0, 0 };
+        for ([_]?*Sharer{ a.sharer, a.camera }, 0..) |maybe, i| if (maybe) |s| {
+            prev_before[i] = s.preview_tex;
+        };
+        a.uploadTexturesMode(true);
+        if (a.views.items.len != n) return false;
+        for (a.views.items, 0..) |v, i| {
+            const b = before[i];
+            if (v.tex != b.tex or v.tex_w != b.w or v.tex_h != b.h or v.yuv.ow != b.ow or v.yuv.oh != b.oh) return false;
+        }
+        for ([_]?*Sharer{ a.sharer, a.camera }, 0..) |maybe, i| if (maybe) |s| {
+            if (s.preview_tex != prev_before[i]) return false;
+        };
+        return true;
+    }
+
     fn uploadTextures(a: *App) void {
+        a.uploadTexturesMode(false);
+    }
+
+    fn uploadTexturesMode(a: *App, video_only: bool) void {
         var fw: c_int = 0;
         var fh: c_int = 0;
         c.glfwGetFramebufferSize(a.window, &fw, &fh);
@@ -2429,11 +2462,16 @@ pub const App = struct {
             v.mutex.unlock();
             const f = &v.front;
             // em que tamanho (pixels) o vídeo apareceu no quadro passado: 0 = não apareceu
-            const want_w = v.disp_px_w;
-            const want_h = v.disp_px_h;
-            v.disp_px_w = 0;
-            v.disp_px_h = 0;
-            a.reportViewSize(v, want_h);
+            // só vídeo: o tamanho do último desenho completo (nada foi desenhado agora)
+            const want_w = if (video_only) v.last_disp_w else v.disp_px_w;
+            const want_h = if (video_only) v.last_disp_h else v.disp_px_h;
+            if (!video_only) {
+                v.last_disp_w = want_w;
+                v.last_disp_h = want_h;
+                v.disp_px_w = 0;
+                v.disp_px_h = 0;
+                a.reportViewSize(v, want_h);
+            }
             if (f.w == 0) continue;
             if (took) v.gl_stale = true;
             if (f.layout != .rgba) {
@@ -5921,6 +5959,9 @@ pub const App = struct {
             // estatística à mostra de uma transmissão parada: a contagem
             // "sem imagem nova há N s" anda (só enquanto ela aparece)
             if (t.view) |tv| if (tv.idleMs() > 3000) redrawIn(1.0);
+            // os números andam com o vídeo, mas o quadro só de vídeo não
+            // refaz o texto: 2 vezes por segundo basta
+            redrawIn(0.5);
         }
         if (hovered) {
             // botões no canto (da direita pra esquerda)
@@ -10510,6 +10551,8 @@ pub var frame_count: u64 = 0;
 pub var frame_work_max_us: u64 = 0;
 pub var frame_swap_us: u64 = 0; // esperando o vsync no glfwSwapBuffers (fora do trabalho)
 pub var frame_swap_max_us: u64 = 0;
+pub var frame_fast_count: u64 = 0; // quadros só de vídeo (sem refazer a interface)
+pub var frame_build_us: u64 = 0; // montando a interface (NewFrame até Render), só nos quadros completos
 
 /// Limite de quadros por segundo da interface (0 = o do monitor).
 pub var frame_cap_fps: u64 = 60;
@@ -10550,7 +10593,25 @@ pub fn redrawIn(secs: f64) void {
 
 /// Acorda o loop principal (chamado de qualquer thread).
 pub fn wakeUi() void {
+    ui_wake_pending.store(true, .release);
     c.glfwPostEmptyEvent();
+}
+
+/// Acorda o loop por um quadro de vídeo novo: se nada mais mudou, o laço só
+/// sobe a textura e reapresenta o desenho anterior (ver main.zig).
+pub fn wakeVideo() void {
+    video_wake_pending.store(true, .release);
+    c.glfwPostEmptyEvent();
+}
+
+pub var ui_wake_pending: std.atomic.Value(bool) = .init(true);
+pub var video_wake_pending: std.atomic.Value(bool) = .init(false);
+/// Eventos da janela (mouse, teclado, foco, tamanho) desde o último quadro
+/// completo: com algum, a interface é refeita.
+pub var input_events: std.atomic.Value(u32) = .init(0);
+
+pub fn noteInput() void {
+    _ = input_events.fetchAdd(1, .monotonic);
 }
 
 /// Tema base do ImGui (tamanhos; uma vez, na escala da tela) e as cores do tema.

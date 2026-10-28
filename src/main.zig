@@ -126,6 +126,19 @@ pub fn main(init: std.process.Init) !void {
     ui.useFonts(ui.fonts_sans, 1.0);
     ui.applyStyle();
 
+    // eventos da janela contam pra "refazer a interface" (o ImGui encadeia os
+    // dele depois destes); tamanho e exposição não passam pelo ImGui
+    _ = c.glfwSetCursorPosCallback(win, inputCb.pos);
+    _ = c.glfwSetMouseButtonCallback(win, inputCb.button);
+    _ = c.glfwSetScrollCallback(win, inputCb.pos);
+    _ = c.glfwSetKeyCallback(win, inputCb.key);
+    _ = c.glfwSetCharCallback(win, inputCb.char);
+    _ = c.glfwSetWindowFocusCallback(win, inputCb.int1);
+    _ = c.glfwSetCursorEnterCallback(win, inputCb.int1);
+    _ = c.glfwSetWindowSizeCallback(win, inputCb.int2);
+    _ = c.glfwSetFramebufferSizeCallback(win, inputCb.int2);
+    _ = c.glfwSetWindowRefreshCallback(win, inputCb.none);
+    _ = c.glfwSetWindowContentScaleCallback(win, inputCb.float2);
     _ = c.ImGui_ImplGlfw_InitForOpenGL(win, true);
     _ = c.ImGui_ImplOpenGL3_Init("#version 130");
 
@@ -150,6 +163,9 @@ pub fn main(init: std.process.Init) !void {
     app.applyArgs(args);
     crash.testCrash();
     var idle_frames: u32 = 0;
+    var last_full: f64 = 0; // último quadro em que a interface foi refeita
+    // TELINHA_SEM_QUADRO_RAPIDO=1: sempre refaz a interface (comparar / contornar)
+    const fast_ok = std.c.getenv("TELINHA_SEM_QUADRO_RAPIDO") == null;
     var swap_interval: c_int = 1;
     var pacing_check_at: f64 = 0;
     while (c.glfwWindowShouldClose(win) == 0) {
@@ -174,11 +190,49 @@ pub fn main(init: std.process.Init) !void {
             // rede, vídeo e eventos acordam o laço na hora do mesmo jeito
             const unfocused = c.glfwGetWindowAttrib(win, c.GLFW_FOCUSED) == 0;
             var timeout: f64 = if (qa.enabled()) 0.05 else if (iconified) 1.0 else if (unfocused) 2.0 else if (io.*.WantTextInput) 0.25 else 0.5;
-            if (ui.redraw_at != std.math.inf(f64)) timeout = @min(timeout, @max(0.0, ui.redraw_at - c.igGetTime()));
+            // (a hora do ImGui só anda nos quadros completos: soma o que passou desde o último)
+            const imgui_now = c.igGetTime() + @max(0.0, c.glfwGetTime() - last_full);
+            if (ui.redraw_at != std.math.inf(f64)) timeout = @min(timeout, @max(0.0, ui.redraw_at - imgui_now));
             if (timeout > 0) c.glfwWaitEventsTimeout(timeout) else c.glfwPollEvents();
         } else c.glfwPollEvents();
-        ui.redraw_at = std.math.inf(f64);
         var t_frame = sync.nowUs();
+
+        // só chegou quadro de vídeo (nenhum evento, aviso da rede ou animação
+        // pendente): sobe a textura e reapresenta o desenho anterior, sem
+        // refazer a interface inteira (a 60 q/s era ~7% de um núcleo só nisso).
+        // Textura nova ou de outro tamanho, ou 1 s sem refazer: o caminho normal
+        {
+            const ui_wake = ui.ui_wake_pending.swap(false, .acq_rel);
+            const video_wake = ui.video_wake_pending.swap(false, .acq_rel);
+            const inputs = ui.input_events.swap(0, .acq_rel);
+            const now = c.glfwGetTime();
+            const timer_due = c.igGetTime() + @max(0.0, now - last_full) >= ui.redraw_at;
+            if (fast_ok and video_wake and !ui_wake and inputs == 0 and !timer_due and idle_frames > 3 and !iconified and now - last_full < 1.0 and app.videoOnlyFrame()) {
+                var fw: c_int = 0;
+                var fh: c_int = 0;
+                c.glfwGetFramebufferSize(win, &fw, &fh);
+                glViewport(0, 0, fw, fh);
+                const bg = c.igColorConvertU32ToFloat4(ui.col.bg_dark);
+                glClearColor(bg.x, bg.y, bg.z, 1);
+                glClear(0x4000);
+                c.ImGui_ImplOpenGL3_RenderDrawData(c.igGetDrawData());
+                const t_swap = sync.nowUs();
+                c.glfwSwapBuffers(win);
+                const swap = sync.nowUs() - t_swap;
+                ui.frame_swap_us += swap;
+                ui.frame_swap_max_us = @max(ui.frame_swap_max_us, swap);
+                t_frame += swap;
+                app.drawPips();
+                const work = sync.nowUs() - t_frame;
+                ui.frame_work_us += work;
+                ui.frame_work_max_us = @max(ui.frame_work_max_us, work);
+                ui.frame_count += 1;
+                ui.frame_fast_count += 1;
+                continue;
+            }
+            last_full = now;
+        }
+        ui.redraw_at = std.math.inf(f64);
 
         c.ImGui_ImplOpenGL3_NewFrame();
         c.ImGui_ImplGlfw_NewFrame();
@@ -188,12 +242,14 @@ pub fn main(init: std.process.Init) !void {
             const ok = fonts.addEmoji(io.*.Fonts, ui.fonts_sans, base) and fonts.addEmoji(io.*.Fonts, ui.fonts_mono, base);
             debuglog.line("emoji: {s}", .{if (ok) "fonte do sistema carregada" else "nenhuma fonte de emoji no sistema"});
         }
+        const t_build = sync.nowUs();
         c.igNewFrame();
         app.updateUnread();
         app.iconified = iconified;
         app.frame();
         qa.endFrame(&app, win);
         c.igRender();
+        ui.frame_build_us += sync.nowUs() - t_build;
 
         // minimizado: a lógica roda (avisos, sons, janela flutuante), o desenho não
         if (!iconified) {
@@ -251,3 +307,31 @@ fn exitDeadline() void {
 extern fn glViewport(x: c_int, y: c_int, w: c_int, h: c_int) callconv(.c) void;
 extern fn glClearColor(r: f32, g: f32, b: f32, a: f32) callconv(.c) void;
 extern fn glClear(mask: c_uint) callconv(.c) void;
+
+/// Callbacks da janela que só contam eventos (ver ui.input_events).
+const inputCb = struct {
+    fn pos(_: ?*c.GLFWwindow, _: f64, _: f64) callconv(.c) void {
+        ui.noteInput();
+    }
+    fn button(_: ?*c.GLFWwindow, _: c_int, _: c_int, _: c_int) callconv(.c) void {
+        ui.noteInput();
+    }
+    fn key(_: ?*c.GLFWwindow, _: c_int, _: c_int, _: c_int, _: c_int) callconv(.c) void {
+        ui.noteInput();
+    }
+    fn char(_: ?*c.GLFWwindow, _: c_uint) callconv(.c) void {
+        ui.noteInput();
+    }
+    fn int1(_: ?*c.GLFWwindow, _: c_int) callconv(.c) void {
+        ui.noteInput();
+    }
+    fn int2(_: ?*c.GLFWwindow, _: c_int, _: c_int) callconv(.c) void {
+        ui.noteInput();
+    }
+    fn float2(_: ?*c.GLFWwindow, _: f32, _: f32) callconv(.c) void {
+        ui.noteInput();
+    }
+    fn none(_: ?*c.GLFWwindow) callconv(.c) void {
+        ui.noteInput();
+    }
+};
