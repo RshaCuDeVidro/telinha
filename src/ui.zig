@@ -1210,6 +1210,9 @@ pub const App = struct {
 
     pub fn shutdown(a: *App) void {
         a.closePips();
+        // fecha a porta no roteador antes de o processo sair (até 1,5 s)
+        if (a.upnp) |m| m.stopAndWait(1500);
+        a.upnp = null;
         if (a.screen == .room) a.leaveRoom();
         config.save(&a.cfg);
     }

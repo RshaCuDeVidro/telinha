@@ -367,6 +367,7 @@ pub const Mapper = struct {
     mutex: sync.Mutex = .{},
     refs: std.atomic.Value(u32) = .init(2), // interface + thread
     stopping: std.atomic.Value(bool) = .init(false),
+    finished: std.atomic.Value(bool) = .init(false), // a thread terminou (porta fechada)
     state: State = .working,
     err: [200]u8 = undefined,
     err_len: usize = 0,
@@ -388,6 +389,16 @@ pub const Mapper = struct {
             return error.ThreadFailed;
         };
         return m;
+    }
+
+    /// Fecha a porta no roteador e espera (até `timeout_ms`) a thread acabar:
+    /// pra quando o processo vai sair logo depois (o `stop` só levantava a
+    /// bandeira e a porta ficava aberta no roteador por até 1 h).
+    pub fn stopAndWait(m: *Mapper, timeout_ms: u64) void {
+        m.stopping.store(true, .release);
+        const until = sync.nowMs() + timeout_ms;
+        while (!m.finished.load(.acquire) and sync.nowMs() < until) sync.sleepMs(20);
+        m.release();
     }
 
     /// A interface larga o objeto; a thread fecha a porta e termina.
@@ -424,7 +435,10 @@ pub const Mapper = struct {
     }
 
     fn run(m: *Mapper) void {
-        defer m.release();
+        defer {
+            m.finished.store(true, .release);
+            m.release();
+        }
         const router = discover(m.to, m.to_port, 3000) catch |e| {
             // sem UPnP: o outro jeito de pedir porta (NAT-PMP/PCP)
             return m.tryPmp(switch (e) {

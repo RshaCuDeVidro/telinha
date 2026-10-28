@@ -81,6 +81,22 @@ extern "c" var environ: [*:null]const ?[*:0]const u8;
 
 /// Mantém o túnel rápido (cloudflared, sem conta) apontando pra porta web e
 /// divulga o endereço na sala; caiu, sobe de novo (o endereço muda).
+/// O cloudflared rodando (pra matar junto quando o servidor fecha).
+var tunnel_pid = std.atomic.Value(c_int).init(0);
+/// A porta aberta no roteador (pra fechar quando o servidor fecha).
+var upnp_mapper: ?*upnp.Mapper = null;
+
+extern "c" fn sigemptyset(set: *[128]u8) c_int;
+extern "c" fn sigaddset(set: *[128]u8, sig: c_int) c_int;
+extern "c" fn pthread_sigmask(how: c_int, set: *const [128]u8, old: ?*[128]u8) c_int;
+extern "c" fn sigtimedwait(set: *const [128]u8, info: ?*[128]u8, timeout: *const Timespec) c_int;
+extern "c" fn kill(pid: c_int, sig: c_int) c_int;
+const Timespec = extern struct { sec: isize, nsec: isize };
+const SIG_BLOCK = 0;
+const SIGHUP = 1;
+const SIGINT = 2;
+const SIGTERM = 15;
+
 fn webTunnel(srv: *Server, exe: []const u8, port: u16) void {
     sync.nameThread("web-tunel");
     var exe_z: [400]u8 = undefined;
@@ -99,6 +115,7 @@ fn webTunnel(srv: *Server, exe: []const u8, port: u16) void {
         const argv = [_:null]?[*:0]const u8{ ez.ptr, "tunnel", "--no-autoupdate", "--url", uz.ptr, null };
         var pid: c_int = 0;
         const rc = posix_spawnp(&pid, ez.ptr, &fa, null, &argv, environ);
+        if (rc == 0) tunnel_pid.store(pid, .release);
         _ = posix_spawn_file_actions_destroy(&fa);
         _ = close(fds[1]);
         if (rc != 0) {
@@ -132,6 +149,7 @@ fn webTunnel(srv: *Server, exe: []const u8, port: u16) void {
         }
         _ = close(fds[0]);
         _ = waitpid(pid, null, 0);
+        tunnel_pid.store(0, .release);
         srv.setWebLink("");
         log("o túnel do navegador caiu; subindo de novo");
         sync.sleepMs(backoff);
@@ -278,6 +296,12 @@ fn env(name: [*:0]const u8) ?[]const u8 {
 }
 
 pub fn main(init: std.process.Init) !void {
+    // os sinais de fechar ficam pro laço do fim do main (sigtimedwait):
+    // bloqueados aqui, antes de qualquer thread, valem pra todas
+    var sigset: [128]u8 = undefined;
+    _ = sigemptyset(&sigset);
+    for ([_]c_int{ SIGHUP, SIGINT, SIGTERM }) |sgn| _ = sigaddset(&sigset, sgn);
+    _ = pthread_sigmask(SIG_BLOCK, &sigset, null);
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     var port: u16 = 7777;
     var password: []const u8 = env("TELINHA_SENHA") orelse "";
@@ -406,6 +430,7 @@ pub fn main(init: std.process.Init) !void {
         const to, const to_port = upnp.discoveryTarget();
         const m = upnp.Mapper.start(port, to, to_port) catch die("não consegui iniciar o UPnP", .{});
         sync.spawn(watchUpnp, .{ m, password }) catch {};
+        upnp_mapper = m;
     }
 
     if (web_port != 0) {
@@ -419,10 +444,21 @@ pub fn main(init: std.process.Init) !void {
         }
     } else if (web_tunnel or web_link.len > 0) die("--web-tunel e --web-link precisam do --web PORTA", .{});
 
-    // estatística a cada minuto
+    // estatística a cada minuto; SIGTERM/SIGINT/SIGHUP (docker stop, systemctl
+    // stop, Ctrl+C) fecham direito: avisa quem está na sala, mata o cloudflared
+    // e apaga a porta do roteador (antes: docker stop esperava 10 s e matava,
+    // o cloudflared ficava órfão segurando a porta)
     var last_bytes: u64 = 0;
     while (true) {
-        sync.sleepMs(60_000);
+        const sig = sigtimedwait(&sigset, null, &.{ .sec = 60, .nsec = 0 });
+        if (sig > 0) {
+            log(std.fmt.bufPrint(&buf, "recebi o sinal {d}: fechando a sala", .{sig}) catch "fechando");
+            const tp = tunnel_pid.load(.acquire);
+            if (tp > 0) _ = kill(tp, SIGTERM);
+            if (upnp_mapper) |m| m.stopAndWait(2000);
+            srv.stop();
+            std.process.exit(0);
+        }
         const total = srv.relayed_bytes.load(.monotonic);
         const n = srv.memberCount();
         if (n > 0) log(std.fmt.bufPrint(&buf, "{d} na sala, {d:.1} MB encaminhados no último minuto", .{
