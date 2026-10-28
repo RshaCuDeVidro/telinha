@@ -2804,6 +2804,12 @@ def relatorio_de_travamento():
         rep = open(os.path.join(a.cfg, "telinha", "telinha-travou.txt"), errors="replace").read()
         log("relatório:\n" + rep[:1500])
         expect("SIGSEGV" in rep and "pilha:" in rep and "telinha 3." in rep, "relatório incompleto")
+        # binário PIE: a pilha vem em deslocamentos, que o simbolos.py traduz com o .debug deste build
+        expect(re.search(r"^  telinha\+0x[0-9a-f]+$", rep, re.M), "pilha sem os deslocamentos no telinha")
+        sym = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "..", "simbolos.py"), os.path.join(a.cfg, "telinha", "telinha-travou.txt")],
+                             capture_output=True, text=True).stdout
+        log("símbolos:\n" + sym[:1200])
+        expect("crash_now" in sym or "testCrash" in sym, "o simbolos.py não achou a função que travou")
         b = s.app("a", 91, ["--nome", "Ana"], extra_env={"TELINHA_GOFILE_URL": f"http://127.0.0.1:{gf}/uploadfile"})
         b.wait(lambda st: st["crash_prompt"] and st["crash_pending"], 10, "o aviso de que travou")
         b.click("##travoumandar")

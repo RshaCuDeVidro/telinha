@@ -156,10 +156,31 @@ void crash_note(const char *msg) {
 #else // Linux
 #include <execinfo.h>
 #include <fcntl.h>
+#include <link.h>
 #include <signal.h>
+#include <sys/prctl.h>
 #include <unistd.h>
 
 static char g_altstack[64 * 1024];
+// onde o executável foi carregado (PIE: muda a cada execução): a pilha sai
+// como "telinha+0xDESLOC", que casa com o telinha.debug do mesmo build
+static uintptr_t g_base, g_end;
+
+static int find_exe(struct dl_phdr_info *info, size_t size, void *data) {
+    (void)size;
+    (void)data;
+    // a primeira entrada é o próprio programa
+    uintptr_t lo = UINTPTR_MAX, hi = 0;
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
+        if (ph->p_type != PT_LOAD) continue;
+        if (ph->p_vaddr < lo) lo = ph->p_vaddr;
+        if (ph->p_vaddr + ph->p_memsz > hi) hi = ph->p_vaddr + ph->p_memsz;
+    }
+    g_base = info->dlpi_addr;
+    g_end = info->dlpi_addr + hi;
+    return 1;
+}
 
 static void put(int fd, const char *s) {
     ssize_t r = write(fd, s, strlen(s));
@@ -207,11 +228,30 @@ static void on_signal(int sig, siginfo_t *si, void *uc) {
             }
             put(fd, "\nthread ");
             put_num(fd, (unsigned long long)gettid(), 10);
+            char tname[17] = {0};
+            if (prctl(PR_GET_NAME, tname, 0, 0, 0) == 0 && tname[0]) {
+                put(fd, " (");
+                put(fd, tname);
+                put(fd, ")");
+            }
             put(fd, "\n");
             put(fd, g_info);
-            put(fd, "\npilha:\n");
+            // se desenrolar a pilha travar (pilha corrompida), sai mesmo assim
+            alarm(5);
             void *frames[64];
             int n = backtrace(frames, 64);
+            // primeiro os deslocamentos crus (não dependem de ler símbolos)
+            put(fd, "\npilha:\n");
+            for (int i = 0; i < n; i++) {
+                const uintptr_t a = (uintptr_t)frames[i];
+                put(fd, "  ");
+                if (a >= g_base && a < g_end) {
+                    put(fd, "telinha+");
+                    put_num(fd, (unsigned long long)(a - g_base), 16);
+                } else put_num(fd, (unsigned long long)a, 16);
+                put(fd, "\n");
+            }
+            put(fd, "módulos:\n");
             backtrace_symbols_fd(frames, n, fd);
             close(fd);
         }
@@ -226,6 +266,7 @@ void crash_install(const char *path_utf8, const char *info) {
     // a primeira chamada do backtrace carrega a libgcc (aloca): faz agora, fora do sinal
     void *warm[2];
     backtrace(warm, 2);
+    dl_iterate_phdr(find_exe, NULL);
     stack_t ss;
     memset(&ss, 0, sizeof ss);
     ss.ss_sp = g_altstack;

@@ -9,8 +9,10 @@ travou: `telinha.debug` (Linux) ou `telinha.exe` + `telinha.pdb` (Windows).
 Um build separado do mesmo código não serve (o layout muda); o relatório
 traz o commit pra conferir.
 
-Linux: addr2line nos endereços (o binário não é PIE). Windows: o relatório
-traz "telinha.exe+0xDESLOC"; llvm-symbolizer lê o .pdb.
+Linux: o relatório traz "telinha+0xDESLOC" (o binário é PIE: o endereço muda a
+cada execução; relatórios de antes da 3.8 trazem o endereço absoluto, de um
+binário que não era PIE); addr2line no telinha.debug. Windows: "telinha.exe+0xDESLOC";
+llvm-symbolizer lê o .pdb.
 """
 import os
 import re
@@ -46,7 +48,9 @@ def main():
         if here and here != m.group(1):
             print("  atenção: os símbolos só batem com o build do mesmo commit")
 
-    linux_addrs = re.findall(r"^\S*/?telinha\([^)]*\) \[(0x[0-9a-f]+)\]", report, re.M)
+    # deslocamentos (3.8 em diante); senão os endereços absolutos de antes
+    linux_addrs = re.findall(r"^\s+telinha\+(0x[0-9a-f]+)$", report, re.M) or \
+        re.findall(r"^\S*/?telinha\([^)]*\) \[(0x[0-9a-f]+)\]", report, re.M)
     win = list(dict.fromkeys(re.findall(r"^\s+telinha\.exe\+(0x[0-9a-f]+)", report, re.M)))
 
     if linux_addrs:

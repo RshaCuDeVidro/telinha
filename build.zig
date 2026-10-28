@@ -698,6 +698,9 @@ fn app(b: *std.Build, deps: Deps, target: std.Build.ResolvedTarget, optimize: st
 
     const exe = b.addExecutable(.{ .name = "telinha", .root_module = mod });
     if (is_windows) exe.subsystem = .windows;
+    // endereços aleatórios a cada execução (ASLR de verdade: um furo de memória
+    // não acha o código onde espera); o relatório de travamento grava deslocamentos
+    if (target.result.os.tag == .linux) exe.pie = true;
     allowHostLibs(exe, target);
     return exe;
 }
@@ -758,13 +761,16 @@ fn hostSystemPaths(b: *std.Build, mod: *std.Build.Module) void {
 }
 
 fn serverExe(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
-    return b.addExecutable(.{ .name = "telinha-server", .root_module = b.createModule(.{
+    const exe = b.addExecutable(.{ .name = "telinha-server", .root_module = b.createModule(.{
         .root_source_file = b.path("src/server_main.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
         .strip = optimize != .Debug,
     }) });
+    // exposto na internet: PIE estático (endereços aleatórios a cada execução)
+    exe.pie = true;
+    return exe;
 }
 
 // ---------------------------------------------------------------------------
