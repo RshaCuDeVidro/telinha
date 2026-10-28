@@ -318,6 +318,9 @@ pub const Notice = struct {
     }
 };
 
+/// Onde o encoder de uma transmissão espera (pra o pedido de IDR acordar).
+pub const KeyWake = struct { m: *sync.Mutex, c: *sync.Cond };
+
 /// Alguém banido da sala (a lista que o servidor manda pra admin).
 pub const Ban = struct {
     id: u32,
@@ -818,6 +821,10 @@ pub const Client = struct {
     closing: std.atomic.Value(bool) = .init(false),
     /// Pedido de IDR do servidor, por tipo de transmissão (tela, câmera).
     keyreq: [2]std.atomic.Value(bool) = .{ .init(false), .init(false) },
+    /// Quem transmite espera aqui (encoder parado sem quadro novo): o pedido
+    /// de IDR acorda na hora (antes esperava até 50 ms do timedWait).
+    key_wake: [2]?KeyWake = .{ null, null },
+    key_wake_mutex: sync.Mutex = .{},
     /// Codecs que a sala libera pra cada transmissão nossa (tela, câmera):
     /// o que todo mundo que assiste decodifica (mensagem `codec`).
     codecs_allowed: [2]std.atomic.Value(u8) = .{ .init(proto.codecs_h264), .init(proto.codecs_h264) },
@@ -1795,6 +1802,13 @@ pub const Client = struct {
                 const kind: u8 = r.u8_() catch proto.kind_screen;
                 if (kind > proto.kind_camera) return;
                 cl.keyreq[kind].store(true, .release);
+                cl.key_wake_mutex.lock();
+                defer cl.key_wake_mutex.unlock();
+                if (cl.key_wake[kind]) |w| {
+                    w.m.lock();
+                    w.c.signal();
+                    w.m.unlock();
+                }
             },
             .pong => {
                 const t = try r.u64_();
@@ -2452,6 +2466,12 @@ pub const Client = struct {
     }
 
     /// Ação de admin (proto.admin_*). O servidor confere se a gente pode.
+    pub fn setKeyWake(cl: *Client, kind: u8, w: ?KeyWake) void {
+        cl.key_wake_mutex.lock();
+        defer cl.key_wake_mutex.unlock();
+        cl.key_wake[kind] = w;
+    }
+
     pub fn admin(cl: *Client, action: u8, target: u32, value: u8) void {
         const m = proto.Msg.alloc(.admin, 6) catch return;
         const pl = m.payload();

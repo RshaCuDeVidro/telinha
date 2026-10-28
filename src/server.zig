@@ -47,6 +47,9 @@ const thin_grace_ms = 3000;
 // no máximo um IDR por segundo por transmissão (alguém entrando e saindo sem
 // parar fazia a transmissão virar só IDR: banda e encoder de todo mundo)
 const keyreq_interval_ms = 1000;
+/// Quem começou a assistir pede IDR com um limite próprio, mais curto: com o
+/// de 1 s, entrar logo depois de outro pedido esperava até 1 s pela imagem.
+const watch_keyreq_interval_ms = 400;
 const handshake_timeout_ms = 10_000;
 /// Alguém guardando os últimos segundos pra clipe: um IDR a cada tanto (um
 /// clipe só começa num IDR, e sem isso eles só saem quando alguém entra).
@@ -71,6 +74,7 @@ const StreamState = struct {
     last_frame_ms: u64 = 0,
     last_droppable_ms: u64 = 0, // último quadro pulável (a transmissão tem camadas temporais)
     last_keyreq_ms: u64 = 0,
+    last_watch_keyreq_ms: u64 = 0, // IDR pedido porque alguém começou a assistir (limite próprio, mais curto)
     last_slow_ms: u64 = 0,
     last_key_ms: u64 = 0, // último IDR que passou
     codecs_sent: u8 = 0, // codecs liberados que o transmissor já sabe (0 = ainda nada)
@@ -1625,9 +1629,14 @@ pub const Server = struct {
                     _ = cn.queue.dropFrames(stream);
                     cn.dropFlow(stream);
                     if (cn.flow(stream)) |f| f.clips = opts & proto.watch_clips != 0;
-                    // IDR pra quem começou a assistir, respeitando o limite: quem
-                    // chegar logo depois de outro pega o próximo (o laço pede)
-                    s.requestKey(stream, false);
+                    // IDR pra quem começou a assistir, com um limite próprio (400 ms):
+                    // quem chegar logo depois de outro pega o próximo (o laço pede)
+                    const ss = &tc.streams[proto.kindOf(stream)];
+                    const now_w = sync.nowMs();
+                    if (now_w - ss.last_watch_keyreq_ms >= watch_keyreq_interval_ms) {
+                        ss.last_watch_keyreq_ms = now_w;
+                        s.requestKey(stream, true);
+                    } else s.requestKey(stream, false);
                     try s.broadcastMembers();
                 } else {
                     cn.forget(stream);

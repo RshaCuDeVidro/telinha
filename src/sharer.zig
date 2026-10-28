@@ -1272,6 +1272,8 @@ const Pipeline = struct {
         var msg: proto.Builder = .{};
         defer msg.deinit();
         const kind = s.kind;
+        s.client.setKeyWake(kind, .{ .m = &p.mutex, .c = &p.cond });
+        defer s.client.setKeyWake(kind, null);
         var seq: u32 = s.client.next_seq[kind].load(.monotonic);
         defer s.client.next_seq[kind].store(seq, .monotonic);
         s.client.resetInflight(kind);

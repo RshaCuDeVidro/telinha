@@ -126,6 +126,11 @@ pub fn main(init: std.process.Init) !void {
     try convNV12(w, h);
     try runHw("NVENC: texto rolando", w, h, .screen, .text);
     try runHw("NVENC: movimento", w, h, .motion, .motion);
+    if (std.c.getenv("TELINHA_BENCH_TROCA") != null) {
+        const taxa: u32 = if (std.c.getenv("TELINHA_BENCH_TAXA")) |t| std.fmt.parseInt(u32, std.mem.span(t), 10) catch 6_000_000 else 6_000_000;
+        try pageSwitch(w, h, taxa);
+        return;
+    }
     if (std.c.getenv("TELINHA_BENCH_QUALIDADE") != null) {
         // TELINHA_BENCH_TAXA=bits/s (padrão 6 Mbit/s)
         const taxa: u32 = if (std.c.getenv("TELINHA_BENCH_TAXA")) |t| std.fmt.parseInt(u32, std.mem.span(t), 10) catch 6_000_000 else 6_000_000;
@@ -225,6 +230,58 @@ fn psnrY(src_y: []const u8, p: codec.Decoder.Picture, w: u32, h: u32) f64 {
     const mse = @as(f64, @floatFromInt(sse)) / @as(f64, @floatFromInt(@as(u64, w) * h));
     if (mse == 0) return 99;
     return 10 * std.math.log10(255.0 * 255.0 / mse);
+}
+
+/// Tela parada que troca inteira (alt-tab, outra página): quanto o quadro da
+/// troca pesa (tempo no fio, na taxa da transmissão) e quantos quadros a
+/// imagem leva pra ficar nítida. NVENC em modo tela (TELINHA_NVENC_VBV muda o VBV).
+fn pageSwitch(w: u32, h: u32, bitrate: u32) !void {
+    var err: [256]u8 = undefined;
+    var enc = codec.HwEncoder.init(.{ .width = w, .height = h, .fps = 30, .bitrate = bitrate, .mode = .screen, .temporal_layers = 1 }, &err) catch {
+        std.debug.print("NVENC indisponível: {s}\n", .{std.mem.sliceTo(&err, 0)});
+        return;
+    };
+    defer enc.deinit();
+    var dec = try codec.Decoder.init();
+    defer dec.deinit();
+    const n = @as(usize, w) * h;
+    const img = try gpa.alloc(u8, n * 4);
+    defer gpa.free(img);
+    const sy = try gpa.alloc(u8, n);
+    defer gpa.free(sy);
+    const su = try gpa.alloc(u8, n / 4);
+    defer gpa.free(su);
+    const sv = try gpa.alloc(u8, n / 4);
+    defer gpa.free(sv);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    const vbv = if (std.c.getenv("TELINHA_NVENC_VBV")) |v| std.mem.span(v) else "1";
+    std.debug.print("troca de página, {d}x{d}, {d} kbit/s, VBV {s} quadro(s)\n", .{ w, h, bitrate / 1000, vbv });
+    fillText(img, w, h, 1);
+    var steady: f64 = 0;
+    var worst_kb: usize = 0;
+    var first_ok: ?usize = null;
+    var sum_after: f64 = 0;
+    for (0..60) |f| {
+        if (f == 30) fillText(img, w, h, 2);
+        out.clearRetainingCapacity();
+        // TELINHA_BENCH_TROCA_IDR: IDR (com a folga de VBV do IDR) no quadro da troca
+        const idr_at_switch = f == 30 and std.c.getenv("TELINHA_BENCH_TROCA_IDR") != null;
+        _ = try enc.encode(img.ptr, @as(usize, w) * 4, .bgrx, f == 0 or idr_at_switch, &out);
+        const pic = (try dec.decode(out.items)) orelse continue;
+        codec.toI420(img.ptr, @as(usize, w) * 4, w, h, .bgrx, sy, su, sv);
+        const ps = psnrY(sy, pic, w, h);
+        if (f == 29) steady = ps;
+        if (f >= 30) {
+            worst_kb = @max(worst_kb, out.items.len / 1024);
+            if (first_ok == null and ps >= steady - 1.0) first_ok = f - 30;
+            if (f < 40) sum_after += ps;
+        }
+        if (f >= 29 and f < 42) std.debug.print("  quadro {d:>2}: {d:>5.1} dB, {d:>4} KB ({d:>4.0} ms no fio)\n", .{ f, ps, out.items.len / 1024, @as(f64, @floatFromInt(out.items.len * 8)) * 1000 / @as(f64, @floatFromInt(bitrate)) });
+    }
+    std.debug.print("  antes {d:.1} dB | maior quadro depois da troca {d} KB ({d:.0} ms no fio) | média dos 10 seguintes {d:.1} dB | nítido de novo em {?d} quadros\n", .{
+        steady, worst_kb, @as(f64, @floatFromInt(worst_kb * 1024 * 8)) * 1000 / @as(f64, @floatFromInt(bitrate)), sum_after / 10, first_ok,
+    });
 }
 
 /// Qualidade x tempo de cada preset do NVENC (e do openh264), mesma taxa de bits.

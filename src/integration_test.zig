@@ -1018,6 +1018,32 @@ test "clipes: quem guarda clipes recebe IDR de vez em quando" {
     try testing.expect(sync.nowMs() - t0 >= 300);
 }
 
+test "assistir: quem começa a assistir logo depois de outro não espera o limite de 1 s pelo IDR" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+    var t = try TestClient.connect(port, "T", "", "");
+    defer t.close();
+    try t.welcome();
+    var a = try TestClient.connect(port, "A", "", "");
+    defer a.close();
+    try a.welcome();
+    var b = try TestClient.connect(port, "B", "", "");
+    defer b.close();
+    try b.welcome();
+    try liveRoom(&t, &a);
+    try t.send(try frameSeq(true, 100, 0));
+    try a.ackFrame(try a.expect(.frame));
+    // meio segundo depois do primeiro pedido, outro começa a assistir: o
+    // pedido sai na hora (antes esperava até completar 1 s do anterior)
+    sync.sleepMs(500);
+    const t0 = sync.nowMs();
+    try b.watch(t.id, 0);
+    _ = try t.expect(.keyreq);
+    try testing.expect(sync.nowMs() - t0 < 250);
+}
+
 test "sala: membro comum não expulsa ninguém; o dono sim" {
     net.init();
     const port = freshPort();

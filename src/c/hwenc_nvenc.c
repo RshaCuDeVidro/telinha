@@ -55,6 +55,7 @@ struct nvenc {
     int retained, pushed; // contexto primário retido / empurrado nessa thread
     int layers;         // camadas temporais (1 ou 2)
     int reconfig_warned; // já avisou que o driver recusou um reconfigure
+    float vbv_frames;    // VBV normal, em quadros (ver configure_rc)
     uint32_t since_idr; // quadros desde o último IDR (com 2 camadas)
     // quadros que já estão na placa (cudagl.c): registrados uma vez por buffer
     struct { uint64_t ptr; NV_ENC_REGISTERED_PTR reg; } regs[8];
@@ -83,7 +84,9 @@ static void configure_rc(nvenc *e, int bitrate) {
     // quadros esperando uma reordenação que nunca vem)
     rc->zeroReorderDelay = 1;
     // VBV de ~1 quadro: cada quadro sai sem esperar os próximos (latência mínima)
-    rc->vbvBufferSize = (uint32_t)(bitrate / (e->fps > 0 ? e->fps : 30));
+    // (TELINHA_NVENC_VBV=quadros pra medir outro valor no bench)
+    const float vf = e->vbv_frames > 0 ? e->vbv_frames : 1.0f;
+    rc->vbvBufferSize = (uint32_t)((double)bitrate * vf / (e->fps > 0 ? e->fps : 30));
     rc->vbvInitialDelay = rc->vbvBufferSize;
 }
 
@@ -256,6 +259,11 @@ nvenc *nvenc_open(int codec, int width, int height, int fps, int bitrate, int sc
 #endif
     e->cfg.gopLength = NVENC_INFINITE_GOPLENGTH;
     e->cfg.frameIntervalP = 1; // sem B-frames
+    {
+        const char *v = getenv("TELINHA_NVENC_VBV");
+        e->vbv_frames = v ? (float)atof(v) : 1.0f;
+        if (e->vbv_frames < 0.5f || e->vbv_frames > 30.0f) e->vbv_frames = 1.0f;
+    }
     configure_rc(e, bitrate);
     if (screen_mode) {
         // texto: um pouco mais de qualidade nos detalhes
