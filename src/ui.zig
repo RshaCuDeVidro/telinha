@@ -1340,6 +1340,15 @@ pub const App = struct {
             debuglog.line("  tempos {x}: entre quadros na tela {f}, decodificar {f}, captura→tela {f} | fila do decoder: aliviou {d}, jogou fora {d}", .{
                 v.stream, v.t_gap.take(), v.t_decode.take(), v.t_lat.take(), v.backlog_relieved.load(.monotonic), v.backlog_flushes.load(.monotonic),
             });
+            if (v.audio_registered) {
+                const as = v.audio_ring.takeStats();
+                var eb: [160]u8 = undefined;
+                const aerr = audio.mixer.lastError(&eb);
+                debuglog.line("  som {x}: fila {d} ms, faltou som {d}x, cortou atraso {d}x, último pacote há {d} ms | saída {s}{s}{s}", .{
+                    v.stream,                                                                                                    as.fill_ms, as.underruns, as.cuts, if (as.silent_ms == std.math.maxInt(u64)) 0 else as.silent_ms,
+                    if (audio.mixer.deaf.load(.monotonic)) "surdo" else if (audio.mixer.paused.load(.monotonic)) "parada (silêncio)" else "ligada", if (aerr.len > 0) ", último erro: " else "", aerr,
+                });
+            }
         }
         for ([_]?*Sharer{ a.sharer, a.camera }) |maybe| {
             const sh = maybe orelse continue;

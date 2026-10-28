@@ -31,6 +31,10 @@ pub const Ring = struct {
     muted: bool = false,
     level: f32 = 0, // nível recente (0..1), pra UI mostrar quem está fazendo barulho
     last_write_us: u64 = 0, // quando chegou som pela última vez
+    // log de depuração ("o som não funciona" / "picota"): desde a última leitura
+    underruns: u32 = 0, // o som acabou no meio (picote)
+    cuts: u32 = 0, // atrasou demais e jogou o excesso fora (pulo)
+    fill_samples: usize = 0, // quanto tinha na fila na última mixagem
 
     pub fn deinit(rg: *Ring) void {
         gpa.free(rg.buf);
@@ -60,6 +64,23 @@ pub const Ring = struct {
         rg.mutex.lock();
         defer rg.mutex.unlock();
         return rg.volume;
+    }
+
+    /// Pro log de depuração: quantos ms na fila, quantas vezes faltou som e
+    /// quantas cortou o excesso, desde a última vez (e zera).
+    pub const Stats = struct { fill_ms: u32, underruns: u32, cuts: u32, silent_ms: u64 };
+    pub fn takeStats(rg: *Ring) Stats {
+        rg.mutex.lock();
+        defer rg.mutex.unlock();
+        const r: Stats = .{
+            .fill_ms = @as(u32, @intCast(rg.fill_samples * 1000 / (rate * channels))),
+            .underruns = rg.underruns,
+            .cuts = rg.cuts,
+            .silent_ms = if (rg.last_write_us == 0) std.math.maxInt(u64) else (sync.nowUs() -| rg.last_write_us) / 1000,
+        };
+        rg.underruns = 0;
+        rg.cuts = 0;
+        return r;
     }
 
     /// Nível recente (zero se nada chegou nos últimos 300 ms). Não depende de
@@ -115,14 +136,19 @@ pub const Ring = struct {
             const drop = rg.len - target_samples;
             rg.r = (rg.r + drop) % rg.buf.len;
             rg.len -= drop;
+            rg.cuts += 1;
         }
+        rg.fill_samples = rg.len;
         const n = @min(rg.len, out.len);
         const cap = rg.buf.len;
         for (0..n) |i| out[i] += rg.buf[(rg.r + i) % cap] * gain;
         rg.r = (rg.r + n) % cap;
         rg.len -= n;
         // acabou o áudio no meio: espera encher de novo antes de voltar a tocar
-        if (n < out.len) rg.primed = false;
+        if (n < out.len) {
+            rg.primed = false;
+            rg.underruns += 1;
+        }
     }
 };
 
