@@ -123,6 +123,7 @@ class Client:
         self._handlers: dict[str, list[Callable[..., Awaitable[None]]]] = {e: [] for e in EVENTS}
         self._conn: Connection | None = None
         self._stopping = False
+        self._rejoin_call = ""
         self._ready_ev: asyncio.Event | None = None
         self._next_req = 1
         self._file_ready: dict[int, asyncio.Future] = {}
@@ -237,13 +238,16 @@ class Client:
     async def _session(self) -> None:
         conn = await race(self.invite)
         self._conn = conn
+        # reconectando: volta pro canal e pra call em que estava (não pros do convite)
+        want = self.channel or self.want_channel
+        self._rejoin_call = self.call
         try:
             await secure(conn, self.invite, self.password)
             self.fingerprint = conn.fingerprint
             await conn.send(
                 Writer(MsgType.HELLO).str(self.name, 32).str("").u64(self.key).str(f"sdk-python/{SDK_VERSION}")
-                .u8(1).u8(wire.FEAT_BOT | wire.FEAT_DM | wire.FEAT_CALLS | wire.FEAT_EMBED).str(self.want_channel).str(self.bot_token)
-                .str(self._channel_pw.get(self.want_channel.lstrip("#").lower(), "")).done()
+                .u8(1).u8(wire.FEAT_BOT | wire.FEAT_DM | wire.FEAT_CALLS | wire.FEAT_EMBED).str(want).str(self.bot_token)
+                .str(self._channel_pw.get(want.lstrip("#").lower(), "")).done()
             )
             self._last_rx = time.monotonic()
             pinger = asyncio.create_task(self._pinger(conn))
@@ -319,6 +323,10 @@ class Client:
             if self._stream_args:  # reconectou no meio de uma transmissão: volta a transmitir
                 w, h, fps, audio = self._stream_args
                 await self.start_stream(w, h, fps, audio=audio)
+            if self._rejoin_call:
+                t = asyncio.create_task(self._rejoin(self._rejoin_call))
+                self._tasks.add(t)
+                t.add_done_callback(self._tasks.discard)
             log.info("dentro da sala %r como %s (id %d)", self.room, self.name, self.me)
             self._ready.set()
             await self._emit("ready", self.welcome)
@@ -554,6 +562,8 @@ class Client:
         """Troca o canal de texto (o chat). Cria se não existir e o servidor deixar."""
         if password:
             self._channel_pw[name.lstrip("#").lower()] = password
+        else:  # a senha que já valeu (conexão nova depois de cair não lembra dela)
+            password = self._channel_pw.get(name.lstrip("#").lower(), "")
         await self._switch_pause()
         await self._send(Writer(MsgType.CHANNEL).str(name).str(password).done())
 
@@ -561,8 +571,18 @@ class Client:
         """Entra na call (voz) de um canal. Vazio = sai da call."""
         if password:
             self._channel_pw[name.lstrip("#").lower()] = password
+        else:  # a senha que já valeu (conexão nova depois de cair não lembra dela)
+            password = self._channel_pw.get(name.lstrip("#").lower(), "")
         await self._switch_pause()
         await self._send(Writer(MsgType.CALL).str(name).str(password).done())
+
+    async def _rejoin(self, call: str) -> None:
+        # a call de antes de cair (o hello só leva o canal de texto)
+        try:
+            if self.call != call:
+                await self.join_call(call)
+        except (ConnectError, OSError):
+            pass
 
     async def _switch_pause(self) -> None:
         # o servidor aceita uma troca (canal ou call) a cada 800 ms: espera o que faltar

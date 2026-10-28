@@ -517,6 +517,17 @@ class SdkTest(unittest.IsolatedAsyncioTestCase):
         com._conn.writer.transport.abort()  # cai a conexão: o SDK reconecta
         await until(lambda: com.me != old_id and com.me in dono.members, 15, "reconectar")
         await until(lambda: com.channel == "zika", what="voltar pro canal com senha")
+        # o canal e a call de agora (não os do convite) voltam depois de cair
+        await asyncio.sleep(0.9)
+        await com.join_channel("geral")
+        await until(lambda: com.channel == "geral", what="trocar de canal")
+        await asyncio.sleep(0.9)
+        await com.join_call("zika")
+        await until(lambda: com.call == "zika", what="entrar na call com a senha")
+        old_id = com.me
+        com._conn.writer.transport.abort()
+        await until(lambda: com.me != old_id and com.me in dono.members, 15, "reconectar de novo")
+        await until(lambda: com.channel == "geral" and com.call == "zika", what="voltar pro canal e pra call de antes")
         await asyncio.sleep(0.9)
         await outra.join_channel("zika", "abc")
         await until(lambda: outra.channel == "zika", what="a outra janela entrar com a senha")
