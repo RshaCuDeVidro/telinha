@@ -103,6 +103,7 @@ struct mfenc {
     ICodecAPI *codec;
     int w, h, fps;
     int need_input; // pedidos de entrada ainda não atendidos
+    int out_late; // quadros cuja saída não veio no prazo (log de depuração)
     int provides_samples;
     DWORD out_size;
     LONGLONG ts; // 100 ns
@@ -474,7 +475,19 @@ static int submit(struct mfenc *e, IMFSample *sample, int force_idr, const uint8
             e->need_input--;
             if (FAILED(IMFTransform_ProcessInput(e->mft, 0, sample, 0))) rc = -1;
         }
-        if (rc == 0 && e->out_len == 0 && pump(e, EVENT_HAVE_OUTPUT, 1000) < 0) rc = -1;
+        if (rc == 0 && e->out_len == 0) {
+            // a saída deste quadro: até 4 períodos (mín. 40 ms). Esperar 1 s
+            // segurava a transmissão inteira quando o encoder da placa atrasava
+            // um quadro; o que vier depois sai junto com o próximo
+            const int wait = 4000 / e->fps < 40 ? 40 : 4000 / e->fps;
+            const int r = pump(e, EVENT_HAVE_OUTPUT, wait);
+            if (r < 0) rc = -1;
+            else if (r == 0 && e->out_len == 0) {
+                e->out_late++;
+                if ((e->out_late & (e->out_late - 1)) == 0 && getenv("TELINHA_DEBUG"))
+                    fprintf(stderr, "[telinha] Media Foundation: a saída do quadro não veio em %d ms (%d vezes)\n", wait, e->out_late);
+            }
+        }
     } else {
         // síncrono: entrega e tira tudo o que sair
         if (FAILED(IMFTransform_ProcessInput(e->mft, 0, sample, 0))) rc = -1;

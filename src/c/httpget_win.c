@@ -13,6 +13,14 @@ int http_get(const char *url, char *out, int cap) {
     return http_get_h(url, "Accept: application/vnd.github+json\r\n", out, cap);
 }
 
+// Proxy do sistema (o das configurações do Windows, com PAC/WPAD) no 8.1+;
+// o DEFAULT_PROXY só vê o do netsh, e atrás de proxy corporativo nada saía.
+static HINTERNET open_winhttp(void) {
+    HINTERNET s = WinHttpOpen(L"telinha", 4 /* WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY */, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!s) s = WinHttpOpen(L"telinha", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    return s;
+}
+
 // Igual, com outros cabeçalhos ("" = nenhum).
 int http_get_h(const char *url, const char *headers, char *out, int cap) {
     WCHAR wurl[512];
@@ -27,7 +35,7 @@ int http_get_h(const char *url, const char *headers, char *out, int cap) {
     uc.dwUrlPathLength = 512;
     if (!WinHttpCrackUrl(wurl, 0, 0, &uc)) return -1;
     int n = -1;
-    HINTERNET s = WinHttpOpen(L"telinha", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    HINTERNET s = open_winhttp();
     HINTERNET c = NULL, r = NULL;
     if (!s) goto done;
     WinHttpSetTimeouts(s, 10000, 10000, 10000, 15000);

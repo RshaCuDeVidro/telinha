@@ -19,6 +19,7 @@
 #include <mfidl.h>
 #include <mftransform.h>
 #include <icodecapi.h>
+#include <mmsystem.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -84,6 +85,8 @@ typedef struct mfdec {
     IMFDXGIDeviceManager *mgr;
     ID3D11Texture2D *staging; // cópia da saída que a CPU consegue ler
     D3D11_TEXTURE2D_DESC st;
+    ID3D11Query *done_q; // avisa quando a cópia pro staging terminou
+    int hires; // pediu o timer de 1 ms (timeBeginPeriod) pra esperar a placa
     int gpu; // o decoder aceitou a placa (saída em textura)
     int allow_sw;
     // quadros desde o último SPS ([u32 tamanho][dados]...), pra recomeçar
@@ -116,6 +119,8 @@ static void release_mft(mfdec *d);
 void mfdec_close(mfdec *d) {
     if (!d) return;
     release_mft(d);
+    if (d->done_q) ID3D11Query_Release(d->done_q);
+    if (d->hires) timeEndPeriod(1);
     if (d->staging) ID3D11Texture2D_Release(d->staging);
     if (d->mgr) IMFDXGIDeviceManager_Release(d->mgr);
     if (d->ctx) ID3D11DeviceContext_Release(d->ctx);
@@ -344,6 +349,29 @@ static void pack(mfdec *d, const uint8_t *y, int ypitch, const uint8_t *uv, int 
     for (int r = 0; r < h / 2; r++) memcpy(duv + (size_t)r * w, uv + (ptrdiff_t)(d->cy / 2 + r) * uvpitch + d->cx, w);
 }
 
+// Espera a placa terminar o decode e a cópia antes do Map. O Map com espera
+// fica a cargo do driver, e alguns dormem em degraus do timer do Windows
+// (~16 ms sem timeBeginPeriod): "decode_ms" pulando de 16 em 16 = engasgo
+// assistindo. Aqui: evento na fila + Sleep(1) com o timer de 1 ms (só
+// enquanto este decoder existe), até 50 ms; depois disso o Map espera.
+static void wait_gpu(mfdec *d) {
+    if (!d->done_q) {
+        D3D11_QUERY_DESC qd = {D3D11_QUERY_EVENT, 0};
+        if (FAILED(ID3D11Device_CreateQuery(d->dev, &qd, &d->done_q))) d->done_q = NULL;
+        if (!d->done_q) return;
+    }
+    if (!d->hires) d->hires = timeBeginPeriod(1) == TIMERR_NOERROR;
+    ID3D11DeviceContext_End(d->ctx, (ID3D11Asynchronous *)d->done_q);
+    ID3D11DeviceContext_Flush(d->ctx);
+    const ULONGLONG t0 = GetTickCount64();
+    for (;;) {
+        BOOL done = FALSE;
+        HRESULT hr = ID3D11DeviceContext_GetData(d->ctx, (ID3D11Asynchronous *)d->done_q, &done, sizeof done, D3D11_ASYNC_GETDATA_DONOTFLUSH);
+        if (FAILED(hr) || (hr == S_OK && done) || GetTickCount64() - t0 > 50) return;
+        Sleep(1);
+    }
+}
+
 // Textura da placa → staging → memória. 0 = ok.
 static int copy_texture(mfdec *d, IMFDXGIBuffer *db) {
     ID3D11Texture2D *tex = NULL;
@@ -375,6 +403,7 @@ static int copy_texture(mfdec *d, IMFDXGIBuffer *db) {
     }
     // o decoder entrega uma fatia de um array de texturas
     ID3D11DeviceContext_CopySubresourceRegion(d->ctx, (ID3D11Resource *)d->staging, 0, 0, 0, 0, (ID3D11Resource *)tex, sub, NULL);
+    wait_gpu(d);
     D3D11_MAPPED_SUBRESOURCE m;
     if (FAILED(ID3D11DeviceContext_Map(d->ctx, (ID3D11Resource *)d->staging, 0, D3D11_MAP_READ, 0, &m))) goto done;
     const uint8_t *p = m.pData;

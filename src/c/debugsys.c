@@ -249,6 +249,14 @@ int dbg_sysinfo(char *out, int cap) {
     return n;
 }
 
+// Proxy do sistema (o das configurações do Windows, com PAC/WPAD) no 8.1+;
+// o DEFAULT_PROXY só vê o do netsh, e atrás de proxy corporativo nada saía.
+static HINTERNET open_winhttp(void) {
+    HINTERNET s = WinHttpOpen(L"telinha", 4 /* WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY */, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!s) s = WinHttpOpen(L"telinha", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    return s;
+}
+
 // Manda `path` num POST multipart (campo `field`; `content` vai junto como
 // texto, pro Discord). Resposta em `out`. Retorna o código HTTP, ou -1.
 int dbg_http_post_file(const char *url, const char *path, const char *field, const char *filename, const char *content, char *out, int cap) {
@@ -297,7 +305,7 @@ int dbg_http_post_file(const char *url, const char *path, const char *field, con
     int code = -1;
     HINTERNET s = NULL, c = NULL, r = NULL;
     if (!WinHttpCrackUrl(wurl, 0, 0, &uc)) goto done;
-    s = WinHttpOpen(L"telinha", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    s = open_winhttp();
     if (!s) goto done;
     WinHttpSetTimeouts(s, 15000, 15000, 300000, 300000);
     c = WinHttpConnect(s, host, uc.nPort, 0);

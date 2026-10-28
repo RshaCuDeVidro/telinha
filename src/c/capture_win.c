@@ -71,6 +71,12 @@ struct cap_ctx {
     HBITMAP cur_dib;
     uint8_t *cur_bits;
     int cur_size;
+    // seta pintada direto no c->clean (DXGI pela CPU): o que estava embaixo,
+    // devolvido no começo da próxima chamada
+    uint8_t *cur_save;
+    int cur_saved, cur_sx, cur_sy, cur_sw, cur_sh;
+    HCURSOR cur_handle; // o ponto quente do último cursor (GetIconInfo cria 2 bitmaps por chamada)
+    int cur_hx, cur_hy;
 };
 
 static void set_err(char *err, int errlen, const char *msg, long code) {
@@ -265,18 +271,33 @@ out:
 // Cursor: copia o pedaço da tela pra um DIB pequeno, DrawIconEx por cima e copia de volta.
 // Funciona com qualquer tipo de cursor (colorido, monocromático, animado).
 
-static void draw_cursor(struct cap_ctx *c, uint8_t *buf, cap_frame *out) {
+// Devolve o que estava embaixo da seta pintada no c->clean (draw_cursor com save).
+static void cursor_restore(struct cap_ctx *c) {
+    if (!c->cur_saved) return;
+    c->cur_saved = 0;
+    if (c->cur_sx < 0 || c->cur_sy < 0 || c->cur_sx + c->cur_sw > c->w || c->cur_sy + c->cur_sh > c->h) return;
+    for (int y = 0; y < c->cur_sh; y++)
+        memcpy(c->clean + ((size_t)(c->cur_sy + y) * c->w + c->cur_sx) * 4, c->cur_save + (size_t)y * c->cur_sw * 4, (size_t)c->cur_sw * 4);
+}
+
+// `save`: buf é o c->clean; guarda o pedaço de baixo pra cursor_restore.
+static void draw_cursor(struct cap_ctx *c, uint8_t *buf, cap_frame *out, int save) {
     CURSORINFO ci = {.cbSize = sizeof ci};
     out->cursor_known = 0;
     if (!GetCursorInfo(&ci) || !(ci.flags & CURSOR_SHOWING) || !ci.hCursor) return;
     out->cursor_known = 1;
     out->cursor_px = ci.ptScreenPos.x - c->rc.left;
     out->cursor_py = ci.ptScreenPos.y - c->rc.top;
-    ICONINFO ii;
-    if (!GetIconInfo(ci.hCursor, &ii)) return;
-    int hx = (int)ii.xHotspot, hy = (int)ii.yHotspot;
-    if (ii.hbmMask) DeleteObject(ii.hbmMask);
-    if (ii.hbmColor) DeleteObject(ii.hbmColor);
+    if (ci.hCursor != c->cur_handle) {
+        ICONINFO ii;
+        if (!GetIconInfo(ci.hCursor, &ii)) return;
+        c->cur_handle = ci.hCursor;
+        c->cur_hx = (int)ii.xHotspot;
+        c->cur_hy = (int)ii.yHotspot;
+        if (ii.hbmMask) DeleteObject(ii.hbmMask);
+        if (ii.hbmColor) DeleteObject(ii.hbmColor);
+    }
+    int hx = c->cur_hx, hy = c->cur_hy;
 
     if (!c->cur_dc) {
         c->cur_size = GetSystemMetrics(SM_CXCURSOR) * 2;
@@ -309,6 +330,20 @@ static void draw_cursor(struct cap_ctx *c, uint8_t *buf, cap_frame *out) {
     GdiFlush();
     DrawIconEx(c->cur_dc, 0, 0, ci.hCursor, 0, 0, 0, NULL, DI_NORMAL);
     GdiFlush();
+    if (save) {
+        // o retângulo dentro da tela (o resto do quadrado não é escrito)
+        int sx0 = x0 < 0 ? 0 : x0, sy0 = y0 < 0 ? 0 : y0;
+        int sx1 = x0 + s > c->w ? c->w : x0 + s, sy1 = y0 + s > c->h ? c->h : y0 + s;
+        if (!c->cur_save) c->cur_save = malloc((size_t)s * s * 4);
+        if (!c->cur_save) return;
+        c->cur_sx = sx0;
+        c->cur_sy = sy0;
+        c->cur_sw = sx1 - sx0;
+        c->cur_sh = sy1 - sy0;
+        for (int y = 0; y < c->cur_sh; y++)
+            memcpy(c->cur_save + (size_t)y * c->cur_sw * 4, buf + ((size_t)(sy0 + y) * c->w + sx0) * 4, (size_t)c->cur_sw * 4);
+        c->cur_saved = 1;
+    }
     for (int y = 0; y < s; y++) {
         int sy = y0 + y;
         if (sy < 0 || sy >= c->h) continue;
@@ -858,6 +893,8 @@ static int next_dxgi(struct cap_ctx *c, cap_frame *out, int timeout_ms, char *er
         out->height = c->h;
         return moved ? 2 : 0;
     }
+    // a seta pintada no quadro anterior sai antes de qualquer coisa ler ou escrever o c->clean
+    cursor_restore(c);
     // pela CPU, depois de um tempo pela placa: o último quadro está lá, não no c->clean
     if (c->gpu && c->gpu->clean_stale && c->gpu->tex && c->gpu->have) {
         if (copy_to_clean(c, c->gpu->tex)) c->redeliver = 1;
@@ -926,10 +963,11 @@ static int next_dxgi(struct cap_ctx *c, cap_frame *out, int timeout_ms, char *er
     if (fi.LastMouseUpdateTime.QuadPart != 0 && c->show_cursor) changed = 1;
     if (!changed) return 0;
 
-    memcpy(c->out, c->clean, (size_t)c->w * c->h * 4);
+    // a seta vai direto no c->clean (o pedaço de baixo volta na próxima
+    // chamada): sem copiar a tela inteira (8 MB em 1080p) só pra pintá-la
     out->cursor_known = 0;
-    if (c->show_cursor) draw_cursor(c, c->out, out);
-    out->data = c->out;
+    if (c->show_cursor) draw_cursor(c, c->clean, out, 1);
+    out->data = c->clean;
     out->width = c->w;
     out->height = c->h;
     out->stride = c->w * 4;
@@ -965,7 +1003,7 @@ static int next_gdi(struct cap_ctx *c, cap_frame *out, char *err, int errlen) {
     memcpy(c->out, c->dib_bits, (size_t)c->w * c->h * 4);
     out->cursor_known = 0;
     if (c->show_cursor && c->cursor_apart) cursor_pos(c, out);
-    else if (c->show_cursor) draw_cursor(c, c->out, out);
+    else if (c->show_cursor) draw_cursor(c, c->out, out, 0);
     out->data = c->out;
     out->width = c->w;
     out->height = c->h;
@@ -1360,7 +1398,7 @@ static int next_print(struct cap_ctx *c, cap_frame *out, char *err, int errlen) 
     if (c->show_cursor) {
         c->rc = r; // o cursor é desenhado relativo à janela
         if (c->cursor_apart) cursor_pos(c, out);
-        else draw_cursor(c, c->out, out);
+        else draw_cursor(c, c->out, out, 0);
     }
     out->data = c->out;
     out->width = c->w;
@@ -1482,6 +1520,7 @@ void cap_close(cap_ctx *c) {
     close_gdi(c);
     if (c->cur_dib) DeleteObject(c->cur_dib);
     if (c->cur_dc) DeleteDC(c->cur_dc);
+    free(c->cur_save);
     free(c->clean);
     free(c->out);
     free(c);

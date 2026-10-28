@@ -1340,6 +1340,7 @@ const Pipeline = struct {
         var enc: ?Encoder = null;
         defer if (enc) |*e| e.deinit();
         var enc_gen: u32 = std.math.maxInt(u32);
+        var enc_d3d: ?*anyopaque = null; // a textura (Windows) que o encoder recebe; null = pela CPU
         var out: std.ArrayList(u8) = .empty;
         defer out.deinit(gpa);
         var msg: proto.Builder = .{};
@@ -1373,6 +1374,7 @@ const Pipeline = struct {
         var redo_us: u64 = 0;
         var enc_quality: u8 = 0;
         var hw_errs: u8 = 0; // erros seguidos do encoder da placa
+        var hw_renews: u8 = 0; // encoder da placa recriado depois de falhar (até 2 por transmissão)
         // o ritmo de verdade dos quadros codificados (ver setFps)
         var real_fps: f32 = 30;
         var last_enc_us: u64 = 0;
@@ -1459,7 +1461,10 @@ const Pipeline = struct {
             // (a sala avisa: mensagem `codec`); senão H.264
             const allowed = s.client.codecs_allowed[kind].load(.acquire);
             const want_codec: codec.Codec = if (!want_hw) .h264 else if (p.av1_ok and allowed & codec.Codec.av1.bit() != 0) .av1 else if (p.hevc_ok and allowed & codec.Codec.hevc.bit() != 0) .hevc else .h264;
-            if (enc == null or enc.?.width() != sl.w or enc.?.height() != sl.h or gen != enc_gen or enc.?.isHw() != want_hw or enc.?.codecOf() != want_codec or renew) {
+            // a entrada trocou entre textura e CPU (Windows: o cursor passou a ir
+            // pintado, a placa falhou): o encoder do Media Foundation é aberto pra uma das duas
+            const want_d3d: ?*anyopaque = if (p.d3d_on.load(.acquire)) p.d3d_dev else null;
+            if (enc == null or enc.?.width() != sl.w or enc.?.height() != sl.h or gen != enc_gen or enc.?.isHw() != want_hw or enc.?.codecOf() != want_codec or renew or (enc.?.isHw() and want_d3d != enc_d3d)) {
                 if (enc) |*e| e.deinit();
                 enc = null;
                 const target = targetBitrate(sl.w, sl.h, rateFps(fps, mode, fps_auto), quality);
@@ -1474,7 +1479,7 @@ const Pipeline = struct {
                 // graça; com texto, o NVENC gasta ~3x mais bits (zig build bench
                 // com TELINHA_BENCH_CAMADAS), então lá fica uma camada só
                 const layers: u8 = if (want_hw and (mode == .screen or want_codec != .h264)) 1 else 2;
-                const opts: codec.EncoderOptions = .{ .codec = want_codec, .width = sl.w, .height = sl.h, .fps = fps, .bitrate = bw.bps, .mode = mode, .temporal_layers = layers, .d3d_device = if (p.d3d_on.load(.acquire)) p.d3d_dev else null };
+                const opts: codec.EncoderOptions = .{ .codec = want_codec, .width = sl.w, .height = sl.h, .fps = fps, .bitrate = bw.bps, .mode = mode, .temporal_layers = layers, .d3d_device = want_d3d };
                 if (want_hw) {
                     var err: [256]u8 = undefined;
                     if (codec.HwEncoder.init(opts, &err)) |h| {
@@ -1501,6 +1506,7 @@ const Pipeline = struct {
                     enc = .{ .sw = try codec.Encoder.init(opts) };
                 }
                 enc_gen = gen;
+                enc_d3d = want_d3d;
                 enc_fps = 0; // encoder novo nasce no fps nominal
                 s.mutex.lock();
                 const en = if (enc.? == .hw) enc.?.hw.name() else "openh264";
@@ -1576,6 +1582,18 @@ const Pipeline = struct {
                     p.doneWith(i, true);
                     continue;
                 }
+                if (hw_renews < 2) {
+                    // dois seguidos: um encoder novo na placa antes de desistir
+                    // dela (o Media Foundation perde o estado num soluço do driver)
+                    hw_renews += 1;
+                    hw_errs = 0;
+                    if (debugEnabled()) std.debug.print("[telinha] encoder em hardware ({s}) falhou de novo: {s}; recriando ({d}/2)\n", .{ enc.?.hw.name(), @errorName(e), hw_renews });
+                    enc.?.deinit();
+                    enc = null;
+                    s.client.keyreq[kind].store(true, .release);
+                    p.doneWith(i, true);
+                    continue;
+                }
                 if (debugEnabled()) std.debug.print("[telinha] encoder em hardware ({s}) falhou no meio: {s}; seguindo em software\n", .{ enc.?.hw.name(), @errorName(e) });
                 // erro no NVENC no meio da transmissão: cai pro software
                 enc.?.deinit();
@@ -1590,6 +1608,12 @@ const Pipeline = struct {
                 continue;
             };
             hw_errs = 0;
+            // encoder assíncrono (Media Foundation) que não entregou este quadro
+            // no prazo: nada a mandar agora, a saída vai junto com a do próximo
+            if (out.items.len == 0) {
+                p.doneWith(i, true);
+                continue;
+            }
             // cada IDR conta (o log mostra o resumo); só o estranho vira linha
             if (key and is_key) _ = (if (clip_key) &s.idr_clip else &s.idr_room).fetchAdd(1, .monotonic);
             if (key and !is_key and debugEnabled()) std.debug.print("[telinha] IDR pedido, mas o encoder fez um P ({d} bytes)\n", .{out.items.len});

@@ -45,6 +45,14 @@ int upd_can_write(const char *dir) {
     return 1;
 }
 
+// Proxy do sistema (o das configurações do Windows, com PAC/WPAD) no 8.1+;
+// o DEFAULT_PROXY só vê o do netsh, e atrás de proxy corporativo nada saía.
+static HINTERNET open_winhttp(void) {
+    HINTERNET s = WinHttpOpen(L"telinha", 4 /* WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY */, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!s) s = WinHttpOpen(L"telinha", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    return s;
+}
+
 int upd_download(const char *url, const char *path) {
     WCHAR wurl[1024], wpath[1100];
     if (!to_wide(url, wurl, 1024) || !to_wide(path, wpath, 1100)) return -1;
@@ -59,7 +67,7 @@ int upd_download(const char *url, const char *path) {
     if (!WinHttpCrackUrl(wurl, 0, 0, &uc)) return -1;
     int rc = -1;
     HANDLE f = INVALID_HANDLE_VALUE;
-    HINTERNET s = WinHttpOpen(L"telinha", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    HINTERNET s = open_winhttp();
     HINTERNET c = NULL, r = NULL;
     if (!s) goto done;
     WinHttpSetTimeouts(s, 15000, 15000, 30000, 60000);
