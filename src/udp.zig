@@ -260,9 +260,17 @@ pub const Endpoint = struct {
         ep.seal(wire, &b);
     }
 
+    /// Chamado entre pedaços de uma mensagem grande (a voz e o som da fila
+    /// passam na frente do resto do IDR).
+    pub const Between = struct { f: *const fn (*anyopaque) void, ctx: *anyopaque };
+
     /// Manda uma mensagem (tipo + payload, como no TCP) em pedaços, no ritmo.
     /// false = grande demais pro UDP (quem chama manda pelo TCP).
     pub fn sendMsg(ep: *Endpoint, wire: Wire, m: *proto.Msg, channel: u32) bool {
+        return ep.sendMsgEx(wire, m, channel, null);
+    }
+
+    pub fn sendMsgEx(ep: *Endpoint, wire: Wire, m: *proto.Msg, channel: u32, between: ?Between) bool {
         const plain = m.data[4..];
         const count = @max(1, (plain.len + chunk - 1) / chunk);
         if (count > max_frags) return false;
@@ -277,6 +285,9 @@ pub const Endpoint = struct {
         for (0..count) |k| {
             ep.pace(chunk + 64);
             ep.sendFrag(wire, channel, id, plain, k, count);
+            // um IDR ritmado leva centenas de ms: a voz e o som esperando na
+            // fila saem a cada 8 pedaços em vez de no fim
+            if (between) |b| if (k % 8 == 7 and k + 1 < count) b.f(b.ctx);
         }
         return true;
     }
@@ -743,10 +754,14 @@ pub const Link = struct {
 
     /// true = foi pelo UDP; false = quem chama manda pelo TCP.
     pub fn trySend(l: *Link, m: *proto.Msg) bool {
+        return l.trySendEx(m, null);
+    }
+
+    pub fn trySendEx(l: *Link, m: *proto.Msg, between: ?Endpoint.Between) bool {
         if (!l.isActive()) return false;
         const channel = channelOf(m, l.server) orelse return false;
         var a: net.UdpAddr = .{};
-        return l.ep.sendMsg(l.wire(&a), m, channel);
+        return l.ep.sendMsgEx(l.wire(&a), m, channel, between);
     }
 };
 

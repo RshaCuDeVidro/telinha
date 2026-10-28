@@ -766,6 +766,37 @@ pub const SendQueue = struct {
         return m;
     }
 
+    /// Voz ou som no começo da fila (urgentes), se tiver (não espera).
+    fn tryPopVoice(q: *SendQueue) ?*Msg {
+        q.mutex.lock();
+        defer q.mutex.unlock();
+        if (q.closed or q.head == q.items.items.len) return null;
+        const m = q.items.items[q.head];
+        if (m.typ != .voice and m.typ != .audio) return null;
+        q.head += 1;
+        if (q.head == q.items.items.len) {
+            q.head = 0;
+            q.items.clearRetainingCapacity();
+        }
+        q.bytes -= m.data.len;
+        return m;
+    }
+
+    /// Entre pedaços de um IDR pelo UDP: manda a voz e o som que chegaram.
+    const VoiceCut = struct {
+        q: *SendQueue,
+        l: *udp.Link,
+        fn run(ctx: *anyopaque) void {
+            const vc: *VoiceCut = @ptrCast(@alignCast(ctx));
+            var n: usize = 0;
+            while (n < 8) : (n += 1) {
+                const vm = vc.q.tryPopVoice() orelse break;
+                defer vm.release();
+                if (vc.l.trySend(vm)) _ = vc.q.sent_bytes.fetchAdd(vm.data.len, .monotonic);
+            }
+        }
+    };
+
     /// Próxima mensagem, se já estiver na fila e couber em `limit` (não espera).
     fn tryPop(q: *SendQueue, limit: usize) ?*Msg {
         q.mutex.lock();
@@ -822,7 +853,10 @@ pub const SendQueue = struct {
         defer out.deinit(gpa);
         while (q.pop()) |m| {
             defer m.release();
-            if (link) |lk| if (lk.load(.acquire)) |l| if (l.trySend(m)) {
+            if (link) |lk| if (lk.load(.acquire)) |l| if (blk: {
+                var vc: VoiceCut = .{ .q = q, .l = l };
+                break :blk l.trySendEx(m, if (m.data.len > 8 * udp.chunk) .{ .f = VoiceCut.run, .ctx = &vc } else null);
+            }) {
                 q.doneSending();
                 _ = q.sent_bytes.fetchAdd(m.data.len, .monotonic);
                 continue;
