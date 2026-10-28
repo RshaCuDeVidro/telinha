@@ -1,0 +1,43 @@
+<section class="hero invite">
+  <div class="wrap invite-wrap">
+    <div class="hero-kicker">{{icon:link}} invite</div>
+    <h1 class="hero-title"><span class="hero-glitch" data-text="you're invited">you're invited</span></h1>
+    <p class="hero-sub">Someone invited you to a <b>telinha</b> room: watch the gang's screens, talk and chat. The invite stays in your browser (none of it is sent to this site).</p>
+
+    <div class="invite-card corner-accent" id="inv-ok" hidden>
+      <h2>Already have telinha?</h2>
+      <div class="dl-row">
+        <a class="btn primary" id="inv-open" href="#">{{icon:play}}Open in telinha</a>
+        <button class="btn" id="inv-copy" type="button">{{icon:copy}}Copy invite</button>
+      </div>
+      <p class="dl-note">If the app doesn't open on its own: copy the invite and paste it into <b>Join a room</b> (the app notices a copied invite as soon as it opens).</p>
+      <p class="dl-note" id="inv-where"></p>
+    </div>
+
+    <div class="invite-card corner-accent" id="inv-get">
+      <h2>Don't have it yet?</h2>
+      <div class="invite-os" data-os-box="windows">
+        <p>On Windows it's a single file, nothing to install:</p>
+        <div class="dl-row"><a class="btn primary" href="{{gh}}/releases/latest/download/telinha-windows-x86_64.exe">{{icon:windows}}Download telinha <small>.exe</small></a></div>
+        <p class="dl-note">Open the <code>.exe</code> once (Windows may ask you to "Run anyway") and come back here to click <b>Open in telinha</b>.</p>
+      </div>
+      <div class="invite-os" data-os-box="linux">
+        <p>On Linux, one command (just for your user, no sudo):</p>
+        <pre class="invite-cmd"><code>curl -fsSL https://raw.githubusercontent.com/RshaCuDeVidro/telinha/main/install.sh | sh</code></pre>
+        <p class="dl-note">Then come back here and click <b>Open in telinha</b>.</p>
+      </div>
+      <div class="invite-os" data-os-box="mobile">
+        <p>There's no phone app. If the room has the watch-in-browser page, ask whoever invited you for its link (the TV button in the room copies it).</p>
+      </div>
+      <div class="invite-os" data-os-box="other">
+        <p>telinha runs on Windows and Linux. <a href="{{gh}}/releases/latest">All versions and files</a>.</p>
+      </div>
+    </div>
+
+    <div class="invite-card corner-accent" id="inv-bad" hidden>
+      <h2>This link is incomplete</h2>
+      <p>The invite after the <code>#</code> is missing. Ask whoever invited you for the link again (in the app, the <b>Invite</b> button copies it).</p>
+    </div>
+  </div>
+</section>
+<script src="{{base}}assets/invite.js"></script>

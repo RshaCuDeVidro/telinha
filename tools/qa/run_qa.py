@@ -2928,6 +2928,25 @@ def convite_na_janela_aberta():
 
 
 @test
+def convite_https():
+    """Com o site do projeto conhecido, "Convidar" copia o link https da página de convite (clicável no Discord); quem tem o app entra colando esse link (ou o telinha:// de dentro dele)."""
+    with Session("convite-https") as s:
+        p = port()
+        site = "https://exemplo.github.io/telinha/"
+        dono = s.app("dono", 91, ["--nome", "Dono", "--criar", str(p), "--senha", "pw1"], extra_env={"TELINHA_SITE": site})
+        dono.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
+        dono.click("##invite")
+        st = dono.wait(lambda st: st["clipboard"].startswith(site + "j/#i="), 3, "o link https na área de transferência")
+        link = st["clipboard"]
+        log(f"convite: {link[:90]}...")
+        from urllib.parse import unquote
+        inv = unquote(link.split("#i=", 1)[1])
+        expect(inv.startswith("telinha://") and inv.endswith("#pw1"), f"o link não leva o convite: {inv}")
+        conv = s.app("conv", 92, ["--nome", "Conv", "--entrar", link])
+        conv.wait(lambda st: st["status"] == "connected", 10, "entrar pelo link https")
+
+
+@test
 def relatorio_de_travamento():
     """O app cai (falha de memória e panic): na próxima abertura pergunta se manda o relatório; mandando, o gofile (de mentira) recebe o motivo e a pilha."""
     with Session("travou") as s:

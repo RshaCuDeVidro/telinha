@@ -30,6 +30,12 @@ Whoever joins a room with nobody live sees the three steps on the stage: call
 your friends (with the copy invite button), share your screen and, on the
 other side, they click **Watch**.
 
+The **Invite** button copies a link to the site's invite page
+(`https://…/telinha/j/#i=…`): it's clickable on Discord and in the browser, it
+opens the app for whoever has it and shows how to install for whoever doesn't.
+Inside it goes the invite itself (`telinha://…`), and what comes after the `#`
+is never sent to the site.
+
 The invite (`telinha://…`) carries every way into the room: LAN, opened port,
 IPv6 and public link. Each person joins through the fastest one that works for
 them. It also carries the server's fingerprint, so the app checks it is really
@@ -40,9 +46,11 @@ manual port forwarding, IPv6, gaming VPNs, SSH tunnels.
 
 ## Join a room
 
-Paste the invite on the home screen and click **Join**. If the invite is
-already on your clipboard when you open telinha, it's pasted for you. On Linux,
-when installed with `install.sh`, clicking a `telinha://` link opens the app.
+Paste the invite (the https link or the `telinha://` one) on the home screen
+and click **Join**. If the invite is already on your clipboard when you open
+telinha, it's pasted for you. Clicking a `telinha://` link opens the app: on
+Windows it registers itself the first time it opens, on Linux `install.sh` does
+it. With telinha already open, the link goes to the open window.
 
 You can join straight into a channel: type its name in the channel field on
 the home screen.

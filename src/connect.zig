@@ -68,6 +68,60 @@ pub const Invite = struct {
     fingerprint: ?[]const u8 = null,
 };
 
+/// O convite como link https da página de convite do site (".../j/#i=<convite
+/// codificado>"): clicável no Discord e no navegador (telinha:// não é), e a
+/// página abre o app ou ensina a instalar. O que vai depois do # nunca sai do
+/// navegador de quem clica. `site` = "https://dono.github.io/telinha/" (com a barra).
+pub fn toWebLink(site: []const u8, english: bool, invite: []const u8, buf: []u8) ?[]const u8 {
+    var w: std.Io.Writer = .fixed(buf);
+    w.print("{s}{s}j/#i=", .{ site, if (english) "en/" else "" }) catch return null;
+    for (invite) |ch| {
+        if (std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '.' or ch == '_' or ch == '~') {
+            w.writeByte(ch) catch return null;
+        } else w.print("%{X:0>2}", .{ch}) catch return null;
+    }
+    return w.buffered();
+}
+
+/// O contrário: link da página de convite → "telinha://..." (null = não é um).
+pub fn fromWebLink(text: []const u8, buf: []u8) ?[]const u8 {
+    const s = std.mem.trim(u8, text, " \t\r\n");
+    if (!std.mem.startsWith(u8, s, "https://")) return null;
+    const at = std.mem.indexOf(u8, s, "/j/#i=") orelse return null;
+    const enc = s[at + "/j/#i=".len ..];
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < enc.len) : (n += 1) {
+        if (n >= buf.len) return null;
+        if (enc[i] == '%' and i + 2 < enc.len) {
+            buf[n] = std.fmt.parseInt(u8, enc[i + 1 .. i + 3], 16) catch return null;
+            i += 3;
+        } else {
+            buf[n] = enc[i];
+            i += 1;
+        }
+    }
+    const out = buf[0..n];
+    return if (std.mem.startsWith(u8, out, "telinha://")) out else null;
+}
+
+test "convite como link https e de volta" {
+    const inv = "telinha://1.2.3.4:7777,[2001:db8::1]:7777/canal!abcdefghijklmnopqrstuvwx#s3nh@ #x";
+    var b1: [400]u8 = undefined;
+    const link = toWebLink("https://dono.github.io/telinha/", false, inv, &b1).?;
+    try std.testing.expect(std.mem.startsWith(u8, link, "https://dono.github.io/telinha/j/#i=telinha%3A%2F%2F1.2.3.4%3A7777"));
+    try std.testing.expect(std.mem.indexOfScalar(u8, link["https://".len..], '#').? == "dono.github.io/telinha/j/".len);
+    var b2: [400]u8 = undefined;
+    try std.testing.expectEqualStrings(inv, fromWebLink(link, &b2).?);
+    const en = toWebLink("https://dono.github.io/telinha/", true, inv, &b1).?;
+    try std.testing.expect(std.mem.indexOf(u8, en, "/en/j/#i=") != null);
+    try std.testing.expectEqualStrings(inv, fromWebLink(en, &b2).?);
+    // outra coisa não vira convite
+    try std.testing.expect(fromWebLink("https://exemplo.com/j/#i=oi", &b2) == null);
+    try std.testing.expect(fromWebLink("telinha://x:1", &b2) == null);
+    try std.testing.expect(fromWebLink("https://x/j/#i=%zz", &b2) == null);
+}
+
 pub fn splitInvite(raw: []const u8) Invite {
     var s = std.mem.trim(u8, raw, " \t\r\n");
     if (std.mem.startsWith(u8, s, "telinha://")) s = s["telinha://".len..];

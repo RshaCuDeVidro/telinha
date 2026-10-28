@@ -1,0 +1,43 @@
+<section class="hero invite">
+  <div class="wrap invite-wrap">
+    <div class="hero-kicker">{{icon:link}} convite</div>
+    <h1 class="hero-title"><span class="hero-glitch" data-text="te chamaram">te chamaram</span></h1>
+    <p class="hero-sub">Alguém te chamou pra uma sala do <b>telinha</b>: assistir a tela da galera, falar e conversar. O convite fica só no seu navegador (nada dele é enviado pra este site).</p>
+
+    <div class="invite-card corner-accent" id="inv-ok" hidden>
+      <h2>Já tem o telinha?</h2>
+      <div class="dl-row">
+        <a class="btn primary" id="inv-open" href="#">{{icon:play}}Abrir no telinha</a>
+        <button class="btn" id="inv-copy" type="button">{{icon:copy}}Copiar convite</button>
+      </div>
+      <p class="dl-note">Se o app não abrir sozinho: copie o convite e cole no campo <b>Entrar numa sala</b> (o app percebe o convite copiado assim que abre).</p>
+      <p class="dl-note" id="inv-where"></p>
+    </div>
+
+    <div class="invite-card corner-accent" id="inv-get">
+      <h2>Ainda não tem?</h2>
+      <div class="invite-os" data-os-box="windows">
+        <p>No Windows é um arquivo só, sem instalar nada:</p>
+        <div class="dl-row"><a class="btn primary" href="{{gh}}/releases/latest/download/telinha-windows-x86_64.exe">{{icon:windows}}Baixar o telinha <small>.exe</small></a></div>
+        <p class="dl-note">Abra o <code>.exe</code> uma vez (o Windows pode pedir "Executar assim mesmo") e volte aqui pra clicar em <b>Abrir no telinha</b>.</p>
+      </div>
+      <div class="invite-os" data-os-box="linux">
+        <p>No Linux, um comando (só pro seu usuário, sem sudo):</p>
+        <pre class="invite-cmd"><code>curl -fsSL https://raw.githubusercontent.com/RshaCuDeVidro/telinha/main/install.sh | sh</code></pre>
+        <p class="dl-note">Depois volte aqui e clique em <b>Abrir no telinha</b>.</p>
+      </div>
+      <div class="invite-os" data-os-box="mobile">
+        <p>Não tem app pra celular. Se a sala tiver a página de assistir no navegador, peça o link dela pra quem te chamou (o botão da TV na sala copia).</p>
+      </div>
+      <div class="invite-os" data-os-box="other">
+        <p>O telinha roda no Windows e no Linux. <a href="{{gh}}/releases/latest">Todas as versões e arquivos</a>.</p>
+      </div>
+    </div>
+
+    <div class="invite-card corner-accent" id="inv-bad" hidden>
+      <h2>Esse link está incompleto</h2>
+      <p>Faltou o convite depois do <code>#</code>. Peça o link de novo pra quem te chamou (no app, o botão <b>Convidar</b> copia).</p>
+    </div>
+  </div>
+</section>
+<script src="{{base}}assets/invite.js"></script>

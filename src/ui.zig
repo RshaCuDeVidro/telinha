@@ -1424,8 +1424,11 @@ pub const App = struct {
     }
 
     fn joinRoom(a: *App) void {
-        // convite: telinha://endereço[,endereço...]#senha (ou só o endereço)
-        const raw = std.mem.trim(u8, config.getStr(&a.cfg.join_addr), " \t");
+        // convite: telinha://endereço[,endereço...]#senha (ou só o endereço),
+        // ou o link https da página de convite
+        var wb: [1024]u8 = undefined;
+        const raw0 = std.mem.trim(u8, config.getStr(&a.cfg.join_addr), " \t");
+        const raw = connect_mod.fromWebLink(raw0, &wb) orelse raw0;
         const inv = connect_mod.splitInvite(raw);
         if (inv.password) |pw| config.setStr(&a.cfg.join_pass, pw);
         if (inv.channel) |ch| config.setStr(&a.cfg.join_channel, ch);
@@ -2964,11 +2967,14 @@ pub const App = struct {
         a.home_seen = true;
         const raw: [*c]const u8 = c.glfwGetClipboardString(a.window);
         if (raw == null) return;
-        const txt = std.mem.trim(u8, std.mem.span(raw), " \t\r\n");
-        if (!std.mem.startsWith(u8, txt, "telinha://") or txt.len > a.pasted.len) return;
-        if (std.mem.eql(u8, txt, a.pasted[0..a.pasted_len])) return; // esse já foi colado
-        @memcpy(a.pasted[0..txt.len], txt);
-        a.pasted_len = txt.len;
+        const board = std.mem.trim(u8, std.mem.span(raw), " \t\r\n");
+        // o link https da página de convite também vale
+        var db: [1024]u8 = undefined;
+        const txt = connect_mod.fromWebLink(board, &db) orelse board;
+        if (!std.mem.startsWith(u8, txt, "telinha://") or board.len > a.pasted.len) return;
+        if (std.mem.eql(u8, board, a.pasted[0..a.pasted_len])) return; // esse já foi colado
+        @memcpy(a.pasted[0..board.len], board);
+        a.pasted_len = board.len;
         a.takeInvite(txt);
         a.home_error_len = 0;
         a.paste_hint_until = c.igGetTime() + 8;
@@ -5542,12 +5548,25 @@ pub const App = struct {
             std.fmt.bufPrintZ(&buf, "telinha://{s}{s}{s}#{s}", .{ addrs, chan, fp, pass })
         else
             std.fmt.bufPrintZ(&buf, "telinha://{s}{s}{s}", .{ addrs, chan, fp })) catch return;
-        c.igSetClipboardText(inv.ptr);
+        // link https da página de convite do site (clicável no Discord; abre o
+        // app ou ensina a instalar); sem site conhecido, o telinha:// mesmo
+        var sb: [200]u8 = undefined;
+        var lb: [2400]u8 = undefined;
+        var as_link = false;
+        if (inviteSite(&sb)) |site| {
+            if (connect_mod.toWebLink(site, i18n.english(), inv, lb[0 .. lb.len - 1])) |link| {
+                lb[link.len] = 0;
+                c.igSetClipboardText(@ptrCast(&lb));
+                as_link = true;
+            } else c.igSetClipboardText(inv.ptr);
+        } else c.igSetClipboardText(inv.ptr);
         const n_paths = std.mem.count(u8, addrs, ",") + 1;
         if (!a.inviteReachesOutside())
             a.toast("Convite copiado, mas só funciona na mesma rede. Pra galera de fora: link público ou porta no roteador.", .{}, true)
         else if (n_paths > 1)
             a.toast("Convite copiado ({d} caminhos: cada um entra pelo mais rápido que funcionar).", .{n_paths}, false)
+        else if (as_link)
+            a.toast("Convite copiado! O link abre o telinha (ou mostra como instalar).", .{}, false)
         else
             a.toast("Convite copiado! Quem receber cola no campo de endereço.", .{}, false);
     }
@@ -10773,6 +10792,24 @@ fn uiCap(cfg: *const config.Config) u64 {
 /// aviso sumindo), em segundos de igGetTime. O loop principal dorme até lá
 /// (ou até um evento) em vez de redesenhar todo quadro. Só a thread da UI mexe.
 pub var redraw_at: f64 = std.math.inf(f64);
+
+/// O site do projeto (a página de convite fica nele): do repositório do build
+/// ("dono/nome" → https://dono.github.io/nome/), ou TELINHA_SITE (testes, site
+/// próprio). null = sem site (o convite vai como telinha://).
+fn inviteSite(buf: []u8) ?[]const u8 {
+    if (std.c.getenv("TELINHA_SITE")) |e| {
+        const s = std.mem.span(e);
+        return if (s.len > 0 and s.len < buf.len) std.fmt.bufPrint(buf, "{s}", .{s}) catch null else null;
+    }
+    const repo = build_options.repo;
+    const sl = std.mem.indexOfScalar(u8, repo, '/') orelse return null;
+    if (sl == 0 or sl + 1 >= repo.len) return null;
+    var w: std.Io.Writer = .fixed(buf);
+    w.writeAll("https://") catch return null;
+    for (repo[0..sl]) |ch| w.writeByte(std.ascii.toLower(ch)) catch return null;
+    w.print(".github.io/{s}/", .{repo[sl + 1 ..]}) catch return null;
+    return w.buffered();
+}
 
 /// Pede um redesenho daqui a `secs` (o mais cedo dos pedidos vale).
 pub fn redrawIn(secs: f64) void {

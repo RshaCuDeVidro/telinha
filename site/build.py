@@ -544,6 +544,20 @@ def build(out):
         page += f'\n<main class="home" id="conteudo">\n{content}\n</main>\n' + footer(lang, base)
         write(os.path.join(out, path, "index.html"), page)
 
+    # 3b) página de convite (/j/#i=...): o link que o app copia no "Convidar"
+    for lang in LANGS:
+        path = ("" if lang == "pt" else "en/") + "j/"
+        base = "../" * path.count("/")
+        content = read(f"site/invite.{lang}.html")
+        content = re.sub(r"\{\{icon:([a-z-]+)\}\}", lambda m: icon(m.group(1)), content)
+        content = content.replace("{{base}}", base).replace("{{gh}}", GH)
+        title = "convite" if lang == "pt" else "invite"
+        desc = ("Te chamaram pra uma sala do telinha: abra no app ou veja como instalar." if lang == "pt"
+                else "You're invited to a telinha room: open it in the app or see how to install.")
+        page = head(lang, title, desc, base, path, '\n<meta name="robots" content="noindex">') + header(lang, base, "", path)
+        page += f'\n<main class="home" id="conteudo">\n{content}\n</main>\n' + footer(lang, base)
+        write(os.path.join(out, path, "index.html"), page)
+
     # 4) arquivos: estilo, fontes, imagens, busca, 404, sitemap
     shutil.copytree(os.path.join(HERE, "assets"), os.path.join(out, "assets"))
     for f in ("icon.png", "telinha.svg"):

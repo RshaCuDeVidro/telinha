@@ -778,3 +778,10 @@ a.article-card:hover { transform: translateY(-2px); }
   .docs-shell { display: block; }
   body::before, body::after { display: none !important; }
 }
+
+/* página de convite (/j/) */
+.invite-wrap { max-width: 760px; }
+.invite-card { margin-top: 22px; padding: 20px 22px; border: 1px solid var(--border, #2a2440); border-radius: 10px; background: var(--bg-card, #0a050f); }
+.invite-card h2 { margin: 0 0 12px; font-size: 1.1rem; }
+.invite-card .dl-row { margin: 10px 0 6px; }
+.invite-cmd { overflow-x: auto; padding: 10px 12px; border-radius: 6px; background: rgba(0, 0, 0, 0.35); }

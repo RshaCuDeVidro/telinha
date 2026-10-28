@@ -30,6 +30,12 @@ Quem entra numa sala sem ninguém ao vivo vê no palco os três passos: chamar a
 galera (com o botão de copiar o convite), compartilhar a tela e, do outro
 lado, a galera clica em **Assistir**.
 
+O botão **Convidar** copia um link da página de convite do site
+(`https://…/telinha/j/#i=…`): ele é clicável no Discord e no navegador, abre o
+app de quem já tem e mostra como instalar pra quem não tem. Dentro dele vai o
+convite em si (`telinha://…`), e o que vem depois do `#` nunca é enviado pro
+site.
+
 O convite (`telinha://…`) leva todos os caminhos até a sala: rede local, porta
 aberta, IPv6 e link público. Cada pessoa entra pelo mais rápido que funcionar
 pra ela. Ele também leva a impressão digital do servidor, então o app confere
@@ -40,9 +46,11 @@ jeitos: abrir a porta na mão, IPv6, VPN de jogo, túnel por SSH.
 
 ## Entrar numa sala
 
-Cole o convite na tela inicial e clique em **Entrar**. Se o convite já estiver
-copiado quando você abrir o telinha, ele cola sozinho. No Linux instalado pelo
-`install.sh`, clicar num link `telinha://` já abre o app.
+Cole o convite (o link https ou o `telinha://`) na tela inicial e clique em
+**Entrar**. Se o convite já estiver copiado quando você abrir o telinha, ele
+cola sozinho. Clicar num link `telinha://` abre o app: no Windows ele se
+registra sozinho ao abrir pela primeira vez, no Linux o `install.sh` registra.
+Com o telinha já aberto, o link vai pra janela aberta.
 
 Dá pra entrar direto num canal: escreva o nome dele no campo de canal da tela
 inicial.

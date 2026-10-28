@@ -32,6 +32,7 @@ test {
     _ = @import("arrow.zig");
     _ = @import("simlink.zig");
     _ = @import("trace.zig");
+    _ = @import("connect.zig");
 }
 
 fn initPool() void {
