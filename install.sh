@@ -2,7 +2,7 @@
 # Instala o telinha no Linux (só pro seu usuário, sem sudo):
 #   curl -fsSL https://raw.githubusercontent.com/RshaCuDeVidro/telinha/main/install.sh | sh
 #
-# - baixa a última versão dos Releases e confere o SHA256
+# - baixa a última versão dos Releases e confere a assinatura e o SHA256
 # - binário em ~/.local/bin/telinha
 # - atalho no menu de aplicativos, com ícone, e links telinha:// abrindo no telinha
 # - avisa se faltar alguma biblioteca do sistema (e o comando pra instalar)
@@ -53,6 +53,22 @@ BASE="${TELINHA_DOWNLOAD_URL:-https://github.com/$REPO/releases/latest/download}
 say "baixando a última versão do telinha"
 fetch "$BASE/telinha-linux-x86_64" "$TMP/telinha" || die "não consegui baixar o binário (sem internet, ou o repositório não é público?)"
 if fetch "$BASE/SHA256SUMS" "$TMP/SHA256SUMS" 2>/dev/null && command -v sha256sum >/dev/null 2>&1; then
+    # a assinatura das releases (a mesma chave que o atualizador do app confere):
+    # com o openssl 3 dá pra conferir aqui também; sem ele, fica só o SHA256
+    if fetch "$BASE/SHA256SUMS.sig" "$TMP/SHA256SUMS.sig" 2>/dev/null && command -v openssl >/dev/null 2>&1; then
+        cat > "$TMP/chave.pem" <<'CHAVE'
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAL2X97ktbR29psqdJ/K/TV6GQTbSbGgEX3lTcpNvaxjM=
+-----END PUBLIC KEY-----
+CHAVE
+        if openssl pkeyutl -verify -pubin -inkey "$TMP/chave.pem" -rawin -in "$TMP/SHA256SUMS" -sigfile "$TMP/SHA256SUMS.sig" >/dev/null 2>&1; then
+            say "assinatura da release conferida"
+        elif openssl pkeyutl -help 2>&1 | grep -q -- '-rawin'; then
+            die "a assinatura da release não confere; nada foi instalado"
+        else
+            say "openssl antigo (sem Ed25519 direto): conferindo só o SHA256"
+        fi
+    fi
     want=$(awk '$2 == "telinha-linux-x86_64" { print $1 }' "$TMP/SHA256SUMS")
     got=$(sha256sum "$TMP/telinha" | awk '{ print $1 }')
     [ -n "$want" ] && [ "$want" != "$got" ] && die "o SHA256 não bate (download corrompido?); nada foi instalado"

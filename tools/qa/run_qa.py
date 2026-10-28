@@ -2581,9 +2581,9 @@ class FakeReleases:
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{port}"
 
-    def release(self, name, tag, files, sig):
-        """Publica uma release em /name/: os arquivos, o SHA256SUMS e a assinatura dada."""
-        sums = "".join(f"{hashlib.sha256(v).hexdigest()}  {k}\n" for k, v in files.items()).encode()
+    def release(self, name, tag, files, sig, signed_tag=None):
+        """Publica uma release em /name/: os arquivos, o SHA256SUMS (com a versão, como o CI) e a assinatura dada."""
+        sums = (f"# telinha {signed_tag or tag}\n" + "".join(f"{hashlib.sha256(v).hexdigest()}  {k}\n" for k, v in files.items())).encode()
         allf = dict(files, **{"SHA256SUMS": sums, "SHA256SUMS.sig": sig(sums)})
         for k, v in allf.items():
             self.routes[f"/{name}/{k}"] = v
@@ -2599,7 +2599,7 @@ class FakeReleases:
 
 @test
 def atualizacao():
-    """Atualizador: versão nova no "GitHub" (de mentira): aviso com o que muda (o CHANGELOG da release, conferido), baixa, confere a assinatura e o sha256, troca o próprio executável e abre de novo; release com a assinatura errada não instala (só o botão da página); depois de atualizar, as novidades aparecem uma vez."""
+    """Atualizador: versão nova no "GitHub" (de mentira): aviso com o que muda (o CHANGELOG da release, conferido), baixa, confere a assinatura e o sha256, troca o próprio executável e abre de novo; release com a assinatura errada ou com os arquivos assinados de uma versão velha não instala (só o botão da página); versão que não abre volta sozinha pra de antes; depois de atualizar, as novidades aparecem uma vez."""
     with Session("atualiza") as s:
         key = os.path.join(s.base, "teste.pem")
         subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519", "-out", key], check=True, capture_output=True)
@@ -2617,6 +2617,10 @@ def atualizacao():
         fake = FakeReleases(port())
         ok_url = fake.release("ok", "v9.9.9", files, sign)
         bad_url = fake.release("ruim", "v9.9.9", files, lambda d: bytes([sign(d)[0] ^ 1]) + sign(d)[1:])
+        # os arquivos assinados de uma release velha anunciados como nova: não instala
+        old_url = fake.release("velha", "v9.9.9", files, sign, signed_tag="v1.0.0")
+        # versão nova que nem abre (glibc/processador): volta sozinho pra de agora
+        dead_url = fake.release("morta", "v9.9.9", dict(files, **{"telinha-linux-x86_64": b"#!/bin/sh\nexit 1\n"}), sign)
         new_pid = None
         try:
             # o app roda de uma cópia (é ela que vai ser trocada)
@@ -2664,6 +2668,23 @@ def atualizacao():
             b.screenshot(os.path.join(s.base, "assinatura_errada.png"))
             expect(b.find("###updgo", timeout=0.5, need=False) is None, "botão de atualizar com a assinatura errada")
             expect(hashlib.sha256(open(exe2, "rb").read()).digest() == before, "trocou o executável com a assinatura errada")
+            b.stop()
+            # release velha (assinada de verdade) anunciada como nova: não instala
+            v = s.app("v", 94, ["--nome", "Vi"], extra_env=dict(env, TELINHA_ATUALIZACAO_URL=old_url, QA_EXE=exe2), wrap=["sh", "-c", 'shift; exec "$QA_EXE" "$@"', "x"])
+            st = v.wait(lambda st: st["update"] == "newer" and st["update_modal"], 20, "o aviso (release velha)")
+            expect(not st["update_can"] and "versão assinada" in st["update_why"], f"release velha passou: {st['update_why']}")
+            expect(hashlib.sha256(open(exe2, "rb").read()).digest() == before, "trocou o executável por uma release velha")
+            v.stop()
+            # a versão nova morre ao abrir: o app que reiniciou percebe, põe o executável de volta e continua aberto
+            r = s.app("r", 95, ["--nome", "Rui"], extra_env=dict(env, TELINHA_ATUALIZACAO_URL=dead_url, QA_EXE=exe2), wrap=["sh", "-c", 'shift; exec "$QA_EXE" "$@"', "x"])
+            r.wait(lambda st: st["update"] == "newer" and st["update_modal"] and st["update_can"], 20, "o aviso (versão que não abre)")
+            r.click("###updgo")
+            r.wait(lambda st: st["update"] == "installed", 30, "instalar a versão que não abre")
+            r.click("###updrestart")
+            st = r.wait(lambda st: st["update"] == "install_failed", 10, "perceber que a versão nova não abriu")
+            expect("não abriu" in st["update_err"], f"motivo: {st['update_err']!r}")
+            expect(hashlib.sha256(open(exe2, "rb").read()).digest() == before, "o executável não voltou pro de antes")
+            expect(r.proc.poll() is None, "o app fechou mesmo com a versão nova sem abrir")
 
             # depois de atualizar (abriu numa versão mais nova que a da última vez): as novidades
             c = s.app("c", 93, ["--nome", "Caio"], config={"client_key": "abc123", "last_version": "3.0.0"})
@@ -2728,8 +2749,8 @@ def atualizacao_windows():
             a.proc.wait(30)
             a.proc = None
             a.wait(lambda st: st["pid"] != old_pid and st["screen"] == "home", 60, "o .exe novo abrir")
-            # o novo esperou o antigo fechar e apagou o .old
-            for _ in range(50):
+            # o novo esperou o antigo fechar e, depois de 10 s de pé, apagou o .old (a volta)
+            for _ in range(125):
                 if not os.path.exists(exe + ".old"):
                     break
                 time.sleep(0.2)

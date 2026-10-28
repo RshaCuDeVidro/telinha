@@ -3932,6 +3932,8 @@ pub const App = struct {
                     debuglog.line("reiniciando na versão nova", .{});
                     if (update.restart()) {
                         c.glfwSetWindowShouldClose(a.window, 1);
+                    } else if (update.getState() == .install_failed) {
+                        a.toast("{s}", .{update.installError()}, true);
                     } else a.toast("Não consegui abrir a versão nova: feche e abra o telinha.", .{}, true);
                     close = true;
                 }

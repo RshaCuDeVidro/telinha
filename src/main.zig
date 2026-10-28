@@ -234,6 +234,7 @@ pub fn main(init: std.process.Init) !void {
     c.glfwHideWindow(win);
     c.glfwPollEvents();
     sync.spawn(exitDeadline, .{}) catch {};
+    update.confirmHealthy(); // versão nova recém-instalada que fechou direito: passou
     app.shutdown();
     c.ImGui_ImplOpenGL3_Shutdown();
     c.ImGui_ImplGlfw_Shutdown();

@@ -67,6 +67,11 @@ var self_buf: [1024]u8 = undefined;
 var self_len: usize = 0;
 var err_buf: [200]u8 = undefined;
 var err_len: usize = 0;
+var repo_buf: [128]u8 = undefined; // "dono/projeto": os arquivos só vêm de github.com/<repo>/releases/download/
+var repo_len: usize = 0;
+
+/// Teto do executável baixado (o maior hoje tem ~10 MB).
+pub const max_bin_bytes: u64 = 256 * 1024 * 1024;
 
 pub fn getState() State {
     return state.load(.acquire);
@@ -164,6 +169,10 @@ pub fn checkAsync(repo: []const u8, current: []const u8, english: bool) void {
     if (s == .current or s == .failed) state.store(.idle, .release);
     if (state.cmpxchgStrong(.idle, .checking, .acq_rel, .acquire) != null) return;
     last_check_ms = sync.nowMs();
+    if (repo.len <= repo_buf.len) {
+        @memcpy(repo_buf[0..repo.len], repo);
+        repo_len = repo.len;
+    }
     var url_buf: [256]u8 = undefined;
     const url = if (override) |o| std.mem.span(o) else std.fmt.bufPrint(&url_buf, "https://api.github.com/repos/{s}/releases/latest", .{repo}) catch {
         state.store(.failed, .release);
@@ -263,6 +272,12 @@ fn prepare(rel: Release, current: []const u8, english: bool) void {
     const sig = fetch(sig_url, false, 1024) catch return setWhy("não consegui baixar a assinatura", .{});
     defer gpa.free(sig);
     if (!verifySums(sums, sig, key())) return setWhy("a assinatura da release não confere", .{});
+    // a versão vai dentro do que foi assinado: sem isso, uma resposta forjada da
+    // API ("v9.9.9") com os arquivos assinados de uma release velha fazia o app
+    // "atualizar" pra uma versão antiga (com os furos dela)
+    const signed = signedVersion(sums) orelse return setWhy("a assinatura não diz a versão", .{});
+    if (!std.mem.eql(u8, signed, rel.tag_name)) return setWhy("a versão assinada ({s}) não é a anunciada", .{signed[0..@min(signed.len, 24)]});
+    if (!isNewer(signed, current)) return setWhy("a versão assinada não é mais nova", .{});
 
     // o que muda (no idioma da interface), conferido pelo SHA256SUMS
     const cl_name = if (english) "CHANGELOG.md" else "CHANGELOG.pt.md";
@@ -285,6 +300,7 @@ fn prepare(rel: Release, current: []const u8, english: bool) void {
     const bu = assetUrl(rel, asset_name) orelse return setWhy("a release não tem o {s}", .{asset_name});
     bin_sha = sumOf(sums, asset_name) orelse return setWhy("SHA256SUMS sem o {s}", .{asset_name});
     bin_size = assetSize(rel, asset_name);
+    if (bin_size > max_bin_bytes) return setWhy("o arquivo da release é grande demais", .{});
     if (bu.len > bin_url.len) return setWhy("endereço longo demais", .{});
     @memcpy(bin_url[0..bu.len], bu);
     bin_url_len = bu.len;
@@ -326,22 +342,25 @@ fn install() void {
     const novo = std.fmt.bufPrintZ(&nb, "{s}.novo", .{self_buf[0..self_len]}) catch return failInstall("caminho longo demais", .{});
     const url = std.fmt.bufPrintZ(&ub, "{s}", .{bin_url[0..bin_url_len]}) catch return failInstall("endereço longo demais", .{});
     if (!urlOk(url)) return failInstall("endereço estranho", .{});
-    upd_cleanup(self.ptr);
+    upd_cleanup(self.ptr, 0);
     const r = upd_download(url.ptr, novo.ptr);
     if (r == -2) return failInstall("precisa do curl instalado pra baixar", .{});
-    if (r != 0) return failInstall("não consegui baixar (sem internet?)", .{});
+    if (r != 0) {
+        upd_cleanup(self.ptr, 0); // pedaço baixado (ou grande demais)
+        return failInstall("não consegui baixar (sem internet?)", .{});
+    }
     // confere antes de trocar: tamanho e sha256 do que diz o SHA256SUMS assinado
     var got: [32]u8 = undefined;
     const size = hashFile(novo, &got) catch {
-        upd_cleanup(self.ptr);
+        upd_cleanup(self.ptr, 0);
         return failInstall("não consegui ler o que baixei", .{});
     };
     if ((bin_size != 0 and size != bin_size) or !std.mem.eql(u8, &got, &bin_sha)) {
-        upd_cleanup(self.ptr);
+        upd_cleanup(self.ptr, 0);
         return failInstall("o arquivo baixado não confere com a assinatura: não instalei", .{});
     }
     if (upd_swap(self.ptr, novo.ptr) != 0) {
-        upd_cleanup(self.ptr);
+        upd_cleanup(self.ptr, 0);
         return failInstall("não consegui trocar o executável", .{});
     }
     if (debugOn()) std.debug.print("[telinha] atualização instalada: {s}\n", .{self});
@@ -370,15 +389,59 @@ pub fn restart() bool {
     if (getState() != .installed) return false;
     var sb: [1100]u8 = undefined;
     const self = std.fmt.bufPrintZ(&sb, "{s}", .{self_buf[0..self_len]}) catch return false;
-    return upd_relaunch(self.ptr) == 0;
+    const r = upd_relaunch(self.ptr);
+    if (r == -2) {
+        // a versão nova nem abriu nesta máquina: o executável volta a ser este
+        if (upd_rollback(self.ptr) == 0)
+            failInstall("a versão nova não abriu neste computador: continuei na de agora", .{})
+        else
+            failInstall("a versão nova não abriu neste computador", .{});
+        return false;
+    }
+    return r == 0;
+}
+
+/// Ao fechar normalmente: a versão nova abriu e fechou direito (passou no teste).
+pub fn confirmHealthy() void {
+    if (!on_probation.swap(false, .acq_rel)) return;
+    var sb: [1024]u8 = undefined;
+    if (upd_self_path(&sb, sb.len) != 0) return;
+    upd_mark(@ptrCast(&sb), 0);
+    // instalou outra versão nesse meio tempo: o .old agora é a volta dela
+    upd_cleanup(@ptrCast(&sb), @intFromBool(getState() == .installed));
+}
+
+var on_probation: std.atomic.Value(bool) = .init(false);
+
+fn confirmLater() void {
+    sync.nameThread("atualizacao");
+    sync.sleepMs(10_000);
+    confirmHealthy();
 }
 
 /// Ao abrir: espera a versão anterior fechar (reinício depois de atualizar) e
 /// apaga as sobras (o .old do Windows, um .novo que ficou pela metade).
+/// Depois de atualizar, o executável anterior fica como .old até a versão
+/// nova rodar 10 s (ou fechar direito); se ela morrer antes, na próxima vez
+/// que abrir o .old volta pro lugar e abre no lugar dela.
 pub fn startup() void {
-    upd_wait_previous();
+    const after_update = upd_wait_previous() != 0;
     var sb: [1024]u8 = undefined;
-    if (upd_self_path(&sb, sb.len) == 0) upd_cleanup(@ptrCast(&sb));
+    if (upd_self_path(&sb, sb.len) != 0) return;
+    const self: [*:0]const u8 = @ptrCast(&sb);
+    if (after_update) {
+        upd_cleanup(self, 1);
+        upd_mark(self, 1);
+        on_probation.store(true, .release);
+        sync.spawn(confirmLater, .{}) catch {};
+    } else if (upd_marked(self) != 0) {
+        upd_mark(self, 0);
+        if (upd_rollback(self) == 0) {
+            if (debugOn()) std.debug.print("[telinha] a versão nova caiu logo depois de atualizar: voltei pra anterior\n", .{});
+            if (upd_relaunch(self) == 0) std.process.exit(0);
+        }
+        upd_cleanup(self, 0);
+    } else upd_cleanup(self, 0);
 }
 
 fn key() [32]u8 {
@@ -437,7 +500,31 @@ const Release = struct {
 };
 
 fn assetUrl(rel: Release, name: []const u8) ?[]const u8 {
-    for (rel.assets) |a| if (std.mem.eql(u8, a.name, name)) return if (urlOkSlice(a.browser_download_url)) a.browser_download_url else null;
+    for (rel.assets) |a| if (std.mem.eql(u8, a.name, name)) return if (urlOkSlice(a.browser_download_url) and assetHostOk(a.browser_download_url, repo_buf[0..repo_len], rel.tag_name)) a.browser_download_url else null;
+    return null;
+}
+
+/// Os arquivos só vêm da release certa no GitHub (o endereço veio da rede):
+/// https://github.com/<repo>/releases/download/<tag>/ (o de testes passa).
+pub fn assetHostOk(url: []const u8, repo: []const u8, tag: []const u8) bool {
+    if (getenv("TELINHA_ATUALIZACAO_URL") != null and std.mem.startsWith(u8, url, "http://127.0.0.1:")) return true;
+    if (repo.len == 0 or tag.len == 0) return false;
+    var pb: [400]u8 = undefined;
+    const prefix = std.fmt.bufPrint(&pb, "https://github.com/{s}/releases/download/{s}/", .{ repo, tag }) catch return false;
+    return std.mem.startsWith(u8, url, prefix) and std.mem.indexOfScalar(u8, url[prefix.len..], '/') == null;
+}
+
+/// A versão que o CI escreve na primeira linha do SHA256SUMS assinado
+/// ("# telinha v3.8.0").
+pub fn signedVersion(sums: []const u8) ?[]const u8 {
+    var it = std.mem.splitScalar(u8, sums, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trimEnd(u8, raw, "\r");
+        if (std.mem.startsWith(u8, line, "# telinha ")) {
+            const v = std.mem.trim(u8, line["# telinha ".len..], " \t");
+            return if (v.len > 0 and v.len <= 32) v else null;
+        }
+    }
     return null;
 }
 
@@ -501,9 +588,12 @@ extern "c" fn upd_self_path(out: [*]u8, cap: c_int) c_int;
 extern "c" fn upd_can_write(dir: [*:0]const u8) c_int;
 extern "c" fn upd_download(url: [*:0]const u8, path: [*:0]const u8) c_int;
 extern "c" fn upd_swap(self: [*:0]const u8, newfile: [*:0]const u8) c_int;
-extern "c" fn upd_cleanup(self: [*:0]const u8) void;
+extern "c" fn upd_cleanup(self: [*:0]const u8, keep_old: c_int) void;
 extern "c" fn upd_relaunch(self: [*:0]const u8) c_int;
-extern "c" fn upd_wait_previous() void;
+extern "c" fn upd_rollback(self: [*:0]const u8) c_int;
+extern "c" fn upd_mark(self: [*:0]const u8, on: c_int) void;
+extern "c" fn upd_marked(self: [*:0]const u8) c_int;
+extern "c" fn upd_wait_previous() c_int;
 extern "c" fn upd_file_size(path: [*:0]const u8) c_longlong;
 extern "c" fn upd_fopen(path: [*:0]const u8) ?*FILE;
 
@@ -526,6 +616,9 @@ test "comparação de versões" {
 }
 
 test "release do JSON do GitHub (tag, página, arquivos)" {
+    @memcpy(repo_buf[0..3], "a/b"); // os arquivos só valem da release desse repositório
+    repo_len = 3;
+    defer repo_len = 0;
     const r = try parseRelease(
         \\{"url":"x","tag_name":"v3.2.0","html_url":"https://github.com/a/b/releases/tag/v3.2.0","draft":false,
         \\ "body":"## Download\n| a | b |\n\n### Highlights\n\n- coisa","assets":[{"name":"SHA256SUMS","size":10,
@@ -539,6 +632,20 @@ test "release do JSON do GitHub (tag, página, arquivos)" {
     try std.testing.expectEqual(@as(u64, 10), assetSize(r.value, "SHA256SUMS"));
     try std.testing.expectEqualStrings("### Highlights\n\n- coisa", releaseNotes(r.value.body));
     try std.testing.expectError(error.BadTag, parseRelease("{\"tag_name\":\"\"}"));
+}
+
+test "atualização: versão assinada e arquivos só da release certa no GitHub" {
+    try std.testing.expectEqualStrings("v3.8.0", signedVersion("# telinha v3.8.0\r\naaaa  telinha-linux-x86_64\n").?);
+    try std.testing.expect(signedVersion("aaaa  telinha-linux-x86_64\n") == null);
+    try std.testing.expect(signedVersion("# telinha \n") == null);
+    const r = "dono/telinha";
+    try std.testing.expect(assetHostOk("https://github.com/dono/telinha/releases/download/v3.8.0/SHA256SUMS", r, "v3.8.0"));
+    // outra release, outro repositório, outro host, subpasta
+    try std.testing.expect(!assetHostOk("https://github.com/dono/telinha/releases/download/v3.6.0/SHA256SUMS", r, "v3.8.0"));
+    try std.testing.expect(!assetHostOk("https://github.com/outro/telinha/releases/download/v3.8.0/SHA256SUMS", r, "v3.8.0"));
+    try std.testing.expect(!assetHostOk("https://example.com/dono/telinha/releases/download/v3.8.0/x", r, "v3.8.0"));
+    try std.testing.expect(!assetHostOk("https://github.com/dono/telinha/releases/download/v3.8.0/a/b", r, "v3.8.0"));
+    try std.testing.expect(!assetHostOk("https://github.com/dono/telinha/releases/download/v3.8.0/x", "", "v3.8.0"));
 }
 
 test "SHA256SUMS assinado (o mesmo formato do openssl pkeyutl -sign -rawin do CI)" {

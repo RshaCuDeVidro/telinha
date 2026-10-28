@@ -12,6 +12,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+// teto do que se baixa (o mesmo de update.max_bin_bytes)
+#define UPD_MAX_BYTES (256ull * 1024 * 1024)
+#define UPD_MAX_BYTES_STR "268435456"
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -72,10 +76,13 @@ int upd_download(const char *url, const char *path) {
     f = CreateFileW(wpath, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (f == INVALID_HANDLE_VALUE) goto done;
     static char buf[64 * 1024];
+    unsigned long long total = 0;
     for (;;) {
         DWORD got = 0, wrote = 0;
         if (!WinHttpReadData(r, buf, sizeof buf, &got)) goto done;
         if (got == 0) break;
+        total += got;
+        if (total > UPD_MAX_BYTES) goto done; // nenhum executável nosso chega perto
         if (!WriteFile(f, buf, got, &wrote, NULL) || wrote != got) goto done;
     }
     rc = 0;
@@ -102,13 +109,55 @@ int upd_swap(const char *self, const char *newfile) {
     return 0;
 }
 
-void upd_cleanup(const char *self) {
+void upd_cleanup(const char *self, int keep_old) {
     char p[1110];
     WCHAR w[1110];
-    snprintf(p, sizeof p, "%s.old", self);
-    if (to_wide(p, w, 1110)) DeleteFileW(w);
+    if (!keep_old) {
+        snprintf(p, sizeof p, "%s.old", self);
+        if (to_wide(p, w, 1110)) DeleteFileW(w);
+    }
     snprintf(p, sizeof p, "%s.novo", self);
     if (to_wide(p, w, 1110)) DeleteFileW(w);
+}
+
+int upd_rollback(const char *self) {
+    WCHAR wself[1100], wold[1110];
+    char old[1110];
+    snprintf(old, sizeof old, "%s.old", self);
+    if (!to_wide(self, wself, 1100) || !to_wide(old, wold, 1110)) return -1;
+    if (GetFileAttributesW(wold) == INVALID_FILE_ATTRIBUTES) return -1;
+    // o novo pode ser o que está rodando: renomeia ele pra fora antes
+    char bad[1110];
+    WCHAR wbad[1110];
+    snprintf(bad, sizeof bad, "%s.ruim", self);
+    if (!to_wide(bad, wbad, 1110)) return -1;
+    DeleteFileW(wbad);
+    if (!MoveFileExW(wself, wbad, MOVEFILE_REPLACE_EXISTING)) return -1;
+    if (!MoveFileExW(wold, wself, MOVEFILE_REPLACE_EXISTING)) {
+        MoveFileExW(wbad, wself, MOVEFILE_REPLACE_EXISTING);
+        return -1;
+    }
+    return 0;
+}
+
+void upd_mark(const char *self, int on) {
+    char p[1110];
+    WCHAR w[1110];
+    snprintf(p, sizeof p, "%s.testando", self);
+    if (!to_wide(p, w, 1110)) return;
+    if (!on) {
+        DeleteFileW(w);
+        return;
+    }
+    HANDLE h = CreateFileW(w, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+}
+
+int upd_marked(const char *self) {
+    char p[1110];
+    WCHAR w[1110];
+    snprintf(p, sizeof p, "%s.testando", self);
+    return to_wide(p, w, 1110) && GetFileAttributesW(w) != INVALID_FILE_ATTRIBUTES;
 }
 
 int upd_relaunch(const char *self) {
@@ -133,19 +182,23 @@ int upd_relaunch(const char *self) {
     free(line);
     if (!ok) return -1;
     CloseHandle(pi.hThread);
+    // o novo fica esperando este fechar: se ele morreu antes disso, nem abriu
+    // (DLL que falta, instrução que o processador não tem)
+    const DWORD w = WaitForSingleObject(pi.hProcess, 1000);
     CloseHandle(pi.hProcess);
-    return 0;
+    return w == WAIT_OBJECT_0 ? -2 : 0;
 }
 
-void upd_wait_previous(void) {
+int upd_wait_previous(void) {
     WCHAR v[32];
-    if (GetEnvironmentVariableW(L"TELINHA_ESPERAR_PID", v, 32) == 0) return;
+    if (GetEnvironmentVariableW(L"TELINHA_ESPERAR_PID", v, 32) == 0) return 0;
     SetEnvironmentVariableW(L"TELINHA_ESPERAR_PID", NULL);
     DWORD pid = (DWORD)wcstoul(v, NULL, 10);
     HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid);
-    if (!h) return;
+    if (!h) return 1;
     WaitForSingleObject(h, 15000);
     CloseHandle(h);
+    return 1;
 }
 
 FILE *upd_fopen(const char *path) {
@@ -188,7 +241,7 @@ int upd_can_write(const char *dir) {
 
 int upd_download(const char *url, const char *path) {
     // curl (quase todo Linux tem): sem shell no meio, o endereço vai como argumento
-    const char *argv[] = {"curl", "-fsSL", "--max-time", "900", "--retry", "2", "-A", "telinha", "-o", path, url, NULL};
+    const char *argv[] = {"curl", "-fsSL", "--max-time", "900", "--retry", "2", "--max-filesize", UPD_MAX_BYTES_STR, "-A", "telinha", "-o", path, url, NULL};
     pid_t pid;
     if (posix_spawnp(&pid, "curl", NULL, NULL, (char *const *)argv, environ) != 0) return -2;
     int st = 0;
@@ -203,13 +256,51 @@ int upd_download(const char *url, const char *path) {
 
 int upd_swap(const char *self, const char *newfile) {
     if (chmod(newfile, 0755) != 0) return -1;
-    return rename(newfile, self) == 0 ? 0 : -1;
+    // o de agora fica como .old (outro nome pro mesmo arquivo; o rename abaixo
+    // é atômico): se o novo não abrir, volta
+    char old[1110];
+    snprintf(old, sizeof old, "%s.old", self);
+    unlink(old);
+    if (link(self, old) != 0) old[0] = 0;
+    if (rename(newfile, self) != 0) {
+        if (old[0]) unlink(old);
+        return -1;
+    }
+    return 0;
 }
 
-void upd_cleanup(const char *self) {
+void upd_cleanup(const char *self, int keep_old) {
     char p[1110];
     snprintf(p, sizeof p, "%s.novo", self);
     unlink(p);
+    if (!keep_old) {
+        snprintf(p, sizeof p, "%s.old", self);
+        unlink(p);
+    }
+}
+
+int upd_rollback(const char *self) {
+    char old[1110];
+    snprintf(old, sizeof old, "%s.old", self);
+    if (access(old, F_OK) != 0) return -1;
+    return rename(old, self) == 0 ? 0 : -1;
+}
+
+void upd_mark(const char *self, int on) {
+    char p[1110];
+    snprintf(p, sizeof p, "%s.testando", self);
+    if (!on) {
+        unlink(p);
+        return;
+    }
+    int fd = open(p, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd >= 0) close(fd);
+}
+
+int upd_marked(const char *self) {
+    char p[1110];
+    snprintf(p, sizeof p, "%s.testando", self);
+    return access(p, F_OK) == 0;
 }
 
 int upd_relaunch(const char *self) {
@@ -246,21 +337,29 @@ int upd_relaunch(const char *self) {
         execve(self, argv, envp);
         _exit(127);
     }
+    // o novo fica esperando este fechar: se ele morreu antes disso, nem abriu
+    // (glibc mais nova que a do sistema, instrução que o processador não tem)
+    for (int i = 0; i < 20; i++) {
+        int st = 0;
+        if (waitpid(pid, &st, WNOHANG) == pid) return -2;
+        usleep(50000);
+    }
     return 0;
 }
 
-void upd_wait_previous(void) {
+int upd_wait_previous(void) {
     const char *v = getenv("TELINHA_ESPERAR_PID");
-    if (!v) return;
+    if (!v) return 0;
     pid_t pid = (pid_t)atoi(v);
     // "0" em vez de unsetenv: o Zig guarda a lista do ambiente do começo do
     // processo, e o unsetenv encurta essa lista no lugar (a última entrada
     // virava nulo e o primeiro std.debug.print caía nela: o app travava toda
     // vez que reiniciava depois de atualizar)
     setenv("TELINHA_ESPERAR_PID", "0", 1);
-    if (pid <= 1) return;
+    if (pid <= 1) return 0;
     // até 15 s (kill 0 só pergunta se o processo ainda existe)
     for (int i = 0; i < 300 && kill(pid, 0) == 0; i++) usleep(50000);
+    return 1;
 }
 
 FILE *upd_fopen(const char *path) {
