@@ -56,6 +56,12 @@ struct cap_ctx {
     int soft_cursor;
     int stream_x, stream_y, stream_w, stream_h; // área capturada (coordenadas lógicas)
     int cursor_gx, cursor_gy; // última posição global enviada
+    // posição do cursor do Hyprland: a captura e quem chama perguntavam cada um
+    // a cada quadro (um socket novo por pergunta, até 2x o fps); agora uma
+    // resposta vale 1/fps, e com o mouse parado há 1 s, 1/15 s
+    pthread_mutex_t hc_lock;
+    uint64_t hc_us, hc_moved_us;
+    int hc_x, hc_y, hc_ok;
     int have_front;
 
     // ---- PipeWire
@@ -876,7 +882,9 @@ static void gpu_fail(struct gpu_path *g, const char *what) {
     g->failed = 1;
 }
 
-static int gpu_produce(struct cap_ctx *c, GLuint src_tex, int sw, int sh, int swap, cap_frame *cur) {
+// preview_only: ninguém pegando quadro, só a prévia pedida (a própria tela na
+// interface de quem transmite): desenha a cena e a prévia, sem slot pro encoder.
+static int gpu_produce(struct cap_ctx *c, GLuint src_tex, int sw, int sh, int swap, cap_frame *cur, int preview_only) {
     struct gpu_path *g = c->gpu;
     struct egl_state *e = c->egl;
     if (!g || g->failed) return 0;
@@ -890,7 +898,7 @@ static int gpu_produce(struct cap_ctx *c, GLuint src_tex, int sw, int sh, int sw
     float crop[4];
     memcpy(crop, g->crop, sizeof crop);
     const int max_h = g->max_h, want_prev = g->want_preview, prev_max_w = g->preview_max_w;
-    struct gpu_slot *sl = gpu_pick_slot(g);
+    struct gpu_slot *sl = preview_only ? NULL : gpu_pick_slot(g);
     if (sl) sl->state = SLOT_RENDERING;
     pthread_mutex_unlock(&c->lock);
     int x = 0, y = 0, w = sw, h = sh, ow = sw, oh = sh;
@@ -922,7 +930,10 @@ static int gpu_produce(struct cap_ctx *c, GLuint src_tex, int sw, int sh, int sw
             g->have_copy = 1;
         }
     }
-    g->output_dirty = 0;
+    // só a prévia: o slot do encoder ficou pra trás; quando alguém voltar a
+    // pegar quadro, o timer refaz a saída da cópia da fonte (tela parada não
+    // manda quadro novo, e quem entrasse veria a tela de antes)
+    g->output_dirty = preview_only;
     g->have_scene = 1;
     g->scene_src_w = sw;
     g->scene_src_h = sh;
@@ -1133,7 +1144,7 @@ static int gpu_from_memory(struct cap_ctx *c, const uint8_t *pixels, int w, int 
         e->PixelStorei(GL_UNPACK_ALIGNMENT, 4);
         e->TexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
     }
-    return gpu_produce(c, g->src_tex, w, h, bgr, cur);
+    return gpu_produce(c, g->src_tex, w, h, bgr, cur, 0);
 }
 
 // ===========================================================================
@@ -1403,7 +1414,12 @@ static void on_process(void *data) {
         pthread_mutex_lock(&c->lock);
         const int gpu_on = c->gpu_on && c->gpu && !c->gpu->failed;
         const int warming = gpu_on && c->gpu->warming;
-        const int idle = consumer_idle(c) && !(gpu_on && c->gpu->want_preview);
+        const int nobody = consumer_idle(c);
+        const int want_prev = gpu_on && c->gpu->want_preview;
+        // ninguém assistindo, só a prévia: até 15 por segundo e sem slot pro
+        // encoder (antes era o quadro inteiro a cada quadro do compositor)
+        const int prev_only = nobody && want_prev && !c->gpu->va.ctx;
+        const int idle = (nobody && !want_prev) || (prev_only && now_us() - c->gpu->prev_last_us < 66000);
         pthread_mutex_unlock(&c->lock);
         if (idle || warming) {
             // ninguém vai pegar: nem lê o quadro (pela CPU custava 3-5 ms cada)
@@ -1426,7 +1442,7 @@ static void on_process(void *data) {
                 cur.width = w;
                 cur.height = hgt;
                 fill_cursor(c, &cur);
-                gpu_produce(c, tex, w, hgt, 0, &cur);
+                gpu_produce(c, tex, w, hgt, 0, &cur, prev_only);
                 pw_stream_queue_buffer(c->stream, b);
                 return;
             }
@@ -1552,7 +1568,7 @@ static void on_cursor_timer(void *data, uint64_t expirations) {
     const int moved = fill_cursor(c, &cur);
     if (dirty) {
         // recorte/altura novos com a tela parada: refaz a partir da cópia da fonte
-        gpu_produce(c, c->gpu->copy_tex, c->gpu->copy_w, c->gpu->copy_h, 0, &cur);
+        gpu_produce(c, c->gpu->copy_tex, c->gpu->copy_w, c->gpu->copy_h, 0, &cur, 0);
     } else if (moved && c->soft_cursor && !c->cursor_apart) {
         gpu_recompose(c, &cur);
     }
@@ -1905,13 +1921,37 @@ static int hyprland_cursor(int *x, int *y) {
     return -1;
 }
 
+// hyprland_cursor com a resposta guardada (ver hc_lock).
+static int hyprland_cursor_cached(struct cap_ctx *c, int *x, int *y) {
+    pthread_mutex_lock(&c->hc_lock);
+    const uint64_t now = now_us();
+    const uint64_t frame_us = 1000000u / (uint64_t)(c->fps > 0 ? c->fps : 30);
+    const uint64_t ttl = now - c->hc_moved_us > 1000000 ? 66000 : frame_us;
+    if (!c->hc_us || now - c->hc_us >= ttl) {
+        int nx, ny;
+        const int ok = hyprland_cursor(&nx, &ny) == 0;
+        if (ok && (!c->hc_ok || nx != c->hc_x || ny != c->hc_y)) c->hc_moved_us = now;
+        c->hc_ok = ok;
+        if (ok) {
+            c->hc_x = nx;
+            c->hc_y = ny;
+        }
+        c->hc_us = now;
+    }
+    const int ok = c->hc_ok;
+    *x = c->hc_x;
+    *y = c->hc_y;
+    pthread_mutex_unlock(&c->hc_lock);
+    return ok ? 0 : -1;
+}
+
 // Preenche os campos de cursor do quadro (cursor desenhado por quem chama).
 static int fill_cursor(struct cap_ctx *c, cap_frame *out) {
     out->cursor_draw = 0;
     out->cursor_known = 0;
     if (!c->soft_cursor) return 0;
     int gx, gy;
-    if (hyprland_cursor(&gx, &gy) < 0) return 0;
+    if (hyprland_cursor_cached(c, &gx, &gy) < 0) return 0;
     float scale = 1.0f;
     if (c->stream_w > 0 && out->width > 0) scale = (float)out->width / (float)c->stream_w;
     out->cursor_draw = !c->cursor_apart;
@@ -2167,6 +2207,7 @@ cap_ctx *cap_open(int source_id, int show_cursor, int fps, char *err, int errlen
     // Hyprland: cursor embutido força cursor em software (mouse com lag); desenhamos nós mesmos
     c->soft_cursor = show_cursor && getenv("HYPRLAND_INSTANCE_SIGNATURE") != NULL && getenv("TELINHA_CURSOR_EMBUTIDO") == NULL;
     pthread_mutex_init(&c->lock, NULL);
+    pthread_mutex_init(&c->hc_lock, NULL);
     pthread_cond_init(&c->cond, NULL);
     if (is_wayland()) {
         c->kind = KIND_PIPEWIRE;
@@ -2204,6 +2245,7 @@ void cap_close(cap_ctx *c) {
     free(c->pending);
     free(c->front);
     pthread_mutex_destroy(&c->lock);
+    pthread_mutex_destroy(&c->hc_lock);
     pthread_cond_destroy(&c->cond);
     free(c);
 }

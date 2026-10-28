@@ -430,6 +430,50 @@ const Source = union(enum) {
 /// (subir é na hora). TELINHA_VIEW_DESCE_MS muda (testes).
 var view_down_ms: u64 = 10_000;
 
+/// O que o encoder da placa sabe fazer: sondado uma vez por processo (cada
+/// sondagem abria uma sessão do encoder, e o NVENC criava e destruía o contexto
+/// CUDA: 50-150 ms em todo começo de transmissão, 2-3 vezes). Se a placa sumir
+/// depois, o encoder de verdade falha ao abrir e a transmissão segue no software.
+const HwProbe = struct { cuda: bool, va: bool, mf: bool, hevc: bool, av1: bool, av1_checked: bool };
+var hw_probe_mutex: sync.Mutex = .{};
+var hw_probe: ?HwProbe = null;
+
+fn probeHw() ?HwProbe {
+    hw_probe_mutex.lock();
+    defer hw_probe_mutex.unlock();
+    const want_av1 = codec.av1_enabled.load(.acquire);
+    if (hw_probe) |hp| {
+        if (!want_av1 or hp.av1_checked) return hp;
+    }
+    var err: [256]u8 = undefined;
+    var r: HwProbe = if (hw_probe) |hp| hp else blk: {
+        var pr = codec.HwEncoder.init(.{ .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000 }, &err) catch {
+            if (debugEnabled()) std.debug.print("[telinha] sem encoder em hardware: {s}\n", .{std.mem.sliceTo(&err, 0)});
+            return null; // não guarda: um driver que volta (ou outro processo largando a sessão) dá certo da próxima vez
+        };
+        const base: HwProbe = .{ .cuda = pr.acceptsCuda(), .va = pr.isVa(), .mf = pr.isMf(), .hevc = false, .av1 = false, .av1_checked = false };
+        pr.deinit();
+        var b = base;
+        if (codec.HwEncoder.init(.{ .codec = .hevc, .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000 }, &err)) |hp| {
+            var hh = hp;
+            hh.deinit();
+            b.hevc = true;
+        } else |_| {}
+        break :blk b;
+    };
+    // AV1 só testa se ligou a opção (abrir o encoder custa uns ms e memória da placa)
+    if (want_av1 and !r.av1_checked) {
+        r.av1_checked = true;
+        if (codec.HwEncoder.init(.{ .codec = .av1, .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000 }, &err)) |ap| {
+            var aa = ap;
+            aa.deinit();
+            r.av1 = true;
+        } else |_| if (debugEnabled()) std.debug.print("[telinha] sem AV1: {s}\n", .{std.mem.sliceTo(&err, 0)});
+    }
+    hw_probe = r;
+    return r;
+}
+
 const Pipeline = struct {
     s: *Sharer,
     cap: ?Source = null,
@@ -726,32 +770,11 @@ const Pipeline = struct {
             p.cap = .{ .screen = cap };
         }
         if (p.settings.hardware) {
-            var err: [256]u8 = undefined;
-            if (codec.HwEncoder.init(.{ .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000 }, &err)) |probe| {
-                var pr = probe;
-                const cuda = pr.acceptsCuda();
-                const is_va = pr.isVa();
-                const is_mf = pr.isMf();
-                pr.deinit();
+            if (probeHw()) |hw| {
                 p.use_hw.store(true, .release);
-                if (cuda) p.enableGpu() else if (is_va) p.enableVa() else if (is_mf) p.enableD3d();
-                if (getenv("TELINHA_SEM_HEVC") == null) {
-                    if (codec.HwEncoder.init(.{ .codec = .hevc, .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000 }, &err)) |hp| {
-                        var hh = hp;
-                        hh.deinit();
-                        p.hevc_ok = true;
-                    } else |_| {}
-                }
-                // AV1 só testa se ligou a opção (abrir o encoder custa uns ms e memória da placa)
-                if (codec.av1_enabled.load(.acquire) and getenv("TELINHA_SEM_AV1") == null) {
-                    if (codec.HwEncoder.init(.{ .codec = .av1, .width = 640, .height = 360, .fps = 30, .bitrate = 1_000_000 }, &err)) |ap| {
-                        var aa = ap;
-                        aa.deinit();
-                        p.av1_ok = true;
-                    } else |_| if (debugEnabled()) std.debug.print("[telinha] sem AV1: {s}\n", .{std.mem.sliceTo(&err, 0)});
-                }
-            } else |_| {
-                if (debugEnabled()) std.debug.print("[telinha] sem encoder em hardware: {s}\n", .{std.mem.sliceTo(&err, 0)});
+                if (hw.cuda) p.enableGpu() else if (hw.va) p.enableVa() else if (hw.mf) p.enableD3d();
+                p.hevc_ok = hw.hevc and getenv("TELINHA_SEM_HEVC") == null;
+                p.av1_ok = hw.av1 and getenv("TELINHA_SEM_AV1") == null;
             }
         }
         const b = std.mem.span(p.cap.?.backend());
