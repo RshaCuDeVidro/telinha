@@ -727,6 +727,7 @@ fn buildAudio(t: *Track, samples: []const AudioSample, from_us: u64, until_us: u
             t.start_us = @max(s.ts_us, from_us);
             expect_us = t.start_us;
         }
+        if (s.ts_us + 30_000 < expect_us) continue; // andou na frente do relógio (ver Recorder.flush)
         // buraco: completa com pacotes vazios (código 0, frame de 0 bytes)
         while (s.ts_us >= expect_us + 15_000 and t.count() > 0) {
             try t.data.append(gpa, toc & 0xFC);
@@ -740,7 +741,7 @@ fn buildAudio(t: *Track, samples: []const AudioSample, from_us: u64, until_us: u
         try t.sizes.append(gpa, @intCast(s.data.len));
         try t.durations.append(gpa, audio_frame);
         try t.keys.append(gpa, true);
-        expect_us = @max(expect_us + 10_000, s.ts_us + 5_000);
+        expect_us += 10_000;
     }
 }
 
@@ -989,6 +990,10 @@ pub const Recorder = struct {
             for (r.audio.items) |s| {
                 if (s.ts_us >= until_us) break;
                 used_audio += 1;
+                // a posição é a contagem de pacotes (10 ms cada): atrasado entra
+                // silêncio antes; adiantado demais (o som andou na frente do
+                // relógio) sai, senão cada pico de jitter somava atraso pra sempre
+                if (s.ts_us + 30_000 < r.audio_next_us) continue;
                 while (s.ts_us >= r.audio_next_us + 15_000) {
                     try at.data.append(gpa, r.audio_toc & 0xFC);
                     try at.sizes.append(gpa, 1);
@@ -1001,7 +1006,7 @@ pub const Recorder = struct {
                 try at.sizes.append(gpa, @intCast(s.data.len));
                 try at.durations.append(gpa, audio_frame);
                 try at.keys.append(gpa, true);
-                r.audio_next_us = @max(r.audio_next_us + 10_000, s.ts_us + 5_000);
+                r.audio_next_us += 10_000;
             }
         }
         try r.writeFragment(&vt, &at);
@@ -1093,3 +1098,21 @@ pub const Recorder = struct {
         gpa.destroy(r);
     }
 };
+
+test "mp4: som do clipe não acumula atraso com jitter; buraco vira silêncio" {
+    var pkt = [_]u8{ 0xfc, 0x01 };
+    var samples: [300]AudioSample = undefined;
+    var n: usize = 0;
+    // 3 s de som a cada 10 ms, com um pico de +12 ms a cada 10 pacotes
+    for (0..300) |k| {
+        if (k >= 100 and k < 120) continue; // 200 ms que não chegaram
+        const jitter: u64 = if (k % 10 == 5) 12_000 else 0;
+        samples[n] = .{ .data = &pkt, .ts_us = 1_000_000 + k * 10_000 + jitter };
+        n += 1;
+    }
+    var t: Track = .{};
+    defer t.deinit();
+    try buildAudio(&t, samples[0..n], 1_000_000, 5_000_000);
+    // 300 pacotes de 10 ms: os 280 que chegaram + 20 de silêncio no buraco
+    try std.testing.expectEqual(@as(usize, 300), t.count());
+}

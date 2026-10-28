@@ -66,11 +66,9 @@ pub const Buffer = struct {
         // do reenvio, e o quadro seguinte pode ter sido capturado um pouco antes)
         const ts_us = @max(ts_in, b.last_ts_us + 1000);
         b.last_ts_us = ts_us;
-        // mudou a resolução ou o codec: o que tinha antes não entra no mesmo arquivo
-        if (key and b.frames.items.len > 0) {
-            const last = b.frames.items[b.frames.items.len - 1];
-            if (last.w != w or last.h != h or last.cd != cd) b.dropBefore(b.frames.items.len);
-        }
+        // mudou a resolução ou o codec (quem assiste pediu outro tamanho, a
+        // qualidade automática desceu): o que tinha antes fica; o clipe sai em
+        // partes, uma por tamanho (`Snapshot.runs`)
         if (b.frames.items.len == 0 and !key) {
             b.feedRecorder(data, ts_us, key, w, h, cd);
             return; // sem IDR ainda: nada pra guardar
@@ -155,6 +153,13 @@ pub const Buffer = struct {
         audio: []mp4.AudioSample,
         w: u32,
         h: u32,
+        /// Trechos com o mesmo tamanho e codec, em ordem (cada um vira um
+        /// arquivo; quase sempre um só).
+        runs: [max_runs]Run = undefined,
+        n_runs: usize = 0,
+
+        pub const max_runs = 8;
+        pub const Run = struct { from: usize, to: usize, w: u32, h: u32 };
 
         pub fn deinit(s: *Snapshot) void {
             for (s.video) |v| gpa.free(v.data);
@@ -173,6 +178,20 @@ pub const Buffer = struct {
         var start: usize = 0;
         for (b.frames.items, 0..) |f, i| {
             if (f.key and newest -| f.ts_us >= keepUs()) start = i;
+        }
+        // mais trechos que cabem: fica com os mais novos
+        var cuts: usize = 0;
+        var i = b.frames.items.len;
+        while (i > start + 1) {
+            i -= 1;
+            const f = b.frames.items[i];
+            const prev = b.frames.items[i - 1];
+            if (!f.key or (f.w == prev.w and f.h == prev.h and f.cd == prev.cd)) continue;
+            cuts += 1;
+            if (cuts == Snapshot.max_runs) {
+                start = i;
+                break;
+            }
         }
         const frames = b.frames.items[start..];
         var video = try gpa.alloc(mp4.VideoSample, frames.len);
@@ -198,7 +217,29 @@ pub const Buffer = struct {
             }, .ts_us = p.ts_us };
             k += 1;
         }
-        return .{ .video = video, .audio = audio, .w = frames[0].w, .h = frames[0].h };
+        var snap: Snapshot = .{ .video = video, .audio = audio, .w = frames[0].w, .h = frames[0].h };
+        for (frames, 0..) |f, j| {
+            const same = j > 0 and !(f.key and (f.w != frames[j - 1].w or f.h != frames[j - 1].h or f.cd != frames[j - 1].cd));
+            if (same) {
+                snap.runs[snap.n_runs - 1].to = j + 1;
+            } else {
+                snap.runs[snap.n_runs] = .{ .from = j, .to = j + 1, .w = f.w, .h = f.h };
+                snap.n_runs += 1;
+            }
+        }
+        // trecho curto (o tamanho mudou logo de novo, ou no começo de quem
+        // assiste) não vira arquivo próprio; o mais novo sempre fica
+        var kept: usize = 0;
+        for (snap.runs[0..snap.n_runs], 0..) |r, j| {
+            const last = j + 1 == snap.n_runs;
+            if (!last and frames[r.to].ts_us -| frames[r.from].ts_us < 1_500_000) continue;
+            snap.runs[kept] = r;
+            kept += 1;
+        }
+        snap.n_runs = kept;
+        snap.w = snap.runs[0].w;
+        snap.h = snap.runs[0].h;
+        return snap;
     }
 
     // -------------------------------------------------------------- gravação
@@ -221,10 +262,7 @@ pub const Buffer = struct {
 
     /// Caminho da parte `part` da gravação: "x_gravacao.mp4" → "x_gravacao_2.mp4".
     fn partPath(b: *Buffer, part: u32) void {
-        const base = std.mem.sliceTo(&b.rec_path, 0);
-        const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse base.len;
-        const out = std.fmt.bufPrintZ(&b.rec_cur, "{s}_{d}{s}", .{ base[0..dot], part, base[dot..] }) catch return;
-        _ = out;
+        _ = partName(&b.rec_cur, std.mem.sliceTo(&b.rec_path, 0), part) catch return;
     }
 
     /// Arquivo da parte atual (ou da última) da gravação.
@@ -318,6 +356,12 @@ pub const Buffer = struct {
         return b.rec_done_ms + ms;
     }
 };
+
+/// "x.mp4" → "x_2.mp4" (parte `part` de uma gravação ou de um clipe).
+pub fn partName(out: []u8, base: []const u8, part: u32) ![:0]u8 {
+    const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse base.len;
+    return std.fmt.bufPrintZ(out, "{s}_{d}{s}", .{ base[0..dot], part, base[dot..] });
+}
 
 // ---------------------------------------------------------------------------
 // Onde salvar
@@ -421,4 +465,46 @@ pub fn newPathExt(buf: []u8, who: []const u8, kind: []const u8, ext: []const u8)
     return std.fmt.bufPrintZ(buf, "{s}{s}telinha_{s}_{d:0>4}-{d:0>2}-{d:0>2}_{d:0>2}-{d:0>2}-{d:0>2}{s}{s}", .{
         dir, if (sync.is_windows) "\\" else "/", clean[0..n], t.year, t.month, t.day, t.h, t.m, t.s, kind, ext,
     });
+}
+
+test "clip: troca de tamanho no meio não apaga o que estava guardado; o clipe sai em partes" {
+    const b = try Buffer.create();
+    defer b.destroy();
+    keep_secs.store(30, .monotonic);
+    const idr = "\x00\x00\x00\x01\x65\x88";
+    const p = "\x00\x00\x00\x01\x41\x9a";
+    var t: u64 = 1_000_000;
+    for (0..60) |k| {
+        b.addVideo(if (k % 30 == 0) idr else p, t, k % 30 == 0, 1920, 1080, .h264);
+        t += 33_333;
+    }
+    b.addAudio("\xfc\x01", t);
+    // quem assiste pediu menos: o encoder recomeça em 720p com um IDR
+    for (0..30) |k| {
+        b.addVideo(if (k == 0) idr else p, t, k == 0, 1280, 720, .h264);
+        t += 33_333;
+    }
+    var snap = try b.snapshot();
+    defer snap.deinit();
+    try std.testing.expectEqual(@as(usize, 90), snap.video.len);
+    try std.testing.expectEqual(@as(usize, 2), snap.n_runs);
+    try std.testing.expectEqual(Buffer.Snapshot.Run{ .from = 0, .to = 60, .w = 1920, .h = 1080 }, snap.runs[0]);
+    try std.testing.expectEqual(Buffer.Snapshot.Run{ .from = 60, .to = 90, .w = 1280, .h = 720 }, snap.runs[1]);
+    try std.testing.expectEqual(@as(usize, 1), snap.audio.len);
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("a/x_clipe_2.mp4", try partName(&buf, "a/x_clipe.mp4", 2));
+    // mudou de novo e voltou: os trechos de 1 s e 0,3 s no meio não viram arquivo
+    for (0..10) |k| {
+        b.addVideo(if (k == 0) idr else p, t, k == 0, 960, 540, .h264);
+        t += 33_333;
+    }
+    for (0..60) |k| {
+        b.addVideo(if (k == 0) idr else p, t, k == 0, 1280, 720, .h264);
+        t += 33_333;
+    }
+    var snap2 = try b.snapshot();
+    defer snap2.deinit();
+    try std.testing.expectEqual(@as(usize, 2), snap2.n_runs);
+    try std.testing.expectEqual(@as(u32, 1080), snap2.runs[0].h);
+    try std.testing.expectEqual(Buffer.Snapshot.Run{ .from = 100, .to = 160, .w = 1280, .h = 720 }, snap2.runs[1]);
 }

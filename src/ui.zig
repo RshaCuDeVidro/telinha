@@ -1040,6 +1040,7 @@ pub const App = struct {
     pctest_logged: bool = true, // resultado do teste do PC já foi pro log
     crash_prompt: bool = false, // travou da última vez: pergunta se manda o relatório
     update_modal: bool = false, // versão nova: o que muda + atualizar
+    update_later: bool = false, // apareceu na sala: abre o aviso ao sair dela
     update_seen: [32]u8 = undefined, // a versão nova que já apareceu nesta sessão
     update_seen_len: usize = 0,
     update_auto_started: bool = false, // instalou sozinho: avisa quando terminar
@@ -1254,6 +1255,15 @@ pub const App = struct {
         a.upnp = null;
         if (a.screen == .room) a.leaveRoom();
         config.save(&a.cfg);
+        // clipe sendo escrito: espera terminar (até 2 s) em vez de deixar o arquivo pela metade
+        var waited: u32 = 0;
+        while (waited < 200) : (waited += 1) {
+            const busy = for (a.clip_jobs) |j| {
+                if (j) |x| if (!x.done.load(.acquire)) break true;
+            } else false;
+            if (!busy) break;
+            sync.sleepMs(10);
+        }
     }
 
     /// "Fulano começou a transmitir · clique pra assistir" (8 s; clicar assiste).
@@ -1862,6 +1872,11 @@ pub const App = struct {
 
     fn leaveRoom(a: *App) void {
         a.trim_at = c.igGetTime() + 2;
+        // gravação em andamento fecha o arquivo aqui (o fim e a duração): o
+        // buffer só some quando a última thread solta a transmissão, e saindo
+        // do app isso pode não acontecer antes de o processo acabar
+        for (a.views.items) |v| if (v.clip) |cb| if (cb.recState().active) a.stopRecording(cb, "");
+        for ([_]?*Sharer{ a.sharer, a.camera }) |m| if (m) |sh| if (sh.clip) |cb| if (cb.recState().active) a.stopRecording(cb, "");
         a.closeModals();
         a.clearChatImages();
         if (a.img_ready) |r| chatsend.drop(r);
@@ -3953,12 +3968,17 @@ pub const App = struct {
                     a.update_auto_started = true;
                 } else if (!std.mem.eql(u8, v, config.getStr(&a.cfg.update_skip))) {
                     debuglog.line("versão nova {s}: avisando", .{v});
-                    a.update_modal = true;
+                    a.updateNotice(.newer, v);
                 }
             }
         }
         if (a.update_auto_started and (st == .installed or st == .install_failed)) {
             a.update_auto_started = false;
+            a.updateNotice(if (st == .installed) .installed else .failed, "");
+        }
+        // o aviso que ficou pra depois da sala
+        if (a.update_later and a.screen != .room) {
+            a.update_later = false;
             a.update_modal = true;
         }
         if (st == .downloading or st == .checking) redrawIn(0.25);
@@ -6539,12 +6559,21 @@ pub const App = struct {
         secs: f32 = 0,
         path: [512:0]u8 = undefined,
         snap: clip.Buffer.Snapshot,
+        parts: usize = 1,
 
         fn run(j: *ClipJob) void {
             const n = std.mem.len(@as([*:0]const u8, &j.path));
-            if (mp4.writeClip(j.path[0..n :0], j.snap.w, j.snap.h, j.snap.video, j.snap.audio)) |_| {
-                j.ok = true;
-            } else |_| {}
+            // um arquivo por tamanho (o tamanho mudou no meio: "_2", "_3"...)
+            var ok = true;
+            for (j.snap.runs[0..j.snap.n_runs], 1..) |r, part| {
+                var buf: [530]u8 = undefined;
+                const path = if (part == 1) j.path[0..n :0] else clip.partName(&buf, j.path[0..n], @intCast(part)) catch break;
+                mp4.writeClip(path, r.w, r.h, j.snap.video[r.from..r.to], j.snap.audio) catch {
+                    ok = false;
+                };
+            }
+            j.ok = ok;
+            j.parts = j.snap.n_runs;
             j.snap.deinit();
             j.done.store(true, .release);
             wakeUi();
@@ -6592,7 +6621,10 @@ pub const App = struct {
             const path = std.mem.sliceTo(&j.path, 0);
             if (j.ok) {
                 a.rememberSaved(path);
-                a.toast("Clipe salvo ({d:.0} s): {s}", .{ j.secs, baseName(path) }, false);
+                if (j.parts > 1)
+                    a.toast("Clipe salvo ({d:.0} s, em {d} partes: o tamanho mudou no meio): {s}", .{ j.secs, j.parts, baseName(path) }, false)
+                else
+                    a.toast("Clipe salvo ({d:.0} s): {s}", .{ j.secs, baseName(path) }, false);
             } else a.toast("Não consegui salvar o clipe em {s}", .{path}, true);
             std.heap.c_allocator.destroy(j);
             sl.* = null;
@@ -6715,6 +6747,21 @@ pub const App = struct {
     }
 
     /// Abre a pasta dos clipes no gerenciador de arquivos.
+    /// Fora da sala abre o aviso de versão nova; dentro, só um toast (o modal
+    /// escurecia o vídeo de quem assiste) e o aviso abre ao voltar pro início.
+    fn updateNotice(a: *App, what: enum { newer, installed, failed }, v: []const u8) void {
+        if (a.screen != .room) {
+            a.update_modal = true;
+            return;
+        }
+        a.update_later = true;
+        switch (what) {
+            .newer => a.toast("telinha {s} saiu: o aviso abre quando você sair da sala (ou em Configurações).", .{v}, false),
+            .installed => a.toast("A versão nova do telinha foi baixada: abre quando o telinha reiniciar.", .{}, false),
+            .failed => a.toast("Não consegui instalar a versão nova do telinha: o aviso abre quando você sair da sala.", .{}, true),
+        }
+    }
+
     /// "Versão nova disponível" (checagem no GitHub), com o botão de baixar.
     fn drawUpdateBanner(a: *App, w: f32) void {
         const ust = update.getState();
@@ -10486,7 +10533,7 @@ pub const App = struct {
     /// precisa conferir depois de clicar num botão.
     pub fn qaState(a: *App, w: *std.Io.Writer) !void {
         const s = qa.str;
-        try w.print("{{\"screen\":{f},\"home_error\":{f}", .{ s(@tagName(a.screen)), s(a.home_error[0..a.home_error_len]) });
+        try w.print("{{\"screen\":{f},\"home_error\":{f},\"frames\":{d}", .{ s(@tagName(a.screen)), s(a.home_error[0..a.home_error_len]), frame_count });
         try w.print(",\"mic\":{},\"deaf\":{},\"share_modal\":{},\"settings_modal\":{},\"theater\":{},\"fullscreen\":{},\"controls_hidden\":{}", .{ a.mic != null, a.deaf, a.share_modal, a.settings_modal, a.theater, a.fullscreen, a.controls_hidden });
         if (a.focused) |f| try w.print(",\"focused\":{d}", .{f}) else try w.writeAll(",\"focused\":null");
         try w.print(",\"reconnect\":{{\"attempt\":{d},\"waiting\":{}}}", .{ a.reconnect.attempt, a.reconnect.waiting });

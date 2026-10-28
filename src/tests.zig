@@ -33,6 +33,8 @@ test {
     _ = @import("simlink.zig");
     _ = @import("trace.zig");
     _ = @import("connect.zig");
+    _ = @import("clip.zig");
+    _ = @import("mp4.zig");
 }
 
 fn initPool() void {

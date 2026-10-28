@@ -294,6 +294,61 @@ def tela_inicial():
         expect(st["cfg"]["host_pass"] == "s3nha", "senha não guardada")
 
 
+def ocioso(app, secs=5.0):
+    """Quadros desenhados e CPU (% de um núcleo) do app parado por `secs`."""
+    tick = os.sysconf("SC_CLK_TCK")
+
+    def cpu():
+        f = open(f"/proc/{app.proc.pid}/stat").read().rsplit(")", 1)[1].split()
+        return (int(f[11]) + int(f[12])) / tick
+    def threads():
+        out = {}
+        for t in os.listdir(f"/proc/{app.proc.pid}/task"):
+            try:
+                st = open(f"/proc/{app.proc.pid}/task/{t}/stat").read()
+            except OSError:
+                continue
+            name = st[st.index("(") + 1:st.rindex(")")]
+            f = st.rsplit(")", 1)[1].split()
+            out[f"{name}/{t}"] = (int(f[11]) + int(f[12])) / tick
+        return out
+    f0, c0, th0, t0 = app.state()["frames"], cpu(), threads(), time.monotonic()
+    time.sleep(secs)
+    f1, c1, th1, t1 = app.state()["frames"], cpu(), threads(), time.monotonic()
+    busy = sorted(((v - th0.get(k, 0), k) for k, v in th1.items()), reverse=True)[:4]
+    log("  threads: " + ", ".join(f"{k} {100 * d / (t1 - t0):.1f}%" for d, k in busy if d > 0))
+    # o desenho no Xvfb é o llvmpipe (GL pela CPU): esse custo já é medido pelos
+    # quadros por segundo; a CPU que conta é a do resto do app
+    gl = sum(v - th0.get(k, 0) for k, v in th1.items() if k.startswith("llvmpipe"))
+    return (f1 - f0) / (t1 - t0), 100 * (c1 - c0 - gl) / (t1 - t0)
+
+
+@test
+def interface_dorme():
+    """Regra número 1: parado, o app não gasta. Tela inicial e sala aberta sem ninguém
+    transmitindo, com o laço dormindo como fora dos testes (TELINHA_QA_OCIOSO): no máximo
+    alguns quadros por segundo (o redesenho de segurança) e quase nada de CPU."""
+    with Session("ocioso") as s:
+        a = s.app("a", 91, [], extra_env={"TELINHA_QA_OCIOSO": "1"}, config={"name": "Ana"})
+        a.wait(lambda st: st["screen"] == "home", 15, "a tela inicial")
+        # a vitrine anima por 12 s depois do último movimento (e ao abrir): depois disso, dorme
+        time.sleep(13.0)
+        fps, cpu = ocioso(a)
+        log(f"tela inicial parada: {fps:.1f} quadros/s, {cpu:.1f}% de CPU fora o desenho")
+        expect(fps <= 3.0, f"tela inicial parada redesenhando {fps:.1f} vezes por segundo")
+        expect(cpu <= 3.0, f"tela inicial parada gastando {cpu:.1f}% de CPU")
+        a.click("Criar sala")
+        a.wait(lambda st: st["home_tab"] == 1, 5, "a aba criar sala")
+        a.fill("##port", str(port()))
+        a.click("Criar sala##go")
+        a.wait(lambda st: st["screen"] == "room" and st["status"] == "connected", 15, "a sala abrir")
+        time.sleep(3.0)
+        fps, cpu = ocioso(a)
+        log(f"sala aberta parada: {fps:.1f} quadros/s, {cpu:.1f}% de CPU fora o desenho")
+        expect(fps <= 5.0, f"sala parada redesenhando {fps:.1f} vezes por segundo")
+        expect(cpu <= 3.0, f"sala parada gastando {cpu:.1f}% de CPU")
+
+
 @test
 def tela_inicial_parada():
     """Tela inicial com as animações desligadas: o cartão (aba criar sala) não treme entre quadros (a altura medida decidia a posição e vice-versa)."""

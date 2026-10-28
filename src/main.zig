@@ -207,7 +207,7 @@ pub fn main(init: std.process.Init) !void {
             // sem foco (o jogo na frente): o redesenho "de segurança" fica raro;
             // rede, vídeo e eventos acordam o laço na hora do mesmo jeito
             const unfocused = c.glfwGetWindowAttrib(win, c.GLFW_FOCUSED) == 0;
-            var timeout: f64 = if (qa.enabled()) 0.05 else if (iconified) 1.0 else if (unfocused) 2.0 else if (io.*.WantTextInput) 0.25 else 0.5;
+            var timeout: f64 = if (qa.enabled() and !qa.idle_mode) 0.05 else if (iconified) 1.0 else if (unfocused) 2.0 else if (io.*.WantTextInput) 0.25 else 0.5;
             // (a hora do ImGui só anda nos quadros completos: soma o que passou desde o último)
             const imgui_now = c.igGetTime() + @max(0.0, c.glfwGetTime() - last_full);
             if (ui.redraw_at != std.math.inf(f64)) timeout = @min(timeout, @max(0.0, ui.redraw_at - imgui_now));

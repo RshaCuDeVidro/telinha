@@ -23,6 +23,10 @@ pub fn enabled() bool {
     return dir_len > 0;
 }
 
+/// TELINHA_QA_OCIOSO=1: o laço dorme como fora dos testes (sem o redesenho a
+/// cada 50 ms que deixa o estado sempre fresco), pra medir a interface parada.
+pub var idle_mode = false;
+
 /// Liga o modo de testes se TELINHA_QA apontar pra uma pasta (depois de criar o contexto do ImGui).
 pub fn init() void {
     const d = std.mem.span(getenv("TELINHA_QA") orelse return);
@@ -30,6 +34,7 @@ pub fn init() void {
     @memcpy(dir_buf[0..d.len], d);
     dir_len = d.len;
     c.qa_enable(1);
+    if (getenv("TELINHA_QA_OCIOSO")) |v| idle_mode = v[0] == '1';
 }
 
 /// Fim de um quadro: guarda os itens dele e, de tempos em tempos, escreve os arquivos.
