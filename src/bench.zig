@@ -126,6 +126,12 @@ pub fn main(init: std.process.Init) !void {
     try convNV12(w, h);
     try runHw("NVENC: texto rolando", w, h, .screen, .text);
     try runHw("NVENC: movimento", w, h, .motion, .motion);
+    if (std.c.getenv("TELINHA_BENCH_LENTO") != null) {
+        const taxa: u32 = if (std.c.getenv("TELINHA_BENCH_TAXA")) |t| std.fmt.parseInt(u32, std.mem.span(t), 10) catch 6_000_000 else 6_000_000;
+        try slowText(w, h, taxa, false);
+        try slowText(w, h, taxa, true);
+        return;
+    }
     if (std.c.getenv("TELINHA_BENCH_TROCA") != null) {
         const taxa: u32 = if (std.c.getenv("TELINHA_BENCH_TAXA")) |t| std.fmt.parseInt(u32, std.mem.span(t), 10) catch 6_000_000 else 6_000_000;
         try pageSwitch(w, h, taxa);
@@ -230,6 +236,50 @@ fn psnrY(src_y: []const u8, p: codec.Decoder.Picture, w: u32, h: u32) f64 {
     const mse = @as(f64, @floatFromInt(sse)) / @as(f64, @floatFromInt(@as(u64, w) * h));
     if (mse == 0) return 99;
     return 10 * std.math.log10(255.0 * 255.0 / mse);
+}
+
+/// Texto mudando devagar (rolagem a 7,5 q/s) numa transmissão de 30 q/s pelo
+/// NVENC: com e sem avisar o encoder do ritmo de verdade (setFps).
+fn slowText(w: u32, h: u32, bitrate: u32, real_fps: bool) !void {
+    var err: [256]u8 = undefined;
+    var enc = codec.HwEncoder.init(.{ .width = w, .height = h, .fps = 30, .bitrate = bitrate, .mode = .screen, .temporal_layers = 1 }, &err) catch {
+        std.debug.print("NVENC indisponível: {s}\n", .{std.mem.sliceTo(&err, 0)});
+        return;
+    };
+    defer enc.deinit();
+    if (real_fps) enc.setFps(8);
+    var dec = try codec.Decoder.init();
+    defer dec.deinit();
+    const n = @as(usize, w) * h;
+    const img = try gpa.alloc(u8, n * 4);
+    defer gpa.free(img);
+    const sy = try gpa.alloc(u8, n);
+    defer gpa.free(sy);
+    const su = try gpa.alloc(u8, n / 4);
+    defer gpa.free(su);
+    const sv = try gpa.alloc(u8, n / 4);
+    defer gpa.free(sv);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    fillText(img, w, h, 1);
+    var psnr_sum: f64 = 0;
+    var bytes: u64 = 0;
+    var cnt: f64 = 0;
+    for (0..40) |f| {
+        scroll(img, w, h);
+        out.clearRetainingCapacity();
+        _ = try enc.encode(img.ptr, @as(usize, w) * 4, .bgrx, f == 0, &out);
+        const pic = (try dec.decode(out.items)) orelse continue;
+        codec.toI420(img.ptr, @as(usize, w) * 4, w, h, .bgrx, sy, su, sv);
+        if (f < 8) continue;
+        psnr_sum += psnrY(sy, pic, w, h);
+        bytes += out.items.len;
+        cnt += 1;
+    }
+    // 7,5 quadros por segundo de verdade
+    std.debug.print("texto a 7,5 q/s ({s}): PSNR {d:.2} dB, {d:.0} kbit/s de {d} kbit/s\n", .{
+        if (real_fps) "encoder sabe o ritmo real" else "encoder acha que é 30 q/s", psnr_sum / cnt, @as(f64, @floatFromInt(bytes)) * 8 / cnt * 7.5 / 1000, bitrate / 1000,
+    });
 }
 
 /// Tela parada que troca inteira (alt-tab, outra página): quanto o quadro da

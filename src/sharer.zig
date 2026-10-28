@@ -1373,6 +1373,10 @@ const Pipeline = struct {
         var redo_us: u64 = 0;
         var enc_quality: u8 = 0;
         var hw_errs: u8 = 0; // erros seguidos do encoder da placa
+        // o ritmo de verdade dos quadros codificados (ver setFps)
+        var real_fps: f32 = 30;
+        var last_enc_us: u64 = 0;
+        var enc_fps: u32 = 0; // o que o encoder acha que é o fps agora (0 = o de quando abriu)
 
         while (true) {
             // espera um quadro novo (ou um pedido de IDR)
@@ -1497,6 +1501,7 @@ const Pipeline = struct {
                     enc = .{ .sw = try codec.Encoder.init(opts) };
                 }
                 enc_gen = gen;
+                enc_fps = 0; // encoder novo nasce no fps nominal
                 s.mutex.lock();
                 const en = if (enc.? == .hw) enc.?.hw.name() else "openh264";
                 const k = @min(en.len, s.encoder_name_buf.len);
@@ -1536,6 +1541,25 @@ const Pipeline = struct {
             if (bw.takeChange()) |b| enc.?.setBitrate(b);
             const good = bw.goodBps(sync.nowUs());
             if (good > 0) s.client.last_good_bps[kind].store(good, .monotonic);
+            // o ritmo de verdade (tela de código mudando a 8 q/s numa transmissão
+            // de 30): o controle de taxa do encoder divide a taxa por ele, então
+            // cada quadro ganha até 4x mais bits. Sobe na hora (rolagem
+            // começando), desce devagar; só reconfigura com 25% de diferença
+            if (!resend) {
+                const tn = sync.nowUs();
+                if (last_enc_us != 0) {
+                    const iv = @max(tn - last_enc_us, 1000);
+                    const inst = @as(f32, 1e6) / @as(f32, @floatFromInt(iv));
+                    real_fps = if (inst > real_fps) inst else real_fps * 0.9 + inst * 0.1;
+                }
+                last_enc_us = tn;
+                const want: u32 = std.math.clamp(@as(u32, @intFromFloat(@round(real_fps))), @max(1, fps / 4), fps);
+                if (enc_fps == 0) enc_fps = fps;
+                if (want * 4 < enc_fps * 3 or want * 4 > enc_fps * 5) {
+                    enc_fps = want;
+                    enc.?.setFps(want);
+                }
+            }
 
             const t0 = sync.nowUs();
             if (slowEncodeUs(sl.w, sl.h)) |us| sync.sleepMs(@intCast(us / 1000)); // teste: PC lento
@@ -1804,6 +1828,11 @@ const Encoder = union(enum) {
     fn setBitrate(e: *Encoder, bps: u32) void {
         switch (e.*) {
             inline else => |*x| x.setBitrate(bps),
+        }
+    }
+    fn setFps(e: *Encoder, fps: u32) void {
+        switch (e.*) {
+            inline else => |*x| x.setFps(fps),
         }
     }
     fn encode(e: *Encoder, sl: *const Slot, key: bool, out: *std.ArrayList(u8)) !?bool {

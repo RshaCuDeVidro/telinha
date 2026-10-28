@@ -53,6 +53,8 @@ int hwenc_encode_dev(hwenc *e, uint64_t dev, int pitch, int format, int force_id
                      const uint8_t **out, int *out_len, int *is_idr);
 
 void hwenc_set_bitrate(hwenc *e, int bitrate);
+// O ritmo de verdade dos quadros (o controle de taxa divide a taxa por ele). Só o NVENC.
+void hwenc_set_fps(hwenc *e, int fps);
 const char *hwenc_name(hwenc *e);
 void hwenc_close(hwenc *e);
 

@@ -481,6 +481,13 @@ pub const Encoder = struct {
         _ = e.enc.*.*.SetOption.?(e.enc, oh.ENCODER_OPTION_BITRATE, &info);
     }
 
+    /// O ritmo de verdade dos quadros: o controle de taxa do openh264 divide a
+    /// taxa por ele (tela mudando devagar ganha mais bits por quadro).
+    pub fn setFps(e: *Encoder, fps: u32) void {
+        var f: f32 = @floatFromInt(@max(fps, 1));
+        _ = e.enc.*.*.SetOption.?(e.enc, oh.ENCODER_OPTION_FRAME_RATE, &f);
+    }
+
     pub fn forceKey(e: *Encoder) void {
         _ = e.enc.*.*.ForceIntraFrame.?(e.enc, true);
     }
@@ -551,6 +558,11 @@ pub const HwEncoder = struct {
 
     pub fn setBitrate(e: *HwEncoder, bps: u32) void {
         hw.hwenc_set_bitrate(e.h, @intCast(bps));
+    }
+
+    /// O ritmo de verdade dos quadros (ver hwenc_set_fps). Só o NVENC muda.
+    pub fn setFps(e: *HwEncoder, fps: u32) void {
+        hw.hwenc_set_fps(e.h, @intCast(fps));
     }
 
     pub fn name(e: *HwEncoder) []const u8 {

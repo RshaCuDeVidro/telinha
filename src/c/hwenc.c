@@ -17,6 +17,7 @@ nvenc *nvenc_open(int codec, int width, int height, int fps, int bitrate, int sc
 int nvenc_encode(nvenc *e, const uint8_t *pixels, int stride, int format, int force_idr, const uint8_t **out, int *out_len, int *is_idr);
 int nvenc_encode_dev(nvenc *e, uint64_t dev, int pitch, int format, int force_idr, const uint8_t **out, int *out_len, int *is_idr);
 void nvenc_set_bitrate(nvenc *e, int bitrate);
+void nvenc_set_fps(nvenc *e, int fps);
 const char *nvenc_name(nvenc *e);
 void nvenc_close(nvenc *e);
 
@@ -26,6 +27,7 @@ nvenc_av1 *nvenc_av1_open(int codec, int width, int height, int fps, int bitrate
 int nvenc_av1_encode(nvenc_av1 *e, const uint8_t *pixels, int stride, int format, int force_idr, const uint8_t **out, int *out_len, int *is_idr);
 int nvenc_av1_encode_dev(nvenc_av1 *e, uint64_t dev, int pitch, int format, int force_idr, const uint8_t **out, int *out_len, int *is_idr);
 void nvenc_av1_set_bitrate(nvenc_av1 *e, int bitrate);
+void nvenc_av1_set_fps(nvenc_av1 *e, int fps);
 const char *nvenc_av1_name(nvenc_av1 *e);
 void nvenc_av1_close(nvenc_av1 *e);
 
@@ -175,6 +177,12 @@ void hwenc_set_bitrate(hwenc *h, int bitrate) {
 #endif
     if (h->kind == KIND_NV_AV1) return nvenc_av1_set_bitrate(h->impl, bitrate);
     nvenc_set_bitrate(h->impl, bitrate);
+}
+
+void hwenc_set_fps(hwenc *h, int fps) {
+    // VA-API e Media Foundation: ficam no fps de quando abriu
+    if (h->kind == KIND_NV_AV1) nvenc_av1_set_fps(h->impl, fps);
+    else if (h->kind == KIND_NV) nvenc_set_fps(h->impl, fps);
 }
 
 const char *hwenc_name(hwenc *h) {

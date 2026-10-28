@@ -20,6 +20,7 @@
 #define nvenc_encode nvenc_av1_encode
 #define nvenc_encode_dev nvenc_av1_encode_dev
 #define nvenc_set_bitrate nvenc_av1_set_bitrate
+#define nvenc_set_fps nvenc_av1_set_fps
 #define nvenc_name nvenc_av1_name
 #endif
 #include "hwenc.h"
@@ -481,6 +482,19 @@ int nvenc_encode_dev(nvenc *e, uint64_t dev, int pitch, int format, int force_id
 
 void nvenc_set_bitrate(nvenc *e, int bitrate) {
     configure_rc(e, bitrate);
+    reconfigure(e);
+}
+
+// O ritmo de verdade dos quadros (tela de código mudando a 8 q/s com a
+// transmissão em 30): o controle de taxa e o VBV dividem a taxa por ele, então
+// cada quadro pode gastar mais bits (sem isso a tela parada-mas-mudando usava
+// uma fração da banda e saía borrada). Sem IDR.
+void nvenc_set_fps(nvenc *e, int fps) {
+    if (fps < 1 || fps == e->fps) return;
+    e->fps = fps;
+    e->init.frameRateNum = (uint32_t)fps;
+    e->init.frameRateDen = 1;
+    configure_rc(e, e->bitrate);
     reconfigure(e);
 }
 
