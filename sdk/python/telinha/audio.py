@@ -45,6 +45,22 @@ async def reap(proc: asyncio.subprocess.Process, timeout: float = 3.0) -> None:
         log.warning("o processo %s não saiu em %.0f s", proc.pid, timeout)
 
 
+def drain_tail(stream: asyncio.StreamReader | None, keep: int = 4096) -> tuple[asyncio.Task | None, bytearray]:
+    """Lê o stderr de um ffmpeg enquanto ele roda, guardando só o fim: sem
+    isso, um ffmpeg que reclama muito (stream ruim) enche o cano (64 KB) e
+    trava esperando alguém ler, e a rádio/vídeo congela."""
+    tail = bytearray()
+    if stream is None:
+        return None, tail
+
+    async def run() -> None:
+        while chunk := await stream.read(4096):
+            tail.extend(chunk)
+            if len(tail) > keep:
+                del tail[:-keep]
+    return asyncio.create_task(run()), tail
+
+
 async def ogg_packets(stream: asyncio.StreamReader):
     """Os pacotes de um Ogg/Opus, na ordem (o OpusHead e o OpusTags inclusive)."""
     pending = b""
@@ -155,6 +171,7 @@ class Player:
         enc = await asyncio.create_subprocess_exec(*enc_args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                                                    stderr=asyncio.subprocess.DEVNULL)
         self._proc = dec
+        drain, err_tail = drain_tail(dec.stderr)
         pump = asyncio.create_task(self._pump(dec.stdout, enc.stdin, channels))
         loop = asyncio.get_running_loop()
         n = 0
@@ -182,12 +199,16 @@ class Player:
                 await self.client.send_voice(pkt)
                 self.position += FRAME_S
             await dec.wait()
+            if drain:
+                await asyncio.wait([drain], timeout=1)
             if dec.returncode not in (0, None) and not self._stop and self._restart_at is None:
-                err = (await dec.stderr.read()).decode(errors="replace").strip()
+                err = bytes(err_tail).decode(errors="replace").strip()
                 raise RuntimeError(f"o ffmpeg não conseguiu tocar {source!r}: {err[-300:] or dec.returncode}")
             return True
         finally:
             pump.cancel()
+            if drain:
+                drain.cancel()
             for proc in (dec, enc):
                 await reap(proc)
 

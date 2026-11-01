@@ -27,7 +27,7 @@ import shutil
 import tempfile
 
 from . import wire
-from .audio import FFmpegMissing, ogg_packets, reap
+from .audio import FFmpegMissing, drain_tail, ogg_packets, reap
 from .client import Client
 from .image import ChatImage, encode as encode_image
 
@@ -256,13 +256,16 @@ class VideoPlayer:
             w = max(16, round((info.width or 16 * h // 9) * h / max(info.height, 1) / 2) * 2)
             g = max(1, round(fps * 2))
             vargs = self._input(video, headers, start) + [
-                "-map", "0:v:0", "-vf", f"scale={w}:{h},format=yuv420p", "-c:v", "libx264", "-preset", "veryfast",
+                # ritmo constante: o bot manda o quadro n na hora n/fps, então um
+                # vídeo de taxa variável descolava do som; o ffmpeg repete/larga quadros
+                "-map", "0:v:0", "-fps_mode", "cfr", "-r", f"{fps:.3f}", "-vf", f"scale={w}:{h},format=yuv420p", "-c:v", "libx264", "-preset", "veryfast",
                 "-tune", "zerolatency", "-bf", "0", "-g", str(g), "-b:v", str(self.bitrate), "-maxrate", str(self.bitrate),
                 "-bufsize", str(self.bitrate), "-x264-params", "aud=1:repeat-headers=1", "-f", "h264", "pipe:1"]
         log.info("vídeo %s: %r, %s", video[:80], info, "repassando sem recodificar" if self.passthrough else f"recodificando pra {w}x{h}")
         vproc = await asyncio.create_subprocess_exec(*vargs, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                                                      limit=8 * 1024 * 1024)
         self._procs = [vproc]
+        drain, err_tail = drain_tail(vproc.stderr)
         aproc = None
         if info.has_audio:
             aargs = self._input(audio or video, headers, start) + [
@@ -282,13 +285,17 @@ class VideoPlayer:
                     await asyncio.wait_for(vproc.wait(), 10)
                 except asyncio.TimeoutError:
                     pass
+            if drain:
+                await asyncio.wait([drain], timeout=1)
             if vproc.returncode not in (0, None) and not self._stop:
-                err = (await vproc.stderr.read()).decode(errors="replace").strip()
+                err = bytes(err_tail).decode(errors="replace").strip()
                 raise RuntimeError(f"o ffmpeg não conseguiu abrir {video[:120]!r}: {err[-300:] or vproc.returncode}")
             return not self._stop
         finally:
             for t in tasks:
                 t.cancel()
+            if drain:
+                drain.cancel()
             for proc in self._procs:
                 await reap(proc)
 

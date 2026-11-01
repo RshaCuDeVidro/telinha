@@ -23,7 +23,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from . import wire
-from .connection import Connection, ConnectError, WrongPassword, race, secure
+from .connection import Connection, ConnectError, IdentityMismatch, WrongPassword, race, secure
 from .crypto import AuthFailed, fingerprint, transcript, verify_identity
 from .embed import Click, Embed
 from .image import ChatImage, encode as encode_image
@@ -66,12 +66,18 @@ EVENTS = (
 
 
 class Denied(Exception):
-    """A sala recusou o bot ou tirou ele (o motivo vem da sala). Não reconecta."""
+    """A sala recusou o bot ou tirou ele (o motivo vem da sala). Expulso,
+    banido ou sem permissão pra bot não reconecta; sala cheia, trancada ou
+    fechada tenta de novo de tempos em tempos (ver `RETRY_DENIED`)."""
 
     def __init__(self, reason: str, code: int):
         super().__init__(reason)
         self.reason = reason
         self.code = wire.Deny(code) if code in wire.Deny._value2member_map_ else code
+
+
+# recusas que passam sozinhas (a sala esvazia, destranca, o dono abre de novo)
+RETRY_DENIED = (wire.Deny.FULL, wire.Deny.LOCKED, wire.Deny.CLOSED, wire.Deny.LINK_CLOSED)
 
 
 class Client:
@@ -124,6 +130,7 @@ class Client:
         self._conn: Connection | None = None
         self._stopping = False
         self._rejoin_call = ""
+        self._pinned_fp: str | None = None
         self._ready_ev: asyncio.Event | None = None
         self._next_req = 1
         self._file_ready: dict[int, asyncio.Future] = {}
@@ -201,8 +208,15 @@ class Client:
             try:
                 await self._session()
                 backoff = 1.0
-            except Denied:
-                raise
+            except Denied as e:
+                if self._stopping or not self.reconnect or e.code not in RETRY_DENIED:
+                    raise
+                # cheia/trancada/fechada: não adianta insistir a cada segundo
+                wait = min(max(backoff, 30.0) * 2, 300.0)
+                await self._emit("disconnect", e.reason)
+                log.warning("a sala recusou (%s); tentando de novo em %.0f s", e.reason, wait)
+                await asyncio.sleep(wait)
+                backoff = wait
             except WrongPassword:
                 raise
             except (ConnectError, OSError, asyncio.IncompleteReadError, AuthFailed, wire.Truncated, asyncio.TimeoutError) as e:
@@ -243,6 +257,16 @@ class Client:
         self._rejoin_call = self.call
         try:
             await secure(conn, self.invite, self.password)
+            # a sala da primeira conexão fica fixada: reconectando, outra
+            # identidade (alguém no meio do caminho, DNS trocado) não recebe a
+            # senha do canal nem o token do bot. Pra fixar desde o começo, use
+            # o convite com a impressão (telinha://host:porta!impressão#senha).
+            if self._pinned_fp and conn.fingerprint != self._pinned_fp:
+                raise IdentityMismatch(f"a sala mudou de identidade ({conn.fingerprint}, era {self._pinned_fp}): não reconecto")
+            if conn.fingerprint and not self._pinned_fp:
+                self._pinned_fp = conn.fingerprint
+                if self.invite.fingerprint is None:
+                    log.info("identidade da sala: %s (ponha no convite pra conferir já na primeira vez: !%s)", conn.fingerprint, conn.fingerprint)
             self.fingerprint = conn.fingerprint
             await conn.send(
                 Writer(MsgType.HELLO).str(self.name, 32).str("").u64(self.key).str(f"sdk-python/{SDK_VERSION}")
