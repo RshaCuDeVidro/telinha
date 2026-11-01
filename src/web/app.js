@@ -18,6 +18,8 @@ const PT = {
   you: '(você)', live: 'AO VIVO',
   tap_sound: 'Toque pra ativar o som',
   no_audio_dec: 'Este navegador não toca o som da transmissão (falta o AudioDecoder). O Chrome e o Edge tocam; ou use o app.',
+  live_elsewhere: (c) => `Ninguém ao vivo neste canal. Tem gente ao vivo em #${c}: toque no canal aí em cima.`,
+  chan_locked: 'canal trancado ou com senha: entre pelo app',
 };
 const EN = {
   join_title: 'Watch in your browser', join_sub: 'Nothing to install. To stream and talk, use the telinha app.',
@@ -31,6 +33,8 @@ const EN = {
   you: '(you)', live: 'LIVE',
   tap_sound: 'Tap to turn on sound',
   no_audio_dec: "This browser can't play the stream's sound (no AudioDecoder). Chrome and Edge can; or use the app.",
+  live_elsewhere: (c) => `Nobody live in this channel. Someone is live in #${c}: tap the channel above.`,
+  chan_locked: 'locked or password channel: join it from the app',
 };
 const L = (navigator.language || 'pt').toLowerCase().startsWith('pt') ? PT : EN;
 const $ = (id) => document.getElementById(id);
@@ -38,7 +42,7 @@ const TOUCH = matchMedia('(pointer: coarse)').matches;
 
 // ----------------------------------------------------------- protocolo
 const T = { hello: 1, welcome: 2, denied: 3, members: 4, chat: 5, frame: 8, watch: 9, keyreq: 10, ping: 11, pong: 12,
-  audio: 14, ack: 15, voice: 17, notice: 20, cursor: 25, view_size: 26, channel: 29, web_hello: 40,
+  audio: 14, ack: 15, voice: 17, notice: 20, cursor: 25, view_size: 26, channel: 29, call: 33, web_hello: 40,
   chat_edit: 42, embed_action: 43 };
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -339,7 +343,18 @@ function onMessage(u8) {
       break;
     }
     case T.members: onMembers(r); break;
-    case T.channel: { st.chan = r.str(); $('chan').textContent = '#' + st.chan; break; }
+    case T.channel: {
+      st.chan = r.str(); $('chan').textContent = '#' + st.chan;
+      // a lista de canais (pessoas e quem está ao vivo): a página não fica
+      // presa no canal do link
+      try {
+        const n = r.u8(); const list = [];
+        for (let i = 0; i < n; i++) list.push({ name: r.str(), people: r.u16(), flags: r.u8() });
+        st.chans = list;
+      } catch (e) { /* servidor antigo: só o nome */ }
+      renderChans();
+      break;
+    }
     case T.chat: onChat(r); break;
     case T.chat_edit: onChatEdit(r); break;
     case T.frame: onFrame(r); break;
@@ -400,6 +415,37 @@ function renderPeople(list) {
   }
 }
 
+function renderChans() {
+  const box = $('chans'); box.textContent = '';
+  const list = st.chans || [];
+  box.hidden = list.length < 2;
+  for (const c of list) {
+    const b = document.createElement('button');
+    const closed = (c.flags & (4 | 8)) !== 0; // senha / trancado
+    b.className = 'chip' + (c.name === st.chan ? ' sel' : '') + (closed ? ' closed' : '');
+    if (c.flags & 1) { const d = document.createElement('span'); d.className = 'chip-live'; b.append(d); }
+    b.append('#' + c.name);
+    if (c.people) { const n = document.createElement('span'); n.className = 'chip-n'; n.textContent = c.people; b.append(n); }
+    if (closed) b.title = L.chan_locked;
+    else if (c.name !== st.chan) b.onclick = () => {
+      // o chat e a call juntos (a página separa os dois como o app, mas aqui é um lugar só)
+      // (o servidor aceita uma troca a cada 800 ms: a call vai logo depois)
+      send(new W(T.channel).str(c.name).str('').done());
+      setTimeout(() => send(new W(T.call).str(c.name).str('').done()), 850);
+    };
+    box.append(b);
+  }
+  emptyText();
+}
+
+// "ninguém transmitindo" e, se tiver, onde tem gente ao vivo
+function emptyText() {
+  const streams = st.streams || [];
+  if (streams.length) { $('empty').textContent = ''; return; }
+  const other = (st.chans || []).find((c) => c.name !== st.chan && (c.flags & 1) && !(c.flags & (4 | 8)));
+  $('empty').textContent = other ? L.live_elsewhere(other.name) : L.nobody;
+}
+
 function renderStreams(streams) {
   const box = $('streams'); box.textContent = '';
   for (const s of streams) {
@@ -410,7 +456,7 @@ function renderStreams(streams) {
     b.onclick = () => watch(s.id);
     box.append(b);
   }
-  $('empty').textContent = streams.length ? '' : L.nobody;
+  emptyText();
   $('empty').hidden = streams.length > 0 && st.decoded > 0;
 }
 
@@ -542,7 +588,13 @@ function sizeCursor(w, h) {
 // transmite não precisa pintar o cursor na tela, nem sair do caminho direto
 // pela placa de vídeo)
 function drawCursor() {
-  const cc = $('cursor'); const g = cc.getContext('2d');
+  const cc = $('cursor');
+  // a camada só muda quando a seta mexe (limpar e repintar a cada quadro fazia
+  // o Chrome do celular recompor a tela toda, e piscava)
+  const k = st.cursor ? `${st.cursor[0]},${st.cursor[1]},${cc.width}x${cc.height}` : `-${cc.width}`;
+  if (k === drawCursor.last) return;
+  drawCursor.last = k;
+  const g = cc.getContext('2d');
   g.clearRect(0, 0, cc.width, cc.height);
   if (!st.cursor || !cc.width) return;
   const x = st.cursor[0] / 65534 * cc.width, y = st.cursor[1] / 65534 * cc.height;
@@ -564,7 +616,7 @@ function sendViewSizeNow() {
   if (!st.watching) return;
   const dpr = window.devicePixelRatio || 1;
   // tela cheia: a altura da tela (não "a original": 1440p/4K pra um celular)
-  const full = document.fullscreenElement != null;
+  const full = document.fullscreenElement != null || document.body.classList.contains('fake-full');
   const want = Math.round((full ? Math.min(screen.width, screen.height) : $('stage').clientHeight) * dpr);
   // 2% de folga: 1080 px com DPR quebrado dava 1083 e pedia 1440p
   let h = STEPS.find((s) => s * 1.02 >= want) || 0xffff;
@@ -881,8 +933,14 @@ function start() {
   $('btn-full').onclick = () => {
     if (document.fullscreenElement) { document.exitFullscreen(); return; }
     const stage = $('stage');
+    // iPhone: o Safari não põe um elemento em tela cheia; o palco cobre a página
+    if (document.body.classList.contains('fake-full') || !(stage.requestFullscreen || stage.webkitRequestFullscreen)) {
+      document.body.classList.toggle('fake-full');
+      st.sentH = -1; sendViewSize();
+      return;
+    }
     if (stage.requestFullscreen) stage.requestFullscreen().then(() => { try { screen.orientation.lock('landscape'); } catch (e) { /* sem */ } }).catch(() => {});
-    else if (stage.webkitRequestFullscreen) stage.webkitRequestFullscreen();
+    else stage.webkitRequestFullscreen();
   };
   // celular: um toque mostra/esconde os controles (não tem "mouse em cima")
   $('stage').addEventListener('click', (e) => { if (TOUCH && e.target.closest('.controls') == null) $('stage').classList.toggle('show-ctl'); });

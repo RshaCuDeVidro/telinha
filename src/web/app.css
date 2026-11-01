@@ -98,7 +98,10 @@ input:focus { border-color: var(--accent); }
   .streams { padding: 8px 10px; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
   .pill { flex: none; }
   /* o vídeo em 16:9 na largura toda, sem bordas */
-  .stage { flex: none; aspect-ratio: 16 / 9; width: 100%; max-height: 60dvh; border-radius: 0; }
+  /* svh: a altura da tela com a barra do navegador à mostra, que não muda
+     quando a barra some (dvh mudava no meio da rolagem e o vídeo piscava) */
+  .stage { flex: none; aspect-ratio: 16 / 9; width: 100%; max-height: 60vh; max-height: 60svh; border-radius: 0; }
+  .chans { padding: 8px 10px 0; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
   .side { min-height: 0; padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); }
   .people { max-height: 72px; display: flex; flex-wrap: wrap; gap: 4px 10px; }
   .people li { padding: 2px 0; }
@@ -160,3 +163,14 @@ a.ce-title:hover { color: var(--c); text-decoration: underline; }
 /* o vídeo tem som e ele está desligado: à vista, em cima do vídeo */
 .sound-pill { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 4;
   background: var(--accent); color: #fff; border: 0; border-radius: 999px; padding: 8px 16px; font-weight: 600; cursor: pointer; }
+
+/* canais: a página troca de canal sem voltar pro app */
+.chans { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { display: inline-flex; align-items: center; gap: 6px; flex: none; padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--hover); background: transparent; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; }
+.chip.sel { color: var(--text); border-color: var(--accent); }
+.chip.closed { opacity: .5; cursor: default; }
+.chip-live { width: 7px; height: 7px; border-radius: 50%; background: var(--red); }
+.chip-n { font-size: 11px; opacity: .7; }
+/* iPhone: "tela cheia" é o palco cobrindo a página */
+.fake-full .stage { position: fixed; inset: 0; z-index: 50; max-height: none; aspect-ratio: auto; border-radius: 0; }
