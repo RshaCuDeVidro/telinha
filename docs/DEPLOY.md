@@ -72,6 +72,26 @@ sudo systemctl enable --now telinha
 journalctl -u telinha -f
 ```
 
+### Updating itself
+
+With `--atualizar-sozinho` (or `TELINHA_ATUALIZAR=1`) the server checks for a new
+release every 6 h, downloads its `telinha-server`, verifies the signature and the
+signed version (same as the app), and only restarts once the room has been
+**empty for 2 minutes** (bots don't count). It restarts in the same process, so
+systemd and Docker don't notice; if the new version crashes in its first 10 s,
+the next start rolls back to the previous one.
+
+The executable must live in a folder the service can write to. With the unit
+above (`ProtectSystem=strict`), use the state folder:
+
+```sh
+sudo install -D -m755 zig-out/bin/telinha-server-x86_64 /var/lib/telinha/bin/telinha-server
+# and in the unit: ExecStart=/var/lib/telinha/bin/telinha-server --atualizar-sozinho ...
+```
+
+Without write access the server only logs that there's a new version. On Docker,
+update the image (the container's binary is read-only).
+
 ## Debug logs from players
 
 In the app, *Settings → Debugging → To the room owner* sends the log through the

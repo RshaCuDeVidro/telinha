@@ -2579,6 +2579,7 @@ test "canais: senha, trava, tópico, admin leva alguém; o que é fixo sobrevive
 test "nome: convite colado no campo do nome não vira o nome (a senha ia aparecer)" {
     var nb: [32]u8 = undefined;
     try std.testing.expectEqualStrings("anônimo", Server.safeName("telinha://168.75.82.0:7777#4byx", &nb));
+    try std.testing.expectEqualStrings("anônimo", Server.safeName("https://dono.github.io/telinha/j/#i=telinha%3A%2F%2F1.2.3.4", &nb));
     try std.testing.expectEqualStrings("anônimo", Server.safeName("  TELINHA://x:1!abc#pw ", &nb));
     try std.testing.expectEqualStrings("anônimo", Server.safeName("   ", &nb));
     try std.testing.expectEqualStrings("Ana", Server.safeName(" Ana ", &nb));

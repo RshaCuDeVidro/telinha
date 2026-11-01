@@ -15,6 +15,9 @@ void upd_cleanup(const char *self, int keep_old);
 // Abre o executável de novo com os mesmos argumentos (quem chama sai depois).
 // 0 = ok; -2 = o novo morreu logo ao abrir (biblioteca, processador): não saia.
 int upd_relaunch(const char *self);
+// Servidor (Linux): vira o executável de novo no mesmo processo (execve).
+// Só volta se falhar (-1).
+int upd_reexec(const char *self, int after_update);
 // Põe o `self`.old de volta no lugar. 0 = ok.
 int upd_rollback(const char *self);
 // Marca "versão nova em teste" (`self`.testando): on = 1 cria, 0 apaga.

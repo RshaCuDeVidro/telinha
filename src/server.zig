@@ -1039,6 +1039,15 @@ pub const Server = struct {
         return s.conns.items.len;
     }
 
+    /// Gente de verdade na sala (bots não contam: o de música fica conectado).
+    pub fn humanCount(s: *Server) usize {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        var n: usize = 0;
+        for (s.conns.items) |cn| n += @intFromBool(!cn.bot);
+        return n;
+    }
+
     fn log(s: *Server, comptime fmt: []const u8, args: anytype) void {
         const f = s.log_fn orelse return;
         var buf: [512]u8 = undefined;
@@ -2160,7 +2169,8 @@ pub const Server = struct {
     /// vira "anônimo". Um '\n' no nome injetava linhas no arquivo de estado.
     pub fn safeName(raw_name: []const u8, out: *[32]u8) []const u8 {
         const trimmed = std.mem.trim(u8, raw_name, " \t\r\n");
-        if (trimmed.len == 0 or std.ascii.startsWithIgnoreCase(trimmed, "telinha://")) return "anônimo";
+        // convite colado no lugar do nome (a senha ficava à vista de todo mundo)
+        if (trimmed.len == 0 or std.ascii.startsWithIgnoreCase(trimmed, "telinha://") or std.mem.indexOf(u8, trimmed, "/j/#i=") != null) return "anônimo";
         var n: usize = 0;
         var i: usize = 0;
         var space = false;

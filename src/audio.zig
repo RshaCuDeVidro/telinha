@@ -97,6 +97,13 @@ pub const Ring = struct {
         return rg.level;
     }
 
+    /// Quanto som (µs) está na fila esperando tocar.
+    pub fn queuedUs(rg: *Ring) u64 {
+        rg.mutex.lock();
+        defer rg.mutex.unlock();
+        return @as(u64, rg.len / channels) * 1_000_000 / rate;
+    }
+
     pub fn write(rg: *Ring, samples: []const f32) void {
         rg.writeLocked(samples);
         // a saída estava parada (silêncio longo): liga de novo, fora do mutex

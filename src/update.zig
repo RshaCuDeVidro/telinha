@@ -35,6 +35,19 @@ else if (builtin.os.tag == .windows)
 else
     "telinha-linux-x86_64";
 
+/// Servidor dedicado: baixa o telinha-server em vez do app.
+pub var for_server = false;
+
+fn assetName() []const u8 {
+    if (!for_server) return asset_name;
+    if (builtin.os.tag != .linux) return "";
+    return switch (builtin.cpu.arch) {
+        .x86_64 => "telinha-server-linux-x86_64",
+        .aarch64 => "telinha-server-linux-aarch64",
+        else => "",
+    };
+}
+
 pub const State = enum(u8) {
     idle,
     checking,
@@ -296,10 +309,11 @@ fn prepare(rel: Release, current: []const u8, english: bool) void {
         }
     } else |_| {};
 
-    if (asset_name.len == 0) return setWhy("não tem versão pronta pra este processador", .{});
-    const bu = assetUrl(rel, asset_name) orelse return setWhy("a release não tem o {s}", .{asset_name});
-    bin_sha = sumOf(sums, asset_name) orelse return setWhy("SHA256SUMS sem o {s}", .{asset_name});
-    bin_size = assetSize(rel, asset_name);
+    const an = assetName();
+    if (an.len == 0) return setWhy("não tem versão pronta pra este processador", .{});
+    const bu = assetUrl(rel, an) orelse return setWhy("a release não tem o {s}", .{an});
+    bin_sha = sumOf(sums, an) orelse return setWhy("SHA256SUMS sem o {s}", .{an});
+    bin_size = assetSize(rel, an);
     if (bin_size > max_bin_bytes) return setWhy("o arquivo da release é grande demais", .{});
     if (bu.len > bin_url.len) return setWhy("endereço longo demais", .{});
     @memcpy(bin_url[0..bu.len], bu);
@@ -399,6 +413,39 @@ pub fn restart() bool {
         return false;
     }
     return r == 0;
+}
+
+/// Servidor: reabre na versão instalada, no mesmo processo. Só volta se falhar.
+pub fn serverRestart() void {
+    if (getState() != .installed) return;
+    var sb: [1100]u8 = undefined;
+    const self = std.fmt.bufPrintZ(&sb, "{s}", .{self_buf[0..self_len]}) catch return;
+    _ = upd_reexec(self.ptr, 1);
+    failInstall("não consegui reabrir na versão nova", .{});
+}
+
+/// Servidor, ao abrir: como o startup() do app, mas sem processo novo (o
+/// systemd mataria um filho solto). Versão nova que caiu antes de passar 10 s
+/// de pé: volta pra anterior e reabre nela.
+pub fn serverStartup() ?[]const u8 {
+    var sb: [1024]u8 = undefined;
+    if (upd_self_path(&sb, sb.len) != 0) return null;
+    const self: [*:0]const u8 = @ptrCast(&sb);
+    const after = if (getenv("TELINHA_ATUALIZOU")) |v| v[0] == '1' else false;
+    if (after) {
+        upd_cleanup(self, 1);
+        upd_mark(self, 1);
+        on_probation.store(true, .release);
+        sync.spawn(confirmLater, .{}) catch {};
+        return "abri na versão nova (o executável anterior fica guardado até passar 10 s de pé)";
+    } else if (upd_marked(self) != 0) {
+        upd_mark(self, 0);
+        if (upd_rollback(self) == 0) _ = upd_reexec(self, 0);
+        upd_cleanup(self, 0);
+        return "a versão nova caiu logo depois de atualizar e não consegui voltar pra anterior";
+    }
+    upd_cleanup(self, 0);
+    return null;
 }
 
 /// Ao fechar normalmente: a versão nova abriu e fechou direito (passou no teste).
@@ -588,6 +635,7 @@ extern "c" fn upd_self_path(out: [*]u8, cap: c_int) c_int;
 extern "c" fn upd_can_write(dir: [*:0]const u8) c_int;
 extern "c" fn upd_download(url: [*:0]const u8, path: [*:0]const u8) c_int;
 extern "c" fn upd_swap(self: [*:0]const u8, newfile: [*:0]const u8) c_int;
+extern "c" fn upd_reexec(self: [*:0]const u8, after_update: c_int) c_int;
 extern "c" fn upd_cleanup(self: [*:0]const u8, keep_old: c_int) void;
 extern "c" fn upd_relaunch(self: [*:0]const u8) c_int;
 extern "c" fn upd_rollback(self: [*:0]const u8) c_int;

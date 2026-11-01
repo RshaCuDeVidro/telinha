@@ -13,6 +13,8 @@ const Server = @import("server.zig").Server;
 const tunnel = @import("tunnel.zig");
 const upnp = @import("upnp.zig");
 const crypto = @import("crypto.zig");
+const update = @import("update.zig");
+const server_options = @import("server_options");
 
 const usage =
     \\telinha-server — servidor dedicado de salas do telinha
@@ -32,6 +34,8 @@ const usage =
     \\                         Quem entra num nome que não existe cria o canal
     \\                         (some quando esvazia)
     \\  --sem-canais-novos     ninguém cria canal: só os da lista
+    \\  --atualizar-sozinho    baixa a versão nova (assinada) e reinicia quando a
+    \\                         sala ficar 2 min vazia ($TELINHA_ATUALIZAR=1)
     \\  --sem-bots             recusa bots (o sdk/python e afins; $TELINHA_SEM_BOTS=1)
     \\  --so-protocolo-novo    recusa apps de antes da 3.8 (protocolo 6: a senha deles
     \\                         dá pra testar offline a partir de uma conexão;
@@ -240,6 +244,62 @@ fn log(msg: []const u8) void {
     std.debug.print("[{d:0>2}:{d:0>2}] {s}\n", .{ t.h, t.m, msg });
 }
 
+/// --atualizar-sozinho: confere a cada 6 h (a primeira 5 min depois de abrir),
+/// baixa e confere a assinatura, e só reinicia com a sala vazia há 2 min
+/// (bots não contam: o de música fica conectado o tempo todo). Reinicia no
+/// mesmo processo; se a versão nova cair antes de 10 s, a próxima abertura
+/// volta pra anterior (update.serverStartup).
+const AutoUpdate = struct {
+    next_check_ms: u64,
+    empty_ms: u64,
+    empty_since_ms: u64 = 0,
+    told: update.State = .idle,
+
+    fn tick(au: *AutoUpdate, srv: *Server) void {
+        var buf: [300]u8 = undefined;
+        const now = sync.nowMs();
+        const st = update.getState();
+        var vb: [32]u8 = undefined;
+        const v = update.latest(&vb);
+        defer au.told = st;
+        switch (st) {
+            .idle, .current, .failed => if (now >= au.next_check_ms) {
+                au.next_check_ms = now + 6 * 3600_000;
+                update.checkAsync(server_options.repo, proto.app_version, false);
+            },
+            .newer => if (update.canInstall()) {
+                log(std.fmt.bufPrint(&buf, "versão nova {s}: baixando", .{v}) catch "versão nova: baixando");
+                update.installAsync();
+            } else if (au.told != .newer) {
+                log(std.fmt.bufPrint(&buf, "versão nova {s}, mas não dá pra trocar sozinho: {s}", .{ v, update.whyNot() }) catch "versão nova");
+            },
+            .install_failed => {
+                if (au.told != .install_failed) log(std.fmt.bufPrint(&buf, "a atualização falhou: {s} (tento de novo em 6 h)", .{update.installError()}) catch "a atualização falhou");
+                if (now >= au.next_check_ms) {
+                    au.next_check_ms = now + 6 * 3600_000;
+                    update.installAsync();
+                }
+            },
+            .installed => {
+                if (au.told != .installed) log(std.fmt.bufPrint(&buf, "versão {s} instalada: reinicio quando a sala ficar vazia por 2 min", .{v}) catch "versão nova instalada");
+                if (srv.humanCount() > 0) {
+                    au.empty_since_ms = 0;
+                    return;
+                }
+                if (au.empty_since_ms == 0) au.empty_since_ms = now;
+                if (now - au.empty_since_ms < au.empty_ms) return;
+                log(std.fmt.bufPrint(&buf, "sala vazia: reiniciando na versão {s}", .{v}) catch "reiniciando na versão nova");
+                const tp = tunnel_pid.load(.acquire);
+                if (tp > 0) _ = kill(tp, SIGTERM);
+                if (upnp_mapper) |m| m.stopAndWait(2000);
+                update.serverRestart(); // só volta se não deu
+                log(std.fmt.bufPrint(&buf, "não consegui reabrir na versão nova: {s}", .{update.installError()}) catch "não consegui reabrir");
+            },
+            else => {},
+        }
+    }
+};
+
 fn die(comptime fmt: []const u8, args: anytype) noreturn {
     std.debug.print("erro: " ++ fmt ++ "\n", args);
     std.process.exit(1);
@@ -328,6 +388,7 @@ pub fn main(init: std.process.Init) !void {
     var web_link: []const u8 = env("TELINHA_WEB_LINK") orelse "";
     var cloudflared: []const u8 = env("TELINHA_CLOUDFLARED") orelse "cloudflared";
     if (env("TELINHA_PORTA")) |p| port = std.fmt.parseInt(u16, p, 10) catch die("TELINHA_PORTA inválida: {s}", .{p});
+    var auto_update = if (env("TELINHA_ATUALIZAR")) |v| std.mem.eql(u8, v, "1") else false;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -346,6 +407,10 @@ pub fn main(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, a, "--sem-canais-novos")) {
             new_channels = false;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--atualizar-sozinho")) {
+            auto_update = true;
             continue;
         }
         if (std.mem.eql(u8, a, "--sem-bots")) {
@@ -396,6 +461,14 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, a, "-m") or std.mem.eql(u8, a, "--max")) {
             max = std.fmt.parseInt(u32, v, 10) catch die("número inválido: {s}", .{v});
         } else die("opção desconhecida: {s} (veja --help)", .{a});
+    }
+
+    if (auto_update) {
+        if (server_options.repo.len == 0 and env("TELINHA_ATUALIZACAO_URL") == null)
+            die("--atualizar-sozinho: este binário não sabe de onde vem a versão nova (compile com -Drepo=dono/nome)", .{});
+        update.for_server = true;
+        // a versão nova caiu logo depois de trocar? volta pra anterior (antes de abrir as portas)
+        if (update.serverStartup()) |m| log(m);
     }
 
     net.init();
@@ -457,8 +530,12 @@ pub fn main(init: std.process.Init) !void {
     // roteador (antes: docker stop esperava 10 s e matava,
     // o cloudflared ficava órfão segurando a porta)
     var last_bytes: u64 = 0;
+    // TELINHA_ATUALIZAR_TESTE: confere na hora e reinicia com 3 s de sala vazia (QA)
+    const au_test = env("TELINHA_ATUALIZAR_TESTE") != null;
+    var au: AutoUpdate = .{ .next_check_ms = sync.nowMs() + @as(u64, if (au_test) 0 else 5 * 60_000), .empty_ms = @as(u64, if (au_test) 3_000 else 120_000) };
+    var last_stats_ms = sync.nowMs();
     while (true) {
-        const sig = sigtimedwait(&sigset, null, &.{ .sec = 60, .nsec = 0 });
+        const sig = sigtimedwait(&sigset, null, &.{ .sec = @as(isize, if (au_test and auto_update) 1 else if (auto_update) 30 else 60), .nsec = 0 });
         if (sig > 0) {
             log(std.fmt.bufPrint(&buf, "recebi o sinal {d}: fechando a sala", .{sig}) catch "fechando");
             const tp = tunnel_pid.load(.acquire);
@@ -469,6 +546,9 @@ pub fn main(init: std.process.Init) !void {
             // conexão só cai e todo mundo reconecta sozinho
             std.process.exit(0);
         }
+        if (auto_update) au.tick(srv);
+        if (sync.nowMs() -| last_stats_ms < 59_000) continue;
+        last_stats_ms = sync.nowMs();
         const total = srv.relayed_bytes.load(.monotonic);
         const n = srv.memberCount();
         if (n > 0) log(std.fmt.bufPrint(&buf, "{d} na sala, {d:.1} MB encaminhados no último minuto", .{

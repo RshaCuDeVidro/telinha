@@ -222,6 +222,13 @@ long long upd_file_size(const char *path) {
     return ((long long)a.nFileSizeHigh << 32) | a.nFileSizeLow;
 }
 
+// (o servidor só roda no Linux)
+int upd_reexec(const char *self, int after_update) {
+    (void)self;
+    (void)after_update;
+    return -1;
+}
+
 #else
 #include <errno.h>
 #include <fcntl.h>
@@ -353,6 +360,33 @@ int upd_relaunch(const char *self) {
         usleep(50000);
     }
     return 0;
+}
+
+// Servidor: troca o processo pelo executável (já trocado no disco) com os
+// mesmos argumentos, no mesmo PID (o systemd/Docker acompanham o PID; um
+// filho solto seria morto junto com o pai). `after_update` = 1 avisa a versão
+// nova que ela está em teste (TELINHA_ATUALIZOU). Só volta se o exec falhar.
+int upd_reexec(const char *self, int after_update) {
+    static char cmd[8192];
+    int fd = open("/proc/self/cmdline", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    ssize_t n = read(fd, cmd, sizeof cmd - 1);
+    close(fd);
+    if (n <= 0) return -1;
+    cmd[n] = 0;
+    char *argv[128];
+    int argc = 0;
+    argv[argc++] = (char *)self;
+    for (char *p = cmd + strlen(cmd) + 1; p < cmd + n && argc < 127; p += strlen(p) + 1) argv[argc++] = p;
+    argv[argc] = NULL;
+    static char *envp[1024];
+    int ne = 0;
+    for (char **e = environ; *e && ne < 1022; e++)
+        if (strncmp(*e, "TELINHA_ATUALIZOU=", 18) != 0) envp[ne++] = *e;
+    envp[ne++] = after_update ? "TELINHA_ATUALIZOU=1" : "TELINHA_ATUALIZOU=0";
+    envp[ne] = NULL;
+    execve(self, argv, envp);
+    return -1;
 }
 
 int upd_wait_previous(void) {

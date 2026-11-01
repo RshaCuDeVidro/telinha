@@ -34,7 +34,7 @@ pub fn build(b: *std.Build) void {
         // ReleaseSafe: o servidor lê bytes de qualquer um da internet; um
         // índice fora do lugar vira panic com a linha (e o systemd reinicia),
         // não corrupção de memória silenciosa (o Docker já usava ReleaseSafe)
-        const exe = serverExe(b, t, if (optimize == .ReleaseFast) .ReleaseSafe else optimize);
+        const exe = serverExe(b, t, if (optimize == .ReleaseFast) .ReleaseSafe else optimize, repo);
         const install = b.addInstallArtifact(exe, .{ .dest_sub_path = b.fmt("telinha-server-{s}", .{@tagName(arch)}) });
         server_step.dependOn(&install.step);
         if (!native_only) b.getInstallStep().dependOn(&install.step);
@@ -762,7 +762,7 @@ fn hostSystemPaths(b: *std.Build, mod: *std.Build.Module) void {
     }
 }
 
-fn serverExe(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
+fn serverExe(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, repo: []const u8) *std.Build.Step.Compile {
     const exe = b.addExecutable(.{ .name = "telinha-server", .root_module = b.createModule(.{
         .root_source_file = b.path("src/server_main.zig"),
         .target = target,
@@ -770,6 +770,12 @@ fn serverExe(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
         .link_libc = true,
         .strip = optimize != .Debug,
     }) });
+    // --atualizar-sozinho: de onde vem a versão nova (o mesmo -Drepo do app)
+    const opts = b.addOptions();
+    opts.addOption([]const u8, "repo", repo);
+    exe.root_module.addOptions("server_options", opts);
+    exe.root_module.addCSourceFile(.{ .file = b.path("src/c/selfupdate.c"), .flags = &.{"-O2"} });
+    exe.root_module.addIncludePath(b.path("src/c"));
     // exposto na internet: PIE estático (endereços aleatórios a cada execução)
     exe.pie = true;
     return exe;

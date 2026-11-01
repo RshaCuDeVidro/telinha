@@ -22,7 +22,7 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(__file__))
-from telinha_qa import APP, EXE, App, QAError, Session, log  # noqa: E402
+from telinha_qa import APP, EXE, ROOT, App, QAError, Session, log  # noqa: E402
 
 TESTS = []
 
@@ -1114,10 +1114,13 @@ def bot_de_outro_canal():
         bot = next(m for m in st["room_bots"] if m["name"] == "Telão")
         expect(not any(m["id"] == bot["id"] for m in st["members"]), "o bot de outro canal entrou na lista da call")
         b.screenshot(os.path.join(s.base, "bots_longe.png"))
+        # o menu do clique direito tem a opção; o botão "Chamar" na linha faz o mesmo à vista
         b.click_rect(b.member_row(bot["id"]), button=3)
-        b.click(contains="###mbotjoin")
+        b.find("###mbotjoin")
+        b.key("Escape")
+        b.click("##botcall", within=b.member_row(bot["id"]))
         b.wait(lambda st: any(m["id"] == bot["id"] and m["bot"] for m in st["members"]) and not st["room_bots"], 10, "o Telão vir pra call da Bia")
-        log("bot de outro canal listado e chamado pra call pelo menu")
+        log("bot de outro canal listado e chamado pra call pelo botão da linha")
 
 
 @test
@@ -1237,6 +1240,8 @@ def sala_controles():
         a.click(contains="Compartilhar tela##share")
         a.wait(lambda st: st["share_modal"], 3, "abrir o compartilhar tela")
         a.click("Jogo e vídeo")
+        # resolução, q/s, qualidade, cursor e placa ficam no "Avançado" (dobrado)
+        a.click("##shareadvbtn")
         a.click("720p")
         a.click("15")
         a.wait(lambda st: st["cfg"]["mode"] == 1 and st["cfg"]["resolution"] == 2 and st["cfg"]["fps"] == 15, 3, "as opções mudarem")
@@ -2721,6 +2726,69 @@ class FakeReleases:
 
     def close(self):
         self.srv.shutdown()
+
+
+@test
+def servidor_atualiza_sozinho():
+    """Servidor com --atualizar-sozinho: acha a release nova (assinada), baixa e confere, espera a sala esvaziar (com gente dentro não reinicia) e reabre no mesmo processo na versão nova, que aceita conexão de novo."""
+    with Session("srvatualiza") as s:
+        key = os.path.join(s.base, "teste.pem")
+        subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519", "-out", key], check=True, capture_output=True)
+        pub = subprocess.run(["openssl", "pkey", "-in", key, "-pubout", "-outform", "DER"], check=True, capture_output=True).stdout[-32:].hex()
+
+        def sign(data):
+            f = os.path.join(s.base, "assinar")
+            open(f, "wb").write(data)
+            return subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", key, "-rawin", "-in", f], check=True, capture_output=True).stdout
+
+        srv_bin = os.path.join(ROOT, "zig-out", "bin", "telinha-server-x86_64")
+        new_bin = open(srv_bin, "rb").read() + b"\0servidor-novo-do-teste\0"
+        fake = FakeReleases(port())
+        url = fake.release("srv", "v9.9.9", {"telinha-server-linux-x86_64": new_bin}, sign)
+        exe = os.path.join(s.base, "bin", "telinha-server")
+        os.makedirs(os.path.dirname(exe))
+        shutil.copy2(srv_bin, exe)
+        p = port()
+        # (a chave de teste só vale com TELINHA_QA)
+        env = dict(os.environ, TELINHA_ATUALIZACAO_URL=url, TELINHA_CHAVE_ATUALIZACAO=pub, TELINHA_ATUALIZAR_TESTE="1", TELINHA_QA=s.base)
+        logf = os.path.join(s.base, "servidor.log")
+        proc = subprocess.Popen([exe, "--porta", str(p), "--nome", "Atualiza", "--atualizar-sozinho"], env=env,
+                                stdout=open(logf, "wb"), stderr=subprocess.STDOUT)
+        try:
+            def log_has(t):
+                return t in open(logf, encoding="utf-8", errors="replace").read()
+            # alguém na sala: instala, mas não reinicia
+            a = s.app("a", 91, ["--nome", "Ana", "--entrar", f"127.0.0.1:{p}"])
+            a.wait(lambda st: st["status"] == "connected", 15, "entrar na sala")
+            deadline = time.time() + 30
+            while time.time() < deadline and not log_has("instalada"):
+                time.sleep(0.3)
+            expect(log_has("instalada"), "não instalou: " + open(logf, errors="replace").read()[-600:])
+            # o binário "novo" do teste ainda diz 3.7.0: a release passa a ser velha, senão
+            # a versão nova acharia a 9.9.9 de novo e instalaria outra vez
+            fake.release("srv", "v0.0.1", {"telinha-server-linux-x86_64": new_bin}, sign)
+            expect(hashlib.sha256(open(exe, "rb").read()).digest() == hashlib.sha256(new_bin).digest(), "o executável não foi trocado")
+            time.sleep(5)
+            expect(not log_has("reiniciando"), "reiniciou com gente na sala")
+            # a sala esvazia: reabre na versão nova (mesmo PID)
+            a.stop()
+            deadline = time.time() + 20
+            while time.time() < deadline and not log_has("abri na versão nova"):
+                time.sleep(0.3)
+            expect(log_has("abri na versão nova"), "não reabriu: " + open(logf, errors="replace").read()[-600:])
+            expect(proc.poll() is None, "o servidor morreu ao reabrir")
+            exe_now = os.readlink(f"/proc/{proc.pid}/exe")
+            expect(exe_now == exe, f"o processo não é o executável novo: {exe_now}")
+            b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}"])
+            b.wait(lambda st: st["status"] == "connected", 20, "entrar na versão nova")
+            time.sleep(11)  # passou do teste de 10 s: o .old sai
+            expect(not os.path.exists(exe + ".old") and not os.path.exists(exe + ".testando"), "sobrou o .old/.testando depois de 10 s de pé")
+            log("reabriu na versão nova no mesmo processo e aceitou conexão")
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait(5)
+            fake.close()
 
 
 @test

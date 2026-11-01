@@ -997,6 +997,7 @@ pub const App = struct {
     net_loss_level: u8 = 0,
     net_loss_d: u64 = 0, // perdidas + pedidos de reenvio na última medida (2 s)
     diag_stream: ?u32 = null, // diagnóstico aberto (clique na bolinha de saúde)
+    share_adv: bool = false, // compartilhar: opções avançadas abertas
     diag_name: [64]u8 = undefined,
     diag_name_len: usize = 0,
     diag_next: f64 = 0,
@@ -1408,8 +1409,8 @@ pub const App = struct {
                 const as = v.audio_ring.takeStats();
                 var eb: [160]u8 = undefined;
                 const aerr = audio.mixer.lastError(&eb);
-                debuglog.line("  som {x}: fila {d} ms, faltou som {d}x, cortou atraso {d}x, encurtou {d} ms aos poucos, pacotes perdidos remendados {d}, último pacote há {d} ms | saída {s}{s}{s}", .{
-                    v.stream,                                                                                                    as.fill_ms, as.underruns, as.cuts, as.drift_ms, v.audio_concealed, if (as.silent_ms == std.math.maxInt(u64)) 0 else as.silent_ms,
+                debuglog.line("  som {x}: fila {d} ms, som-imagem {d:.0} ms, faltou som {d}x, cortou atraso {d}x, encurtou {d} ms aos poucos, pacotes perdidos remendados {d}, último pacote há {d} ms | saída {s}{s}{s}", .{
+                    v.stream,                                                                                                    as.fill_ms, v.avSyncMs() orelse 0, as.underruns, as.cuts, as.drift_ms, v.audio_concealed, if (as.silent_ms == std.math.maxInt(u64)) 0 else as.silent_ms,
                     if (audio.mixer.deaf.load(.monotonic)) "surdo" else if (audio.mixer.paused.load(.monotonic)) "parada (silêncio)" else "ligada", if (aerr.len > 0) ", último erro: " else "", aerr,
                 });
             }
@@ -3059,7 +3060,8 @@ pub const App = struct {
     fn nameIsInvite(a: *App) void {
         if (c.igIsItemActive()) return; // ainda digitando: confere quando sair do campo
         const name = std.mem.trim(u8, std.mem.sliceTo(&a.cfg.name, 0), " \t\r\n");
-        if (!std.ascii.startsWithIgnoreCase(name, "telinha://")) return;
+        const web = std.mem.indexOf(u8, name, "/j/#i=") != null; // o link https da página de convite
+        if (!std.ascii.startsWithIgnoreCase(name, "telinha://") and !web) return;
         // o campo do nome é curto: se o convite não coube inteiro, não dá pra usar
         // (o campo usa name.len - 1 bytes com o zero: cheio = pode ter cortado;
         // aí vale o da área de transferência, se for o mesmo convite inteiro)
@@ -3069,7 +3071,8 @@ pub const App = struct {
             const t = std.mem.trim(u8, std.mem.span(cb), " \t\r\n");
             if (std.mem.startsWith(u8, t, name)) full = t;
         };
-        if (full.len > 0) a.takeInvite(full);
+        var wb: [1024]u8 = undefined;
+        if (full.len > 0) a.takeInvite(connect_mod.fromWebLink(full, &wb) orelse full);
         config.setStr(&a.cfg.name, "");
         a.toast("Isso é o convite: ele vai no endereço da sala. Escolha um nome.", .{}, true);
     }
@@ -5182,6 +5185,10 @@ pub const App = struct {
         c.igSetCursorPosX(S(8));
         const p = c.igGetCursorScreenPos();
         const row_w = width - S(16);
+        // bot fora da minha call: o botão "Chamar" fica por cima da linha (só
+        // nela: a sobreposição atrasa o mouse da linha em um quadro)
+        const bot_call = if (a.client) |cl| m.bot and !m.in_call and cl.server_features & proto.srv_dm != 0 and cl.chans_supported and cl.inCall() else false;
+        if (bot_call) c.igSetNextItemAllowOverlap();
         const left_click = c.igInvisibleButton("m", v2(row_w, h), c.ImGuiButtonFlags_MouseButtonLeft | c.ImGuiButtonFlags_MouseButtonRight) and c.igIsMouseReleased_Nil(0);
         const hovered = c.igIsItemHovered(0);
         // quem está ao vivo: clicar assiste (o clique não fazia nada, e a lista
@@ -5243,6 +5250,29 @@ pub const App = struct {
         if (m.id == my_id) drawTextF(d, font_regular, 12, v2(tx, p.y + (h - S(15)) / 2), col.faint, tr("(você)"));
         var rx = p.x + row_w - S(10);
         if (m.streaming) rx -= liveBadge(d, v2(rx - liveBadgeWidth(), p.y + (h - S(15)) / 2)) + S(14);
+        // bot fora da minha call: "Chamar" à vista (era só no clique direito,
+        // e ninguém achava o "/msg Bot !join")
+        if (a.client) |cl| if (bot_call) {
+            const label = fmtZ("{s}  Chamar", .{ic.phone});
+            const bw = textSizeF(font_semibold, 12, label).x + S(18);
+            const bh = S(24);
+            const bx = rx - bw;
+            const by = p.y + (h - bh) / 2;
+            c.igSetCursorScreenPos(v2(bx, by));
+            const clicked = c.igInvisibleButton("##botcall", v2(bw, bh), 0);
+            const bhov = c.igIsItemHovered(0);
+            if (bhov) {
+                c.igSetMouseCursor(c.ImGuiMouseCursor_Hand);
+                tooltipText(tr("Chamar o bot pra sua call (ele entra e toca pra vocês)"));
+            }
+            rectFill(d, bx, by, bx + bw, by + bh, if (bhov) col.blurple_hover else withAlpha(col.blurple, 60), S(12));
+            drawTextF(d, font_semibold, 12, v2(bx + S(9), by + S(4)), col.white, label);
+            if (clicked) {
+                cl.sendChat("!join", 0, m.id);
+                a.toast("Chamando {s} pra sua call...", .{m.nameSlice()}, false);
+            }
+            rx = bx - S(10);
+        };
         // câmera, microfone desligado / silenciado pelo admin, surdo, rota
         const iy = p.y + (h - S(14)) / 2;
         if (m.camera()) {
@@ -5804,8 +5834,15 @@ pub const App = struct {
             v.decoder_name, if (why.len > 0) ": " else "", why, v.sum_decode, if (v.decode_ms > 0) 1000 / v.decode_ms else 0, v.backlog_relieved.load(.monotonic), v.backlog_flushes.load(.monotonic),
         });
         dg.add(gap_lvl, tr("Na sua tela"), "{d:.0} ms entre quadros", .{usMs(g.p50)}, "Mediana/p95/máx {f}. Pico bem acima da mediana é o engasgo que você vê.", .{g});
+        var sync_lvl: u8 = 0;
         if (v.audio_registered) {
-            dg.add(0, tr("Som"), "chegando", .{}, "{d} pacotes perdidos remendados pelo Opus desde que começou a assistir.", .{v.audio_concealed});
+            if (v.avSyncMs()) |off| {
+                // a partir de ~+90 ms (som atrasado) ou −45 ms (adiantado) a boca descola
+                sync_lvl = if (off > 200 or off < -120) 2 else if (off > 90 or off < -45) 1 else 0;
+                dg.add(sync_lvl, tr("Som e imagem"), "{s}{d:.0} ms", .{ if (off >= 0) "+" else "", off }, "O som {s} {d:.0} ms {s} da imagem (sem contar a saída de som do sistema, ~10-30 ms). {d} pacotes perdidos remendados pelo Opus desde que começou a assistir.", .{
+                    tr("chega"), @abs(off), if (off >= 0) tr("depois") else tr("antes"), v.audio_concealed,
+                });
+            } else dg.add(3, tr("Som e imagem"), "medindo", .{}, "{d} pacotes perdidos remendados pelo Opus desde que começou a assistir.", .{v.audio_concealed});
         }
 
         if (dec_lvl > 0 and dec_lvl < 3)
@@ -5816,6 +5853,8 @@ pub const App = struct {
             dg.setTip("Esperando um quadro completo: normal logo ao entrar ou depois de uma perda grande. Passa sozinho.", .{})
         else if (lat_lvl > 0 and lat_lvl < 3)
             dg.setTip("Daqui está tudo em dia: o atraso vem de antes, do PC ou do upload de {s}. Peça pra {s} clicar na bolinha da própria tela e ver o diagnóstico de lá.", .{ who, who })
+        else if (sync_lvl > 0)
+            dg.setTip("Som e imagem descolados: é medição por enquanto (a correção vem depois). Copie este diagnóstico e mande junto com o log, com o tipo de vídeo (jogo, filme, voz).", .{})
         else if (gap_lvl > 0 and gap_lvl < 3)
             dg.setTip("A imagem chega em dia, mas com picos entre os quadros. Copie este diagnóstico e mande junto com o log (Configurações → Depuração).", .{})
         else if (fps < 0.5)
@@ -9377,6 +9416,34 @@ pub const App = struct {
         _ = segmented("mode", &.{ "Tela e texto", "Jogo e vídeo" }, &a.cfg.mode, w);
         c.igDummy(v2(0, S(9)));
 
+        // o resto fica dobrado numa linha que resume o que vale (eram 7
+        // decisões de uma vez pra quem só queria mostrar a tela)
+        {
+            const res_names = [_][]const u8{ tr("original"), "1080p", "720p", "480p" };
+            const qn = if (a.cfg.quality < 40) tr("economia") else if (a.cfg.quality < 65) tr("equilibrada") else if (a.cfg.quality < 85) tr("alta") else tr("máxima");
+            var fb: [16]u8 = undefined;
+            const fps_txt: []const u8 = if (a.cfg.fps == 0) tr("q/s automático") else std.fmt.bufPrint(&fb, "{d} q/s", .{a.cfg.fps}) catch "";
+            const summary = fmtZ("{s}  {s} · {s} · {s} {s}{s}{s}", .{
+                if (a.share_adv) ic.chev_up else ic.chev_down,      res_names[@intCast(std.math.clamp(a.cfg.resolution, 0, 3))], fps_txt, tr("qualidade"), qn,
+                if (a.cfg.cursor) tr(" · cursor") else "",          if (a.cfg.hardware) tr(" · placa de vídeo") else "",
+            });
+            const p0 = c.igGetCursorScreenPos();
+            const sh = S(34);
+            if (c.igInvisibleButton("##shareadvbtn", v2(w, sh), 0)) a.share_adv = !a.share_adv;
+            const hov = c.igIsItemHovered(0);
+            if (hov) tooltipText(if (a.share_adv) tr("Esconder as opções avançadas") else tr("Resolução, quadros por segundo, qualidade, cursor e placa de vídeo"));
+            const dl = drawList();
+            rectFill(dl, p0.x, p0.y, p0.x + w, p0.y + sh, if (hov) col.hover else col.input, S(8));
+            drawTextF(dl, font_bold, 11, v2(p0.x + S(12), p0.y + S(10)), col.muted, tr("AVANÇADO"));
+            const label = summary;
+            const lw = textSizeF(font_regular, 12.5, label).x;
+            c.ImDrawList_PushClipRect(dl, v2(p0.x + S(90), p0.y), v2(p0.x + w - S(10), p0.y + sh), true);
+            drawTextF(dl, font_regular, 12.5, v2(@max(p0.x + S(90), p0.x + w - S(12) - lw), p0.y + S(9)), col.text, label);
+            c.ImDrawList_PopClipRect(dl);
+            c.igDummy(v2(0, S(9)));
+        }
+        if (a.share_adv) {
+
         fieldLabel("RESOLUÇÃO");
         _ = segmented("res", &.{ "Original", "1080p", "720p", "480p" }, &a.cfg.resolution, w);
         c.igDummy(v2(0, S(9)));
@@ -9429,6 +9496,7 @@ pub const App = struct {
         if (c.igIsItemHovered(0)) tooltipText(tr("NVIDIA; no Windows também AMD e Intel. Sem placa que sirva, vai pela CPU."));
 
         c.igPopStyleColor(2);
+        } // avançado
 
         if (!sync.is_windows and a.n_sources > 0 and std.mem.startsWith(u8, std.mem.sliceTo(&a.sources[0].name, 0), "Escolher")) {
             c.igDummy(v2(0, S(8)));

@@ -436,6 +436,7 @@ pub const View = struct {
     audio_last_seq: ?u32 = null, // sequência do último pacote de som tocado (perda e ordem)
     born_ms: u64 = 0, // quando começou a assistir
     audio_concealed: u32 = 0, // pacotes perdidos remendados pelo Opus (estatística)
+    audio_delay_bits: std.atomic.Value(u32) = .init(0), // f32: da captura até tocar (ms, média)
     audio_registered: bool = false,
 
     /// Buffers na placa (nv12_dev), reaproveitados; só a thread de decode
@@ -459,6 +460,13 @@ pub const View = struct {
         return if (l == 0) 0 else sync.nowMs() -| l;
     }
     /// q/s e KB/s pra mostrar: zero se não chega quadro há mais de 1,5 s.
+    /// Som menos imagem (ms): positivo = o som chega depois da imagem. null = sem dado.
+    pub fn avSyncMs(v: *const View) ?f32 {
+        const a: f32 = @bitCast(v.audio_delay_bits.load(.monotonic));
+        if (a == 0 or v.latency_ms == 0) return null;
+        return a - v.latency_ms;
+    }
+
     /// Fecha os tempos desde a última vez (só a UI, a cada 2 s).
     pub fn takeTimes(v: *View) void {
         v.sum_gap = v.t_gap.take();
@@ -650,6 +658,18 @@ pub const View = struct {
         }
         const pcm = v.audio_dec.?.decode(packet) catch return;
         v.audio_ring.write(pcm);
+        // atraso do som: o fim desse pacote toca depois do que já está na fila
+        // (sem a latência da saída do sistema, ~10-30 ms); comparado com o da
+        // imagem (latency_ms) dá o lip-sync
+        const room_now = v.client.serverNowUs();
+        const dur_us = @as(u64, pcm.len / audio.channels) * 1_000_000 / audio.rate;
+        if (room_now > 0 and ts_us > 0) {
+            const play_us = room_now + v.audio_ring.queuedUs();
+            const delay: f32 = @floatFromInt(@min(play_us -| (ts_us + dur_us), 10_000_000));
+            const ms = delay / 1000;
+            const old = @as(f32, @bitCast(v.audio_delay_bits.load(.monotonic)));
+            v.audio_delay_bits.store(@bitCast(if (old == 0) ms else old * 0.95 + ms * 0.05), .monotonic);
+        }
         if (!v.audio_registered) {
             v.audio_registered = true;
             audio.mixer.add(&v.audio_ring);

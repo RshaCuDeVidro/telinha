@@ -71,6 +71,26 @@ sudo systemctl enable --now telinha
 journalctl -u telinha -f
 ```
 
+### Atualizar sozinho
+
+Com `--atualizar-sozinho` (ou `TELINHA_ATUALIZAR=1`) o servidor confere a release
+nova a cada 6 h, baixa o `telinha-server` dela, confere a assinatura e a versão
+assinada (o mesmo do app), e só reinicia quando a sala fica **2 minutos vazia**
+(bots não contam). Reinicia no mesmo processo, então o systemd e o Docker nem
+percebem; se a versão nova cair nos primeiros 10 s, a próxima abertura volta pra
+anterior sozinha.
+
+O executável precisa estar numa pasta em que o serviço pode escrever. Com a unit
+acima (`ProtectSystem=strict`), use a pasta de estado:
+
+```sh
+sudo install -D -m755 zig-out/bin/telinha-server-x86_64 /var/lib/telinha/bin/telinha-server
+# e na unit: ExecStart=/var/lib/telinha/bin/telinha-server --atualizar-sozinho ...
+```
+
+Sem poder escrever, o servidor só avisa no log que tem versão nova. No Docker,
+atualize a imagem (o binário do container é só leitura).
+
 ## Logs de depuração da galera
 
 No app, *Configurações → Depuração → Pro dono da sala* manda o log pela própria
