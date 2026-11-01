@@ -264,6 +264,8 @@ pub const Sharer = struct {
     // tempos por quadro pro log de depuração (trace.zig)
     t_cap: trace.Hist = .{}, // entre dois quadros capturados
     t_enc: trace.Hist = .{}, // codificar
+    sum_cap: trace.Hist.Summary = .{}, // o último resumo (log e diagnóstico)
+    sum_enc: trace.Hist.Summary = .{},
     bitrate_kbps: u32 = 0,
     congested: bool = false,
     slow_viewer: bool = false, // algum espectador pediu menos nos últimos segundos
@@ -333,6 +335,12 @@ pub const Sharer = struct {
             s.client.release();
             gpa.destroy(s);
         }
+    }
+
+    /// Fecha os tempos desde a última vez (com `mutex`, a cada 2 s).
+    pub fn takeTimes(s: *Sharer) void {
+        s.sum_cap = s.t_cap.take();
+        s.sum_enc = s.t_enc.take();
     }
 
     /// q/s e KB/s pra mostrar (com `mutex`): zero se nada saiu nos últimos 2 s.

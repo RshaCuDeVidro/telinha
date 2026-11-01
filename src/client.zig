@@ -401,6 +401,10 @@ pub const View = struct {
     decoder_why: [128]u8 = [_]u8{0} ** 128,
     t_lat: trace.Hist = .{}, // da captura até subir pra tela (relógio da sala)
     t_gap: trace.Hist = .{}, // entre dois quadros novos na tela (o engasgo aparece aqui)
+    // o último resumo dos tempos (o log de depuração e o diagnóstico leem daqui)
+    sum_gap: trace.Hist.Summary = .{},
+    sum_decode: trace.Hist.Summary = .{},
+    sum_lat: trace.Hist.Summary = .{},
     last_up_us: u64 = 0, // último quadro novo que subiu pra tela (só a UI)
     backlog_relieved: std.atomic.Value(u32) = .init(0), // atrasos resolvidos sem pedir IDR
     backlog_flushes: std.atomic.Value(u32) = .init(0), // atrasos que jogaram tudo fora (IDR pedido)
@@ -455,6 +459,13 @@ pub const View = struct {
         return if (l == 0) 0 else sync.nowMs() -| l;
     }
     /// q/s e KB/s pra mostrar: zero se não chega quadro há mais de 1,5 s.
+    /// Fecha os tempos desde a última vez (só a UI, a cada 2 s).
+    pub fn takeTimes(v: *View) void {
+        v.sum_gap = v.t_gap.take();
+        v.sum_decode = v.t_decode.take();
+        v.sum_lat = v.t_lat.take();
+    }
+
     pub fn shownFps(v: *const View) f32 {
         return if (v.idleMs() > 1500) 0 else v.fps;
     }

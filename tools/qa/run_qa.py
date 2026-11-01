@@ -99,6 +99,37 @@ def volume_da_transmissao():
 
 
 @test
+def destaque_e_diagnostico():
+    """Duas telas, uma em destaque: esconder e mostrar as miniaturas de baixo; clicar na bolinha de saúde abre o diagnóstico."""
+    with Session("destaque") as s:
+        p = port()
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"])
+        bruno = s.app("bruno", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}", "--assistir", "--transmitir", "--software"])
+        aid = bruno.member_id("Ana")
+        bruno.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "ver a tela da Ana")
+        bruno.wait(lambda st: len(st["tiles"]) >= 2, 20, "a própria tela do Bruno no palco")
+        if bruno.state()["hide_strip"]:
+            bruno.click("##strip_show")
+        tile = bruno.tile(aid)
+        bruno.click("##focus", within=tile, hover_first=center(tile))
+        bruno.wait(lambda st: st["focused"] == aid and len(st["tiles"]) >= 2, 3, "destaque com a miniatura embaixo")
+        bruno.click("##strip_hide")
+        bruno.wait(lambda st: st["hide_strip"] and len(st["tiles"]) == 1, 3, "esconder as miniaturas")
+        bruno.screenshot(os.path.join(s.base, "sem_miniaturas.png"))
+        bruno.click("##strip_show")
+        bruno.wait(lambda st: not st["hide_strip"] and len(st["tiles"]) >= 2, 3, "mostrar as miniaturas de novo")
+        # diagnóstico pela bolinha de saúde no nome
+        tile = bruno.tile(aid)
+        bruno.click("##diag", within=tile, hover_first=center(tile))
+        bruno.wait(lambda st: st["diag"] == aid, 3, "abrir o diagnóstico")
+        time.sleep(2.5)  # o primeiro resumo dos tempos sai em 2 s
+        bruno.screenshot(os.path.join(s.base, "diagnostico.png"))
+        bruno.click("##diagclose")
+        bruno.wait(lambda st: st["diag"] is None, 3, "fechar o diagnóstico")
+        ana.stop()
+
+
+@test
 def tela_cheia():
     """Botão de tela cheia no quadro (separado do destacar); com o mouse parado os controles e a seta somem, mexer traz de volta; Esc sai."""
     with Session("telacheia") as s:

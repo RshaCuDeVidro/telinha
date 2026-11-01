@@ -995,6 +995,11 @@ pub const App = struct {
     net_loss_at: u64 = 0, // saúde das transmissões: perda de pacotes daqui
     net_loss_prev: u64 = 0,
     net_loss_level: u8 = 0,
+    net_loss_d: u64 = 0, // perdidas + pedidos de reenvio na última medida (2 s)
+    diag_stream: ?u32 = null, // diagnóstico aberto (clique na bolinha de saúde)
+    diag_name: [64]u8 = undefined,
+    diag_name_len: usize = 0,
+    diag_next: f64 = 0,
     chan_menu_admin: bool = false, // o menu do canal aberto por admin da sala (senão: quem criou)
     chan_menu_default: bool = false, // é o canal padrão (não some nem é apagado)
     chan_menu_delete: bool = false, // clicou em "apagar": falta confirmar
@@ -1395,8 +1400,9 @@ pub const App = struct {
                 v.stream, v.w, v.h, v.shownFps(), v.shownKbps() * 8, v.codec.name(), v.decoder_name, v.decode_ms, v.latency_ms, v.audio_registered,
             });
             // mediana/p95/máximo (o engasgo aparece no "entre quadros na tela")
+            v.takeTimes();
             debuglog.line("  tempos {x}: entre quadros na tela {f}, decodificar {f}, captura→tela {f} | fila do decoder: aliviou {d}, jogou fora {d}", .{
-                v.stream, v.t_gap.take(), v.t_decode.take(), v.t_lat.take(), v.backlog_relieved.load(.monotonic), v.backlog_flushes.load(.monotonic),
+                v.stream, v.sum_gap, v.sum_decode, v.sum_lat, v.backlog_relieved.load(.monotonic), v.backlog_flushes.load(.monotonic),
             });
             if (v.audio_registered) {
                 const as = v.audio_ring.takeStats();
@@ -1433,7 +1439,8 @@ pub const App = struct {
                 sh.idle.load(.monotonic),
             });
             // mediana/p95/máximo: o engasgo que a média esconde
-            debuglog.line("  tempos ({s}): entre capturas {f}, codificar {f}", .{ if (sh.kind == proto.kind_camera) "câmera" else "tela", sh.t_cap.take(), sh.t_enc.take() });
+            sh.takeTimes();
+            debuglog.line("  tempos ({s}): entre capturas {f}, codificar {f}", .{ if (sh.kind == proto.kind_camera) "câmera" else "tela", sh.sum_cap, sh.sum_enc });
         }
     }
 
@@ -2931,8 +2938,9 @@ pub const App = struct {
         a.updateCrashContext();
         a.takeLinkInvite();
         a.callOutStep();
-        trace.enabled.store(debuglog.on(), .monotonic);
-        if (debuglog.on()) a.debugTick();
+        // os tempos por quadro só são medidos com o log ou o diagnóstico aberto
+        trace.enabled.store(debuglog.on() or a.diag_stream != null, .monotonic);
+        if (debuglog.on()) a.debugTick() else if (a.diag_stream != null) a.diagTick();
         a.pollPttKey();
         a.pollHotkeys();
         // tema/zoom mudados (configurações, arquivo CSS): aplica aqui, antes de
@@ -3002,6 +3010,7 @@ pub const App = struct {
         const busy = a.settings_modal or a.share_modal or a.leave_confirm or a.crash_prompt;
         if (a.update_modal and !busy) a.drawUpdateModal() else if (a.whatsnew and !busy and !a.update_modal) a.drawWhatsNew();
         a.watchCrashSend();
+        if (a.screen == .room) a.drawDiag(vp.*.Size) else a.diag_stream = null;
         a.drawToasts(vp.*.Size);
         a.drawCrt(vp.*.Size);
         c.igEnd();
@@ -5703,6 +5712,247 @@ pub const App = struct {
         return .{};
     }
 
+    // ------------------------------------------------------------ diagnóstico
+
+    /// Uma etapa do caminho do vídeo: cor (0 bem, 1 atenção, 2 problema, 3
+    /// sem dado), o número e o porquê.
+    const DiagRow = struct { level: u8, title: []const u8, value: []const u8, note: []const u8 };
+    const Diag = struct {
+        rows: [6]DiagRow = undefined,
+        n: usize = 0,
+        bufs: [6][2][256]u8 = undefined,
+        tip: []const u8 = "",
+        tip_buf: [320]u8 = undefined,
+        title: []const u8 = "",
+        title_buf: [96]u8 = undefined,
+
+        fn add(dg: *Diag, level: u8, title: []const u8, comptime vf: []const u8, va: anytype, comptime nf: []const u8, na: anytype) void {
+            if (dg.n == dg.rows.len) return;
+            const i = dg.n;
+            const v = i18n.bufPrint(&dg.bufs[i][0], vf, va) catch "";
+            const nt = i18n.bufPrint(&dg.bufs[i][1], nf, na) catch "";
+            dg.rows[i] = .{ .level = level, .title = title, .value = v, .note = nt };
+            dg.n += 1;
+        }
+        fn setTip(dg: *Diag, comptime f: []const u8, args: anytype) void {
+            dg.tip = i18n.bufPrint(&dg.tip_buf, f, args) catch "";
+        }
+        fn worst(dg: *const Diag) u8 {
+            var w: u8 = 0;
+            for (dg.rows[0..dg.n]) |r| if (r.level < 3) {
+                w = @max(w, r.level);
+            };
+            return w;
+        }
+    };
+
+    fn openDiag(a: *App, stream: u32, name: []const u8) void {
+        a.diag_stream = stream;
+        a.diag_next = 0;
+        a.diag_name_len = @min(name.len, a.diag_name.len);
+        @memcpy(a.diag_name[0..a.diag_name_len], name[0..a.diag_name_len]);
+        redrawIn(0);
+    }
+
+    /// Com o diagnóstico aberto (e o log desligado): fecha os tempos a cada 2 s.
+    fn diagTick(a: *App) void {
+        const now = c.igGetTime();
+        if (now < a.diag_next) {
+            redrawIn(a.diag_next - now);
+            return;
+        }
+        a.diag_next = now + 2;
+        redrawIn(2);
+        for (a.views.items) |v| v.takeTimes();
+        for ([_]?*Sharer{ a.sharer, a.camera }) |m| if (m) |sh| {
+            sh.mutex.lock();
+            sh.takeTimes();
+            sh.mutex.unlock();
+        };
+    }
+
+    fn usMs(us: u32) f32 {
+        return @as(f32, @floatFromInt(us)) / 1000;
+    }
+
+    /// Quem assiste: cada etapa até a imagem aparecer aqui.
+    fn diagView(a: *App, v: *View, dg: *Diag) void {
+        const who = a.diag_name[0..a.diag_name_len];
+        dg.title = i18n.bufPrint(&dg.title_buf, "Assistindo {s}", .{who}) catch "";
+        const fps = v.shownFps();
+        const fps_c = @max(fps, 1);
+        // seu PC decodificando
+        const dec_lvl: u8 = if (v.decode_ms <= 0) 3 else if (v.decode_ms * fps_c > 1000) 2 else if (v.decode_ms * fps_c > 850 or v.decode_ms > 60) 1 else 0;
+        // sua internet
+        const cl = a.client;
+        const udp_on = if (cl) |x| (if (x.udp.load(.acquire)) |l| l.isActive() else false) else false;
+        const ping = if (cl) |x| x.ping_ms else 0;
+        // atraso e engasgo na tela
+        const lat_lvl: u8 = if (fps < 0.5) 3 else if (v.latency_ms > 1000) 2 else if (v.latency_ms > 400) 1 else 0;
+        const g = v.sum_gap;
+        // engasgo = pico bem acima do ritmo da própria transmissão (10 q/s de
+        // propósito não é engasgo); quase parada (captura por evento), não diz nada
+        const gap_lvl: u8 = if (g.n == 0 or fps < 5) 3 else if (g.p95 > g.p50 * 4 and g.p95 > 150_000) 2 else if (g.p95 > g.p50 * 5 / 2 and g.p95 > 80_000) 1 else 0;
+
+        dg.add(lat_lvl, tr("Imagem chegando"), "{d:.0} q/s · {d:.0} kbit/s", .{ fps, v.shownKbps() * 8 }, "{d}x{d} {s}. Da captura de {s} até a sua tela: {d:.0} ms (mediana/p95/máx {f}).", .{ v.w, v.h, v.codec.name(), who, v.latency_ms, v.sum_lat });
+        if (a.net_loss_d > 0)
+            dg.add(a.net_loss_level, tr("Sua internet"), "ping {d} ms · {s}", .{ ping, if (udp_on) "UDP" else "TCP" }, "{d} pacotes perdidos ou pedidos de novo nos últimos 2 s.", .{a.net_loss_d})
+        else
+            dg.add(0, tr("Sua internet"), "ping {d} ms · {s}", .{ ping, if (udp_on) "UDP" else "TCP" }, "Nenhum pacote perdido nos últimos 2 s.{s}", .{if (udp_on) "" else tr(" Pelo TCP, perda vira atraso em vez de buraco.")});
+        const why = std.mem.sliceTo(&v.decoder_why, 0);
+        dg.add(dec_lvl, tr("Seu PC decodificando"), "{d:.1} ms por quadro", .{v.decode_ms}, "{s}{s}{s}. Mediana/p95/máx {f}; dá conta de ~{d:.0} q/s. Fila do decoder: aliviou {d}x, jogou fora {d}x.", .{
+            v.decoder_name, if (why.len > 0) ": " else "", why, v.sum_decode, if (v.decode_ms > 0) 1000 / v.decode_ms else 0, v.backlog_relieved.load(.monotonic), v.backlog_flushes.load(.monotonic),
+        });
+        dg.add(gap_lvl, tr("Na sua tela"), "{d:.0} ms entre quadros", .{usMs(g.p50)}, "Mediana/p95/máx {f}. Pico bem acima da mediana é o engasgo que você vê.", .{g});
+        if (v.audio_registered) {
+            dg.add(0, tr("Som"), "chegando", .{}, "{d} pacotes perdidos remendados pelo Opus desde que começou a assistir.", .{v.audio_concealed});
+        }
+
+        if (dec_lvl > 0 and dec_lvl < 3)
+            dg.setTip("Seu PC está no limite pra decodificar. Tente: sair da tela cheia (vídeo menor), assistir uma tela só, ou pedir pra {s} usar 30 q/s ou 720p. Se o decoder não é da placa, Configurações → Depuração diz por quê.", .{who})
+        else if (a.net_loss_level > 0)
+            dg.setTip("Sua internet está perdendo pacotes. Wi-Fi longe do roteador costuma ser isso; cabo resolve. Se continuar, o telinha passa pro TCP sozinho.", .{})
+        else if (v.waiting_key and v.last_frame_ms.load(.monotonic) != 0)
+            dg.setTip("Esperando um quadro completo: normal logo ao entrar ou depois de uma perda grande. Passa sozinho.", .{})
+        else if (lat_lvl > 0 and lat_lvl < 3)
+            dg.setTip("Daqui está tudo em dia: o atraso vem de antes, do PC ou do upload de {s}. Peça pra {s} clicar na bolinha da própria tela e ver o diagnóstico de lá.", .{ who, who })
+        else if (gap_lvl > 0 and gap_lvl < 3)
+            dg.setTip("A imagem chega em dia, mas com picos entre os quadros. Copie este diagnóstico e mande junto com o log (Configurações → Depuração).", .{})
+        else if (fps < 0.5)
+            dg.setTip("Nenhum quadro novo nos últimos segundos: a tela de {s} pode só estar parada (tela parada não manda quadro).", .{who})
+        else
+            dg.setTip("Nada a fazer: tudo fluindo.", .{});
+    }
+
+    /// Quem transmite: captura, encoder, a subida e quem assiste.
+    fn diagShare(sh: *Sharer, dg: *Diag) void {
+        dg.title = i18n.bufPrint(&dg.title_buf, "Sua transmissão ({s})", .{if (sh.kind == proto.kind_camera) tr("câmera") else tr("tela")}) catch "";
+        const tfps: f32 = @floatFromInt(@max(sh.target_fps.load(.monotonic), 1));
+        const budget = 1000 / tfps;
+        const enc_lvl: u8 = if (sh.encode_ms <= 0) 3 else if (sh.encode_ms > budget * 1.1) 2 else if (sh.encode_ms > budget * 0.9) 1 else 0;
+        dg.add(0, tr("Captura"), "{d:.0} q/s", .{sh.shownFps()}, "{s}, {d}x{d}. Entre capturas, mediana/p95/máx {f}. Tela parada não gera quadro: o número cair com a tela parada é normal.", .{ sh.backendSlice(), sh.w, sh.h, sh.sum_cap });
+        dg.add(enc_lvl, tr("Encoder"), "{d:.1} ms de {d:.1} ms", .{ sh.encode_ms, budget }, "{s} a {d:.0} q/s (cada quadro tem {d:.1} ms). Mediana/p95/máx {f}.", .{ sh.encoder_name, tfps, budget, sh.sum_enc });
+        dg.add(if (sh.congested) 2 else 0, tr("Sua internet (subida)"), "{d:.0} de {d} kbit/s", .{ sh.shownKbps() * 8, sh.bitrate_kbps }, "{s}", .{if (sh.congested) tr("A fila de envio está crescendo: o controle de taxa está baixando a qualidade pra caber na sua subida.") else tr("Cabendo: o controle de taxa está em dia.")});
+        dg.add(if (sh.slow_viewer) 1 else 0, tr("Quem assiste"), "{s}", .{if (sh.slow_viewer) tr("alguém atrasado") else tr("todos em dia")}, "{s}", .{if (sh.slow_viewer) tr("Alguém com PC ou internet lenta pediu menos: dá pra ver quem no diagnóstico da pessoa ou nas estatísticas do servidor.") else tr("Ninguém pediu pra baixar.")});
+        if (sh.congested)
+            dg.setTip("Sua subida não está dando conta. Tente: 30 q/s, 720p, ou fechar o que está usando a internet (download, outro vídeo, nuvem).", .{})
+        else if (enc_lvl > 0 and enc_lvl < 3)
+            dg.setTip("O encoder está no limite. Com o openh264 (sem placa), 30 q/s ou 720p aliviam; Configurações → Depuração diz por que não está na placa.", .{})
+        else if (sh.slow_viewer)
+            dg.setTip("Do seu lado está tudo bem: quem está atrasado é alguém assistindo. Peça pra essa pessoa abrir o diagnóstico da sua tela no app dela.", .{})
+        else
+            dg.setTip("Nada a fazer: tudo fluindo.", .{});
+    }
+
+    fn drawDiag(a: *App, size: c.ImVec2_c) void {
+        const sid = a.diag_stream orelse return;
+        var dg: Diag = .{};
+        var found = false;
+        if (proto.memberOf(sid) == 0) {
+            const m = if (proto.kindOf(sid) == proto.kind_camera) a.camera else a.sharer;
+            if (m) |sh| {
+                sh.mutex.lock();
+                defer sh.mutex.unlock();
+                diagShare(sh, &dg);
+                found = true;
+            }
+        } else for (a.views.items) |v| if (v.stream == sid) {
+            a.diagView(v, &dg);
+            found = true;
+            break;
+        };
+        if (!found) {
+            a.diag_stream = null; // a transmissão acabou
+            return;
+        }
+        const w = S(480);
+        c.igSetNextWindowPos(v2(size.x - w - S(24), S(76)), c.ImGuiCond_Appearing, v2(0, 0));
+        c.igSetNextWindowSize(v2(w, 0), 0);
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(18), S(16)));
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowRounding, S(10));
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowBorderSize, 1);
+        c.igPushStyleColor_U32(c.ImGuiCol_WindowBg, col.bg_float);
+        c.igPushStyleColor_U32(c.ImGuiCol_Border, withAlpha(col.blurple, 110));
+        defer {
+            c.igPopStyleColor(2);
+            c.igPopStyleVar(3);
+        }
+        const flags = c.ImGuiWindowFlags_NoTitleBar | c.ImGuiWindowFlags_NoResize | c.ImGuiWindowFlags_NoSavedSettings | c.ImGuiWindowFlags_NoCollapse | c.ImGuiWindowFlags_AlwaysAutoResize | c.ImGuiWindowFlags_NoScrollbar;
+        defer c.igEnd();
+        if (!c.igBegin("##diagwin", null, flags)) return;
+        const d = drawList();
+        const inner = w - S(36);
+        const o = c.igGetCursorScreenPos();
+        const lvl_cols = [_]u32{ col.green, col.yellow, col.red, col.faint };
+        const worst = dg.worst();
+
+        // título, veredito e fechar
+        drawTextF(d, font_regular, 17, v2(o.x, o.y + S(2)), col.blurple, ic.gauge);
+        drawTextF(d, font_bold, 17, v2(o.x + S(28), o.y), col.header, dg.title);
+        c.igSetCursorScreenPos(v2(o.x + inner - S(28), o.y - S(4)));
+        if (iconButton("##diagclose", ic.xmark, S(28), col.muted, col.hover, tr("Fechar"))) {
+            a.diag_stream = null;
+            return;
+        }
+        const verdict = switch (worst) {
+            0 => tr("Fluindo bem"),
+            1 => tr("Engasgando um pouco"),
+            else => tr("Engasgando"),
+        };
+        const vy = o.y + S(28);
+        const vw = textSizeF(font_semibold, 12, verdict).x + S(22);
+        rectFill(d, o.x, vy, o.x + vw, vy + S(22), withAlpha(lvl_cols[worst], 40), S(11));
+        drawTextF(d, font_semibold, 12, v2(o.x + S(11), vy + S(3)), lvl_cols[worst], verdict);
+        drawTextF(d, font_regular, 12, v2(o.x + vw + S(10), vy + S(3)), col.faint, tr("atualiza a cada 2 s"));
+        var y = vy + S(36);
+
+        // as etapas, na ordem em que o vídeo passa
+        drawTextF(d, font_bold, 11, v2(o.x, y), col.muted, tr("O CAMINHO DO VÍDEO"));
+        y += S(20);
+        for (dg.rows[0..dg.n], 0..) |r, i| {
+            const lc = lvl_cols[@min(r.level, 3)];
+            // linha ligando as etapas
+            if (i + 1 < dg.n) rectFill(d, o.x + S(5), y + S(14), o.x + S(7), y + S(56), withAlpha(col.text, 18), 0);
+            c.ImDrawList_AddCircleFilled(d, v2(o.x + S(6), y + S(8)), S(5), lc, 0);
+            drawTextF(d, font_semibold, 13.5, v2(o.x + S(22), y), col.text, r.title);
+            const vs = textSizeF(font_semibold, 13.5, r.value);
+            drawTextF(d, font_semibold, 13.5, v2(o.x + inner - vs.x, y), if (r.level == 0 or r.level == 3) col.header else lc, r.value);
+            y += S(20);
+            pushFont(font_regular, 12.5);
+            const ns = c.igCalcTextSize(r.note.ptr, r.note.ptr + r.note.len, false, inner - S(22));
+            popFont();
+            drawTextWrapF(d, font_regular, 12.5, v2(o.x + S(22), y), col.muted, r.note, inner - S(22));
+            y += ns.y + S(12);
+        }
+
+        // o que fazer
+        pushFont(font_regular, 13);
+        const ts = c.igCalcTextSize(dg.tip.ptr, dg.tip.ptr + dg.tip.len, false, inner - S(28));
+        popFont();
+        const box_h = ts.y + S(40);
+        rectFill(d, o.x, y, o.x + inner, y + box_h, withAlpha(lvl_cols[worst], 22), S(8));
+        rectFill(d, o.x, y, o.x + S(3), y + box_h, lvl_cols[worst], S(2));
+        drawTextF(d, font_bold, 11, v2(o.x + S(14), y + S(10)), col.muted, tr("O QUE FAZER"));
+        drawTextWrapF(d, font_regular, 13, v2(o.x + S(14), y + S(28)), col.text, dg.tip, inner - S(28));
+        y += box_h + S(14);
+
+        // copiar (pra mandar junto do relato)
+        c.igSetCursorScreenPos(v2(o.x, y));
+        if (secondaryButton(fmtZ("{s}  Copiar diagnóstico###diagcopy", .{ic.copy}), v2(S(190), S(32)))) {
+            var cb: [2400]u8 = undefined;
+            var cw: std.Io.Writer = .fixed(cb[0 .. cb.len - 1]);
+            cw.print("{s} ({s})\n", .{ dg.title, verdict }) catch {};
+            for (dg.rows[0..dg.n]) |r| cw.print("- {s}: {s}. {s}\n", .{ r.title, r.value, r.note }) catch {};
+            cw.print("{s}\ntelinha {s}\n", .{ dg.tip, version_string }) catch {};
+            const n = cw.buffered().len;
+            cb[n] = 0;
+            c.igSetClipboardText(@ptrCast(&cb));
+            a.toast("Diagnóstico copiado.", .{}, false);
+        }
+        c.igSetCursorScreenPos(v2(o.x, y + S(32)));
+        c.igDummy(v2(inner, 0));
+    }
+
     /// Quem transmite: a rede pra subir, o encoder e quem assiste devagar.
     fn shareHealth(s: *const Sharer) Health {
         if (s.congested) return .{ .level = 2, .cause = tr("sua internet (subindo devagar)") };
@@ -5870,16 +6120,42 @@ pub const App = struct {
                 if (t.stream == fo) break i;
             } else null;
             if (fi) |idx| {
-                const strip_h = if (n > 1 and !a.theater) S(130) else 0;
+                const others = n > 1 and !a.theater;
+                const hidden = others and a.cfg.hide_strip;
+                // escondidas: sobra uma faixa fina com "mostrar"
+                const strip_h = if (!others) 0 else if (hidden) S(26) else S(130);
                 const gap = if (strip_h > 0) S(12) else 0;
                 a.drawTile(&tiles[idx], area_x, area_y, area_w, area_h - strip_h - gap, true);
-                if (strip_h > 0) {
-                    const tw = @min(S(230), (area_w - S(12) * @as(f32, @floatFromInt(n - 2))) / @as(f32, @floatFromInt(n - 1)));
-                    var x = area_x + (area_w - (tw * @as(f32, @floatFromInt(n - 1)) + S(12) * @as(f32, @floatFromInt(n - 2)))) / 2;
+                if (hidden) {
+                    const label = fmtZ("{s}  {d} {s}", .{ ic.chev_up, n - 1, if (n == 2) tr("outra tela") else tr("outras telas") });
+                    const lw = textSizeF(font_semibold, 12, label).x + S(24);
+                    const bx = area_x + (area_w - lw) / 2;
+                    const by = area_y + area_h - strip_h;
+                    c.igSetCursorScreenPos(v2(bx, by));
+                    if (c.igInvisibleButton("##strip_show", v2(lw, strip_h), 0)) {
+                        a.cfg.hide_strip = false;
+                        config.save(&a.cfg);
+                    }
+                    const hov = c.igIsItemHovered(0);
+                    if (hov) tooltipText(tr("Mostrar as outras telas embaixo"));
+                    const dl = drawList();
+                    rectFill(dl, bx, by, bx + lw, by + strip_h, withAlpha(col.text, if (hov) 26 else 12), S(13));
+                    drawTextF(dl, font_semibold, 12, v2(bx + S(12), by + S(5)), if (hov) col.text else col.muted, label);
+                } else if (strip_h > 0) {
+                    // o botão de esconder fica à direita, fora das miniaturas
+                    const bsz = S(28);
+                    const room_w = area_w - bsz - S(12);
+                    const tw = @min(S(230), (room_w - S(12) * @as(f32, @floatFromInt(n - 2))) / @as(f32, @floatFromInt(n - 1)));
+                    var x = area_x + (room_w - (tw * @as(f32, @floatFromInt(n - 1)) + S(12) * @as(f32, @floatFromInt(n - 2)))) / 2;
                     for (tiles[0..n], 0..) |*t, i| {
                         if (i == idx) continue;
                         a.drawTile(t, x, area_y + area_h - strip_h, tw, strip_h, false);
                         x += tw + S(12);
+                    }
+                    c.igSetCursorScreenPos(v2(area_x + area_w - bsz, area_y + area_h - strip_h));
+                    if (iconButton("##strip_hide", ic.chev_down, bsz, col.muted, withAlpha(col.text, 20), tr("Esconder as outras telas"))) {
+                        a.cfg.hide_strip = true;
+                        config.save(&a.cfg);
                     }
                 }
                 return;
@@ -5930,6 +6206,7 @@ pub const App = struct {
         const lost = l.ep.stats.lost_msgs + l.ep.stats.nacks_sent;
         const d = lost -| a.net_loss_prev;
         a.net_loss_prev = lost;
+        a.net_loss_d = d;
         a.net_loss_level = if (d > 20) 2 else if (d > 3) 1 else 0;
     }
 
@@ -6129,8 +6406,13 @@ pub const App = struct {
         drawTextF(d, font_semibold, name_size, v2(lx + S(12) + bw, ly + S(4)), col.white, t.name);
         const dot = v2(lx + S(12) + bw + ns.x + S(9), ly + S(4) + ns.y / 2);
         c.ImDrawList_AddCircleFilled(d, dot, S(4), hc, 0);
-        if (c.igIsMouseHoveringRect(v2(dot.x - S(7), dot.y - S(7)), v2(dot.x + S(7), dot.y + S(7)), true))
-            tooltipText(if (t.health.level == 0) tr("A transmissão está fluindo bem") else fmtZ("Engasgando: {s}", .{t.health.cause}));
+        // bolinha e causa: clicar abre o diagnóstico detalhado (o quadro embaixo deixa: AllowOverlap)
+        c.igSetCursorScreenPos(v2(dot.x - S(8), ly));
+        if (c.igInvisibleButton("##diag", v2(S(16) + cause_w, ns.y + S(8)), 0)) a.openDiag(t.stream, t.name);
+        if (c.igIsItemHovered(0)) {
+            c.igSetMouseCursor(c.ImGuiMouseCursor_Hand);
+            tooltipText(if (t.health.level == 0) tr("A transmissão está fluindo bem · clique pro diagnóstico") else fmtZ("Engasgando: {s} · clique pro diagnóstico", .{t.health.cause}));
+        }
         if (cause_w > 0) {
             c.ImDrawList_PushClipRect(d, v2(lx, ly), v2(lx + label_w - S(4), ly + ns.y + S(8)), true);
             drawTextF(d, font_regular, 12, v2(dot.x + S(10), ly + S(4) + (ns.y - S(15)) / 2), hc, t.health.cause);
@@ -10536,6 +10818,8 @@ pub const App = struct {
         try w.print("{{\"screen\":{f},\"home_error\":{f},\"frames\":{d}", .{ s(@tagName(a.screen)), s(a.home_error[0..a.home_error_len]), frame_count });
         try w.print(",\"mic\":{},\"deaf\":{},\"share_modal\":{},\"settings_modal\":{},\"theater\":{},\"fullscreen\":{},\"controls_hidden\":{}", .{ a.mic != null, a.deaf, a.share_modal, a.settings_modal, a.theater, a.fullscreen, a.controls_hidden });
         if (a.focused) |f| try w.print(",\"focused\":{d}", .{f}) else try w.writeAll(",\"focused\":null");
+        try w.print(",\"hide_strip\":{}", .{a.cfg.hide_strip});
+        if (a.diag_stream) |f| try w.print(",\"diag\":{d}", .{f}) else try w.writeAll(",\"diag\":null");
         try w.print(",\"reconnect\":{{\"attempt\":{d},\"waiting\":{}}}", .{ a.reconnect.attempt, a.reconnect.waiting });
         try w.print(",\"home_tab\":{d},\"show_advanced\":{},\"own_tunnel_open\":{},\"chat_visible\":{},\"side_visible\":{},\"chat_unread\":{d}", .{
             a.home_tab, a.show_advanced, a.own_tunnel_open, a.chat_visible, a.side_visible, a.chat_unread,
