@@ -11083,7 +11083,7 @@ pub const App = struct {
             defer sh.mutex.unlock();
             const audio_on = sh.audio_on;
             const aerr: [160]u8 = sh.audio_err;
-            try w.print(",\"sharer\":{{\"state\":{f},\"w\":{d},\"h\":{d},\"fps\":{d:.1},\"backend\":{f},\"encoder\":{f},\"audio\":{},\"audio_err\":{f},\"auto_cap\":{d},\"frames\":{d},\"cursor_msgs\":{d},\"target_fps\":{d}}}", .{ s(@tagName(sh.state)), sh.w, sh.h, sh.fps, s(sh.backendSlice()), s(sh.encoder_name), audio_on, s(std.mem.sliceTo(&aerr, 0)), sh.auto_cap.load(.acquire), sh.frames_sent.load(.monotonic), sh.cursor_msgs.load(.monotonic), sh.target_fps.load(.monotonic) });
+            try w.print(",\"sharer\":{{\"state\":{f},\"w\":{d},\"h\":{d},\"fps\":{d:.1},\"backend\":{f},\"encoder\":{f},\"audio\":{},\"audio_err\":{f},\"auto_cap\":{d},\"frames\":{d},\"cursor_msgs\":{d},\"target_fps\":{d},\"kbps\":{d}}}", .{ s(@tagName(sh.state)), sh.w, sh.h, sh.fps, s(sh.backendSlice()), s(sh.encoder_name), audio_on, s(std.mem.sliceTo(&aerr, 0)), sh.auto_cap.load(.acquire), sh.frames_sent.load(.monotonic), sh.cursor_msgs.load(.monotonic), sh.target_fps.load(.monotonic), sh.bitrate_kbps });
         } else try w.writeAll(",\"sharer\":null");
         // avisos na tela
         try w.writeAll(",\"toasts\":[");

@@ -32,7 +32,7 @@ def test(fn):
     return fn
 
 
-SERVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "zig-out", "bin", "telinha-server-x86_64")
+SERVER = os.environ.get("QA_SERVER") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "zig-out", "bin", "telinha-server-x86_64")
 
 
 def invite_addrs(clip, pw):
@@ -3038,6 +3038,65 @@ def decoder_lento_tela():
         v = next(v for v in conv.state()["views"] if v["stream"] == did)
         log(f"quem assiste: {v['fps']} q/s, aliviou {v['relieved']}x, jogou tudo fora {v['flushes']}x")
         expect(v["fps"] >= 15, f"quem assiste quase não vê nada: {v['fps']} q/s")
+
+
+@test
+def espectador_que_nao_acompanha():
+    """Um espectador com o PC travando (congela e solta, como alguém com o jogo aberto): depois de 3 recomeços o servidor deixa ele à parte (IDR no máximo a cada 10 s) e para de pedir taxa menor pra quem transmite; os outros dois continuam com a qualidade de antes."""
+    with Session("nao-acompanha") as s:
+        p = port()
+        s.spawn("srv", [SERVER, "--porta", str(p), "--senha", "pw"], {k: os.environ[k] for k in ("HOME", "PATH")})
+        time.sleep(0.6)
+        # algo mudando na tela da Ana o tempo todo
+        s.display(91, "1600x900")
+        s.spawn("xterm", ["xterm", "-geometry", "120x40+0+0", "-e", "sh", "-c", "while :; do head -c 600 /dev/urandom | base64; sleep 0.05; done"], dict(os.environ, DISPLAY=":91"))
+        time.sleep(1.0)
+        a = s.app("a", 91, ["--nome", "Ana", "--entrar", f"127.0.0.1:{p}", "--senha", "pw", "--transmitir", "--software", "--janela", "1240,620,360,280"], size=(1600, 900))
+        st = a.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 20, "a Ana transmitir")
+        aid = st["my_id"]
+        good = [s.app(n.lower(), d, ["--nome", n, "--entrar", f"127.0.0.1:{p}", "--senha", "pw", "--assistir"]) for n, d in (("Bia", 92), ("Caio", 93))]
+        for v in good:
+            v.wait(lambda st: any(x["stream"] == aid and x["shown"] for x in st["views"]), 20, f"{v.name} ver a tela")
+        time.sleep(10)
+        base = a.state()["sharer"]["kbps"]
+        log(f"taxa da Ana com todo mundo em dia: {base} kbit/s")
+        k = s.app("k", 94, ["--nome", "Kaio", "--entrar", f"127.0.0.1:{p}", "--senha", "pw", "--assistir"])
+        k.wait(lambda st: any(x["stream"] == aid and x["shown"] for x in st["views"]), 20, "o Kaio ver a tela")
+        srv_log = os.path.join(s.base, "srv.log")
+        start = len(open(srv_log, errors="replace").read())
+        # o PC do Kaio travando: congela 1,5 s, solta 1 s, por 45 s (só o processo dele)
+        pid = k.proc.pid
+        try:
+            end = time.time() + 45
+            while time.time() < end:
+                os.kill(pid, signal.SIGSTOP)
+                time.sleep(1.5)
+                os.kill(pid, signal.SIGCONT)
+                time.sleep(1.0)
+        finally:
+            os.kill(pid, signal.SIGCONT)
+        text = open(srv_log, errors="replace").read()[start:]
+        lines = text.splitlines()
+        resyncs = [l for l in lines if "Kaio" in l and "recomeçando de um IDR" in l]
+        apart = [i for i, l in enumerate(lines) if "Kaio não acompanha" in l]
+        log(f"recomeços do Kaio: {len(resyncs)}; ficou à parte: {len(apart)}x")
+        expect(apart, "o servidor não deixou o Kaio à parte:\n" + "\n".join(lines[-25:]))
+        after = lines[apart[0] + 1:]
+        slow_after = [l for l in after if "pedindo taxa menor" in l]
+        log(f"pedidos de taxa menor depois de ficar à parte: {len(slow_after)}")
+        for l in slow_after[:5]:
+            log("  " + l)
+        expect(len(slow_after) <= 1, f"continuou pedindo taxa menor por causa do Kaio ({len(slow_after)}x)")
+        # IDR pedido por causa dele: no máximo um a cada ~10 s depois de ficar à parte
+        resync_after = [l for l in after if "Kaio" in l and "recomeçando de um IDR" in l]
+        expect(len(resync_after) <= 6, f"o Kaio continuou pedindo IDR toda hora ({len(resync_after)}x)")
+        now = a.state()["sharer"]["kbps"]
+        log(f"taxa da Ana no fim: {now} kbit/s (antes do Kaio: {base})")
+        expect(now >= base * 0.7, f"a taxa ficou presa lá embaixo: {now} de {base} kbit/s")
+        for v in good:
+            x = next(x for x in v.state()["views"] if x["stream"] == aid)
+            log(f"{v.name}: {x['fps']} q/s, atraso {x['latency']} ms")
+            expect(x["fps"] >= 10, f"{v.name} quase não vê nada: {x['fps']} q/s")
 
 
 @test
