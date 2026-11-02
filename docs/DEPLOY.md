@@ -100,6 +100,20 @@ their `logs-recebidos` folder, next to the config). With `--logs DIR` (or
 `TELINHA_LOGS`), the dedicated server also keeps a copy, so a log sent while no
 admin is around isn't lost. Each person can send one log per minute, up to 8 MB.
 
+With `--coletar-logs` (or `TELINHA_COLETAR_LOGS=1`) you don't have to ask
+anyone: people are told when they join, the app records the log while they're
+in the room, and whoever has the crown right-clicks the person → *Grab the log*.
+The crash report of whoever crashed arrives on its own. Anyone who doesn't want
+it turns it off in *Settings → Debugging* (and you're told it didn't come).
+Without `--logs`, logs go to `logs`, next to the state file.
+
+## When the server crashes
+
+If the server crashes (a bug) and systemd restarts it, it writes in the default
+channel's chat "O servidor reiniciou depois de uma queda (motivo: …)", with the
+file and line, and leaves the details in `ultima-queda.txt`, next to the state
+file (the full stack also goes to the journal).
+
 ## Channels
 
 One server can hold several rooms at once, IRC-style: each channel has its own

@@ -73,7 +73,25 @@ other than NVIDIA), `TELINHA_ATUALIZACAO_URL=http://…` (fake GitHub),
 `TELINHA_ENCODE_LENTO=ms` (fake slow encoder, for automatic quality),
 `TELINHA_TESTE_TRAVAR=1` or `=panic` (crashes the app on purpose, for the crash
 report), `TELINHA_PASTA_CONFIG`/`TELINHA_PASTA_CLIPES`. The build accepts
-`-Drepo=owner/name` (the CI passes it) to check for a new version on GitHub.
+`-Drepo=owner/name` (the CI passes it) to check for a new version on GitHub. On
+the server: `TELINHA_TESTE_QUEDA=1` (panics right after opening, for the crash
+notice).
+
+### Test rules (learned the hard way)
+
+- **A new feature gets a test the way people use it.** Dragging gets a test
+  that drags (`drag_abs`), a menu gets a right-click test, a slider gets a test
+  that pulls the slider. In 3.9.1 the control bar crashed the app when dragged,
+  and the test only clicked the handle.
+- **Before a release: `QA_CARGA_SEG=600 run_qa.py sala_aguenta_carga`** (10 min
+  of streaming at 60 fps over UDP with loss and a viewer freezing, against the
+  ReleaseSafe server, same as the published one). A time difference between two
+  threads took the room down 8 times on 2026-11-02 and only showed under load.
+- **Server: subtract times with `-|`.** A clock read before taking the mutex
+  can be behind another thread's; in ReleaseSafe the negative result is a panic
+  and everyone drops.
+- Run QA without building or streaming on the same machine: the GPU has few
+  NVENC sessions and a busy CPU turns into a false "never went live".
 
 ## Testing by hand without messing up your screen
 

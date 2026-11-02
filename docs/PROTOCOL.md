@@ -129,7 +129,7 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | type | name | direction | payload |
 |---|---|---|---|
 | 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (what it decodes, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (channel to join; empty or missing = the default), `str token_bot` (bots only; see `feat_bot`), `str senha_do_canal` (if the channel has a password; the app sends the last one it used there, to get back to the channel when it reconnects) |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1), `u8 recursos_do_servidor` (`srv_*`: 1 = private messages and quoted replies, 2 = files, 4 = cards, 8 = deleting channels, 16 = channel OPs, 32 = bot panel; an older server doesn't send it = 0) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1), `u8 recursos_do_servidor` (`srv_*`: 1 = private messages and quoted replies, 2 = files, 4 = cards, 8 = deleting channels, 16 = channel OPs, 32 = bot panel, 64 = collects logs; an older server doesn't send it = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (the server closes right after) |
 | 4 | members | S→C | `u8 sala` (1 = locked), `u16 n`, n × member (below), n × `str versão_do_app` (same order), n × `u8 tipo` (1 = bot, 2 = OP of my text channel, 4 = OP of my call's channel, 8 = created my text channel, 16 = created my call's channel; an older server doesn't send it) |
 | 5 | chat | C→S | `str texto`, image (optional, below), `u32 resposta` (id of the message replied to; 0 = none), `u32 pra` (private to this member; 0 = the channel), `u32 n` + n bytes of a [card](#cards) (0 = none) |
@@ -189,6 +189,8 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | 45 | bot_panel | C→S | bots only: `u32 n`, card (`n = 0` removes the panel); see "Bot panel" |
 | 45 | bot_panel | S→C | `u32 bot id`, `u32 n`, card (`n = 0`: no panel anymore) |
 | 46 | panel_action | C→S | `u32 bot id`, `u8 botão`: click on a panel button; reaches the bot as an `embed_action` with `id` 0 |
+| 47 | log_request | C→S | `u32 id`, `u8 what`: 0 = whoever has the crown asks for `id`'s log; 1 = I refuse `id`'s request; see "Log collection" |
+| 47 | log_request | S→C | `u32 who asked`, `str name`: send your log (or refuse) |
 
 `versão_do_app` ("3.0.0") only serves to warn whoever is out of date (the
 interface shows "so-and-so is on telinha X: there is a new version"); empty = not
@@ -372,7 +374,8 @@ stopped (`extra` = its type), 4 = became admin, 5 = is no longer admin, 7/8 = pe
 taken away/given back, 9 = an admin moved you to another channel, 10 = the
 private message didn't go (the person left or their app can't receive it), 11 =
 the requested file isn't in the room anymore, 12 = an admin cleared the room's
-chat (the app erases what it shows; an older app just shows the text). The
+chat (the app erases what it shows; an older app just shows the text), 13 =
+the person you asked for a log refused (the `text` is just their name). The
 `texto` already comes ready ("Ana muted your microphone."). 6 = couldn't switch
 channel (invalid name, switching too fast, the server doesn't allow new
 channels or has too many).
@@ -536,13 +539,23 @@ works from any channel.
 chat, shown to everyone in the room in any channel (in the app: clicking the
 bot in the list opens its controls; the title shows under its name). The bot
 sends `bot_panel` with the card (same format as the end of `chat`; `n = 0`
-removes it), at most once every 200 ms (faster is ignored; the SDK coalesces).
+removes it), on average once every 200 ms with bursts of up to 4 (beyond that
+is ignored; the SDK coalesces).
 The server keeps the latest and relays it to whoever understands cards (not to
 bots or the browser): right away, and to whoever joins later, right after the
 member list. When the bot leaves, everyone gets an empty panel. Clicks:
 `panel_action` (`u32 bot id`, `u8 botão`), with the same limit as
 `embed_action`; it reaches the bot as an `embed_action` for message **0**, with
 who clicked and where they are.
+
+**Log collection** (`log_request`, `srv_*` 64): only on a server with
+`--coletar-logs`. The app says so on join and records the debug log while in the
+room (whoever turned off "Send my log when the room asks" is only told). Whoever
+has the crown sends `log_request` (0, id); the person gets `log_request` (who
+asked, name) and sends the log the usual way (`log_chunk`, to whoever has the
+crown and to the server's `--logs` folder) or answers `log_request` (1, who
+asked), and the asker gets notice 13. Bots and the browser never get asked. An
+app in such a room also sends its last crash report on its own.
 
 ### Browser
 

@@ -768,7 +768,9 @@ fn serverExe(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.buil
         .target = target,
         .optimize = optimize,
         .link_libc = true,
-        .strip = optimize != .Debug,
+        // com símbolos: um panic (ReleaseSafe) sai no journal com arquivo e
+        // linha; sem eles era só "integer overflow" e nenhuma pista
+        .strip = false,
     }) });
     // --atualizar-sozinho: de onde vem a versão nova (o mesmo -Drepo do app)
     const opts = b.addOptions();

@@ -64,6 +64,7 @@ pub const Config = struct {
     debug_log: bool = false, // grava o log de depuração (tudo) num arquivo
     debug_send: i32 = 0, // como mandar o log: 0 = gofile.io (link), 1 = webhook, 2 = pela sala, pro dono
     debug_webhook: [512]u8 = zstr("", 512), // URL do webhook (Discord etc.)
+    share_logs: bool = true, // sala com --coletar-logs: o dono pode pegar o meu log
     clips: bool = true, // guardar os últimos 30 s do que assiste (pra clipe)
     camera_device: [160]u8 = zstr("", 160), // vazio = a primeira câmera
     camera_res: i32 = 1, // 0 = 480p, 1 = 720p, 2 = 1080p
@@ -306,6 +307,8 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         cfg.debug_log = int != 0;
     } else if (std.mem.eql(u8, k, "debug_send")) {
         cfg.debug_send = std.math.clamp(int, 0, 2);
+    } else if (std.mem.eql(u8, k, "share_logs")) {
+        cfg.share_logs = int != 0;
     } else if (std.mem.eql(u8, k, "debug_webhook")) {
         setStr(&cfg.debug_webhook, v);
     } else if (std.mem.eql(u8, k, "check_updates")) {
@@ -475,9 +478,9 @@ fn writeAll(cfg: *const Config, f: *c.FILE) bool {
     ok = ok and c.fwrite(m.ptr, 1, m.len, f) == m.len;
     // (um format só aceita 32 valores: o resto vai aqui)
     var more2: [1600]u8 = undefined;
-    const m2 = std.fmt.bufPrint(&more2, "animations={d}\neco={d}\npanel_w={d}\nmood={d}\njoin_channel={s}\ndraw_color={d}\ndraw_size={d}\nshow_drawings={d}\njoin_fp={s}\njoin_fp_for={s}\nupdate_auto={d}\nupdate_skip={s}\nlast_version={s}\nav1={d}\nchat_h={d}\nadmin_token_for={s}\nfps_auto={d}\nauto_watch={d}\nurl_handler={d}\nhide_strip={d}\ndock_side={d}\ndock_mini={d}\n", .{
+    const m2 = std.fmt.bufPrint(&more2, "animations={d}\neco={d}\npanel_w={d}\nmood={d}\njoin_channel={s}\ndraw_color={d}\ndraw_size={d}\nshow_drawings={d}\njoin_fp={s}\njoin_fp_for={s}\nupdate_auto={d}\nupdate_skip={s}\nlast_version={s}\nav1={d}\nchat_h={d}\nadmin_token_for={s}\nfps_auto={d}\nauto_watch={d}\nurl_handler={d}\nhide_strip={d}\ndock_side={d}\ndock_mini={d}\nshare_logs={d}\n", .{
         @intFromBool(cfg.animations), @intFromBool(cfg.eco), cfg.panel_w, @intFromBool(cfg.mood), getStr(&cfg.join_channel), cfg.draw_color, cfg.draw_size, @intFromBool(cfg.show_drawings), getStr(&cfg.join_fp), getStr(&cfg.join_fp_for),
-        @intFromBool(cfg.update_auto), getStr(&cfg.update_skip), getStr(&cfg.last_version), @intFromBool(cfg.av1), cfg.chat_h, getStr(&cfg.admin_token_for), @intFromBool(cfg.fps == 0), @intFromBool(cfg.auto_watch), @intFromBool(cfg.url_handler), @intFromBool(cfg.hide_strip), cfg.dock_side, @intFromBool(cfg.dock_mini),
+        @intFromBool(cfg.update_auto), getStr(&cfg.update_skip), getStr(&cfg.last_version), @intFromBool(cfg.av1), cfg.chat_h, getStr(&cfg.admin_token_for), @intFromBool(cfg.fps == 0), @intFromBool(cfg.auto_watch), @intFromBool(cfg.url_handler), @intFromBool(cfg.hide_strip), cfg.dock_side, @intFromBool(cfg.dock_mini), @intFromBool(cfg.share_logs),
     }) catch return false;
     ok = ok and c.fwrite(m2.ptr, 1, m2.len, f) == m2.len;
     inline for (@typeInfo(HotkeyId).@"enum".fields) |fl| {

@@ -276,7 +276,7 @@ mundo da sala vê de qualquer canal (no app, clicar no bot na lista abre os
 controles, e o título aparece embaixo do nome dele). Os botões funcionam como
 os de um cartão do chat; o clique chega com `click.panel == True`. Chame de
 novo a cada mudança de estado (o SDK junta as seguidas e manda a última; o
-servidor aceita uma a cada 200 ms) e `set_panel(None)` pra tirar. Ao
+servidor aceita uma a cada 200 ms em média) e `set_panel(None)` pra tirar. Ao
 reconectar, o SDK manda o painel de novo. Servidor antes da 3.9 ignora. O bot
 de música usa pra tocar, pausar, pular e chamar pra call de quem clicou.
 

@@ -277,7 +277,7 @@ everyone in the room sees it from any channel (in the app, clicking the bot in
 the list opens its controls, and the title shows under its name). Its buttons
 work like a chat card's; the click arrives with `click.panel == True`. Call it
 again on every state change (the SDK coalesces and sends the latest; the
-server takes one every 200 ms) and `set_panel(None)` to remove it. After a
+server takes one every 200 ms on average) and `set_panel(None)` to remove it. After a
 reconnect the SDK sends the panel again. Servers before 3.9 ignore it. The
 music bot uses it to play, pause, skip and come to the caller's call.
 

@@ -72,7 +72,24 @@ mentira), `TELINHA_VERSAO_TESTE=9.9.9` (finge outra versão na sala),
 `TELINHA_ENCODE_LENTO=ms` (encoder de mentira lento, pra qualidade automática),
 `TELINHA_TESTE_TRAVAR=1` ou `=panic` (derruba o app de propósito, pro relatório de travamento),
 `TELINHA_PASTA_CONFIG`/`TELINHA_PASTA_CLIPES`. O build aceita `-Drepo=dono/nome`
-(o CI passa) pra checar versão nova no GitHub.
+(o CI passa) pra checar versão nova no GitHub. No servidor: `TELINHA_TESTE_QUEDA=1`
+(panic logo depois de abrir, pro aviso de queda).
+
+### Regras dos testes (aprendidas na marra)
+
+- **Recurso novo ganha teste do jeito que a pessoa usa.** Arrastar ganha teste
+  que arrasta (`drag_abs`), menu ganha teste com o botão direito, régua ganha
+  teste que puxa a régua. Na 3.9.1 a barra de controles travava o app ao ser
+  arrastada, e o teste só clicava na alça.
+- **Antes de lançar: `QA_CARGA_SEG=600 run_qa.py sala_aguenta_carga`** (10 min
+  de transmissão a 60 q/s por UDP com perda e um espectador travando, contra o
+  servidor em ReleaseSafe, igual ao publicado). Uma conta de tempo entre duas
+  threads derrubou a sala 8 vezes em 02/11 e só aparecia com carga.
+- **Servidor: tempo se subtrai com `-|`.** O relógio lido antes de travar o
+  mutex pode ficar atrás do de outra thread; em ReleaseSafe a conta negativa é
+  panic e todo mundo cai.
+- Rode o QA sem compilar nem transmitir na mesma máquina: a placa tem poucas
+  sessões de NVENC e a CPU ocupada vira falso "não ficou ao vivo".
 
 ## Testando na mão sem bagunçar sua tela
 

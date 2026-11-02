@@ -2,6 +2,56 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.10.0
+
+A sala não cai mais sozinha, e o dono pode pegar o log da galera sem pedir. Conversa com a 3.8 e as anteriores (até a 3.1). Mesmo protocolo (7). **Quem hospeda servidor dedicado: atualize**, era o servidor que derrubava a sala.
+
+### Destaques
+
+- 🔌 **A sala não cai mais sozinha**: o servidor das versões 3.8.0 e 3.9.1 abortava de vez em quando com alguém transmitindo por UDP (uma conta de tempo entre duas threads dava negativa), e todo mundo era desconectado junto. Consertado, com teste.
+- 🩺 **Pegar o log de quem está na sala** (servidor com `--coletar-logs`): quem entra é avisado, o log grava sozinho enquanto a pessoa está lá e o dono clica com o botão direito → *Pegar o log*. O relatório de quem travou chega sozinho. Quem não quiser desliga em *Configurações → Depuração*.
+- 📣 **O servidor diz por que caiu**: se cair e voltar, escreve no chat "O servidor reiniciou depois de uma queda (motivo: …)", com o arquivo e a linha.
+- ↔️ **Arrastar a barra de controles não fecha mais o app**: arrastar a alça travava o telinha (clicar funcionava).
+- 🌐 **Página do navegador com a aba escondida não cai mais a cada minuto**: o navegador segura o timer da aba escondida, e o servidor achava que a página tinha morrido.
+
+<!-- detalhes -->
+
+### Todas as mudanças
+
+- **Servidor**: o relógio do UDP (pedidos de reenvio, repetição da última
+  mensagem) lia a hora antes de travar, e a thread que envia pra outro
+  espectador podia gravar uma hora mais nova no meio; em ReleaseSafe (desde
+  a 3.8.0) a subtração negativa vira "panic: integer overflow" e o processo
+  reinicia. Todas as contas de tempo do servidor agora saturam em zero.
+  Teste novo no `udp.zig` (falha com o código antigo).
+- **Servidor**: compilado com símbolos (7 MB). Um panic grava o motivo e a
+  pilha em `queda.txt`; na volta, o motivo vai pro journal, pro chat do canal
+  padrão e fica em `ultima-queda.txt`. Morto sem panic (sinal, falta de
+  memória) também avisa ("parou sem avisar").
+- **Coleta de logs** (`--coletar-logs` / `TELINHA_COLETAR_LOGS=1`): mensagem
+  nova `log_request` (47), recurso de servidor 64 e aviso 13. O app avisa ao
+  entrar, liga o log de depuração enquanto está na sala (desliga ao sair, se
+  não era seu), atende o pedido do dono pelo caminho de sempre (pra quem tem a
+  coroa e pra pasta `--logs`, que por padrão fica do lado do estado) e manda
+  sozinho o relatório do último travamento. Configurações → Depuração:
+  "Mandar meu log quando a sala pedir"; desligado, o dono é avisado que não
+  veio. Bot e navegador não recebem pedido.
+- **Servidor**: a página do navegador tem 200 s de silêncio antes de ser
+  tirada da sala (o app e o SDK continuam com 60 s); a página manda o ping
+  também quando chega mensagem com a aba escondida.
+- **Servidor**: painel de bot com folga pra rajada (4 seguidas, depois uma a
+  cada 200 ms); duas mudanças que chegavam juntas pelo atraso da rede
+  perdiam a última e o painel ficava com o estado velho.
+- **Barra de controles**: as zonas desenhadas durante o arrasto pediam a
+  camada da frente sem a janela (SIGSEGV no endereço 0x48).
+- **QA**: `sala_aguenta_carga` (60 q/s por UDP com perda pra três pessoas, uma
+  travando; `QA_CARGA_SEG=600` antes de lançar), `coleta_de_logs`,
+  `servidor_avisa_queda`; a barra é arrastada de verdade pros três lados, a
+  régua de volume do menu também, e a sala com o painel do bot parada não
+  redesenha à toa. Regras em CONTRIBUTING: recurso de arrastar ganha teste de
+  arrastar; tempo no servidor se subtrai com `-|`.
+- **SDK**: `LOG_REQUEST` e `SRV_LOGS` no `wire.py`.
+
 ## 3.9.1
 
 A 3.9.0 não chegou a sair (a CI pegou um conflito de nome entre o SDK novo e o bot Telão); esta é ela, consertada. Conversa com a 3.8 e as anteriores (até a 3.1). Mesmo protocolo (7); o painel de bot só aparece com servidor e app 3.9.

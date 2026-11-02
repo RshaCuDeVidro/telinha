@@ -1249,6 +1249,11 @@ pub const App = struct {
     whatsnew_after: [24]u8 = undefined, // a versão de antes ("" = só a seção da atual)
     whatsnew_after_len: usize = 0,
     crash_sending: bool = false, // mandando o relatório pelo aviso (avisa quando acabar)
+    // sala que coleta logs (srv_logs): já avisou nesta conexão, ligou o log
+    // sozinho (desliga ao sair), já tentou mandar o relatório de travamento
+    collect_seen: bool = false,
+    collect_auto_log: bool = false,
+    collect_crash_tried: bool = false,
     ptt_capture: bool = false, // esperando a tecla nova do apertar pra falar
     key_capture: ?config.HotkeyId = null, // esperando a tecla nova desse atalho
     capture_mod_seen: c_int = 0, // modificador apertado sozinho na captura (vira o atalho se soltar sem outra tecla)
@@ -2077,6 +2082,9 @@ pub const App = struct {
 
     fn leaveRoom(a: *App) void {
         a.trim_at = c.igGetTime() + 2;
+        a.stopAutoLog();
+        a.collect_seen = false;
+        a.collect_crash_tried = false;
         // gravação em andamento fecha o arquivo aqui (o fim e a duração): o
         // buffer só some quando a última thread solta a transmissão, e saindo
         // do app isso pode não acontecer antes de o processo acabar
@@ -2490,6 +2498,50 @@ pub const App = struct {
         };
     }
 
+    /// Sala com --coletar-logs (srv_logs): avisa uma vez ao entrar, grava o log
+    /// de depuração enquanto está nela (sem ele não teria o que mandar) e manda
+    /// sozinho o relatório do último travamento. Quem desligou "Mandar meu log
+    /// quando a sala pedir" só recebe o aviso.
+    fn collectLogs(a: *App, cl: *Client) void {
+        const on = cl.server_features & proto.srv_logs != 0 and a.server == null;
+        if (!on) return;
+        if (!a.collect_seen) {
+            a.collect_seen = true;
+            if (a.cfg.share_logs)
+                a.toast("Esta sala coleta logs: o dono pode pegar o seu log de diagnóstico (sistema, placa, rede, o que o app fez; nenhuma senha). Pra não mandar: Configurações → Depuração.", .{}, false)
+            else
+                a.toast("Esta sala coleta logs, mas você desligou: se o dono pedir, o seu não vai.", .{}, false);
+            // texto longo, aviso que importa: fica mais tempo na tela
+            if (a.n_toasts > 0) a.toasts[a.n_toasts - 1].until = c.igGetTime() + 14;
+        }
+        if (!a.cfg.share_logs) {
+            a.stopAutoLog();
+            return;
+        }
+        if (!debuglog.on() and !a.collect_auto_log) {
+            debuglog.start();
+            if (debuglog.on()) {
+                a.collect_auto_log = true;
+                a.logSystem();
+            }
+        }
+        if (crash.pending() and !a.collect_crash_tried and !a.crash_sending and debuglog.sendState() != .sending) {
+            a.collect_crash_tried = true;
+            a.crash_prompt = false;
+            a.debug_sent_via = .room;
+            debuglog.sendWhat(.room, .crash, "", config.getStr(&a.cfg.name)) catch return;
+            a.crash_sending = true;
+            a.toast("O telinha travou da última vez: o relatório foi pro dono da sala (ela coleta logs).", .{}, false);
+        }
+    }
+
+    /// O log ligado só por causa da sala que coleta: desliga (o do usuário fica).
+    fn stopAutoLog(a: *App) void {
+        if (!a.collect_auto_log) return;
+        a.collect_auto_log = false;
+        if (!a.cfg.debug_log) debuglog.stop();
+    }
+
     /// Avisos do admin (silenciou, parou a transmissão, deu/tirou admin).
     fn handleNotices(a: *App, cl: *Client) void {
         while (cl.takeNotice()) |n| {
@@ -2504,6 +2556,28 @@ pub const App = struct {
                 },
                 proto.notice_stream_stopped => if (n.extra == proto.kind_camera) a.stopCamera() else a.stopSharing(),
                 proto.notice_log_received => debuglog.line("{s}", .{n.textSlice()}),
+                proto.notice_log_request => {
+                    // o dono pediu o meu log (sala com --coletar-logs)
+                    const who = n.textSlice();
+                    if (!a.cfg.share_logs) {
+                        cl.sendLogRequest(n.from, proto.log_req_refuse);
+                        a.toast("{s} pediu o seu log; não foi (você desligou nas configurações).", .{who}, false);
+                    } else if (debuglog.fileSize() == 0) {
+                        a.toast("{s} pediu o seu log, mas ele está vazio.", .{who}, false);
+                    } else {
+                        a.debug_sent_via = .room;
+                        debuglog.sendWhat(.room, .log, "", config.getStr(&a.cfg.name)) catch {
+                            a.toast("{s} pediu o seu log; já tem um envio em andamento.", .{who}, false);
+                            continue;
+                        };
+                        a.toast("{s} pediu o seu log de diagnóstico: mandando pela sala.", .{who}, false);
+                    }
+                    continue;
+                },
+                proto.notice_log_refused => {
+                    a.toast("{s} não manda o log (desligou nas configurações).", .{n.textSlice()}, false);
+                    continue;
+                },
                 proto.notice_channel => if (n.extra == proto.notice_channel_needs_password and a.chan_req_len > 0) {
                     // o canal pede senha: o painel pergunta (e manda o mesmo pedido de novo)
                     @memcpy(a.chan_pw_for[0..a.chan_req_len], a.chan_req[0..a.chan_req_len]);
@@ -2958,7 +3032,10 @@ pub const App = struct {
                 return;
             }
         }
-        if (st == .connected) a.handleNotices(cl);
+        if (st == .connected) {
+            a.handleNotices(cl);
+            a.collectLogs(cl);
+        }
         if (a.camera) |cam| {
             cam.mutex.lock();
             const cst = cam.state;
@@ -5336,7 +5413,7 @@ pub const App = struct {
                     .{ 1, v2(o.x + S(6), o.y + S(40)), v2(o.x + S(84), o.y + size.y - S(40)) },
                     .{ 2, v2(o.x + size.x - S(84), o.y + S(40)), v2(o.x + size.x - S(6), o.y + size.y - S(40)) },
                 };
-                const fg = c.igGetForegroundDrawList_ViewportPtr(null);
+                const fg = c.igGetForegroundDrawList_ViewportPtr(c.igGetMainViewport());
                 for (zones) |z| {
                     const lit = z[0] == target;
                     rectFill(fg, z[1].x, z[1].y, z[2].x, z[2].y, withAlpha(col.blurple, if (lit) 70 else 22), S(14));
@@ -5818,6 +5895,13 @@ pub const App = struct {
             cl.admin(proto.admin_stop_stream, target.id, proto.kind_camera);
         if (i_am_owner and menuItem(if (target.admin) fmtZ("{s}  Tirar o admin###aadmin", .{ic.shield}) else fmtZ("{s}  Dar admin###aadmin", .{ic.shield}), 0))
             cl.admin(proto.admin_set_admin, target.id, @intFromBool(!target.admin));
+        // sala com --coletar-logs: o log dele vem sem precisar pedir (ele foi avisado ao entrar)
+        if (i_am_owner and cl.server_features & proto.srv_logs != 0 and !target.bot and target.route != proto.route_web and
+            menuItem(fmtZ("{s}  Pegar o log###alog", .{ic.bug}), 0))
+        {
+            cl.sendLogRequest(target.id, proto.log_req_ask);
+            a.toast("Pedi o log de {s}: chega em logs-recebidos.", .{name}, false);
+        }
         if (menuItem(if (target.noDraw()) fmtZ("{s}  Devolver o pincel###adraw", .{ic.pen}) else fmtZ("{s}  Tirar o pincel (apaga os desenhos)###adraw", .{ic.pen}), 0))
             cl.admin(proto.admin_draw, target.id, @intFromBool(target.noDraw()));
         // levar pra outro canal (o chat e a call)
@@ -10933,6 +11017,23 @@ pub const App = struct {
         popFont();
         c.igPopTextWrapPos();
         c.igDummy(v2(0, S(4)));
+        // sala com --coletar-logs: o dono pode pegar o log sem pedir (desligável)
+        c.igPushStyleColor_U32(c.ImGuiCol_FrameBg, col.input);
+        if (c.igCheckbox(tr("Mandar meu log quando a sala pedir (salas que coletam logs)###sharelogs"), &a.cfg.share_logs)) {
+            config.save(&a.cfg);
+            if (!a.cfg.share_logs) a.stopAutoLog();
+        }
+        c.igPopStyleColor(1);
+        c.igPushTextWrapPos(c.igGetCursorPosX() + w);
+        pushFont(font_regular, 12.5);
+        const collecting = if (a.client) |cl| cl.isConnected() and cl.server_features & proto.srv_logs != 0 and a.server == null else false;
+        if (collecting)
+            textColored(if (a.cfg.share_logs) col.yellow else col.muted, if (a.cfg.share_logs) tr("Esta sala coleta logs: enquanto você está nela o log fica gravando, e o dono pode pegar.") else tr("Esta sala coleta logs, mas o seu não vai."))
+        else
+            textColored(col.faint, tr("Servidor dedicado com --coletar-logs: o app avisa ao entrar, grava o log enquanto você está lá e o dono pode pegar sem precisar te pedir."));
+        popFont();
+        c.igPopTextWrapPos();
+        c.igDummy(v2(0, S(4)));
 
         const now = c.igGetTime();
         if (now - a.debug_size_at > 1.0) {
@@ -11295,6 +11396,7 @@ pub const App = struct {
         try w.print(",\"mic\":{},\"deaf\":{},\"share_modal\":{},\"settings_modal\":{},\"theater\":{},\"fullscreen\":{},\"controls_hidden\":{}", .{ a.mic != null, a.deaf, a.share_modal, a.settings_modal, a.theater, a.fullscreen, a.controls_hidden });
         if (a.focused) |f| try w.print(",\"focused\":{d}", .{f}) else try w.writeAll(",\"focused\":null");
         try w.print(",\"hide_strip\":{},\"dock_side\":{d},\"dock_mini\":{},\"panel_open\":{}", .{ a.cfg.hide_strip, a.cfg.dock_side, a.cfg.dock_mini, a.panel_shown + 2 >= a.frame_no });
+        try w.print(",\"share_logs\":{},\"collect_seen\":{},\"collect_auto_log\":{},\"debug_on\":{}", .{ a.cfg.share_logs, a.collect_seen, a.collect_auto_log, debuglog.on() });
         if (a.diag_stream) |f| try w.print(",\"diag\":{d}", .{f}) else try w.writeAll(",\"diag\":null");
         try w.print(",\"reconnect\":{{\"attempt\":{d},\"waiting\":{}}}", .{ a.reconnect.attempt, a.reconnect.waiting });
         try w.print(",\"home_tab\":{d},\"show_advanced\":{},\"own_tunnel_open\":{},\"chat_visible\":{},\"side_visible\":{},\"chat_unread\":{d}", .{

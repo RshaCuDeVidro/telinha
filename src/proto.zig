@@ -21,7 +21,7 @@ pub const version: u16 = 7;
 /// O anterior (servidor e app ainda falam com ele; o servidor pode recusar).
 pub const version_old: u16 = 6;
 /// Versão do app (vai no hello/welcome/members pra avisar quem está desatualizado).
-pub const app_version = "3.9.1";
+pub const app_version = "3.10.0";
 pub const max_msg = 32 * 1024 * 1024;
 /// Marcador em claro no lugar do tamanho: "senha errada" (o servidor não
 /// conseguiu decifrar a primeira mensagem).
@@ -103,6 +103,8 @@ pub const Type = enum(u8) {
     // painel de bot: um cartão fixo dele, que dá pra usar de qualquer canal (ver docs/PROTOCOL.md "Painel do bot")
     bot_panel = 45, // C→S (só bot) u32 n, embed (n = 0 tira) | S→C u32 id do bot, u32 n, embed
     panel_action = 46, // C→S u32 id do bot, u8 botão (chega no bot como embed_action com id 0)
+    // coleta de logs (servidor com --coletar-logs, srv_logs): ver docs/PROTOCOL.md "Coleta de logs"
+    log_request = 47, // C→S u32 id, u8 o_que (log_req_ask: o dono pede o log de id | log_req_refuse: recuso o pedido de id) | S→C u32 quem pediu, str nome
     _,
 };
 
@@ -166,6 +168,9 @@ pub const log_ack_delivered: u8 = 0; // chegou em quem tem a coroa
 pub const log_ack_saved: u8 = 1; // ninguém com a coroa na sala, mas o servidor guardou
 pub const log_ack_nobody: u8 = 2; // ninguém pra receber
 pub const log_ack_refused: u8 = 3; // grande demais ou cedo demais (um por minuto)
+/// log_request: o que é.
+pub const log_req_ask: u8 = 0;
+pub const log_req_refuse: u8 = 1;
 
 pub const chat_img_none: u8 = 0;
 pub const chat_img_h264: u8 = 1;
@@ -258,10 +263,13 @@ pub const notice_moved: u8 = 9; // um admin te levou pra outro canal
 pub const notice_dm: u8 = 10; // a mensagem privada não foi (o texto diz por quê)
 pub const notice_file_gone: u8 = 11; // o arquivo pedido não está mais na sala
 pub const notice_chat_cleared: u8 = 12; // um admin limpou o chat da sala (o app apaga o que mostra)
+pub const notice_log_refused: u8 = 13; // quem você pediu o log não manda (desligou nas configurações)
 /// notice_channel com extra = 1: o canal pede senha (o app pergunta)
 pub const notice_channel_needs_password: u8 = 1;
 /// Só no app (não vem do servidor): chegou um log mandado pela sala (texto = nome + caminho).
 pub const notice_log_received: u8 = 100;
+/// Só no app: o dono da sala pediu o meu log (log_request; texto = nome, from = id).
+pub const notice_log_request: u8 = 101;
 
 /// chat
 pub const chat_history: u8 = 1; // mensagem antiga (quem acabou de entrar): sem som nem notificação
@@ -336,6 +344,10 @@ pub const srv_embed: u8 = 4; // cartões, edição e botões (chat_edit, embed_a
 pub const srv_chan_delete: u8 = 8; // entende chan_act_delete
 pub const srv_chan_op: u8 = 16; // OPs de canal (chan_act_op, chan_creator, member_kind_op_*), OP leva gente
 pub const srv_bot_panel: u8 = 32; // painel de bot (bot_panel, panel_action)
+/// A sala coleta logs (--coletar-logs): o dono pode pedir o log de quem está
+/// nela (log_request); o app avisa ao entrar e grava o log enquanto está nela.
+/// Fora do server_features: só quando o servidor liga.
+pub const srv_logs: u8 = 64;
 pub const server_features: u8 = srv_dm | srv_files | srv_embed | srv_chan_delete | srv_chan_op | srv_bot_panel;
 /// Cartão (embed): bloco opaco pro servidor, no fim do chat (u32 tamanho + bytes).
 /// Formato em docs/PROTOCOL.md; o primeiro byte é a versão.
@@ -582,7 +594,7 @@ pub const AckWindow = struct {
         const v = @max(d, 1);
         // a cada 10 s começa uma janela nova: se a rota piorou, a referência
         // acompanha em 10-20 s (mas uma fila parada não vira "o normal")
-        if (w.epoch_at == 0 or now - w.epoch_at > 10_000_000) {
+        if (w.epoch_at == 0 or now -| w.epoch_at > 10_000_000) {
             w.min_prev = w.min_cur;
             w.min_cur = v;
             w.epoch_at = now;

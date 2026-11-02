@@ -99,6 +99,20 @@ sala. Ele chega em todo mundo que entrou com o token de admin (vai pra pasta
 `TELINHA_LOGS`), o servidor dedicado também guarda uma cópia: um log mandado com
 nenhum admin na sala não se perde. Cada pessoa manda um log por minuto, até 8 MB.
 
+Com `--coletar-logs` (ou `TELINHA_COLETAR_LOGS=1`) não precisa pedir pra
+ninguém: quem entra é avisado, o app grava o log enquanto a pessoa está na sala
+e quem tem a coroa clica com o botão direito na pessoa → *Pegar o log*. O
+relatório de travamento de quem caiu chega sozinho. Quem não quiser desliga em
+*Configurações → Depuração* (e você fica sabendo que não veio). Sem `--logs`, os
+logs ficam em `logs`, do lado do arquivo de estado.
+
+## Quando o servidor cai
+
+Se o servidor cair (um bug) e o systemd o reabrir, ele escreve no chat do canal
+padrão "O servidor reiniciou depois de uma queda (motivo: …)", com o arquivo e
+a linha, e deixa o detalhe em `ultima-queda.txt`, do lado do arquivo de estado
+(a pilha inteira também vai pro journal).
+
 ## Canais
 
 Um servidor só pode ter várias salas ao mesmo tempo, como no IRC: cada canal com

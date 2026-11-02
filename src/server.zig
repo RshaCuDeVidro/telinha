@@ -29,6 +29,7 @@ const cio = @cImport(@cInclude("stdio.h"));
 pub const max_viewer_backlog = 3 * 1024 * 1024;
 /// Sem mensagem nenhuma por esse tempo: a conexão morreu sem avisar.
 const silent_ms = 60_000;
+const silent_web_ms = 200_000;
 /// ...ou se acumulou esse atraso (µs) acima do normal da conexão dele.
 pub const max_viewer_excess_us = 500_000;
 /// Atrasado pelo menos isso e sem escoar (a fila não diminuiu 50 ms em 1 s):
@@ -106,6 +107,7 @@ const Conn = struct {
     last_action_ms: u64 = 0, // embed_action (limite de ritmo)
     panel: ?[]u8 = null, // painel de bot (bot_panel): o cartão fixo dele
     last_panel_ms: u64 = 0,
+    panel_tokens: u32 = panel_burst,
     view_sizes: std.ArrayList(ViewSize) = .empty, // em que tamanho ela mostra cada transmissão
     cursor_sec: u64 = 0, // limite do cursor (como o do ponteiro)
     cursor_count: u32 = 0,
@@ -273,7 +275,7 @@ const Flow = struct {
 
     /// Conta um recomeço. Retorna true se passou a ficar à parte agora.
     fn noteResync(f: *Flow, now_ms: u64) bool {
-        if (f.resync_window_ms == 0 or now_ms - f.resync_window_ms > chronic_window_ms) {
+        if (f.resync_window_ms == 0 or now_ms -| f.resync_window_ms > chronic_window_ms) {
             f.resync_window_ms = now_ms;
             f.resync_count = 0;
         }
@@ -288,9 +290,9 @@ const Flow = struct {
     /// assim deu conta — continua atrasando passado o tempo de escoar, ou
     /// recomeçou de um IDR depois de afinado.
     fn struggling(f: *const Flow, now_ms: u64) bool {
-        const recent_resync = f.last_resync_ms != 0 and now_ms - f.last_resync_ms < 10_000;
+        const recent_resync = f.last_resync_ms != 0 and now_ms -| f.last_resync_ms < 10_000;
         if (f.thin) {
-            const settled = now_ms - f.thin_since_ms >= thin_grace_ms;
+            const settled = now_ms -| f.thin_since_ms >= thin_grace_ms;
             return (settled and f.late) or (recent_resync and f.last_resync_ms > f.thin_since_ms);
         }
         return f.late or recent_resync;
@@ -304,7 +306,7 @@ const Flow = struct {
             f.thin_until_ms = @max(f.thin_until_ms, now_ms + f.thin_ms);
             return false;
         }
-        const again = f.thin_ended_ms != 0 and now_ms - f.thin_ended_ms < 30_000;
+        const again = f.thin_ended_ms != 0 and now_ms -| f.thin_ended_ms < 30_000;
         f.thin_ms = if (again) @min(f.thin_ms * 2, thin_max_ms) else thin_min_ms;
         f.thin = true;
         f.thin_since_ms = now_ms;
@@ -320,7 +322,7 @@ const Flow = struct {
         } else if (f.trend_at_us == 0) {
             f.trend_at_us = now_us;
             f.trend_excess_us = excess;
-        } else if (now_us - f.trend_at_us >= 1_000_000) {
+        } else if (now_us -| f.trend_at_us >= 1_000_000) {
             f.late = excess > soft_viewer_excess_us and excess + 50_000 > f.trend_excess_us;
             f.trend_at_us = now_us;
             f.trend_excess_us = excess;
@@ -329,7 +331,7 @@ const Flow = struct {
 
     /// Marca um recomeço. Retorna true se é repetido (menos de 10 s do anterior).
     fn backoff(f: *Flow, now_ms: u64) bool {
-        if (now_ms - f.last_resync_ms > 10_000) f.resync_level = 0;
+        if (now_ms -| f.last_resync_ms > 10_000) f.resync_level = 0;
         const repeated = f.resync_level > 0;
         f.resync_after_ms = now_ms + (@as(u64, 500) << @min(f.resync_level, 4));
         f.resync_level +|= 1;
@@ -449,8 +451,11 @@ const chat_img_interval_ms = 1500;
 /// Editar mensagem (chat_edit) e clicar em botão de cartão: no máximo tantas por segundo.
 const chat_edit_interval_ms = 200;
 const embed_action_interval_ms = 120;
-/// Painel de bot: no máximo uma mudança a cada tanto (o SDK junta as do meio).
+/// Painel de bot: uma mudança a cada tanto em média (o SDK junta as do meio),
+/// com folga pra rajada curta: duas que chegam juntas pelo atraso da rede não
+/// perdem a última (o painel ficava com o estado velho até a próxima mudança)
 const panel_interval_ms = 200;
+const panel_burst = 4;
 
 /// O cartão (embed) no fim de chat/chat_edit: u32 tamanho + bytes. null = sem
 /// (tamanho 0, campo ausente de app antigo, ou versão que não é a nossa).
@@ -652,6 +657,9 @@ pub const Options = struct {
     /// Bots (feat_bot): recusar todos, ou só aceitar quem mandar esse token.
     no_bots: bool = false,
     bot_token: []const u8 = "",
+    /// --coletar-logs: o dono pode pedir o log de quem está na sala (o app
+    /// avisa ao entrar; quem desligar nas configurações recusa).
+    collect_logs: bool = false,
 };
 
 const StatsPrev = struct {
@@ -776,6 +784,7 @@ pub const Server = struct {
     admin_token: [64]u8 = undefined,
     admin_token_len: usize = 0,
     no_bots: bool = false,
+    collect_logs: bool = false,
     bot_token: [64]u8 = undefined,
     bot_token_len: usize = 0,
     max_members: u32,
@@ -864,6 +873,7 @@ pub const Server = struct {
         copyInto(&s.admin_token, &s.admin_token_len, opts.admin_token);
         copyInto(&s.bot_token, &s.bot_token_len, opts.bot_token);
         s.no_bots = opts.no_bots;
+        s.collect_logs = opts.collect_logs;
         sync.hiresTimer(true); // o repasse por UDP cadencia em ms (solto no release)
         s.retain();
         sync.spawn(acceptLoop, .{s}) catch |e| {
@@ -950,7 +960,7 @@ pub const Server = struct {
             }
             const now = sync.nowMs();
             // sem reenvio pendente, a manutenção (quem sumiu) pode ser de 500 em 500 ms
-            if (now - last_tick < (if (any_busy) @as(u64, 10) else 500)) continue;
+            if (now -| last_tick < (if (any_busy) @as(u64, 10) else 500)) continue;
             last_tick = now;
             any_busy = false;
             // reenvios, desistências e quem sumiu do UDP (volta pro TCP)
@@ -1031,10 +1041,13 @@ pub const Server = struct {
             // canais vazios há dias, a cada minuto
             if (ticks % 240 == 0) s.expireChans(now_ms);
             // calado demais: o app pinga a cada 2 s, o navegador a cada 5, o SDK
-            // a cada 10; sem nada há 60 s a conexão morreu sem avisar
+            // a cada 10; sem nada há 60 s a conexão morreu sem avisar. A página
+            // com a aba escondida há mais de 5 min só roda o timer uma vez por
+            // minuto (Chrome) e caía e voltava a cada minuto: prazo maior pra ela
             if (ticks % 4 == 0) for (s.conns.items) |o| {
                 const last = o.last_rx_ms.load(.monotonic);
-                if (o.authed and !o.silent and last != 0 and now_ms -| last > silent_ms) {
+                const limit: u64 = if (o.web) silent_web_ms else silent_ms;
+                if (o.authed and !o.silent and last != 0 and now_ms -| last > limit) {
                     o.silent = true;
                     s.log("{s} sumiu sem avisar ({d} s sem mandar nada): tirando da sala", .{ o.nameSlice(), (now_ms -| last) / 1000 });
                     net.shutdown(o.sock);
@@ -1529,7 +1542,7 @@ pub const Server = struct {
         const cap: usize = switch (typ) {
             .voice => 8 * 1024,
             .audio => 16 * 1024,
-            .ack, .ping, .keyreq, .watch, .view_size, .cursor, .pointer, .voice_state, .stream_stop, .codec, .react, .kick, .file_cancel, .file_get, .panel_action => 1024,
+            .ack, .ping, .keyreq, .watch, .view_size, .cursor, .pointer, .voice_state, .stream_stop, .codec, .react, .kick, .file_cancel, .file_get, .panel_action, .log_request => 1024,
             .bot_panel => 4 + proto.embed_max,
             else => proto.max_msg,
         };
@@ -1610,8 +1623,13 @@ pub const Server = struct {
                 defer s.mutex.unlock();
                 if (!cn.bot) return;
                 const now = sync.nowMs();
-                if (now -% cn.last_panel_ms < panel_interval_ms) return; // rajada: ignora
-                cn.last_panel_ms = now;
+                const refill: u32 = @intCast(@min(panel_burst, (now -| cn.last_panel_ms) / panel_interval_ms));
+                if (refill > 0) {
+                    cn.panel_tokens = @min(panel_burst, cn.panel_tokens + refill);
+                    cn.last_panel_ms = now;
+                }
+                if (cn.panel_tokens == 0) return; // inundando: ignora
+                cn.panel_tokens -= 1;
                 try s.setPanel(cn, bytes);
             },
             .panel_action => {
@@ -1623,6 +1641,13 @@ pub const Server = struct {
                 if (now -% cn.last_action_ms < embed_action_interval_ms) return; // clique repetido: ignora
                 cn.last_action_ms = now;
                 try s.panelAction(cn, bot_id, button);
+            },
+            .log_request => {
+                const id = try r.u32_();
+                const what = try r.u8_();
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                try s.logRequest(cn, id, what);
             },
             .file_put => try s.onFilePut(cn, &r),
             .file_data => try s.onFileData(cn, &r),
@@ -1726,7 +1751,7 @@ pub const Server = struct {
                             addUnique(&cn.waiting_key, stream);
                             const ss = &tc.streams[proto.kindOf(stream)];
                             const now_w = sync.nowMs();
-                            if (now_w - ss.last_watch_keyreq_ms >= watch_keyreq_interval_ms) {
+                            if (now_w -| ss.last_watch_keyreq_ms >= watch_keyreq_interval_ms) {
                                 ss.last_watch_keyreq_ms = now_w;
                                 s.requestKey(stream, true);
                             } else s.requestKey(stream, false);
@@ -1745,7 +1770,7 @@ pub const Server = struct {
                     // quem chegar logo depois de outro pega o próximo (o laço pede)
                     const ss = &tc.streams[proto.kindOf(stream)];
                     const now_w = sync.nowMs();
-                    if (now_w - ss.last_watch_keyreq_ms >= watch_keyreq_interval_ms) {
+                    if (now_w -| ss.last_watch_keyreq_ms >= watch_keyreq_interval_ms) {
                         ss.last_watch_keyreq_ms = now_w;
                         s.requestKey(stream, true);
                     } else s.requestKey(stream, false);
@@ -2163,6 +2188,37 @@ pub const Server = struct {
         s.log("{s} mandou um {s} ({d} KB): {d} com a coroa receberam{s}", .{ cn.nameSlice(), if (what == proto.log_what_crash) "relatório de travamento" else "log", total / 1024, owners, if (saved) ", guardado em disco" else "" });
         const result: u8 = if (owners > 0) proto.log_ack_delivered else if (saved) proto.log_ack_saved else proto.log_ack_nobody;
         sendLogAck(cn, id, result, owners);
+    }
+
+    /// Coleta de logs (--coletar-logs). log_req_ask: quem tem a coroa pede o
+    /// log de `id` (vai pra ele um log_request com quem pediu; o app manda
+    /// pela sala, como o "pro dono da sala", ou recusa). log_req_refuse: `cn`
+    /// não manda; quem pediu (`id`) recebe um aviso. Mutex travado.
+    fn logRequest(s: *Server, cn: *Conn, id: u32, what: u8) !void {
+        if (!s.collect_logs or !cn.authed) return;
+        const o = s.findConn(id) orelse return;
+        if (!o.authed or o == cn) return;
+        switch (what) {
+            proto.log_req_ask => {
+                if (!cn.owner or o.bot or o.web) return;
+                const now = s.nowUs() / 1000;
+                if (now -| cn.last_action_ms < 200) return; // clique duplo
+                cn.last_action_ms = now;
+                var b: proto.Builder = .{};
+                defer b.deinit();
+                try b.begin(.log_request);
+                try b.u32_(cn.id);
+                try b.str(cn.nameSlice());
+                o.queue.pushOwned(try b.finish());
+                s.log("{s} pediu o log de {s}", .{ cn.nameSlice(), o.nameSlice() });
+            },
+            proto.log_req_refuse => {
+                if (!o.owner) return;
+                try pushNotice(o, proto.notice_log_refused, cn.nameSlice(), 0);
+                s.log("{s} recusou mandar o log", .{cn.nameSlice()});
+            },
+            else => {},
+        }
     }
 
     fn sendLogAck(cn: *Conn, id: u32, result: u8, owners: u8) void {
@@ -2653,6 +2709,14 @@ pub const Server = struct {
 
     /// Aviso do sistema no chat de um canal (guarda no histórico dele e manda
     /// pra quem está nele). Chamado com o mutex travado.
+    /// Aviso do servidor no chat do canal padrão (fica no histórico de quem entra).
+    pub fn announce(s: *Server, text: []const u8) void {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        if (s.chans.items.len == 0) return;
+        s.broadcastChat(s.chans.items[0], text) catch {};
+    }
+
     fn broadcastChat(s: *Server, ch: *Chan, text: []const u8) !void {
         return s.postChat(ch, 0, "", text, null, null);
     }
@@ -2694,7 +2758,7 @@ pub const Server = struct {
     }
 
     fn serverFeatures(s: *Server) u8 {
-        return proto.srv_dm | proto.srv_embed | proto.srv_chan_delete | proto.srv_chan_op | proto.srv_bot_panel | (if (s.files.ok) proto.srv_files else 0);
+        return proto.srv_dm | proto.srv_embed | proto.srv_chan_delete | proto.srv_chan_op | proto.srv_bot_panel | (if (s.files.ok) proto.srv_files else 0) | (if (s.collect_logs) proto.srv_logs else 0);
     }
 
     // ------------------------------------------------------------ arquivos
@@ -3758,7 +3822,7 @@ pub const Server = struct {
         const kind = proto.kindOf(stream);
         const ss = &o.streams[kind];
         const now = sync.nowMs();
-        if (!force and now - ss.last_keyreq_ms < keyreq_interval_ms) return;
+        if (!force and now -| ss.last_keyreq_ms < keyreq_interval_ms) return;
         ss.last_keyreq_ms = now;
         s.n_keyreqs +%= 1;
         const m = proto.Msg.alloc(.keyreq, 1) catch return;
@@ -3986,7 +4050,7 @@ pub const Server = struct {
                 s.log("{s} atrasando {d} ms com {s}: recebendo só metade dos quadros por {d} s", .{ o.nameSlice(), excess / 1000, cn.nameSlice(), f.thin_ms / 1000 });
             }
             // recém-afinado ainda escoando o atraso não conta
-            if (f.late and !(f.thin and now_ms - f.thin_since_ms < thin_grace_ms)) late = true;
+            if (f.late and !(f.thin and now_ms -| f.thin_since_ms < thin_grace_ms)) late = true;
             if (excess > max_viewer_excess_us + allowance or o.queue.queuedBytes() > max_viewer_backlog) {
                 // espectador acumulando atraso: descarta o que nem saiu da
                 // fila, espera o resto chegar e recomeça de um IDR
@@ -4001,9 +4065,9 @@ pub const Server = struct {
                 const apart = f.noteResync(now_ms);
                 if (thinnable) _ = f.thinOut(now_ms); // depois do IDR, só metade
                 if (excess >= std.math.maxInt(u32))
-                    s.log("{s} parou de confirmar os quadros de {s}: recomeçando de um IDR (próximo em {d} ms)", .{ o.nameSlice(), cn.nameSlice(), f.resync_after_ms - now_ms })
+                    s.log("{s} parou de confirmar os quadros de {s}: recomeçando de um IDR (próximo em {d} ms)", .{ o.nameSlice(), cn.nameSlice(), f.resync_after_ms -| now_ms })
                 else
-                    s.log("{s} atrasou {d} ms assistindo {s}: recomeçando de um IDR (próximo em {d} ms)", .{ o.nameSlice(), excess / 1000, cn.nameSlice(), f.resync_after_ms - now_ms });
+                    s.log("{s} atrasou {d} ms assistindo {s}: recomeçando de um IDR (próximo em {d} ms)", .{ o.nameSlice(), excess / 1000, cn.nameSlice(), f.resync_after_ms -| now_ms });
                 if (apart) s.log("{s} não acompanha {s} nem recomeçando: fica à parte por 1 min (IDR a cada 10 s, sem baixar a qualidade dos outros)", .{ o.nameSlice(), cn.nameSlice() });
                 continue;
             }
@@ -4013,7 +4077,7 @@ pub const Server = struct {
             _ = s.relayed_bytes.fetchAdd(m.data.len, .monotonic);
         }
         if (need_key) s.requestKey(stream, false);
-        if ((resynced or late) and now_ms - ss.last_slow_ms > 2000) {
+        if ((resynced or late) and now_ms -| ss.last_slow_ms > 2000) {
             // se a maioria está sofrendo, o gargalo é comum (o upload de quem
             // hospeda a sala, ou só tem um espectador): a taxa desce o quanto
             // precisar. Se é a minoria, desce no máximo até a metade: quem não

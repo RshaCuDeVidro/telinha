@@ -378,6 +378,17 @@ def interface_dorme():
         log(f"sala aberta parada: {fps:.1f} quadros/s, {cpu:.1f}% de CPU fora o desenho")
         expect(fps <= 5.0, f"sala parada redesenhando {fps:.1f} vezes por segundo")
         expect(cpu <= 3.0, f"sala parada gastando {cpu:.1f}% de CPU")
+        # um bot com painel na sala (o título dele embaixo do nome): continua dormindo
+        a.click("##invite")
+        inv = a.wait(lambda st: st["clipboard"].startswith("telinha://"), 3, "o convite")["clipboard"]
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+        s.spawn("bot", [sys.executable, os.path.join(root, "tools", "qa", "bot_painel.py"), inv], {"HOME": s.base, "PATH": os.environ["PATH"]})
+        a.wait(lambda st: any(pn["title"] == "Painel 0" for pn in st["panels"]), 15, "o painel do bot chegar")
+        a.move(5, 5)
+        time.sleep(3.0)
+        fps, cpu = ocioso(a)
+        log(f"sala com o painel do bot parada: {fps:.1f} quadros/s, {cpu:.1f}% de CPU")
+        expect(fps <= 5.0, f"sala com painel de bot redesenhando {fps:.1f} vezes por segundo")
 
 
 @test
@@ -1148,6 +1159,16 @@ def painel_do_bot_e_barra():
         b.click("##dockgrip")
         b.wait(lambda st: st["dock_side"] == 0, 5, "a barra voltar pra baixo")
         b.screenshot(os.path.join(shots, "barra_embaixo.png"))
+        # arrastando de verdade (as zonas acesas por cima de tudo: o 3.9.1 caía
+        # aqui com SIGSEGV, o clique sozinho nunca desenhava as zonas)
+        split = b.find("##panelsplit")
+        right_x = split["vx0"] - 40
+        for side, tx in ((1, 30), (2, right_x), (0, right_x / 2)):
+            g = b.find("##dockgrip")
+            gx, gy = (g["vx0"] + g["vx1"]) / 2, (g["vy0"] + g["vy1"]) / 2
+            drag_abs(b, gx, gy, tx, 300, steps=12)
+            b.wait(lambda st: st["dock_side"] == side, 5, f"a barra arrastada pro lado {side}")
+        b.screenshot(os.path.join(shots, "barra_arrastada.png"))
         # o bot sai: o painel some
         bot.terminate()
         b.wait(lambda st: not st["panels"], 10, "o painel sumir quando o bot sai")
@@ -2338,6 +2359,47 @@ def hevc():
 
 
 @test
+def sala_aguenta_carga():
+    """Carga do jeito que derrubou a sala em 02/11: a Ana transmite a 60 q/s por UDP (com 3% de perda: reenvio e repetição da última mensagem trabalhando) pra três pessoas, uma delas com o PC travando e soltando. O servidor (ReleaseSafe, como o publicado) não pode cair nem dar panic. QA_CARGA_SEG muda a duração (padrão 120 s; antes de lançar, 600)."""
+    secs = int(os.environ.get("QA_CARGA_SEG", "120"))
+    with Session("carga") as s:
+        perda = {"TELINHA_UDP_PERDA": "3"}
+        p = port()
+        srv = s.spawn("srv", [SERVER, "--porta", str(p), "--senha", "pw", "--chave", os.path.join(s.base, "srv.key")], dict({k: os.environ[k] for k in ("HOME", "PATH")}, **perda))
+        time.sleep(0.6)
+        s.display(91, "1600x900")
+        s.spawn("xterm", ["xterm", "-geometry", "160x50+0+0", "-e", "sh", "-c", "while :; do head -c 900 /dev/urandom | base64; sleep 0.016; done"], dict(os.environ, DISPLAY=":91"))
+        time.sleep(1.0)
+        a = s.app("a", 91, ["--nome", "Ana", "--entrar", f"127.0.0.1:{p}", "--senha", "pw", "--transmitir", "--software", "--fps", "60", "--janela", "0,0,960,540"], size=(1600, 900), extra_env=perda)
+        st = a.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 20, "a Ana transmitir")
+        aid = st["my_id"]
+        viewers = [s.app(n.lower(), d, ["--nome", n, "--entrar", f"127.0.0.1:{p}", "--senha", "pw", "--assistir"], extra_env=perda) for n, d in (("Bia", 92), ("Caio", 93), ("Kaio", 94))]
+        for v in viewers:
+            v.wait(lambda st: st["udp"] and st["udp"]["active"] and any(x["stream"] == aid and x["shown"] for x in st["views"]), 25, f"{v.name} ver a tela por UDP")
+        log(f"transmitindo a 60 q/s por UDP pra 3, por {secs} s")
+        k = viewers[2].proc.pid
+        end = time.time() + secs
+        try:
+            while time.time() < end:
+                os.kill(k, signal.SIGSTOP)
+                time.sleep(1.5)
+                os.kill(k, signal.SIGCONT)
+                time.sleep(2.0)
+                expect(srv.poll() is None, f"o servidor caiu (código {srv.returncode})")
+        finally:
+            os.kill(k, signal.SIGCONT)
+        text = open(os.path.join(s.base, "srv.log"), errors="replace").read()
+        expect("panic" not in text, "o servidor deu panic:\n" + "\n".join(l for l in text.splitlines() if "panic" in l or ".zig:" in l)[:3000])
+        expect(srv.poll() is None, "o servidor caiu")
+        for v in viewers[:2]:
+            x = next(x for x in v.state()["views"] if x["stream"] == aid)
+            log(f"{v.name}: {x['fps']} q/s, atraso {x['latency']} ms")
+            expect(x["fps"] >= 10, f"{v.name} quase não vê nada: {x['fps']} q/s")
+        u = a.state()["udp"]
+        log(f"UDP da Ana: {u}")
+
+
+@test
 def udp_com_perda():
     """Vídeo por UDP com 5% de perda simulada nos dois sentidos: quem assiste continua vendo (reenvio do que falta), sem travar."""
     with Session("udp", audio=True) as s:
@@ -2480,6 +2542,9 @@ def idioma_ingles():
         a.find(contains="Share screen##share")
         a.click(contains="Share screen##share")
         a.wait(lambda st: st["share_modal"], 3, "abrir o compartilhar tela")
+        # resolução e afins ficam no "avançado" (dobrado)
+        if a.find("Original", window="Share screen", timeout=1.0, need=False) is None:
+            a.click("##shareadvbtn")
         for label in ["Game and video", "Original"]:
             a.find(label, window="Share screen")
         o = a.find("Original", window="Share screen")
@@ -2562,6 +2627,79 @@ def log_pela_sala():
         txt = open(files[0], errors="replace").read()
         expect("telinha" in txt and "config:" in txt, "o arquivo não parece o log da Bia")
         log(f"log da Bia chegou na Ana: {os.path.basename(files[0])} ({len(txt)} bytes)")
+
+
+@test
+def coleta_de_logs():
+    """Servidor com --coletar-logs: quem entra é avisado e o log passa a gravar sozinho; a dona (token de admin) clica com o botão direito na Bia → "Pegar o log" e o log chega nela (logs-recebidos) e na pasta do servidor; o Caio desligou "Mandar meu log" e a dona é avisada que não vem; quem não é dono nem vê a opção. E a régua de volume do menu arrastada de verdade (recurso de arrastar ganha teste de arrastar)."""
+    import glob
+    with Session("coleta") as s:
+        p = port()
+        logs = os.path.join(s.base, "logs")
+        s.spawn("srv", [SERVER, "--porta", str(p), "--senha", "pw", "--admin", "tok", "--coletar-logs", "--chave", os.path.join(s.base, "srv.key")], {k: os.environ[k] for k in ("HOME", "PATH")})
+        time.sleep(0.6)
+        a = s.app("a", 91, ["--nome", "Ana", "--entrar", f"127.0.0.1:{p}", "--senha", "pw", "--admin", "tok"])
+        a.wait(lambda st: st["status"] == "connected" and st["collect_seen"], 10, "a Ana entrar (avisada)")
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--senha", "pw"])
+        b.wait(lambda st: st["status"] == "connected" and st["collect_seen"] and st["collect_auto_log"] and st["debug_on"], 10, "a Bia avisada e gravando o log")
+        b.toasted("coleta logs", 5)
+        c = s.app("c", 93, ["--nome", "Caio", "--entrar", f"127.0.0.1:{p}", "--senha", "pw"], config={"share_logs": 0})
+        st = c.wait(lambda st: st["status"] == "connected" and st["collect_seen"], 10, "o Caio entrar")
+        expect(not st["debug_on"], "o log do Caio ligou mesmo ele tendo desligado")
+        bid, cid, aid = a.member_id("Bia"), a.member_id("Caio"), b.member_id("Ana")
+        time.sleep(2.5)  # uma amostra no log da Bia
+        # quem não é dono não vê "Pegar o log"
+        b.click_rect(b.member_row(aid), button=3)
+        expect(b.find("###alog", timeout=1.0, need=False) is None, "a Bia (sem coroa) vê 'Pegar o log'")
+        b.key("Escape")
+        # a dona pega o log da Bia
+        a.click_rect(a.member_row(bid), button=3)
+        # arrastar a régua de volume até o fim (200%)
+        r = a.find("##vvol")
+        drag_abs(a, r["vx0"] + (r["vx1"] - r["vx0"]) * 0.5, (r["vy0"] + r["vy1"]) / 2, r["vx1"] + 30, (r["vy0"] + r["vy1"]) / 2, steps=10)
+        a.wait(lambda st: any(m["id"] == bid and m["voice_volume"] >= 1.9 for m in st["members"]), 5, "a régua arrastada até 200%")
+        a.click(contains="###alog")
+        b.toasted("pediu o seu log", 10)
+        a.toasted("mandou um log", 30)
+        files = glob.glob(os.path.join(a.cfg, "telinha", "logs-recebidos", "*_Bia_log.txt"))
+        expect(len(files) == 1, f"o log da Bia não chegou na Ana: {files}")
+        txt = open(files[0], errors="replace").read()
+        expect("config:" in txt, "o arquivo não parece o log da Bia")
+        on_srv = glob.glob(os.path.join(logs, "*_Bia_log.txt"))
+        expect(len(on_srv) == 1, f"o servidor não guardou: {os.listdir(logs) if os.path.isdir(logs) else 'sem pasta'}")
+        # o Caio desligou: a dona fica sabendo
+        a.click_rect(a.member_row(cid), button=3)
+        a.click(contains="###alog")
+        a.toasted("não manda o log", 10)
+        c.toasted("pediu o seu log", 5)
+        log(f"log da Bia na dona ({len(txt)} bytes) e no servidor; o Caio recusou")
+
+
+@test
+def servidor_avisa_queda():
+    """O servidor cai (panic de teste): na volta, o motivo (com arquivo e linha) aparece no chat do canal padrão e fica em ultima-queda.txt; morto sem panic (SIGKILL), o chat diz que parou sem avisar."""
+    with Session("queda") as s:
+        p = port()
+        env = {k: os.environ[k] for k in ("HOME", "PATH")}
+        key = os.path.join(s.base, "srv.key")
+        dead = s.spawn("srv0", [SERVER, "--porta", str(p), "--chave", key], dict(env, TELINHA_TESTE_QUEDA="1"))
+        dead.wait(10)
+        expect(os.path.exists(os.path.join(s.base, "queda.txt")), "o panic não gravou queda.txt")
+        srv = s.spawn("srv1", [SERVER, "--porta", str(p), "--chave", key], env)
+        time.sleep(0.8)
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}"])
+        st = b.wait(lambda st: any("reiniciou depois de uma queda" in l["text"] for l in st["chat"]), 10, "o aviso da queda no chat")
+        line = next(l["text"] for l in st["chat"] if "reiniciou" in l["text"])
+        log(f"no chat: {line}")
+        expect("queda de teste" in line and ".zig:" in line, f"o aviso não diz o motivo e onde: {line}")
+        expect(os.path.exists(os.path.join(s.base, "ultima-queda.txt")), "ultima-queda.txt não ficou")
+        b.stop()
+        os.kill(srv.pid, signal.SIGKILL)
+        srv.wait(5)
+        s.spawn("srv2", [SERVER, "--porta", str(p), "--chave", key], env)
+        time.sleep(0.8)
+        c = s.app("c", 93, ["--nome", "Caio", "--entrar", f"127.0.0.1:{p}"])
+        c.wait(lambda st: any("parou sem avisar" in l["text"] for l in st["chat"]), 10, "o aviso de quem morreu sem panic")
 
 
 @test
@@ -3601,6 +3739,8 @@ def windows_decoder():
         # quem transmite muda a resolução: SPS novo no meio, o decoder renegocia
         a.click(contains="Ao vivo (configurar)##share")
         a.wait(lambda st: st["share_modal"], 3, "abrir as configurações da transmissão")
+        if a.find("480p", timeout=1.0, need=False) is None:
+            a.click("##shareadvbtn")
         a.click("480p")
         a.click("Aplicar")
         a.toasted("Configurações aplicadas")

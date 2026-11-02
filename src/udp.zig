@@ -597,9 +597,9 @@ pub const Endpoint = struct {
             ep.mutex.lock();
             defer ep.mutex.unlock();
             for (ep.tx.items) |*t| {
-                if (t.tail_done or now - t.last_ms < 100) continue;
+                if (t.tail_done or now -| t.last_ms < 100) continue;
                 t.tail_done = true;
-                if (now - t.last_ms > 1000 or n_tails == tails.len) continue;
+                if (now -| t.last_ms > 1000 or n_tails == tails.len) continue;
                 tails[n_tails] = .{ t.channel, t.next };
                 n_tails += 1;
             }
@@ -617,7 +617,7 @@ pub const Endpoint = struct {
                 // total: proporcional ao tamanho, 8 ms por pedaço, até 5 s; o
                 // teto fixo de 1 s fazia um IDR grande num link de 2 Mbit/s
                 // nunca completar, e virava laço de pedidos de IDR)
-                if (now - p.last_ms > give_up or now - p.first_ms > maxAgeMs(p.count)) {
+                if (now -| p.last_ms > give_up or now -| p.first_ms > maxAgeMs(p.count)) {
                     ep.stats.lost_msgs += 1;
                     _ = ep.partials.swapRemove(i);
                     p.free();
@@ -627,12 +627,12 @@ pub const Endpoint = struct {
                 // vai em lotes de 64: uma mensagem grande precisa de vários)
                 if (p.got_n != p.got_at_nack) p.nacks = 0;
                 // espera um pouco (pode estar só fora de ordem) e não repete cedo demais
-                if (now - p.last_ms < @max(5, rtt / 4) or now - p.nacked_ms < nack_every or p.nacks >= 6) continue;
+                if (now -| p.last_ms < @max(5, rtt / 4) or now -| p.nacked_ms < nack_every or p.nacks >= 6) continue;
                 var nk: Nack = .{ .channel = p.channel, .id = p.id };
                 // só os buracos antes do maior que chegou: os depois dele ainda
                 // podem estar a caminho (pedir de novo dobrava o tráfego de um
                 // IDR grande num link lento). Parou de chegar: pede o fim também
-                const stalled = now - p.last_ms > give_up / 2;
+                const stalled = now -| p.last_ms > give_up / 2;
                 for (0..p.count) |k| {
                     if (p.has(k)) continue;
                     if (k > p.hi and !stalled) break;
@@ -648,7 +648,7 @@ pub const Endpoint = struct {
             // mensagens inteiras faltando (nem um pedaço chegou) e desistência
             for (ep.rx.items) |*ch| {
                 if (ch.held.items.len == 0) continue;
-                const waiting = now - ch.gap_ms;
+                const waiting = now -| ch.gap_ms;
                 // a que falta ainda está chegando (pedaços sendo reenviados): espera ela
                 if (ep.findPartial(ch.channel, ch.next) != null) continue;
                 if (waiting > give_up) {
@@ -669,7 +669,7 @@ pub const Endpoint = struct {
                     ep.flushHeld(ch, &ready, now);
                     continue;
                 }
-                if (waiting >= @max(10, rtt / 2) and now - ch.asked_ms >= nack_every) {
+                if (waiting >= @max(10, rtt / 2) and now -| ch.asked_ms >= nack_every) {
                     ch.asked_ms = now;
                     var id = ch.next;
                     var asked: usize = 0;
@@ -685,7 +685,7 @@ pub const Endpoint = struct {
             // o que já foi enviado há mais que o prazo de quem recebe (+ meio
             // segundo) não vai mais ser pedido
             for (&ep.sent) |*s| {
-                if (s.msg != null and now - s.at_ms > maxAgeMs((s.msg.?.data.len + chunk - 1) / chunk) + 500) {
+                if (s.msg != null and now -| s.at_ms > maxAgeMs((s.msg.?.data.len + chunk - 1) / chunk) + 500) {
                     s.msg.?.release();
                     s.msg = null;
                 }
@@ -1033,4 +1033,32 @@ test "udp: a última mensagem de uma rajada que se perdeu chega sozinha (repetid
     while (side.got.items.len < 1 and waited < 400) : (waited += 1) pump(pr.a, pr.b, pr.sa, pr.sb, wa, wb, &side, &dummy, 1);
     try std.testing.expectEqual(@as(usize, 1), side.got.items.len);
     try std.testing.expectEqual(@as(usize, 3000), side.got.items[0].len - 1);
+}
+
+test "udp: envio de outra thread mais novo que o relógio do tick não estoura a conta" {
+    // o tick lê o relógio antes de travar; a escritora de outra conexão pode
+    // ter mandado nesse meio-tempo (last_ms > now). No servidor ReleaseSafe
+    // isso era "panic: integer overflow" e a sala inteira caía
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var pr = try testPair(0);
+    defer {
+        pr.a.destroy();
+        pr.b.destroy();
+        net.close(pr.sa);
+        net.close(pr.sb);
+    }
+    const addr_b = localAddr(net.localPortOf(pr.sb));
+    const wa: Wire = .{ .sock = pr.sa, .to = &addr_b };
+    const m = try proto.Msg.alloc(.frame, 3000);
+    defer m.release();
+    m.from = 0x42;
+    @memset(m.payload(), 7);
+    try std.testing.expect(pr.a.sendMsg(wa, m, 0x42));
+    const later = sync.nowMs() + 5_000;
+    for (pr.a.tx.items) |*t| t.last_ms = later;
+    for (&pr.a.sent) |*s| if (s.msg != null) {
+        s.at_ms = later;
+    };
+    var dummy: TestSide = .{};
+    pr.a.tick(wa, TestSide.deliver, &dummy);
 }

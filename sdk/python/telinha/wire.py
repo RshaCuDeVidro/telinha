@@ -63,6 +63,7 @@ class MsgType(enum.IntEnum):
     BANS = 44
     BOT_PANEL = 45
     PANEL_ACTION = 46
+    LOG_REQUEST = 47  # coleta de logs (o SDK não manda log: só ignora)
 
 
 # hello: o que este cliente entende (feat_*)
@@ -78,6 +79,7 @@ SRV_DM = 1
 SRV_FILES = 2
 SRV_EMBED = 4
 SRV_BOT_PANEL = 32  # painel de bot (bot_panel, panel_action)
+SRV_LOGS = 64  # a sala coleta logs (--coletar-logs)
 
 # cartões (embed): ver docs/PROTOCOL.md "Cartões"
 EMBED_VERSION = 1

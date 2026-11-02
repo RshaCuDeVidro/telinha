@@ -2,6 +2,56 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.10.0
+
+The room no longer drops on its own, and the owner can grab people's logs without asking. Talks to 3.8 and older (back to 3.1). Same protocol (7). **If you host a dedicated server, update**: the server was what kept dropping the room.
+
+### Highlights
+
+- 🔌 **The room no longer drops on its own**: the 3.8.0 and 3.9.1 servers sometimes aborted while someone was streaming over UDP (a time difference between two threads went negative), disconnecting everyone at once. Fixed, with a test.
+- 🩺 **Grab the log of anyone in the room** (server with `--coletar-logs`): people are told when they join, the log records while they're there and the owner right-clicks → *Grab the log*. Crash reports arrive on their own. Anyone who doesn't want it turns it off in *Settings → Debugging*.
+- 📣 **The server says why it crashed**: if it crashes and comes back, it writes in the chat "O servidor reiniciou depois de uma queda (motivo: …)", with the file and line.
+- ↔️ **Dragging the control bar no longer closes the app**: dragging the handle crashed telinha (clicking it worked).
+- 🌐 **Web page in a hidden tab no longer drops every minute**: the browser throttles hidden-tab timers and the server thought the page had died.
+
+<!-- detalhes -->
+
+### All changes
+
+- **Server**: the UDP clock (resend requests, repeating the last message)
+  read the time before locking, and the thread sending to another viewer
+  could store a newer time in between; in ReleaseSafe (since 3.8.0) the
+  negative subtraction is "panic: integer overflow" and the process restarts.
+  All server time math now saturates at zero. New test in `udp.zig` (fails
+  with the old code).
+- **Server**: built with symbols (7 MB). A panic writes the reason and stack
+  to `queda.txt`; on restart the reason goes to the journal, to the default
+  channel's chat and stays in `ultima-queda.txt`. Dying without a panic
+  (signal, out of memory) is reported too ("parou sem avisar").
+- **Log collection** (`--coletar-logs` / `TELINHA_COLETAR_LOGS=1`): new
+  `log_request` message (47), server feature 64 and notice 13. The app says
+  so on join, turns on the debug log while in the room (off again on leaving,
+  if it wasn't yours), answers the owner's request the usual way (to whoever
+  has the crown and to the `--logs` folder, which defaults to next to the
+  state file) and sends its last crash report on its own. Settings →
+  Debugging: "Send my log when the room asks"; when off, the owner is told it
+  didn't come. Bots and the browser are never asked.
+- **Server**: the web page gets 200 s of silence before being dropped (app
+  and SDK keep 60 s); the page also pings when a message arrives while the
+  tab is hidden.
+- **Server**: bot panel allows short bursts (4 in a row, then one per
+  200 ms); two updates arriving together due to network delay lost the last
+  one and the panel kept the stale state.
+- **Control bar**: the drop zones drawn while dragging asked for the
+  foreground layer without a viewport (SIGSEGV at address 0x48).
+- **QA**: `sala_aguenta_carga` (60 fps over UDP with loss to three people,
+  one freezing; `QA_CARGA_SEG=600` before a release), `coleta_de_logs`,
+  `servidor_avisa_queda`; the bar is really dragged to all three sides, the
+  menu's volume slider too, and an idle room with a bot panel doesn't redraw
+  for nothing. Rules in CONTRIBUTING: a drag feature gets a drag test; server
+  time math uses `-|`.
+- **SDK**: `LOG_REQUEST` and `SRV_LOGS` in `wire.py`.
+
 ## 3.9.1
 
 3.9.0 never shipped (CI caught a name clash between the new SDK and the Telão bot); this is it, fixed. Talks to 3.8 and older (back to 3.1). Same protocol (7); the bot panel only shows with a 3.9 server and app.

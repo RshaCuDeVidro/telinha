@@ -125,7 +125,7 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | tipo | nome | direção | payload |
 |---|---|---|---|
 | 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (o que decodifica, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (canal pra entrar; vazio ou sem o campo = o padrão), `str token_bot` (só bot; ver `feat_bot`), `str senha_do_canal` (se o canal tiver senha; o app manda a última que usou nele, pra voltar pro canal ao reconectar) |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1), `u8 recursos_do_servidor` (`srv_*`: 1 = mensagem privada e resposta citada, 2 = arquivos, 4 = cartões, 8 = apagar canal, 16 = OPs de canal, 32 = painel de bot; servidor antigo não manda = 0) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1), `u8 recursos_do_servidor` (`srv_*`: 1 = mensagem privada e resposta citada, 2 = arquivos, 4 = cartões, 8 = apagar canal, 16 = OPs de canal, 32 = painel de bot, 64 = coleta logs; servidor antigo não manda = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (servidor fecha em seguida) |
 | 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo), n × `str versão_do_app` (mesma ordem), n × `u8 tipo` (1 = bot, 2 = OP do meu canal de texto, 4 = OP do canal da minha call, 8 = criou o meu canal de texto, 16 = criou o canal da minha call; servidor antigo não manda) |
 | 5 | chat | C→S | `str texto`, imagem (opcional, abaixo), `u32 resposta` (id da mensagem respondida; 0 = nenhuma), `u32 pra` (privada pra esse membro; 0 = o canal), `u32 n` + n bytes de um [cartão](#cartões) (0 = nenhum) |
@@ -185,6 +185,8 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 45 | bot_panel | C→S | só bot: `u32 n`, cartão (`n = 0` tira o painel); ver "Painel do bot" |
 | 45 | bot_panel | S→C | `u32 id do bot`, `u32 n`, cartão (`n = 0`: não tem mais painel) |
 | 46 | panel_action | C→S | `u32 id do bot`, `u8 botão`: clique num botão do painel; chega no bot como `embed_action` com `id` 0 |
+| 47 | log_request | C→S | `u32 id`, `u8 o_que`: 0 = quem tem a coroa pede o log de `id`; 1 = recuso o pedido de `id`; ver "Coleta de logs" |
+| 47 | log_request | S→C | `u32 quem pediu`, `str nome`: mande o seu log (ou recuse) |
 
 `versão_do_app` ("3.0.0") serve só pra avisar quem está desatualizado (a
 interface mostra "fulano está no telinha X: tem versão nova"); vazia = não
@@ -361,7 +363,8 @@ transmissão parada (`extra` = tipo dela), 4 = virou admin, 5 = deixou de ser
 admin, 7/8 = pincel tirado/devolvido, 9 = um admin te levou pra outro canal, 10 =
 a mensagem privada não foi (a pessoa saiu ou o app dela não recebe), 11 = o
 arquivo pedido não está mais na sala, 12 = um admin limpou o chat da sala (o
-app apaga o que mostra; app antigo só mostra o texto). O
+app apaga o que mostra; app antigo só mostra o texto), 13 = quem você pediu o
+log recusou (o `texto` é só o nome dela). O
 `texto` já vem pronto ("Ana silenciou seu microfone."). 6 = não deu pra
 trocar de canal (nome inválido, trocando rápido demais, o servidor não deixa
 criar canal ou já tem canais demais).
@@ -522,12 +525,22 @@ escreveu pra ele (no `chat`, inclusive na privada): é assim que o
 chat, que aparece pra todo mundo da sala em qualquer canal (no app: clicar no
 bot na lista abre os controles; o título aparece embaixo do nome dele). O bot
 manda `bot_panel` com o cartão (mesmo formato do fim do `chat`; `n = 0` tira),
-no máximo um a cada 200 ms (mais rápido é ignorado; o SDK junta). O servidor
+um a cada 200 ms em média, com rajada de até 4 (além disso é ignorado; o SDK
+junta). O servidor
 guarda o último e repassa pra quem entende cartões (não pra bots nem pro
 navegador): na hora, e pra quem entra depois, logo depois da lista de membros.
 Quando o bot sai, todo mundo recebe o painel vazio. Clique: `panel_action`
 (`u32 id do bot`, `u8 botão`), com o mesmo limite do `embed_action`; chega no
 bot como um `embed_action` da mensagem **0**, com quem clicou e onde ele está.
+
+**Coleta de logs** (`log_request`, `srv_*` 64): só no servidor com
+`--coletar-logs`. O app avisa ao entrar e grava o log de depuração enquanto está
+na sala (quem desligou "Mandar meu log quando a sala pedir" só é avisado). Quem
+tem a coroa manda `log_request` (0, id); a pessoa recebe `log_request` (quem
+pediu, nome) e manda o log pelo caminho de sempre (`log_chunk`, pra quem tem a
+coroa e pra pasta `--logs` do servidor) ou responde `log_request` (1, quem
+pediu), e quem pediu recebe o aviso 13. Bot e navegador não recebem pedido. O
+app numa sala dessas também manda sozinho o relatório do último travamento.
 
 ### Navegador
 

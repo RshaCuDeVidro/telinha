@@ -36,6 +36,12 @@ const usage =
     \\  --sem-canais-novos     ninguém cria canal: só os da lista
     \\  --atualizar-sozinho    baixa a versão nova (assinada) e reinicia quando a
     \\                         sala ficar 2 min vazia ($TELINHA_ATUALIZAR=1)
+    \\  --coletar-logs         o dono (quem entra com o token de admin) pode pegar o
+    \\                         log de depuração de quem está na sala, sem pedir
+    \\                         ($TELINHA_COLETAR_LOGS=1). O app avisa ao entrar,
+    \\                         grava o log enquanto está na sala e quem desligar
+    \\                         nas configurações recusa. Guardados em --logs
+    \\                         (padrão: "logs" do lado do --estado)
     \\  --sem-bots             recusa bots (o sdk/python e afins; $TELINHA_SEM_BOTS=1)
     \\  --so-protocolo-novo    recusa apps de antes da 3.8 (protocolo 6: a senha deles
     \\                         dá pra testar offline a partir de uma conexão;
@@ -165,6 +171,100 @@ fn webTunnel(srv: *Server, exe: []const u8, port: u16) void {
     }
 }
 extern "c" fn getuid() c_uint;
+extern "c" fn creat(path: [*:0]const u8, mode: c_uint) c_int;
+extern "c" fn dup2(old: c_int, new: c_int) c_int;
+extern "c" fn write(fd: c_int, buf: [*]const u8, n: usize) isize;
+extern "c" fn unlink(path: [*:0]const u8) c_int;
+extern "c" fn rename(old: [*:0]const u8, new: [*:0]const u8) c_int;
+
+// ------------------------------------------------------------ quedas
+// O servidor caía (panic) e reiniciava sem ninguém saber por quê: o panic
+// grava o motivo e a pilha em queda.txt (do lado do estado), e um marcador
+// "rodando" denuncia quem morreu sem panic (sinal, falta de memória). Ao
+// voltar, o motivo vai pro journal, pro chat do canal padrão e fica em
+// ultima-queda.txt.
+
+pub const panic = std.debug.FullPanic(onPanic);
+var queda_buf: [480]u8 = undefined;
+var queda_path: ?[:0]const u8 = null;
+
+fn onPanic(msg: []const u8, first_trace_addr: ?usize) noreturn {
+    if (queda_path) |qp| {
+        const fd = creat(qp.ptr, 0o640);
+        if (fd >= 0) {
+            var hb: [600]u8 = undefined;
+            const t = sync.dateTime();
+            const h = std.fmt.bufPrint(&hb, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} telinha-server {s}: panic: {s}\n", .{ t.year, t.month, t.day, t.h, t.m, t.s, proto.app_version, msg }) catch "panic\n";
+            _ = write(fd, h.ptr, h.len);
+            // a pilha (com arquivo e linha: o servidor vai com símbolos) sai no arquivo;
+            // no journal ela aparece quando o servidor volta
+            _ = dup2(fd, 2);
+        }
+    }
+    std.debug.defaultPanic(msg, first_trace_addr orelse @returnAddress());
+}
+
+/// Caminho de `name` do lado do arquivo de estado.
+fn besideState(state: []const u8, name: []const u8, buf: []u8) ?[:0]const u8 {
+    const dir = if (std.mem.lastIndexOfScalar(u8, state, '/')) |i| state[0..i] else ".";
+    return std.fmt.bufPrintZ(buf, "{s}/{s}", .{ dir, name }) catch null;
+}
+
+/// A última vez terminou mal? Devolve o motivo (curto, pro chat) e deixa o
+/// arquivo em ultima-queda.txt. Também arma o panic e o marcador desta vez.
+fn checkLastCrash(state: []const u8, reason_buf: []u8) ?[]const u8 {
+    var mb: [480]u8 = undefined;
+    var ub: [480]u8 = undefined;
+    const marker = besideState(state, "rodando", &mb) orelse return null;
+    queda_path = besideState(state, "queda.txt", &queda_buf);
+    const last = besideState(state, "ultima-queda.txt", &ub) orelse return null;
+    var reason: ?[]const u8 = null;
+    if (queda_path) |qp| if (std.c.fopen(qp.ptr, "rb")) |f| {
+        var data: [16 * 1024]u8 = undefined;
+        const n = std.c.fread(&data, 1, data.len, f);
+        _ = std.c.fclose(f);
+        const text = data[0..n];
+        std.debug.print("[queda] a última execução caiu:\n{s}\n", .{text});
+        // "...: panic: integer overflow" + o primeiro src/arquivo.zig:linha da pilha
+        const first = text[0 .. std.mem.indexOfScalar(u8, text, '\n') orelse text.len];
+        const what = if (std.mem.indexOf(u8, first, "panic: ")) |i| first[i..] else first;
+        var where: []const u8 = "";
+        if (std.mem.indexOf(u8, text, "/src/")) |i| {
+            const rest = text[i + 1 ..];
+            const end = std.mem.indexOf(u8, rest, ": 0x") orelse std.mem.indexOfScalar(u8, rest, '\n') orelse rest.len;
+            where = rest[0..end];
+        }
+        reason = if (where.len > 0) std.fmt.bufPrint(reason_buf, "{s} em {s}", .{ what, where }) catch what else std.fmt.bufPrint(reason_buf, "{s}", .{what}) catch null;
+        _ = rename(qp.ptr, last.ptr);
+    };
+    const had_marker = if (std.c.fopen(marker.ptr, "rb")) |f| blk: {
+        _ = std.c.fclose(f);
+        break :blk true;
+    } else false;
+    if (reason == null and had_marker) {
+        reason = "parou sem avisar (sinal, falta de memória ou a máquina reiniciou)";
+        if (std.c.fopen(last.ptr, "wb")) |w| {
+            const t = sync.dateTime();
+            var lb: [200]u8 = undefined;
+            const l = std.fmt.bufPrint(&lb, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} (hora em que voltou) {s}\n", .{ t.year, t.month, t.day, t.h, t.m, t.s, reason.? }) catch "";
+            _ = std.c.fwrite(l.ptr, 1, l.len, w);
+            _ = std.c.fclose(w);
+        }
+    }
+    // marcador desta execução (sai no fechamento limpo e ao se atualizar)
+    marker_path = besideState(state, "rodando", &marker_buf);
+    if (marker_path) |mp| if (std.c.fopen(mp.ptr, "wb")) |w| {
+        _ = std.c.fclose(w);
+    };
+    return reason;
+}
+var marker_buf: [480]u8 = undefined;
+var marker_path: ?[:0]const u8 = null;
+
+/// Fechamento limpo (sinal, atualização): não é queda.
+fn cleanExit() void {
+    if (marker_path) |mp| _ = unlink(mp.ptr);
+}
 extern "c" fn chmod(path: [*:0]const u8, mode: c_uint) c_int;
 
 /// "!impressão" pro convite (vazio sem identidade).
@@ -180,12 +280,19 @@ var key_used_len: usize = 0;
 var state_buf: [420]u8 = undefined;
 
 var files_buf: [480]u8 = undefined;
+var logs_buf: [480]u8 = undefined;
 
 /// A pasta dos arquivos da sala: a dada, ou "arquivos" do lado do estado.
 fn filesDir(given: []const u8, state: []const u8) []const u8 {
     if (given.len > 0) return given;
     const dir = if (std.mem.lastIndexOfScalar(u8, state, '/')) |i| state[0..i] else ".";
     return std.fmt.bufPrint(&files_buf, "{s}/arquivos", .{dir}) catch "";
+}
+
+/// Pasta dos logs coletados (--coletar-logs sem --logs): "logs" do lado do estado.
+fn logsDir(state: []const u8) []const u8 {
+    const dir = if (std.mem.lastIndexOfScalar(u8, state, '/')) |i| state[0..i] else ".";
+    return std.fmt.bufPrint(&logs_buf, "{s}/logs", .{dir}) catch "";
 }
 
 /// O arquivo de estado: o dado, ou "estado.txt" na pasta da chave.
@@ -289,11 +396,12 @@ const AutoUpdate = struct {
                     return;
                 }
                 if (au.empty_since_ms == 0) au.empty_since_ms = now;
-                if (now - au.empty_since_ms < au.empty_ms) return;
+                if (now -| au.empty_since_ms < au.empty_ms) return;
                 log(std.fmt.bufPrint(&buf, "sala vazia: reiniciando na versão {s}", .{v}) catch "reiniciando na versão nova");
                 const tp = tunnel_pid.load(.acquire);
                 if (tp > 0) _ = kill(tp, SIGTERM);
                 if (upnp_mapper) |m| m.stopAndWait(2000);
+                cleanExit();
                 update.serverRestart(); // só volta se não deu
                 log(std.fmt.bufPrint(&buf, "não consegui reabrir na versão nova: {s}", .{update.installError()}) catch "não consegui reabrir");
             },
@@ -303,6 +411,7 @@ const AutoUpdate = struct {
 };
 
 fn die(comptime fmt: []const u8, args: anytype) noreturn {
+    cleanExit(); // não abriu: não é queda
     std.debug.print("erro: " ++ fmt ++ "\n", args);
     std.process.exit(1);
 }
@@ -377,6 +486,7 @@ pub fn main(init: std.process.Init) !void {
     var channels: []const u8 = env("TELINHA_CANAIS") orelse "";
     var new_channels = true;
     var no_bots = if (env("TELINHA_SEM_BOTS")) |v| std.mem.eql(u8, v, "1") else false;
+    var collect_logs = if (env("TELINHA_COLETAR_LOGS")) |v| std.mem.eql(u8, v, "1") else false;
     var only_new = if (env("TELINHA_SO_PROTOCOLO_NOVO")) |v| std.mem.eql(u8, v, "1") else false;
     var bot_token: []const u8 = env("TELINHA_TOKEN_BOTS") orelse "";
     var key_path: []const u8 = env("TELINHA_CHAVE") orelse "";
@@ -421,6 +531,10 @@ pub fn main(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, a, "--sem-bots")) {
             no_bots = true;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--coletar-logs")) {
+            collect_logs = true;
             continue;
         }
         if (std.mem.eql(u8, a, "--so-protocolo-novo")) {
@@ -487,18 +601,31 @@ pub fn main(init: std.process.Init) !void {
         for (&pw_buf, rnd) |*ch, r| ch.* = alphabet[r % alphabet.len];
         password = &pw_buf;
     }
+    const seed = loadKey(key_path, &key_used);
+    const state_file = statePath(state_path, key_used[0..key_used_len]);
+    var crash_reason_buf: [400]u8 = undefined;
+    const crash_reason = checkLastCrash(state_file, &crash_reason_buf);
+    if (collect_logs and logs_dir.len == 0) logs_dir = logsDir(state_file);
     if (logs_dir.len > 0) {
         var lb: [300]u8 = undefined;
         const z = std.fmt.bufPrintZ(&lb, "{s}", .{logs_dir}) catch die("pasta de logs longa demais", .{});
         _ = mkdir(z.ptr, 0o750);
     }
-    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir, .channels = channels, .new_channels = new_channels, .identity_seed = loadKey(key_path, &key_used), .state_path = statePath(state_path, key_used[0..key_used_len]), .files_dir = filesDir(files_dir, statePath(state_path, key_used[0..key_used_len])), .no_bots = no_bots, .bot_token = bot_token, .accept_old = !only_new }) catch
+    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir, .channels = channels, .new_channels = new_channels, .identity_seed = seed, .state_path = state_file, .files_dir = filesDir(files_dir, state_file), .no_bots = no_bots, .bot_token = bot_token, .accept_old = !only_new, .collect_logs = collect_logs }) catch
         die("não consegui abrir a porta {d} (já está em uso?)", .{port});
 
     var buf: [256]u8 = undefined;
     log(std.fmt.bufPrint(&buf, "sala \"{s}\" aberta na porta {d} (protocolo v{d}, {s}, máx. {d} pessoas)", .{
         room, port, proto.version, if (password.len > 0) "com senha" else "sem senha", max,
     }) catch "sala aberta");
+    // QA: cai de propósito (o aviso de queda na volta)
+    if (env("TELINHA_TESTE_QUEDA") != null) @panic("queda de teste");
+    if (crash_reason) |why| {
+        log(std.fmt.bufPrint(&buf, "a última execução caiu: {s} (detalhes em ultima-queda.txt)", .{why}) catch "a última execução caiu");
+        var cb: [500]u8 = undefined;
+        srv.announce(std.fmt.bufPrint(&cb, "O servidor reiniciou depois de uma queda (motivo: {s}). Quem estava na sala volta sozinho.", .{why}) catch "O servidor reiniciou depois de uma queda.");
+    }
+    if (collect_logs) log(std.fmt.bufPrint(&buf, "coletando logs: o dono pode pedir o log de quem está na sala (guardados em {s})", .{logs_dir}) catch "coletando logs");
     if (srv.fingerprint()) |f| {
         fp_suffix[0] = '!';
         @memcpy(fp_suffix[1..], &f);
@@ -550,6 +677,7 @@ pub fn main(init: std.process.Init) !void {
             // sem srv.stop(): ele avisa "o dono fechou a sala" e o app não
             // tentaria voltar; num restart (atualização, systemctl restart) a
             // conexão só cai e todo mundo reconecta sozinho
+            cleanExit();
             std.process.exit(0);
         }
         if (auto_update) au.tick(srv);

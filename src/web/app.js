@@ -258,6 +258,13 @@ function toast(text) {
 }
 function status(text, cls) { $('status-text').textContent = text; $('dot').className = 'dot ' + (cls || ''); }
 function send(u8) { if (st.ws && st.ws.readyState === 1) st.ws.send(u8); }
+// no máximo um ping a cada 4 s (o timer e as mensagens que chegam chamam)
+function pingSoon() {
+  const now = Date.now();
+  if (now - (st.pingAt || 0) < 4000) return;
+  st.pingAt = now;
+  send(new W(T.ping).u64(now).done());
+}
 function color(id) { const c = ['#e5484d', '#f76b15', '#ffc53d', '#30a46c', '#12a594', '#0090ff', '#6e56cf', '#d6409f']; return c[id % c.length]; }
 
 // ---------------------------------------------------------- conexão
@@ -341,7 +348,7 @@ async function connect(name, pass) {
   ws.onopen = () => {
     send(new W(T.web_hello).str(pass).str(name).str('').u64(key).str('web').u8(codecs).u8(FEAT).str(hash.get('c') || '').done());
   };
-  ws.onmessage = (e) => onMessage(new Uint8Array(e.data));
+  ws.onmessage = (e) => { onMessage(new Uint8Array(e.data)); if (document.hidden) pingSoon(); };
   ws.onclose = () => {
     stopVideo();
     // conexão nova não assiste nada: lembra o que era e volta a assistir no
@@ -1024,8 +1031,10 @@ function start() {
     if (!st.wake) keepAwake(true);
     if (!st.wake && st.awakeVid && st.awakeVid.paused) st.awakeVid.play().catch(() => {});
   }, { passive: true });
-  // vivo: ping a cada 5 s (o túnel fecha conexão parada) e o fps no canto
-  setInterval(() => send(new W(T.ping).u64(Date.now()).done()), 5000);
+  // vivo: ping a cada 5 s (o túnel fecha conexão parada) e o fps no canto.
+  // Aba escondida: o timer roda 1 vez por minuto; o que chega da rede (o som)
+  // não é segurado, então a mensagem que chega também manda o ping (onMessage)
+  setInterval(pingSoon, 5000);
   // aba escondida / celular bloqueado: para de receber a transmissão (banda e
   // bateria; quem hospeda pelo link público mandava uma cópia inteira por
   // ninguém); com o som ligado continua (o som vem junto). Volta sozinho.

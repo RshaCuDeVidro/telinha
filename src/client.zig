@@ -314,6 +314,7 @@ const IncomingLog = struct {
 pub const Notice = struct {
     kind: u8,
     extra: u8,
+    from: u32 = 0, // notice_log_request: quem pediu
     text: [400]u8,
     len: usize,
 
@@ -2082,6 +2083,14 @@ pub const Client = struct {
                 }
                 if (cl.notices.items.len < 32) try cl.notices.append(gpa, n);
             },
+            .log_request => {
+                // o dono da sala pediu o meu log (--coletar-logs): a UI manda ou recusa
+                var n: Notice = .{ .kind = proto.notice_log_request, .extra = 0, .from = try r.u32_(), .text = undefined, .len = 0 };
+                copyInto(&n.text, &n.len, try r.str());
+                cl.mutex.lock();
+                defer cl.mutex.unlock();
+                if (cl.notices.items.len < 32) try cl.notices.append(gpa, n);
+            },
             .draw => {
                 const from = try r.u32_();
                 const stream = try r.u32_();
@@ -2370,6 +2379,15 @@ pub const Client = struct {
     }
 
     /// Clique num botão do painel de um bot.
+    /// Coleta de logs: o dono pede o log de `id` (log_req_ask) ou eu recuso o
+    /// pedido de `id` (log_req_refuse).
+    pub fn sendLogRequest(cl: *Client, id: u32, what: u8) void {
+        const m = proto.Msg.alloc(.log_request, 5) catch return;
+        std.mem.writeInt(u32, m.payload()[0..4], id, .little);
+        m.payload()[4] = what;
+        cl.queue.pushOwned(m);
+    }
+
     pub fn sendPanelAction(cl: *Client, bot: u32, button: u8) void {
         const m = proto.Msg.alloc(.panel_action, 5) catch return;
         std.mem.writeInt(u32, m.payload()[0..4], bot, .little);
