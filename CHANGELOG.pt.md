@@ -2,6 +2,24 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.10.1
+
+Correção da página do navegador. Mesmo protocolo (7); só o servidor muda de verdade (a página vai dentro dele).
+
+### Destaques
+
+- 🌐 **Controles da página do navegador somem sozinhos de novo**: aparecem quando o mouse mexe e somem 2,5 s depois que ele para (junto com o cursor), também em tela cheia e no modo cinema. Antes eles ficavam na tela enquanto o mouse estivesse em cima do vídeo, e pra sempre depois de clicar num botão.
+
+<!-- detalhes -->
+
+### Todas as mudanças
+
+- **Página do navegador**: os controles saíam pelo `:hover` e pelo
+  `:focus-within` do CSS (em tela cheia o mouse nunca sai do vídeo, e o
+  clique deixava o foco preso no botão). Agora um timer por movimento do
+  mouse (nada roda parado); o cursor some junto; no celular, o toque mostra e
+  eles somem sozinhos em 4 s; com o teclado (Tab) a barra aparece.
+
 ## 3.10.0
 
 A sala não cai mais sozinha, e o dono pode pegar o log da galera sem pedir. Conversa com a 3.8 e as anteriores (até a 3.1). Mesmo protocolo (7). **Quem hospeda servidor dedicado: atualize**, era o servidor que derrubava a sala.

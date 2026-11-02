@@ -1022,8 +1022,36 @@ function start() {
     if (stage.requestFullscreen) stage.requestFullscreen().then(() => { try { screen.orientation.lock('landscape'); } catch (e) { /* sem */ } }).catch(() => {});
     else stage.webkitRequestFullscreen();
   };
-  // celular: um toque mostra/esconde os controles (não tem "mouse em cima")
-  $('stage').addEventListener('click', (e) => { if (TOUCH && e.target.closest('.controls') == null) $('stage').classList.toggle('show-ctl'); });
+  // controles (e o cursor) aparecem com o mouse mexendo e somem 2,5 s parado,
+  // como num player: o :hover sozinho deixava eles na tela pra sempre em tela
+  // cheia e no cinema (o mouse nunca sai do vídeo). Em cima dos controles ficam.
+  // Só um timer por movimento: parado não gasta nada.
+  const stageEl = $('stage');
+  const ctlIdle = () => {
+    clearTimeout(st.ctlT);
+    st.ctlT = setTimeout(() => {
+      if (stageEl.querySelector('.controls:hover')) return ctlIdle();
+      stageEl.classList.remove('ctl-on', 'show-ctl');
+      // o clique deixava o foco no botão (e a barra presa na tela)
+      const f = document.activeElement;
+      if (f && f.closest('.controls') && f.tagName !== 'INPUT') f.blur();
+    }, TOUCH ? 4000 : 2500);
+  };
+  stageEl.addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'touch') return;
+    stageEl.classList.add('ctl-on');
+    ctlIdle();
+  }, { passive: true });
+  stageEl.addEventListener('pointerleave', () => {
+    if (document.fullscreenElement) return;
+    clearTimeout(st.ctlT);
+    stageEl.classList.remove('ctl-on');
+  });
+  // celular: um toque mostra/esconde os controles (não tem "mouse em cima"); somem sozinhos
+  stageEl.addEventListener('click', (e) => {
+    if (!TOUCH || e.target.closest('.controls') != null) return;
+    if (stageEl.classList.toggle('show-ctl')) ctlIdle(); else clearTimeout(st.ctlT);
+  });
   $('stage').ondblclick = () => $('btn-full').onclick();
   // sem a trava ainda (o Safari pede um toque): cada toque tenta de novo
   document.addEventListener('pointerdown', () => {

@@ -2,6 +2,24 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.10.1
+
+Web page fix. Same protocol (7); only the server really changes (the page ships inside it).
+
+### Highlights
+
+- 🌐 **The web page controls hide on their own again**: they show when the mouse moves and hide 2.5 s after it stops (along with the cursor), also in fullscreen and cinema mode. Before, they stayed on screen while the mouse was over the video, and forever after clicking a button.
+
+<!-- detalhes -->
+
+### All changes
+
+- **Web page**: the controls were shown by CSS `:hover` and `:focus-within`
+  (in fullscreen the mouse never leaves the video, and a click left focus
+  stuck on the button). Now a timer per mouse movement (nothing runs while
+  idle); the cursor hides too; on phones a tap shows them and they hide on
+  their own after 4 s; with the keyboard (Tab) the bar shows.
+
 ## 3.10.0
 
 The room no longer drops on its own, and the owner can grab people's logs without asking. Talks to 3.8 and older (back to 3.1). Same protocol (7). **If you host a dedicated server, update**: the server was what kept dropping the room.

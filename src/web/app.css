@@ -68,7 +68,13 @@ input:focus { border-color: var(--accent); }
   display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 14px;
   background: rgba(10, 8, 18, .72); border: 1px solid rgba(168, 85, 247, .22); box-shadow: 0 10px 30px rgba(0, 0, 0, .5);
   backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); opacity: 0; transition: opacity .2s; }
-.stage:hover .controls, .controls:focus-within, .stage.idle-off .controls { opacity: 1; }
+.stage.ctl-on .controls { opacity: 1; }
+.controls { pointer-events: none; }
+.stage.ctl-on .controls, .stage.show-ctl .controls { pointer-events: auto; }
+/* teclado (Tab): a barra aparece com o foco nela (regra própria: navegador sem :has ignora só esta) */
+.controls:has(:focus-visible) { opacity: 1; pointer-events: auto; }
+/* parado em cima do vídeo: o cursor some junto com os controles */
+.stage:not(.ctl-on):not(.show-ctl) { cursor: none; }
 .ctl { display: inline-flex; align-items: center; gap: 8px; height: 34px; background: rgba(255,255,255,.08); color: #fff; padding: 0 12px; border-radius: 10px; font-size: 13px; font-weight: 600; }
 .ctl.sq { width: 34px; padding: 0; justify-content: center; }
 .ctl:hover { background: rgba(255,255,255,.18); }
