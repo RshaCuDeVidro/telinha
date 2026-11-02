@@ -2,9 +2,9 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
-## 3.9.0
+## 3.9.1
 
-Conversa com a 3.8 e as anteriores (até a 3.1). Mesmo protocolo (7); o painel de bot só aparece com servidor e app 3.9.
+A 3.9.0 não chegou a sair (a CI pegou um conflito de nome entre o SDK novo e o bot Telão); esta é ela, consertada. Conversa com a 3.8 e as anteriores (até a 3.1). Mesmo protocolo (7); o painel de bot só aparece com servidor e app 3.9.
 
 ### Destaques
 
@@ -19,6 +19,8 @@ Conversa com a 3.8 e as anteriores (até a 3.1). Mesmo protocolo (7); o painel d
 
 ### Todas as mudanças
 
+- **SDK**: os internos do painel têm nome próprio (`_bot_panel*`); um atributo
+  `_panel` apagava o método `_panel` do bot Telão e o painel dele sumia.
 - **Painel de bot**: mensagens novas `bot_panel` (45) e `panel_action` (46) e
   o recurso de servidor 32. O servidor guarda o último painel de cada bot,
   manda pra quem entra (logo depois da lista de membros), limita a uma

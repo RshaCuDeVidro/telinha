@@ -149,10 +149,10 @@ class Client:
         self._last_switch = 0.0
         self._last_image = 0.0
         self._next_edit = 0.0  # quando a próxima edição pode sair
-        self._panel: Embed | None = None  # o painel (set_panel): vai de novo a cada conexão
-        self._panel_buttons: list = []
-        self._panel_sent = 0.0
-        self._panel_task: asyncio.Task | None = None
+        self._bot_panel: Embed | None = None  # o painel (set_panel): vai de novo a cada conexão
+        self._bot_panel_buttons: list = []
+        self._bot_panel_sent = 0.0
+        self._bot_panel_task: asyncio.Task | None = None
         self._echo: list[tuple[str, int, asyncio.Future]] = []  # mensagens minhas esperando voltar (pra pegar o id)
         self._tasks: set[asyncio.Task] = set()  # handlers rodando
         self._buttons: dict[int, list] = {}  # id da mensagem → callbacks dos botões dela
@@ -352,9 +352,9 @@ class Client:
             if self._stream_args:  # reconectou no meio de uma transmissão: volta a transmitir
                 w, h, fps, audio = self._stream_args
                 await self.start_stream(w, h, fps, audio=audio)
-            if self._panel is not None:  # conexão nova: o servidor não tem o painel
-                self._panel_sent = 0.0
-                self._later_panel(0)
+            if self._bot_panel is not None:  # conexão nova: o servidor não tem o painel
+                self._bot_panel_sent = 0.0
+                self._later_bot_panel(0)
             if self._rejoin_call:
                 t = asyncio.create_task(self._rejoin(self._rejoin_call))
                 self._tasks.add(t)
@@ -421,7 +421,7 @@ class Client:
             click = Click(r.u32(), r.u8(), r.u32(), r.str(), _client=self)
             click.channel = r.opt(r.str, "")
             click.call = r.opt(r.str, "")
-            cbs = self._panel_buttons if click.panel else (self._buttons.get(click.message_id) or [])
+            cbs = self._bot_panel_buttons if click.panel else (self._buttons.get(click.message_id) or [])
             if click.button < len(cbs) and cbs[click.button]:
                 t = asyncio.create_task(self._run_handler("action", cbs[click.button], (click,)))
                 self._tasks.add(t)
@@ -588,29 +588,29 @@ class Client:
         em qualquer canal (no app: clique no bot na lista), com botões que
         funcionam de lá. None tira. O servidor aceita uma mudança a cada
         200 ms: as seguidas são juntadas e a última sempre chega."""
-        self._panel = embed
-        self._panel_buttons = [b.on_click for b in embed.buttons] if embed else []
-        if self._panel_task and not self._panel_task.done():
+        self._bot_panel = embed
+        self._bot_panel_buttons = [b.on_click for b in embed.buttons] if embed else []
+        if self._bot_panel_task and not self._bot_panel_task.done():
             return  # a que está esperando manda a versão mais nova
-        wait = self._panel_sent + PANEL_GAP - time.monotonic()
+        wait = self._bot_panel_sent + PANEL_GAP - time.monotonic()
         if wait > 0:
-            self._later_panel(wait)
+            self._later_bot_panel(wait)
         else:
-            await self._send_panel()
+            await self._send_bot_panel()
 
-    def _later_panel(self, wait: float) -> None:
+    def _later_bot_panel(self, wait: float) -> None:
         async def later():
             await asyncio.sleep(wait)
-            await self._send_panel()
-        self._panel_task = asyncio.create_task(later())
-        self._tasks.add(self._panel_task)
-        self._panel_task.add_done_callback(self._tasks.discard)
+            await self._send_bot_panel()
+        self._bot_panel_task = asyncio.create_task(later())
+        self._tasks.add(self._bot_panel_task)
+        self._bot_panel_task.add_done_callback(self._tasks.discard)
 
-    async def _send_panel(self) -> None:
+    async def _send_bot_panel(self) -> None:
         if not self.welcome or not self.welcome.server_features & wire.SRV_BOT_PANEL:
             return  # servidor antigo: não tem painel
-        e = self._panel.encode() if self._panel else b""
-        self._panel_sent = time.monotonic()
+        e = self._bot_panel.encode() if self._bot_panel else b""
+        self._bot_panel_sent = time.monotonic()
         try:
             await self._send(Writer(MsgType.BOT_PANEL).u32(len(e)).bytes(e).done())
         except ConnectError:

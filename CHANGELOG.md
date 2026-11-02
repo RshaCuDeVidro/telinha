@@ -2,9 +2,9 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
-## 3.9.0
+## 3.9.1
 
-Talks to 3.8 and older (back to 3.1). Same protocol (7); the bot panel only shows with a 3.9 server and app.
+3.9.0 never shipped (CI caught a name clash between the new SDK and the Telão bot); this is it, fixed. Talks to 3.8 and older (back to 3.1). Same protocol (7); the bot panel only shows with a 3.9 server and app.
 
 ### Highlights
 
@@ -19,6 +19,9 @@ Talks to 3.8 and older (back to 3.1). Same protocol (7); the bot panel only show
 
 ### All changes
 
+- **SDK**: the panel internals have their own names (`_bot_panel*`); an
+  `_panel` attribute was shadowing the Telão bot's `_panel` method and its
+  panel went missing.
 - **Bot panel**: new messages `bot_panel` (45) and `panel_action` (46) and
   server feature 32. The server keeps each bot's latest panel, sends it to
   whoever joins (right after the member list), allows one change every 200 ms
