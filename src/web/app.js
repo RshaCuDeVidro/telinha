@@ -280,13 +280,52 @@ async function decodable() {
 }
 
 // tela do celular acesa enquanto assiste (canvas não conta como mídia tocando)
+// tela acesa enquanto assiste. A trava do sistema (Wake Lock) cai sozinha
+// (economia de bateria, aba escondida) e o Safari só deixa pedir depois de um
+// toque: pede de novo quando cai e a cada toque sem ela. Sem trava nenhuma
+// (navegador sem suporte, pedido recusado): um vídeo preto de 2 s tocando
+// mudo, escondido, que o celular entende como "assistindo vídeo"
+const AWAKE_MP4 = 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAMzbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAB9AAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAl50cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAB9AAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAEAAAABAAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAfQAAAAAAABAAAAAAHWbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAABAAAAAgABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABgW1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAUFzdGJsAAAAuXN0c2QAAAAAAAAAAQAAAKlhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAEAAQABIAAAASAAAAAAAAAABFExhdmM2My4xLjEwMiBsaWJ4MjY0AAAAAAAAAAAAAAAAGP//AAAAL2F2Y0MBQsAe/+EAF2dCwB7ZBCbARAAAAwAEAAADABA8WLkgAQAFaMuDxMgAAAAQcGFzcAAAAAEAAAABAAAAFGJ0cnQAAAAAAAAK3AAAAAAAAAAYc3R0cwAAAAAAAAABAAAABAAAIAAAAAAUc3RzcwAAAAAAAAABAAAAAQAAABxzdHNjAAAAAAAAAAEAAAABAAAABAAAAAEAAAAkc3RzegAAAAAAAAAAAAAABAAAApUAAAALAAAADAAAAAsAAAAUc3RjbwAAAAAAAAABAAADYwAAAGF1ZHRhAAAAWW1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBsAAAAAAAAAAAAAAAALGlsc3QAAAAkqXRvbwAAABxkYXRhAAAAAQAAAABMYXZmNjMuMS4xMDIAAAAIZnJlZQAAAr9tZGF0AAACcgYF//9u3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE2NSByMzIyMiBiMzU2MDVhIC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAyNSAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTAgcmVmPTMgZGVibG9jaz0xOi0zOi0zIGFuYWx5c2U9MHgxOjB4MTExIG1lPWhleCBzdWJtZT03IHBzeT0xIHBzeV9yZD0yLjAwOjAuNzAgbWl4ZWRfcmVmPTEgbWVfcmFuZ2U9MTYgY2hyb21hX21lPTEgdHJlbGxpcz0xIDh4OGRjdD0wIGNxbT0wIGRlYWR6b25lPTIxLDExIGZhc3RfcHNraXA9MSBjaHJvbWFfcXBfb2Zmc2V0PS00IHRocmVhZHM9MiBsb29rYWhlYWRfdGhyZWFkcz0xIHNsaWNlZF90aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVybGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWluZWRfaW50cmE9MCBiZnJhbWVzPTAgd2VpZ2h0cD0wIGtleWludD0yNTAga2V5aW50X21pbj0yIHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4yMACAAAAAG2WIhAXzn///D0UAAVefJycnXXXXXXXXXXXXgAAAAAdBmjgL5zhGAAAACEGaVAL5zhGAAAAAB0GaYBXOcIw=';
+const AWAKE_WEBM = 'data:video/webm;base64,GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAJDEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHWTbuMU6uEElTDZ1OsggEyTbuMU6uEHFO7a1OsggIt7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsCrXsYMPQkBNgIxMYXZmNjMuMS4xMDJXQYxMYXZmNjMuMS4xMDJEiYhAn0AAAAAAABZUrmvXrgEAAAAAAABO14EBc8WITxPZNaK4XeicgQAitZyDdW5kiIEAhoVWX1ZQOIOBASPjg4QdzWUA4JCwgUC6gUCagQJVsIRVuYEBVe6BAOwBAAAAAAAAAgAAElTDZ/pzc59jwIBnyJlFo4dFTkNPREVSRIeMTGF2ZjYzLjEuMTAyc3PVY8CLY8WITxPZNaK4XehnyKBFo4dFTkNPREVSRIeTTGF2YzYzLjEuMTAyIGxpYnZweGfIoUWjiERVUkFUSU9ORIeTMDA6MDA6MDIuMDAwMDAwMDAwAB9DtnX354EAo6qBAACA8AIAnQEqQABAAABHCIWFiIWEiAICAAZwPEJgCrIg9zAA/v+rUICjloEB9ADRAQABEBAAGAAYWC/0AAiOgACjloED6ADRAQABEBAAGAAYWC/0AAiOgACjloEF3ADRAQABEBAAGAAYWC/0AAiOgAAcU7trkbuPs4EAt4r3gQHxggGx8IED';
 async function keepAwake(on) {
-  try {
-    if (on && !st.wake && 'wakeLock' in navigator && !document.hidden) {
-      st.wake = await navigator.wakeLock.request('screen');
-      st.wake.addEventListener('release', () => { st.wake = null; });
-    } else if (!on && st.wake) { const w = st.wake; st.wake = null; await w.release(); }
-  } catch (e) { /* sem permissão ou sem suporte */ }
+  st.wantAwake = on;
+  if (!on) {
+    if (st.wake) { const w = st.wake; st.wake = null; try { await w.release(); } catch (e) { /* já solta */ } }
+    awakeVideo(false);
+    return;
+  }
+  if (st.wake || st.wakeAsking || document.hidden) return;
+  if ('wakeLock' in navigator) {
+    st.wakeAsking = true;
+    try {
+      const w = await navigator.wakeLock.request('screen');
+      st.wake = w;
+      w.addEventListener('release', () => {
+        if (st.wake === w) st.wake = null;
+        // caiu sozinha com a página à mostra: pede de novo
+        if (st.wantAwake && !document.hidden) setTimeout(() => keepAwake(true), 1000);
+      });
+      awakeVideo(false);
+      if (!st.wantAwake) keepAwake(false); // desligaram enquanto pedia
+      return;
+    } catch (e) { /* sem permissão (falta um toque) ou recusado: vai o vídeo */ } finally { st.wakeAsking = false; }
+  }
+  awakeVideo(true);
+}
+function awakeVideo(on) {
+  let v = st.awakeVid;
+  if (!on) { if (v && !v.paused) v.pause(); return; }
+  if (!v) {
+    v = st.awakeVid = document.createElement('video');
+    v.muted = true; v.loop = true; v.playsInline = true;
+    v.setAttribute('playsinline', ''); v.setAttribute('muted', '');
+    v.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0.01;pointer-events:none;left:0;bottom:0';
+    for (const [src, type] of [[AWAKE_MP4, 'video/mp4'], [AWAKE_WEBM, 'video/webm']]) {
+      const so = document.createElement('source'); so.src = src; so.type = type; v.append(so);
+    }
+    document.body.append(v);
+  }
+  if (v.paused) v.play().catch(() => { /* espera um toque */ });
 }
 
 async function connect(name, pass) {
@@ -896,7 +935,7 @@ function showDebug(fps) {
     `atraso ${dbg.latMs >= 0 ? Math.round(dbg.latMs) + ' ms' : '-'} · ida e volta ${dbg.rttMs >= 0 ? dbg.rttMs + ' ms' : '-'} · IDR pedidos ${dbg.keyreqs} · erros do decoder ${dbg.decErrors}`,
     `conexão: ${st.ws ? ['abrindo', 'aberta', 'fechando', 'fechada'][st.ws.readyState] : '-'} · reconexões ${dbg.reconnects} · assistindo ${st.watching || '-'} · altura pedida ${st.sentH}`,
     `som: ${st.soundOn ? 'ligado' : 'desligado'} (AudioContext ${ac}, AudioDecoder ${'AudioDecoder' in window ? 'sim' : 'não'})`,
-    `tela: ${screen.width}×${screen.height} @${devicePixelRatio} · ${TOUCH ? 'toque' : 'mouse'} · ${document.hidden ? 'escondida' : 'à mostra'} · wake lock ${st.wake ? 'sim' : 'não'}`,
+    `tela: ${screen.width}×${screen.height} @${devicePixelRatio} · ${TOUCH ? 'toque' : 'mouse'} · ${document.hidden ? 'escondida' : 'à mostra'} · tela acesa ${st.wake ? 'pela trava' : st.awakeVid && !st.awakeVid.paused ? 'pelo vídeo' : 'não'}`,
     `navegador: ${navigator.userAgent}`,
     ...dbg.errors,
   ];
@@ -949,6 +988,12 @@ function start() {
   // celular: um toque mostra/esconde os controles (não tem "mouse em cima")
   $('stage').addEventListener('click', (e) => { if (TOUCH && e.target.closest('.controls') == null) $('stage').classList.toggle('show-ctl'); });
   $('stage').ondblclick = () => $('btn-full').onclick();
+  // sem a trava ainda (o Safari pede um toque): cada toque tenta de novo
+  document.addEventListener('pointerdown', () => {
+    if (!st.wantAwake) return;
+    if (!st.wake) keepAwake(true);
+    if (!st.wake && st.awakeVid && st.awakeVid.paused) st.awakeVid.play().catch(() => {});
+  }, { passive: true });
   // vivo: ping a cada 5 s (o túnel fecha conexão parada) e o fps no canto
   setInterval(() => send(new W(T.ping).u64(Date.now()).done()), 5000);
   // aba escondida / celular bloqueado: para de receber a transmissão (banda e

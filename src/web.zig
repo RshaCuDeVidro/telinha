@@ -122,7 +122,7 @@ fn reply(c: net.Socket, status: []const u8, ctype: []const u8, body: []const u8)
     defer net.close(c);
     var hb: [600]u8 = undefined;
     // a página só fala com o próprio servidor (nada de terceiros)
-    const head = std.fmt.bufPrint(&hb, "HTTP/1.1 {s}\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nCache-Control: no-cache\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'\r\nConnection: close\r\n\r\n", .{ status, ctype, body.len }) catch return;
+    const head = std.fmt.bufPrint(&hb, "HTTP/1.1 {s}\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nCache-Control: no-cache\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'self'; connect-src 'self'; img-src 'self' data:; media-src 'self' blob: data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'\r\nConnection: close\r\n\r\n", .{ status, ctype, body.len }) catch return;
     net.sendAll(c, head) catch return;
     net.sendAll(c, body) catch return;
 }
