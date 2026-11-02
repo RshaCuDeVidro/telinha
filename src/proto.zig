@@ -283,6 +283,9 @@ pub const slow_decoder: u8 = 1;
 
 /// watch: opções
 pub const watch_clips: u8 = 1; // guardando os últimos segundos pra clipe: quer IDR de vez em quando
+/// Só o som (a página web com a aba escondida e o som ligado): a imagem para de
+/// vir e volta com um IDR quando tirar. Servidor antigo ignora e manda tudo.
+pub const watch_audio_only: u8 = 2;
 
 /// pointer
 pub const pointer_visible: u8 = 1;

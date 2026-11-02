@@ -206,6 +206,33 @@ const Conn = struct {
 };
 
 /// O que um espectador está recebendo de um stream.
+const chronic_resyncs = 3;
+const chronic_window_ms = 30_000;
+const chronic_hold_ms = 60_000; // sem recomeçar por 1 min, volta ao normal
+const chronic_key_ms = 10_000;
+
+/// Quantos assistem `stream` (fora quem está só no som) e quantos estão com
+/// dificuldade. Os que vivem recomeçando só contam se forem a maioria (aí o
+/// gargalo é comum: o upload de quem transmite).
+fn roomStruggle(s: *Server, cn: *Conn, stream: u32, now_ms: u64) struct { viewers: u32, struggling: u32 } {
+    var viewers: u32 = 0;
+    var struggling: u32 = 0;
+    var apart: u32 = 0;
+    for (s.conns.items) |o| {
+        if (o == cn or !contains(&o.watching, stream)) continue;
+        const f = o.findFlow(stream) orelse {
+            viewers += 1;
+            continue;
+        };
+        if (f.audio_only) continue;
+        viewers += 1;
+        if (!f.struggling(now_ms)) continue;
+        if (f.chronic(now_ms)) apart += 1 else struggling += 1;
+    }
+    if (apart * 2 > viewers) struggling += apart;
+    return .{ .viewers = viewers, .struggling = struggling };
+}
+
 const Flow = struct {
     stream: u32,
     clips: bool = false, // guardando os últimos segundos pra clipe (quer IDR de vez em quando)
@@ -229,6 +256,30 @@ const Flow = struct {
     thin_ms: u64 = thin_min_ms,
     thin_ended_ms: u64 = 0,
     probe_until_ms: u64 = 0, // acabou de voltar a receber tudo: atrasou, afina na hora
+    audio_only: bool = false, // só o som (aba escondida na página web): nada de quadro
+    // quem vive recomeçando (3 vezes em 30 s) fica à parte por um tempo: segue
+    // afinado, pede IDR no máximo a cada 10 s e, se for a minoria, não baixa a
+    // taxa de quem transmite (um espectador com o PC no jogo derrubava a sala)
+    resync_count: u8 = 0,
+    resync_window_ms: u64 = 0,
+    chronic_until_ms: u64 = 0,
+
+    fn chronic(f: *const Flow, now_ms: u64) bool {
+        return now_ms < f.chronic_until_ms;
+    }
+
+    /// Conta um recomeço. Retorna true se passou a ficar à parte agora.
+    fn noteResync(f: *Flow, now_ms: u64) bool {
+        if (f.resync_window_ms == 0 or now_ms - f.resync_window_ms > chronic_window_ms) {
+            f.resync_window_ms = now_ms;
+            f.resync_count = 0;
+        }
+        f.resync_count +|= 1;
+        const was = f.chronic(now_ms);
+        if (f.resync_count >= chronic_resyncs or was) f.chronic_until_ms = now_ms + chronic_hold_ms;
+        if (f.chronic(now_ms)) f.resync_after_ms = @max(f.resync_after_ms, now_ms + chronic_key_ms);
+        return !was and f.chronic(now_ms);
+    }
 
     /// Atrasado sem escoar, ou recomeçou há menos de 10 s. Afinado: só se nem
     /// assim deu conta — continua atrasando passado o tempo de escoar, ou
@@ -995,7 +1046,7 @@ pub const Server = struct {
                 for (o.flows.items) |*f| {
                     const sh = s.findConn(proto.memberOf(f.stream)) orelse continue;
                     const ss = &sh.streams[proto.kindOf(f.stream)];
-                    if (!ss.on) continue;
+                    if (!ss.on or f.audio_only) continue;
                     if (f.clips and ss.last_key_ms != 0 and now_ms -| ss.last_key_ms > s.clip_key_ms and now_ms -| ss.last_keyreq_ms > s.clip_key_ms) {
                         s.requestKey(f.stream, false);
                         continue;
@@ -1630,15 +1681,37 @@ pub const Server = struct {
                     if (!contains(&cn.watching, stream) and cn.watching.items.len >= s.max_members * 2) return;
                     const changed = !contains(&cn.watching, stream);
                     if (!changed) {
-                        // só mudou as opções (ex.: ligou os clipes)
-                        if (cn.findFlow(stream)) |f| f.clips = opts & proto.watch_clips != 0;
+                        // só mudou as opções (ex.: ligou os clipes, escondeu a aba)
+                        const f = cn.flow(stream) orelse return;
+                        f.clips = opts & proto.watch_clips != 0;
+                        const was_audio = f.audio_only;
+                        f.audio_only = opts & proto.watch_audio_only != 0;
+                        if (f.audio_only and !was_audio) {
+                            // o que já está na fila também não precisa ir
+                            _ = cn.queue.dropFrames(stream);
+                            f.win.reset();
+                            remove(&cn.waiting_key, stream);
+                        } else if (was_audio and !f.audio_only) {
+                            // voltou a ver: recomeça de um IDR, como quem acabou de entrar
+                            f.* = .{ .stream = stream, .clips = f.clips };
+                            addUnique(&cn.waiting_key, stream);
+                            const ss = &tc.streams[proto.kindOf(stream)];
+                            const now_w = sync.nowMs();
+                            if (now_w - ss.last_watch_keyreq_ms >= watch_keyreq_interval_ms) {
+                                ss.last_watch_keyreq_ms = now_w;
+                                s.requestKey(stream, true);
+                            } else s.requestKey(stream, false);
+                        }
                         return;
                     }
                     addUnique(&cn.watching, stream);
                     addUnique(&cn.waiting_key, stream);
                     _ = cn.queue.dropFrames(stream);
                     cn.dropFlow(stream);
-                    if (cn.flow(stream)) |f| f.clips = opts & proto.watch_clips != 0;
+                    if (cn.flow(stream)) |f| {
+                        f.clips = opts & proto.watch_clips != 0;
+                        f.audio_only = opts & proto.watch_audio_only != 0;
+                    }
                     // IDR pra quem começou a assistir, com um limite próprio (400 ms):
                     // quem chegar logo depois de outro pega o próximo (o laço pede)
                     const ss = &tc.streams[proto.kindOf(stream)];
@@ -1683,11 +1756,13 @@ pub const Server = struct {
                     }
                     return;
                 }
+                if (f.audio_only) return;
                 f.win.dropNewest(cn.queue.dropFrames(stream));
                 addUnique(&cn.waiting_key, stream);
                 const now = sync.nowMs();
                 if (now >= f.resync_after_ms) s.requestKey(stream, false);
                 _ = f.backoff(now);
+                if (f.chronic(now)) f.resync_after_ms = @max(f.resync_after_ms, now + chronic_key_ms);
                 f.decoder_behind = true;
                 // metade dos quadros alivia o decoder dele sem mexer em ninguém
                 if (s.findConn(proto.memberOf(stream))) |sh| {
@@ -1695,7 +1770,7 @@ pub const Server = struct {
                     if (now -| ss.last_droppable_ms < 2000) {
                         if (f.thinOut(now))
                             s.log("{s} não deu conta de decodificar {s}: recebendo só metade dos quadros por {d} s", .{ cn.nameSlice(), sh.nameSlice(), f.thin_ms / 1000 });
-                    } else if (reason == proto.keyreq_behind and now -| ss.last_decoder_hint_ms > 10_000) {
+                    } else if (reason == proto.keyreq_behind and !f.chronic(now) and now -| ss.last_decoder_hint_ms > 10_000) {
                         // sem quadros puláveis não dá pra afinar: avisa quem
                         // transmite (o fps automático desce pra 30)
                         ss.last_decoder_hint_ms = now;
@@ -2325,6 +2400,7 @@ pub const Server = struct {
             proto.route_internet => "internet",
             proto.route_internet6 => "internet IPv6",
             proto.route_tunnel => "link público",
+            proto.route_web => "navegador",
             else => "?",
         };
     }
@@ -3769,15 +3845,8 @@ pub const Server = struct {
             // afinar é pra proteger quem está dando conta. Se a maioria está
             // sofrendo (gargalo comum, ex.: o upload de quem hospeda, ou só tem
             // um espectador), quem resolve é a taxa (mantém os 30 q/s)
-            var viewers: u32 = 0;
-            var struggling: u32 = 0;
-            for (s.conns.items) |o| {
-                if (o == cn or !contains(&o.watching, stream)) continue;
-                viewers += 1;
-                const f = o.flow(stream) orelse continue;
-                if (f.struggling(now_ms)) struggling += 1;
-            }
-            thinnable = (struggling + 1) * 2 <= viewers;
+            const rs = roomStruggle(s, cn, stream, now_ms);
+            thinnable = (rs.struggling + 1) * 2 <= rs.viewers;
         }
         var need_key = false;
         var resynced = false; // algum espectador recomeçou agora
@@ -3785,7 +3854,8 @@ pub const Server = struct {
         for (s.conns.items) |o| {
             if (o == cn or !contains(&o.watching, stream)) continue;
             const f = o.flow(stream) orelse continue;
-            if (f.thin and now_ms >= f.thin_until_ms and !f.late) {
+            if (f.audio_only) continue;
+            if (f.thin and now_ms >= f.thin_until_ms and !f.late and !f.chronic(now_ms)) {
                 // tempo de afinar acabou e ele está em dia: volta a receber tudo
                 // (é um teste: se começar a atrasar, afina de novo na hora)
                 f.thin = false;
@@ -3837,8 +3907,13 @@ pub const Server = struct {
                 resynced = true;
                 s.n_resyncs +%= 1;
                 _ = f.backoff(now_ms);
+                const apart = f.noteResync(now_ms);
                 if (thinnable) _ = f.thinOut(now_ms); // depois do IDR, só metade
-                s.log("{s} atrasou {d} ms assistindo {s}: recomeçando de um IDR (próximo em {d} ms)", .{ o.nameSlice(), excess / 1000, cn.nameSlice(), f.resync_after_ms - now_ms });
+                if (excess >= std.math.maxInt(u32))
+                    s.log("{s} parou de confirmar os quadros de {s}: recomeçando de um IDR (próximo em {d} ms)", .{ o.nameSlice(), cn.nameSlice(), f.resync_after_ms - now_ms })
+                else
+                    s.log("{s} atrasou {d} ms assistindo {s}: recomeçando de um IDR (próximo em {d} ms)", .{ o.nameSlice(), excess / 1000, cn.nameSlice(), f.resync_after_ms - now_ms });
+                if (apart) s.log("{s} não acompanha {s} nem recomeçando: fica à parte por 1 min (IDR a cada 10 s, sem baixar a qualidade dos outros)", .{ o.nameSlice(), cn.nameSlice() });
                 continue;
             }
             o.queue.push(m);
@@ -3854,14 +3929,9 @@ pub const Server = struct {
             // dá conta nem assim fica recomeçando de IDR de vez em quando, sem
             // estragar a qualidade pros outros.
             ss.last_slow_ms = now_ms;
-            var viewers: u32 = 0;
-            var struggling: u32 = 0;
-            for (s.conns.items) |o| {
-                if (o == cn or !contains(&o.watching, stream)) continue;
-                viewers += 1;
-                const f = o.flow(stream) orelse continue;
-                if (f.struggling(now_ms)) struggling += 1;
-            }
+            const rs = roomStruggle(s, cn, stream, now_ms);
+            const viewers = rs.viewers;
+            const struggling = rs.struggling;
             // todo mundo que atrasou foi afinado e está escoando: a taxa fica
             if (struggling == 0) return;
             const majority = struggling * 2 > viewers;
@@ -3900,4 +3970,24 @@ fn constEql(a: []const u8, b: []const u8) bool {
         diff |= x ^ y;
     }
     return diff == 0;
+}
+
+test "Flow: quem vive recomeçando fica à parte e pede IDR no máximo a cada 10 s" {
+    var f: Flow = .{ .stream = 1 };
+    try std.testing.expect(!f.noteResync(1_000));
+    try std.testing.expect(!f.noteResync(5_000));
+    try std.testing.expect(f.noteResync(9_000)); // terceiro em 30 s
+    try std.testing.expect(f.chronic(9_000));
+    try std.testing.expect(f.resync_after_ms >= 19_000);
+    // continua recomeçando: fica mais tempo
+    try std.testing.expect(!f.noteResync(40_000));
+    try std.testing.expect(f.chronic(99_000));
+    // 1 min sem recomeçar: volta ao normal
+    try std.testing.expect(!f.chronic(100_001));
+    // recomeços espaçados não contam
+    var g: Flow = .{ .stream = 1 };
+    _ = g.noteResync(1_000);
+    _ = g.noteResync(40_000);
+    try std.testing.expect(!g.noteResync(80_000));
+    try std.testing.expect(!g.chronic(80_000));
 }

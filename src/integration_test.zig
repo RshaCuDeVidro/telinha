@@ -1463,6 +1463,48 @@ test "sala: watch só aceita quem existe" {
     try testing.expectEqual(@as(usize, 0), srv.watchingCount(viewer.id));
 }
 
+test "sala: só o som (aba escondida) para os quadros e mantém o som; voltar pede IDR" {
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+
+    var streamer = try TestClient.connect(port, "T", "", "");
+    defer streamer.close();
+    try streamer.welcome();
+    var viewer = try TestClient.connect(port, "E", "", "");
+    defer viewer.close();
+    try viewer.welcome();
+
+    try streamer.streamStart(proto.kind_screen, proto.stream_audio);
+    try viewer.watch(streamer.id, 0);
+    _ = try streamer.expect(.keyreq);
+    try streamer.send(try frameSeq(true, 200, 1));
+    _ = try viewer.expect(.frame);
+
+    // aba escondida: só o som
+    try viewer.watch(streamer.id, proto.watch_audio_only);
+    sync.sleepMs(150); // o "assistir" e os quadros vêm por conexões diferentes
+    @memset(&viewer.seen, false);
+    try streamer.send(try frameSeq(true, 200, 2));
+    try streamer.send(try frameSeq(false, 100, 3));
+    const opus_fake = [_]u8{ 0xfc, 1, 2, 3 };
+    const m = try proto.Msg.alloc(.audio, proto.audio_header_len + opus_fake.len);
+    std.mem.writeInt(u32, m.payload()[0..4], 1, .little);
+    std.mem.writeInt(u64, m.payload()[4..12], 0, .little);
+    @memcpy(m.payload()[12..], &opus_fake);
+    try streamer.send(m);
+    _ = try viewer.expect(.audio);
+    try testing.expect(!viewer.seen[@intFromEnum(proto.Type.frame)]);
+
+    // voltou pra aba: pede IDR na hora e os quadros voltam
+    try viewer.watch(streamer.id, 0);
+    _ = try streamer.expect(.keyreq);
+    try streamer.send(try frameSeq(true, 200, 4));
+    var r: proto.Reader = .{ .data = try viewer.expect(.frame) };
+    _ = try r.u32_();
+    try testing.expectEqual(@as(u32, 4), try r.u32_());
+}
+
 test "sala: áudio chega em quem assiste, com o remetente certo" {
     net.init();
     const port = freshPort();

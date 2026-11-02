@@ -958,11 +958,26 @@ function start() {
     clearTimeout(st.hideT);
     if (document.hidden) {
       st.hideT = setTimeout(() => {
-        if (!document.hidden || st.soundOn || !st.watching) return;
+        if (!document.hidden || !st.watching) return;
+        if (st.soundOn) {
+          // com o som ligado: só o som. A imagem para de vir (um PC ocupado
+          // com um jogo e a aba escondida não davam conta dos quadros, e o
+          // servidor baixava a qualidade da sala toda); volta com um IDR
+          st.audioOnly = st.watching;
+          send(new W(T.watch).u32(st.watching).u8(1).u8(2).done());
+          return;
+        }
         st.hiddenPaused = st.watching;
         watch(0);
         keepAwake(false);
       }, 3000);
+    } else if (st.audioOnly) {
+      const w = st.audioOnly; st.audioOnly = 0;
+      if (st.watching === w) {
+        stopVideo(); // recomeça do IDR que o servidor pede
+        st.watching = w;
+        send(new W(T.watch).u32(w).u8(1).u8(0).done());
+      }
     } else if (st.hiddenPaused) {
       const w = st.hiddenPaused; st.hiddenPaused = 0;
       if ((st.streams || []).some((s) => s.id === w)) watch(w);
