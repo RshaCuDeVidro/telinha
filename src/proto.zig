@@ -682,6 +682,28 @@ pub const SendQueue = struct {
         m.release();
     }
 
+    /// Cursor: só a posição mais nova vale. Se ainda tem um da mesma
+    /// transmissão esperando na frente da fila, troca por esse em vez de
+    /// enfileirar mais um (com a fila atrasada, quem assiste recebia a seta
+    /// passando por todas as posições velhas, e cada uma acordava a interface).
+    pub fn replaceCursor(q: *SendQueue, m: *Msg) void {
+        q.mutex.lock();
+        if (!q.closed) {
+            const sid = m.payload()[0..4];
+            for (q.items.items[q.head..]) |*slot| {
+                const o = slot.*;
+                if (!isUrgent(o.typ)) break; // as urgentes ficam todas na frente
+                if (o.typ != .cursor or o.data.len != m.data.len or !std.mem.eql(u8, o.payload()[0..4], sid)) continue;
+                slot.* = m.retain();
+                o.release();
+                q.mutex.unlock();
+                return;
+            }
+        }
+        q.mutex.unlock();
+        q.pushUrgent(m);
+    }
+
     /// Enfileira e solta a referência do chamador.
     pub fn pushOwned(q: *SendQueue, m: *Msg) void {
         q.push(m);

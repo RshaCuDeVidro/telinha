@@ -519,12 +519,15 @@ function newDecoder(codec) {
   st.waitKey = true;
 }
 
-function requestKey() {
+// motivo 3 = "não deu conta" (o mesmo do app): o servidor avisa quem
+// transmite e o fps automático desce pra 30. Os outros pedidos vão como
+// quadro perdido (0)
+function requestKey(reason = 0) {
   dbg.keyreqs++;
   const id = st.watching;
   stopVideo();
   st.watching = id;
-  if (id) send(new W(T.keyreq).u32(id).u8(0).done());
+  if (id) send(new W(T.keyreq).u32(id).u8(reason).done());
 }
 
 function onFrame(r) {
@@ -571,7 +574,8 @@ function onFrame(r) {
   // decoder do celular segura de propósito envelheceram sem culpa dele. Sem
   // isso cada pausa virava IDR pedido, decoder novo e a sala inteira afinada
   if (now - prevAt > 300) st.pending.fill(now);
-  if (st.dec.decodeQueueSize > 60 || (st.pending.length > 2 && now - st.pending[0] > 700)) { requestKey(); return; }
+  // (aba escondida não conta: aí o navegador segura o decoder de propósito)
+  if (st.dec.decodeQueueSize > 60 || (st.pending.length > 2 && now - st.pending[0] > 700)) { requestKey(document.hidden ? 0 : 3); return; }
   try {
     st.dec.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: time, data: r.rest() }));
     st.pending.push(now);

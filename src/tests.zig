@@ -441,6 +441,34 @@ test "SendQueue: pushUrgent fura a fila" {
     try testing.expectEqual(proto.Type.frame, q.items.items[q.head + 2].typ);
 }
 
+test "SendQueue: cursor esperando na fila é trocado pelo mais novo" {
+    var q: proto.SendQueue = .{};
+    defer q.deinit();
+    q.pushOwned(try proto.Msg.alloc(.frame, 10));
+    const curs = struct {
+        fn make(stream: u32, x: u8) !*proto.Msg {
+            const m = try proto.Msg.alloc(.cursor, 8);
+            std.mem.writeInt(u32, m.payload()[0..4], stream, .little);
+            @memset(m.payload()[4..8], x);
+            return m;
+        }
+    };
+    for ([_]u8{ 1, 2, 3 }) |x| {
+        const m = try curs.make(7, x);
+        q.replaceCursor(m);
+        m.release();
+    }
+    const other = try curs.make(9, 5);
+    q.replaceCursor(other);
+    other.release();
+    // um por transmissão, o mais novo, e os dois na frente do quadro
+    try testing.expectEqual(@as(usize, 3), q.items.items.len - q.head);
+    try testing.expectEqual(@as(u8, 3), q.items.items[q.head].payload()[4]);
+    try testing.expectEqual(@as(u8, 5), q.items.items[q.head + 1].payload()[4]);
+    try testing.expectEqual(proto.Type.frame, q.items.items[q.head + 2].typ);
+    try testing.expectEqual(@as(usize, 2 * (5 + 8) + 15), q.queuedBytes());
+}
+
 test "AckWindow: atraso acumulado e confirmação cumulativa" {
     var w: proto.AckWindow = .{};
     // sem medida ainda: usa a referência padrão
@@ -1196,6 +1224,7 @@ test "mp4: gravação fragmentada abre e decodifica no ffmpeg (inclusive sem o f
     }
     try testing.expect(r.durationMs() > 1500);
     r.finish();
+    mp4.waitWrites(5000);
     if (access("/usr/bin/ffprobe", 0) != 0) return error.SkipZigTest;
     var cmd_buf: [256]u8 = undefined;
     var out: [2048]u8 = undefined;
@@ -1242,6 +1271,7 @@ test "mp4: HEVC (NVENC) vira hvc1 que o ffmpeg abre e decodifica, clipe e grava�
     const r = try mp4.Recorder.start(rec_path, w, h, video.items[0], false);
     for (video.items[1..]) |v| try r.addVideo(v);
     r.finish();
+    mp4.waitWrites(5000);
     if (access("/usr/bin/ffprobe", 0) != 0) return error.SkipZigTest;
     var cmd_buf: [256]u8 = undefined;
     var res: [2048]u8 = undefined;
@@ -1313,6 +1343,7 @@ test "mp4: AV1 (OBUs) vira av01 + av1C que o ffmpeg abre e decodifica, clipe e g
     const r = try mp4.Recorder.start(rec_path, 640, 360, video.items[0], false);
     for (video.items[1..]) |v| try r.addVideo(v);
     r.finish();
+    mp4.waitWrites(5000);
     if (access("/usr/bin/ffprobe", 0) != 0) return error.SkipZigTest;
     for ([_][:0]const u8{ clip_path, rec_path }) |path| {
         const probe = run(try std.fmt.bufPrintZ(&cmd_buf, "ffprobe -v error -count_frames -show_entries stream=codec_name,codec_tag_string,width,height,nb_read_frames -of csv=p=0 {s} 2>&1", .{path}), &res);

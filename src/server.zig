@@ -3695,7 +3695,7 @@ pub const Server = struct {
         std.mem.writeInt(u32, m.payload()[0..4], stream, .little);
         @memcpy(m.payload()[4..8], payload[1..5]);
         for (s.conns.items) |o| {
-            if (o != cn and contains(&o.watching, stream)) o.queue.pushUrgent(m);
+            if (o != cn and contains(&o.watching, stream)) o.queue.replaceCursor(m);
         }
     }
 

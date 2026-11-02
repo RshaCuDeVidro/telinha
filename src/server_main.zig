@@ -67,6 +67,7 @@ const usage =
     \\  --web-link URL         o endereço HTTPS fixo da porta web (domínio seu,
     \\                         túnel nomeado, outro proxy) em vez do túnel rápido
     \\  --cloudflared CAMINHO  o executável (padrão: cloudflared do PATH)
+    \\  -v, --versao           mostra a versão e sai
     \\  -h, --help             mostra isso
     \\
 ;
@@ -240,8 +241,9 @@ fn loadKey(given: []const u8, used: *[400]u8) ?[32]u8 {
 }
 
 fn log(msg: []const u8) void {
-    const t = sync.localTime();
-    std.debug.print("[{d:0>2}:{d:0>2}] {s}\n", .{ t.h, t.m, msg });
+    // com segundos: no journal dá pra casar o log com o que a pessoa conta
+    const t = sync.dateTime();
+    std.debug.print("[{d:0>2}:{d:0>2}:{d:0>2}] {s}\n", .{ t.h, t.m, t.s, msg });
 }
 
 /// --atualizar-sozinho: confere a cada 6 h (a primeira 5 min depois de abrir),
@@ -395,6 +397,10 @@ pub fn main(init: std.process.Init) !void {
         const a: []const u8 = args[i];
         if (std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "--help")) {
             std.debug.print("{s}", .{usage});
+            return;
+        }
+        if (std.mem.eql(u8, a, "-v") or std.mem.eql(u8, a, "--versao") or std.mem.eql(u8, a, "--version")) {
+            std.debug.print("telinha-server {s} (protocolo {d})\n", .{ proto.app_version, proto.version });
             return;
         }
         if (std.mem.eql(u8, a, "--upnp")) {

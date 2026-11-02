@@ -327,7 +327,7 @@ pub const Buffer = struct {
             .active = b.recorder != null or b.rec_waiting,
             .waiting = b.rec_waiting,
             .ms = b.rec_done_ms + if (b.recorder) |r| r.durationMs() else 0,
-            .failed = b.rec_error,
+            .failed = b.rec_error or if (b.recorder) |r| r.failed() else false,
         };
     }
 

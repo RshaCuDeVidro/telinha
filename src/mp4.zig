@@ -883,9 +883,80 @@ pub fn writeClip(path: [:0]const u8, w: u32, h: u32, video: []const VideoSample,
 // ---------------------------------------------------------------------------
 // Gravação (MP4 fragmentado)
 
+/// Arquivos de gravação ainda sendo escritos no disco (quem fecha o app espera).
+pub var writing: std.atomic.Value(u32) = .init(0);
+
+/// Espera os arquivos de gravação terminarem de ser escritos (até `ms`).
+pub fn waitWrites(ms: u32) void {
+    var waited: u32 = 0;
+    while (writing.load(.acquire) > 0 and waited < ms) : (waited += 5) sync.sleepMs(5);
+}
+
+/// O disco da gravação numa thread própria, que só existe enquanto grava: o
+/// encoder e a rede só entregam o fragmento pronto e seguem, sem esperar o
+/// fwrite/fflush (um disco lento segurava a thread do vídeo e, pelo mutex do
+/// clipe, o som). Fecha o arquivo e se apaga sozinha depois do `close`.
+const Sink = struct {
+    mutex: sync.Mutex = .{},
+    cond: sync.Cond = .{},
+    queue: std.ArrayList([]u8) = .empty,
+    queued: usize = 0, // bytes esperando o disco
+    closing: bool = false,
+    failed: std.atomic.Value(bool) = .init(false),
+    file: *cio.FILE,
+
+    fn push(s: *Sink, buf: []u8) void {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        // o disco não acompanha: larga o fragmento em vez de crescer sem fim
+        if (s.queued > 256 << 20) {
+            gpa.free(buf);
+            s.failed.store(true, .release);
+            return;
+        }
+        s.queue.append(gpa, buf) catch {
+            gpa.free(buf);
+            s.failed.store(true, .release);
+            return;
+        };
+        s.queued += buf.len;
+        s.cond.signal();
+    }
+
+    fn close(s: *Sink) void {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        s.closing = true;
+        s.cond.signal();
+    }
+
+    fn run(s: *Sink) void {
+        sync.nameThread("gravador");
+        while (true) {
+            s.mutex.lock();
+            while (s.queue.items.len == 0 and !s.closing) s.cond.wait(&s.mutex);
+            if (s.queue.items.len == 0) {
+                s.mutex.unlock();
+                break;
+            }
+            const buf = s.queue.orderedRemove(0);
+            s.queued -= buf.len;
+            s.mutex.unlock();
+            if (cio.fwrite(buf.ptr, 1, buf.len, s.file) != buf.len) s.failed.store(true, .release);
+            // cada fragmento no disco: o arquivo toca mesmo se o app cair
+            _ = cio.fflush(s.file);
+            gpa.free(buf);
+        }
+        _ = cio.fclose(s.file);
+        s.queue.deinit(gpa);
+        gpa.destroy(s);
+        _ = writing.fetchSub(1, .release);
+    }
+};
+
 pub const Recorder = struct {
     kind: Kind, // codec do arquivo (do primeiro quadro-chave)
-    file: *cio.FILE,
+    sink: *Sink,
     w: u32,
     h: u32,
     with_audio: bool,
@@ -908,11 +979,9 @@ pub const Recorder = struct {
         if (!first.key) return error.NoKeyframe;
         const ps = paramSets(first.data);
         if (!ps.complete()) return error.NoParamSets;
-        const f = openFile(path, "wb") orelse return error.FileOpen;
-        errdefer _ = cio.fclose(f);
         const r = try gpa.create(Recorder);
         errdefer gpa.destroy(r);
-        r.* = .{ .kind = ps.kind, .file = f, .w = w, .h = h, .with_audio = with_audio, .start_us = first.ts_us, .audio_next_us = first.ts_us, .last_video_us = first.ts_us -| 1000 };
+        r.* = .{ .kind = ps.kind, .sink = undefined, .w = w, .h = h, .with_audio = with_audio, .start_us = first.ts_us, .audio_next_us = first.ts_us, .last_video_us = first.ts_us -| 1000 };
         var head: std.ArrayList(u8) = .empty;
         defer head.deinit(gpa);
         const b: Box = .{ .buf = &head };
@@ -935,8 +1004,31 @@ pub const Recorder = struct {
         }
         b.end(mvex);
         b.end(mv);
-        if (cio.fwrite(head.items.ptr, 1, head.items.len, f) != head.items.len) return error.FileWrite;
-        try r.addVideo(first);
+        const hb = try gpa.dupe(u8, head.items);
+        const f = openFile(path, "wb") orelse {
+            gpa.free(hb);
+            return error.FileOpen;
+        };
+        const sk = gpa.create(Sink) catch {
+            gpa.free(hb);
+            _ = cio.fclose(f);
+            return error.OutOfMemory;
+        };
+        sk.* = .{ .file = f };
+        _ = writing.fetchAdd(1, .acq_rel);
+        sync.spawn(Sink.run, .{sk}) catch {
+            _ = writing.fetchSub(1, .acq_rel);
+            gpa.free(hb);
+            _ = cio.fclose(f);
+            gpa.destroy(sk);
+            return error.ThreadSpawn;
+        };
+        r.sink = sk;
+        sk.push(hb);
+        r.addVideo(first) catch {
+            r.finish();
+            return error.OutOfMemory;
+        };
         return r;
     }
 
@@ -1071,9 +1163,8 @@ pub const Recorder = struct {
         try b.bytes(vt.data.items);
         try b.bytes(at.data.items);
         b.end(md);
-        if (cio.fwrite(buf.items.ptr, 1, buf.items.len, r.file) != buf.items.len) return error.FileWrite;
-        _ = cio.fflush(r.file);
         r.bytes += buf.items.len;
+        r.sink.push(try buf.toOwnedSlice(gpa));
     }
 
     /// Duração gravada até agora (ms).
@@ -1088,9 +1179,16 @@ pub const Recorder = struct {
         r.finish();
     }
 
+    /// O disco falhou (ou não acompanhou) em algum fragmento.
+    pub fn failed(r: *const Recorder) bool {
+        return r.sink.failed.load(.acquire);
+    }
+
+    /// Escreve o resto e entrega o fechamento pra thread do disco (não espera:
+    /// `waitWrites` espera).
     pub fn finish(r: *Recorder) void {
         r.flush(true) catch {};
-        _ = cio.fclose(r.file);
+        r.sink.close();
         for (r.video.items) |s| gpa.free(s.data);
         for (r.audio.items) |s| gpa.free(s.data);
         r.video.deinit(gpa);

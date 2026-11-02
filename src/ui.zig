@@ -285,6 +285,111 @@ fn textColored(color: u32, s: []const u8) void {
     c.igTextUnformatted(s.ptr, s.ptr + s.len);
     c.igPopStyleColor(1);
 }
+/// Menus de botão direito (membro, canal, mensagem): o mesmo visual nos três.
+/// Fundo flutuante com borda fina da cor de destaque, itens altos com o ícone
+/// numa coluna própria e uma barrinha no item embaixo do mouse. Nada anima: o
+/// destaque só muda quando o mouse mexe.
+const menu_w = 236;
+fn menuPush() void {
+    c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(6), S(6)));
+    c.igPushStyleVar_Float(c.ImGuiStyleVar_PopupRounding, S(8) * col.round);
+    c.igPushStyleVar_Float(c.ImGuiStyleVar_PopupBorderSize, S(1));
+    c.igPushStyleVar_Vec2(c.ImGuiStyleVar_ItemSpacing, v2(S(6), S(1)));
+    c.igPushStyleColor_U32(c.ImGuiCol_PopupBg, col.bg_float);
+    c.igPushStyleColor_U32(c.ImGuiCol_Border, withAlpha(col.blurple, 120));
+    c.igPushStyleColor_U32(c.ImGuiCol_HeaderHovered, withAlpha(col.blurple, 44));
+    c.igPushStyleColor_U32(c.ImGuiCol_HeaderActive, withAlpha(col.blurple, 80));
+    c.igPushStyleColor_U32(c.ImGuiCol_Separator, withAlpha(col.text, 26));
+}
+fn menuPop() void {
+    c.igPopStyleColor(5);
+    c.igPopStyleVar(4);
+}
+
+/// Cabeçalho do menu: o nome com uma barrinha de destaque e, embaixo, um
+/// detalhe (rota, trecho da mensagem, "você é OP").
+fn menuHeader(title: []const u8, sub: []const u8, sub_col: u32) void {
+    const d = c.igGetWindowDrawList();
+    const p = c.igGetCursorScreenPos();
+    c.igDummy(v2(S(menu_w), S(2)));
+    pushFont(font_semibold, 14);
+    const th = textSize(title).y;
+    popFont();
+    rectFill(d, p.x + S(4), p.y + S(4), p.x + S(7), p.y + S(4) + th, col.blurple, S(2));
+    c.igIndent(S(14));
+    pushFont(font_semibold, 14);
+    textColored(col.header, title);
+    popFont();
+    if (sub.len > 0) {
+        pushFont(font_regular, 12);
+        textColored(sub_col, sub);
+        popFont();
+    }
+    c.igUnindent(S(14));
+    menuSection("", 0);
+}
+
+/// Separador entre grupos do menu, com um rótulo pequeno opcional ("ADMIN").
+fn menuSection(label: []const u8, color: u32) void {
+    c.igDummy(v2(0, S(3)));
+    c.igSeparator();
+    c.igDummy(v2(0, S(2)));
+    if (label.len == 0) return;
+    c.igIndent(S(8));
+    pushFont(font_bold, 10.5);
+    textColored(color, label);
+    popFont();
+    c.igUnindent(S(8));
+}
+
+/// Um item do menu. O rótulo é o de sempre ("<ícone>  Texto###id", o mesmo que
+/// o QA procura): o selectable desenha só o fundo e o texto vai por cima, com o
+/// ícone numa coluna na cor de destaque (ou na cor do texto, se ele foi pintado
+/// de vermelho por fora).
+fn menuItem(label: [:0]const u8, flags: c.ImGuiSelectableFlags) bool {
+    const text_col = c.igGetColorU32_Col(c.ImGuiCol_Text, 1);
+    const plain = text_col == col.text;
+    var text: []const u8 = label[0 .. std.mem.indexOf(u8, label, "##") orelse label.len];
+    var icon: []const u8 = "";
+    if (text.len > 0 and text[0] >= 0x80) if (std.mem.indexOf(u8, text, "  ")) |i| if (i <= 4) {
+        icon = text[0..i];
+        text = text[i + 2 ..];
+    };
+    const h = S(27);
+    const icon_w = S(30);
+    pushFont(font_regular, 13.5);
+    const ts = textSize(text);
+    popFont();
+    const p = c.igGetCursorScreenPos();
+    c.igPushStyleColor_U32(c.ImGuiCol_Text, 0);
+    const hit = c.igSelectable_Bool(label.ptr, false, flags | c.ImGuiSelectableFlags_SpanAvailWidth, v2(@max(S(menu_w), icon_w + ts.x + S(14)), h));
+    c.igPopStyleColor(1);
+    const hov = c.igIsItemHovered(0);
+    const d = c.igGetWindowDrawList();
+    if (hov) rectFill(d, p.x, p.y + S(6), p.x + S(2.5), p.y + h - S(6), if (plain) col.blurple else text_col, S(1));
+    if (icon.len > 0) {
+        const is = textSizeF(font_regular, 13, icon);
+        drawTextF(d, font_regular, 13, v2(@round(p.x + S(8) + (S(16) - is.x) / 2), @round(p.y + (h - is.y) / 2)), if (plain) (if (hov) col.header else col.blurple) else text_col, icon);
+    }
+    drawTextF(d, font_regular, 13.5, v2(p.x + icon_w, @round(p.y + (h - ts.y) / 2)), if (plain and hov) col.header else text_col, text);
+    return hit;
+}
+
+/// O começo de um texto numa linha só, pro cabeçalho do menu da mensagem.
+fn menuSnippet(text: []const u8, buf: []u8) []const u8 {
+    const t = std.mem.trim(u8, text, " \t\r\n");
+    const max = buf.len - 3;
+    var n = @min(t.len, max);
+    while (n > 0 and n < t.len and t[n] & 0xC0 == 0x80) n -= 1;
+    @memcpy(buf[0..n], t[0..n]);
+    for (buf[0..n]) |*ch| if (ch.* == '\n' or ch.* == '\t' or ch.* == '\r') {
+        ch.* = ' ';
+    };
+    if (n == t.len) return buf[0..n];
+    @memcpy(buf[n .. n + 3], "…");
+    return buf[0 .. n + 3];
+}
+
 fn texRef(tex: u32) c.ImTextureRef_c {
     return .{ ._TexData = null, ._TexID = tex };
 }
@@ -1270,6 +1375,8 @@ pub const App = struct {
             if (!busy) break;
             sync.sleepMs(10);
         }
+        // e a gravação terminando de ir pro disco (a thread dela fecha o arquivo)
+        mp4.waitWrites(2000);
     }
 
     /// "Fulano começou a transmitir · clique pra assistir" (8 s; clicar assiste).
@@ -5308,12 +5415,8 @@ pub const App = struct {
     }
 
     fn memberMenu(a: *App, cl: *Client, members: []const Member) void {
-        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(8), S(8)));
-        c.igPushStyleColor_U32(c.ImGuiCol_PopupBg, col.bg_float);
-        defer {
-            c.igPopStyleColor(1);
-            c.igPopStyleVar(1);
-        }
+        menuPush();
+        defer menuPop();
         if (a.open_member_menu) {
             _ = c.igOpenPopup_Str("membermenu", 0);
             a.open_member_menu = false;
@@ -5328,11 +5431,9 @@ pub const App = struct {
             return;
         };
         const name = target.nameSlice();
-        pushFont(font_semibold, 13);
-        textColored(col.muted, name);
-        popFont();
+        menuHeader(name, routeText(target.route), col.faint);
         if (target.id != cl.my_id and cl.server_features & proto.srv_dm != 0 and
-            c.igSelectable_Bool(fmtZ("{s}  Mensagem privada###mdmember", .{ic.lock}), false, 0, v2(S(220), 0)))
+            menuItem(fmtZ("{s}  Mensagem privada###mdmember", .{ic.lock}), 0))
         {
             a.startDm(target.id, name);
             a.cfg.show_chat = true;
@@ -5341,16 +5442,10 @@ pub const App = struct {
         }
         // bot fora da minha call: chama ele pra cá (o "/msg Bot !join" sem precisar saber)
         if (target.bot and !target.in_call and cl.server_features & proto.srv_dm != 0 and cl.chans_supported and cl.inCall() and
-            c.igSelectable_Bool(fmtZ("{s}  Chamar pra minha call###mbotjoin", .{ic.phone}), false, 0, v2(S(220), 0)))
+            menuItem(fmtZ("{s}  Chamar pra minha call###mbotjoin", .{ic.phone}), 0))
         {
             cl.sendChat("!join", 0, target.id);
             c.igCloseCurrentPopup();
-        }
-        const route = routeText(target.route);
-        if (route.len > 0) {
-            pushFont(font_regular, 12);
-            textColored(col.faint, route);
-            popFont();
         }
         c.igDummy(v2(0, S(4)));
         // volume da voz dessa pessoa, só pra mim (0–200%)
@@ -5362,8 +5457,8 @@ pub const App = struct {
         var save = c.igIsItemDeactivatedAfterEdit();
         var new_pct: ?i32 = if (pct != before) pct else null;
         const muted = pct == 0;
-        c.igDummy(v2(0, S(4)));
-        if (c.igSelectable_Bool(if (muted) tr("Voltar a ouvir###vmute") else tr("Silenciar pra mim###vmute"), false, 0, v2(S(220), 0))) {
+        c.igDummy(v2(0, S(2)));
+        if (menuItem(if (muted) tr("Voltar a ouvir###vmute") else tr("Silenciar pra mim###vmute"), 0)) {
             new_pct = if (muted) 100 else 0;
             save = true;
         }
@@ -5414,19 +5509,13 @@ pub const App = struct {
             if (m.id == my_id) break m;
         } else null;
         const i_am_owner = me != null and me.?.owner;
-        const w = S(220);
         // dar ou tirar o OP (tirar: quem criou e admin); levar e tirar do canal:
         // o admin tem os dele embaixo
         const can_op = ops_known and !target.bot and target.route != proto.route_web and !t_creator and (!t_op or i_created or i_am_admin);
         const can_manage = !i_am_admin and op_over;
         if (op_len > 0 and target.id != my_id and (can_op or can_manage)) {
-            c.igDummy(v2(0, S(4)));
-            c.igSeparator();
-            c.igDummy(v2(0, S(2)));
-            pushFont(font_bold, 11);
-            textColored(op_blue, fmtZ("{s}  OP DO #{s}", .{ ic.crown, op_chan }));
-            popFont();
-            if (can_op and c.igSelectable_Bool(if (t_op) fmtZ("{s}  Tirar o OP do #{s}###cop", .{ ic.crown, op_chan }) else fmtZ("{s}  Dar OP no #{s}###cop", .{ ic.crown, op_chan }), false, 0, v2(w, 0)))
+            menuSection(fmtZ("{s}  OP DO #{s}", .{ ic.crown, op_chan }), op_blue);
+            if (can_op and menuItem(if (t_op) fmtZ("{s}  Tirar o OP do #{s}###cop", .{ ic.crown, op_chan }) else fmtZ("{s}  Dar OP no #{s}###cop", .{ ic.crown, op_chan }), 0))
                 cl.chanAdmin(proto.chan_act_op, op_chan, if (t_op) "0" else "1", target.id);
             if (can_manage) {
                 if (ops_known and c.igBeginMenu(fmtZ("{s}  Levar pro canal###cmove", .{ic.arrow_right}), true)) {
@@ -5439,28 +5528,23 @@ pub const App = struct {
                     c.igEndMenu();
                 }
                 c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);
-                if (c.igSelectable_Bool(fmtZ("{s}  Tirar do #{s} (não volta)###cban", .{ ic.ban, op_chan }), false, 0, v2(w, 0)))
+                if (menuItem(fmtZ("{s}  Tirar do #{s} (não volta)###cban", .{ ic.ban, op_chan }), 0))
                     cl.chanAdmin(proto.chan_act_ban, op_chan, "", target.id);
                 c.igPopStyleColor(1);
             }
         }
         if (!i_am_admin or target.owner or (target.admin and !i_am_owner)) return;
-        c.igDummy(v2(0, S(4)));
-        c.igSeparator();
-        c.igDummy(v2(0, S(2)));
-        pushFont(font_bold, 11);
-        textColored(col.muted, tr("ADMIN"));
-        popFont();
-        if (c.igSelectable_Bool(if (target.muted()) fmtZ("{s}  Liberar o microfone###amute", .{ic.mic}) else fmtZ("{s}  Silenciar o microfone (pra todos)###amute", .{ic.mic_slash}), false, 0, v2(w, 0)))
+        menuSection(tr("ADMIN"), col.muted);
+        if (menuItem(if (target.muted()) fmtZ("{s}  Liberar o microfone###amute", .{ic.mic}) else fmtZ("{s}  Silenciar o microfone (pra todos)###amute", .{ic.mic_slash}), 0))
             cl.admin(proto.admin_mute, target.id, @intFromBool(!target.muted()));
-        if (target.streaming and c.igSelectable_Bool(fmtZ("{s}  Parar a transmissão###astop", .{ic.stop}), false, 0, v2(w, 0)))
+        if (target.streaming and menuItem(fmtZ("{s}  Parar a transmissão###astop", .{ic.stop}), 0))
             cl.admin(proto.admin_stop_stream, target.id, proto.kind_screen);
-        if (target.camera() and c.igSelectable_Bool(fmtZ("{s}  Desligar a câmera###acam", .{ic.video_slash}), false, 0, v2(w, 0)))
+        if (target.camera() and menuItem(fmtZ("{s}  Desligar a câmera###acam", .{ic.video_slash}), 0))
             cl.admin(proto.admin_stop_stream, target.id, proto.kind_camera);
-        if (i_am_owner and c.igSelectable_Bool(if (target.admin) fmtZ("{s}  Tirar o admin###aadmin", .{ic.shield}) else fmtZ("{s}  Dar admin###aadmin", .{ic.shield}), false, 0, v2(w, 0)))
+        if (i_am_owner and menuItem(if (target.admin) fmtZ("{s}  Tirar o admin###aadmin", .{ic.shield}) else fmtZ("{s}  Dar admin###aadmin", .{ic.shield}), 0))
             cl.admin(proto.admin_set_admin, target.id, @intFromBool(!target.admin));
         c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);
-        if (c.igSelectable_Bool(if (target.noDraw()) fmtZ("{s}  Devolver o pincel###adraw", .{ic.pen}) else fmtZ("{s}  Tirar o pincel (apaga os desenhos)###adraw", .{ic.pen}), false, 0, v2(w, 0)))
+        if (menuItem(if (target.noDraw()) fmtZ("{s}  Devolver o pincel###adraw", .{ic.pen}) else fmtZ("{s}  Tirar o pincel (apaga os desenhos)###adraw", .{ic.pen}), 0))
             cl.admin(proto.admin_draw, target.id, @intFromBool(target.noDraw()));
         // levar pra outro canal (o chat e a call)
         if (cl.chans_supported and c.igBeginMenu(fmtZ("{s}  Levar pro canal###amove", .{ic.arrow_right}), true)) {
@@ -5478,10 +5562,10 @@ pub const App = struct {
             }
             c.igEndMenu();
         }
-        if (op_len > 0 and c.igSelectable_Bool(fmtZ("{s}  Tirar do #{s} (não volta)###cban", .{ ic.ban, op_chan }), false, 0, v2(w, 0)))
+        if (op_len > 0 and menuItem(fmtZ("{s}  Tirar do #{s} (não volta)###cban", .{ ic.ban, op_chan }), 0))
             cl.chanAdmin(proto.chan_act_ban, op_chan, "", target.id);
-        if (c.igSelectable_Bool(fmtZ("{s}  Expulsar da sala###akick", .{ic.ban}), false, 0, v2(w, 0))) cl.admin(proto.admin_kick, target.id, 0);
-        if (c.igSelectable_Bool(fmtZ("{s}  Banir (não volta mais)###aban", .{ic.gavel}), false, 0, v2(w, 0))) cl.admin(proto.admin_ban, target.id, 0);
+        if (menuItem(fmtZ("{s}  Expulsar da sala###akick", .{ic.ban}), 0)) cl.admin(proto.admin_kick, target.id, 0);
+        if (menuItem(fmtZ("{s}  Banir (não volta mais)###aban", .{ic.gavel}), 0)) cl.admin(proto.admin_ban, target.id, 0);
         c.igPopStyleColor(1);
     }
 
@@ -8674,15 +8758,19 @@ pub const App = struct {
             last_from = if (special) 0xfffffffe else line.from;
         }
         c.ImDrawList_ChannelsMerge(mdl);
+        menuPush();
         if (c.igBeginPopup("##msgmenu", 0)) {
-            if (c.igSelectable_Bool(fmtZ("{s}  Copiar texto###mcopy", .{ic.copy}), false, 0, v2(S(200), 0))) {
+            // quem mandou e o começo da mensagem (uma linha só)
+            var snip_buf: [64]u8 = undefined;
+            menuHeader(a.msg_menu_name[0..a.msg_menu_name_len], menuSnippet(a.msg_menu_text[0..a.msg_menu_len], &snip_buf), col.faint);
+            if (menuItem(fmtZ("{s}  Copiar texto###mcopy", .{ic.copy}), 0)) {
                 var z: [4001]u8 = undefined;
                 @memcpy(z[0..a.msg_menu_len], a.msg_menu_text[0..a.msg_menu_len]);
                 z[a.msg_menu_len] = 0;
                 c.igSetClipboardText(@ptrCast(&z));
             }
             const dm_ok = cl.server_features & proto.srv_dm != 0;
-            if (dm_ok and c.igSelectable_Bool(fmtZ("{s}  Responder###mreply", .{ic.reply}), false, 0, v2(S(220), 0))) {
+            if (dm_ok and menuItem(fmtZ("{s}  Responder###mreply", .{ic.reply}), 0)) {
                 // citando: a barra em cima da caixa; resposta numa privada continua privada
                 a.reply_id = a.msg_menu_id;
                 copyName(&a.reply_name, &a.reply_name_len, a.msg_menu_name[0..a.msg_menu_name_len]);
@@ -8706,12 +8794,12 @@ pub const App = struct {
                 a.focus_chat = true;
             }
             if (dm_ok and a.msg_menu_from != me and a.msg_menu_from != 0 and a.msg_menu_to == 0 and
-                c.igSelectable_Bool(fmtZ("{s}  Mensagem privada###mdm", .{ic.lock}), false, 0, v2(S(220), 0)))
+                menuItem(fmtZ("{s}  Mensagem privada###mdm", .{ic.lock}), 0))
             {
                 a.startDm(a.msg_menu_from, a.msg_menu_name[0..a.msg_menu_name_len]);
                 a.focus_chat = true;
             }
-            if (!dm_ok and c.igSelectable_Bool(fmtZ("{s}  Responder###mreply", .{ic.reply}), false, 0, v2(S(220), 0))) {
+            if (!dm_ok and menuItem(fmtZ("{s}  Responder###mreply", .{ic.reply}), 0)) {
                 // servidor antigo: "@nome " no começo da caixa (a pessoa é avisada pela menção)
                 const cur_len = std.mem.indexOfScalar(u8, &a.chat_input, 0) orelse a.chat_input.len;
                 const name = a.msg_menu_name[0..a.msg_menu_name_len];
@@ -8726,6 +8814,7 @@ pub const App = struct {
             }
             c.igEndPopup();
         }
+        menuPop();
         a.react_hover = hover_line;
         cl.mutex.unlock();
         c.igDummy(v2(0, S(8)));
@@ -9046,51 +9135,56 @@ pub const App = struct {
 
     /// Menu do admin num canal (clique direito na lista).
     fn chanMenu(a: *App, cl: *Client) void {
+        menuPush();
+        defer menuPop();
         if (!c.igBeginPopup("##chanmenu", 0)) return;
         defer c.igEndPopup();
         const name = a.chan_menu[0..a.chan_menu_len];
         const fl = a.chan_menu_flags;
         const w = S(250);
-        pushFont(font_bold, 13);
-        textColored(col.header, fmtZ("#{s}", .{name}));
-        popFont();
         // servidor antigo (sem OP): "mine" é quem criou
         const ops_known = cl.server_features & proto.srv_chan_op != 0;
         const created = fl & proto.chan_creator != 0 or (!ops_known and fl & proto.chan_mine != 0);
-        pushFont(font_regular, 12);
-        if (created)
-            textColored(op_blue, fmtZ("{s}  Você criou esse canal: é OP nele.", .{ic.crown}))
+        var hb: [proto.channel_name_max + 1]u8 = undefined;
+        const title = std.fmt.bufPrint(&hb, "#{s}", .{name}) catch name;
+        menuHeader(title, if (created)
+            fmtZ("{s}  Você criou esse canal: é OP nele.", .{ic.crown})
         else if (fl & proto.chan_mine != 0)
-            textColored(op_blue, fmtZ("{s}  Você é OP desse canal.", .{ic.crown}));
-        popFont();
+            fmtZ("{s}  Você é OP desse canal.", .{ic.crown})
+        else
+            "", op_blue);
         // admin passa por tudo: sem isso, parece que a senha e a trava não funcionam
-        if (a.chan_menu_admin) wrapText(col.faint, 12, tr("Você é admin da sala: entra com senha ou trancado e vê os invisíveis. Os outros, não."), w);
-        c.igSeparator();
+        if (a.chan_menu_admin) {
+            wrapText(col.faint, 12, tr("Você é admin da sala: entra com senha ou trancado e vê os invisíveis. Os outros, não."), w);
+            c.igDummy(v2(0, S(2)));
+        }
         // fixar é coisa do admin da sala; o resto, quem criou o canal também pode
-        if (a.chan_menu_admin and c.igSelectable_Bool(if (fl & proto.chan_fixed != 0) fmtZ("{s}  Soltar (some dias depois de esvaziar)###cfix", .{ic.lock_open}) else fmtZ("{s}  Fixar (fica pra sempre, mesmo vazio)###cfix", .{ic.lock}), false, 0, v2(w, 0)))
+        if (a.chan_menu_admin and menuItem(if (fl & proto.chan_fixed != 0) fmtZ("{s}  Soltar (some dias depois de esvaziar)###cfix", .{ic.lock_open}) else fmtZ("{s}  Fixar (fica pra sempre, mesmo vazio)###cfix", .{ic.lock}), 0))
             cl.chanAdmin(proto.chan_act_fix, name, if (fl & proto.chan_fixed != 0) "0" else "1", 0);
-        if (c.igSelectable_Bool(if (fl & proto.chan_hidden != 0) fmtZ("{s}  Mostrar na lista###chide", .{ic.eye}) else fmtZ("{s}  Invisível (só entra quem sabe o nome)###chide", .{ic.eye_slash}), false, 0, v2(w, 0)))
+        if (menuItem(if (fl & proto.chan_hidden != 0) fmtZ("{s}  Mostrar na lista###chide", .{ic.eye}) else fmtZ("{s}  Invisível (só entra quem sabe o nome)###chide", .{ic.eye_slash}), 0))
             cl.chanAdmin(proto.chan_act_hide, name, if (fl & proto.chan_hidden != 0) "0" else "1", 0);
-        if (c.igSelectable_Bool(if (fl & proto.chan_locked != 0) fmtZ("{s}  Destrancar###clock", .{ic.lock_open}) else fmtZ("{s}  Trancar (só admin e os OPs entram)###clock", .{ic.lock}), false, 0, v2(w, 0)))
+        if (menuItem(if (fl & proto.chan_locked != 0) fmtZ("{s}  Destrancar###clock", .{ic.lock_open}) else fmtZ("{s}  Trancar (só admin e os OPs entram)###clock", .{ic.lock}), 0))
             cl.chanAdmin(proto.chan_act_lock, name, if (fl & proto.chan_locked != 0) "0" else "1", 0);
-        if (c.igSelectable_Bool(fmtZ("{s}  Senha do canal…###cpw", .{ic.shield}), false, 0, v2(w, 0))) a.startChanEdit(.password, name);
-        if (c.igSelectable_Bool(fmtZ("{s}  Tópico…###ctopic", .{ic.pen}), false, 0, v2(w, 0))) a.startChanEdit(.topic, name);
+        if (menuItem(fmtZ("{s}  Senha do canal…###cpw", .{ic.shield}), 0)) a.startChanEdit(.password, name);
+        if (menuItem(fmtZ("{s}  Tópico…###ctopic", .{ic.pen}), 0)) a.startChanEdit(.topic, name);
         // apagar: o padrão nunca; fixo, só o admin (foi ele que fixou); OP que
         // não criou, não
         if (a.chan_menu_default or cl.server_features & proto.srv_chan_delete == 0) return;
         if (!a.chan_menu_admin and (fl & proto.chan_fixed != 0 or !created)) return;
-        c.igSeparator();
+        menuSection("", 0);
         if (fl & proto.chan_fixed == 0) {
+            c.igIndent(S(8));
             pushFont(font_regular, 12);
             textColored(col.faint, tr("Vazio, ele some sozinho em 3 dias."));
             popFont();
+            c.igUnindent(S(8));
         }
         c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);
         defer c.igPopStyleColor(1);
         if (!a.chan_menu_delete) {
-            if (c.igSelectable_Bool(fmtZ("{s}  Apagar o canal…###cdel", .{ic.trash}), false, c.ImGuiSelectableFlags_NoAutoClosePopups, v2(w, 0)))
+            if (menuItem(fmtZ("{s}  Apagar o canal…###cdel", .{ic.trash}), c.ImGuiSelectableFlags_NoAutoClosePopups))
                 a.chan_menu_delete = true;
-        } else if (c.igSelectable_Bool(fmtZ("{s}  Apagar #{s} de vez (o chat some)###cdel", .{ ic.trash, name }), false, 0, v2(w, 0))) {
+        } else if (menuItem(fmtZ("{s}  Apagar #{s} de vez (o chat some)###cdel", .{ ic.trash, name }), 0)) {
             cl.chanAdmin(proto.chan_act_delete, name, "", 0);
             a.chan_menu_delete = false;
         }
