@@ -123,7 +123,7 @@ Clips and recordings go to your videos folder (`Videos/telinha`).
 | Action | How |
 |---|---|
 | Toggle the microphone | **Ctrl+M** |
-| Deafen (hear nobody) | **Ctrl+D** |
+| Deafen (stop hearing the call; stream audio keeps playing) | **Ctrl+D** |
 | Someone's voice volume | right-click them |
 
 In **Settings → Voice**: voice activation (with sensitivity) or

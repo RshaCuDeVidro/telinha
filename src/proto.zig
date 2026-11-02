@@ -21,7 +21,7 @@ pub const version: u16 = 7;
 /// O anterior (servidor e app ainda falam com ele; o servidor pode recusar).
 pub const version_old: u16 = 6;
 /// Versão do app (vai no hello/welcome/members pra avisar quem está desatualizado).
-pub const app_version = "3.10.1";
+pub const app_version = "3.10.2";
 pub const max_msg = 32 * 1024 * 1024;
 /// Marcador em claro no lugar do tamanho: "senha errada" (o servidor não
 /// conseguiu decifrar a primeira mensagem).

@@ -29,6 +29,7 @@ pub const Ring = struct {
     primed: bool = false,
     volume: f32 = 1.0,
     muted: bool = false,
+    voice: bool = false, // voz da call (o surdo cala só essas; o som das transmissões continua)
     level: f32 = 0, // nível recente (0..1), pra UI mostrar quem está fazendo barulho
     last_write_us: u64 = 0, // quando chegou som pela última vez
     // log de depuração ("o som não funciona" / "picota"): desde a última leitura
@@ -359,6 +360,13 @@ pub const Mixer = struct {
         for (out, 0..) |*v, i| v.* *= if (g1 < g0) g1 else g0 + step * @as(f32, @floatFromInt(i / channels + 1));
     }
 
+    /// Surdo = não ouvir a call: a voz cala; o som das transmissões que você
+    /// escolheu assistir continua, e os avisos também (é assim que se ouve o
+    /// "surdo ligado").
+    pub fn ringGain(rg: *const Ring, self_mute: bool, deaf: bool) f32 {
+        return if (rg.muted or self_mute or (deaf and rg.voice)) 0 else rg.volume;
+    }
+
     fn onPlay(user: ?*anyopaque, samples: [*c]f32, frames: c_int) callconv(.c) void {
         const m: *Mixer = @ptrCast(@alignCast(user));
         const out = samples[0..@intCast(frames * channels)];
@@ -370,9 +378,7 @@ pub const Mixer = struct {
         var any = false;
         for (m.rings.items) |rg| {
             if (rg.len > 0) any = true;
-            // os avisos tocam mesmo surdo (é assim que se ouve o "surdo ligado")
-            const gain: f32 = if (rg.muted or self_mute or (deaf and rg != &chime_ring)) 0 else rg.volume;
-            rg.mixInto(out, gain);
+            rg.mixInto(out, ringGain(rg, self_mute, deaf));
         }
         if (any or m.last_sound_us.load(.monotonic) == 0) m.last_sound_us.store(sync.nowUs(), .monotonic);
         m.limit(out);

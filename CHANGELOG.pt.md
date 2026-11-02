@@ -2,6 +2,22 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.10.2
+
+Surdo que faz sentido. Mesmo protocolo (7); servidor igual ao da 3.10.1.
+
+### Destaques
+
+- 🎧 **Surdo cala só a call**: o som das transmissões que você está assistindo continua tocando (antes o surdo calava tudo, até o vídeo do amigo). Os avisos sonoros também continuam.
+
+<!-- detalhes -->
+
+### Todas as mudanças
+
+- **Som**: cada fila do mixer sabe se é voz da call; o surdo zera só essas
+  (`Mixer.ringGain`, com teste). O microfone continua desligando junto com o
+  surdo, como antes. Dica do botão e o guia dizem isso.
+
 ## 3.10.1
 
 Correção da página do navegador. Mesmo protocolo (7); só o servidor muda de verdade (a página vai dentro dele).

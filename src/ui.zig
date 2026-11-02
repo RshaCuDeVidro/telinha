@@ -5479,7 +5479,7 @@ pub const App = struct {
         at += bs + gap;
         const deaf_pos = Place.pos(vertical, at, cross);
         c.igSetCursorScreenPos(deaf_pos);
-        if (iconButton("##deaf", ic.headphones, bs, if (a.deaf) col.red else col.text, col.hover, if (a.deaf) tr("Voltar a ouvir a sala") else tr("Parar de ouvir a sala (surdo)"))) a.toggleDeaf(via_clique);
+        if (iconButton("##deaf", ic.headphones, bs, if (a.deaf) col.red else col.text, col.hover, if (a.deaf) tr("Voltar a ouvir a call") else tr("Parar de ouvir a call (surdo; o som das transmissões continua)"))) a.toggleDeaf(via_clique);
         if (a.deaf) slash(d, deaf_pos, bs);
         at += bs + gap;
         if (calls) {

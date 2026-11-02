@@ -122,7 +122,7 @@ Os clipes e gravações vão pra pasta de vídeos (`Vídeos/telinha`).
 | Ação | Como |
 |---|---|
 | Ligar e desligar o microfone | **Ctrl+M** |
-| Ficar surdo (não ouvir ninguém) | **Ctrl+D** |
+| Ficar surdo (não ouvir a call; o som das transmissões continua) | **Ctrl+D** |
 | Volume da voz de alguém | clique direito na pessoa |
 
 Em **Configurações → Voz**: ativação por voz (com sensibilidade) ou

@@ -2,6 +2,22 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.10.2
+
+Deafen that makes sense. Same protocol (7); server identical to 3.10.1.
+
+### Highlights
+
+- 🎧 **Deafen only silences the call**: audio from the streams you're watching keeps playing (deafen used to silence everything, even your friend's video). Sound cues keep playing too.
+
+<!-- detalhes -->
+
+### All changes
+
+- **Audio**: each mixer queue knows whether it's call voice; deafen only
+  zeroes those (`Mixer.ringGain`, with a test). The microphone still turns
+  off with deafen, as before. The button tooltip and the guide say so.
+
 ## 3.10.1
 
 Web page fix. Same protocol (7); only the server really changes (the page ships inside it).

@@ -605,6 +605,15 @@ test "som: fila acima do alvo volta devagar com som tocando e de uma vez no sil�
     try testing.expectEqual(zeros.len - block, quiet.len);
 }
 
+test "som: surdo cala a voz da call e deixa o som da transmissão" {
+    const call_voice: audio.Ring = .{ .voice = true, .volume = 0.8 };
+    const stream: audio.Ring = .{ .volume = 0.6 };
+    try testing.expectEqual(@as(f32, 0), audio.Mixer.ringGain(&call_voice, false, true));
+    try testing.expectEqual(@as(f32, 0.6), audio.Mixer.ringGain(&stream, false, true));
+    try testing.expectEqual(@as(f32, 0.8), audio.Mixer.ringGain(&call_voice, false, false));
+    try testing.expectEqual(@as(f32, 0), audio.Mixer.ringGain(&stream, true, false)); // o próprio som mudo
+}
+
 test "som: limitador não deixa a soma passar do teto e volta devagar" {
     var m: audio.Mixer = .{};
     var loud = [_]f32{1.6} ** (480 * audio.channels);

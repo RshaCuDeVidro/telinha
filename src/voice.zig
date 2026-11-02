@@ -357,6 +357,7 @@ pub const Peer = struct {
         p.ring.write(pcm);
         if (!p.registered) {
             p.registered = true;
+            p.ring.voice = true;
             audio.mixer.add(&p.ring);
         }
     }

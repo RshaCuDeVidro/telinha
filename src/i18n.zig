@@ -565,8 +565,8 @@ const table = [_][2][]const u8{
     .{ "O admin silenciou seu microfone", "The admin muted your microphone" },
     .{ "Desligar o microfone", "Turn off microphone" },
     .{ "Ligar o microfone", "Turn on microphone" },
-    .{ "Voltar a ouvir a sala", "Undeafen" },
-    .{ "Parar de ouvir a sala (surdo)", "Stop hearing the room (deafen)" },
+    .{ "Voltar a ouvir a call", "Undeafen" },
+    .{ "Parar de ouvir a call (surdo; o som das transmissões continua)", "Stop hearing the call (deafen; stream audio keeps playing)" },
     .{ "Configurações", "Settings" },
 
     // convite, link público e porta no roteador
