@@ -2,6 +2,109 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.8.0
+
+Talks to 3.7, 3.6, 3.5, 3.4, 3.3, 3.2 and 3.1. The protocol is now 7; the new app joins older servers and the new server accepts older apps (protocol 6) for one more version.
+
+### Highlights
+
+- 🛡️ **Safer rooms**: the server proves who it is before anything encrypted with the password (someone who connects once can no longer test passwords offline), a wrong password waits longer each time, and connections that never get in no longer tie up the server. Banning catches the person (not whoever has the same name) and the owner can unban from the list.
+- 🐢 **One lagging viewer no longer drags the room down**: someone who keeps falling behind (PC busy with a game, bad Wi-Fi) gets fewer frames and is set apart, without lowering the quality for everyone who keeps up.
+- 🎬 **60 frames per second on its own**: with the graphics card's encoder, the stream goes out at 60 fps; if someone can't decode that fast, it drops to 30.
+- 🩺 **Real diagnostics**: click the green, yellow or red dot next to a name to see the video's path step by step (frames arriving, your internet, your PC, the screen; or capture, encoder and upload when you're streaming), what to do about it, and a copy button.
+- 🔗 **Invites that work anywhere**: the invite is now an https link that opens telinha or explains how to install it; on Windows, `telinha://` links open in the app, and a link clicked while the app is open goes to the open window.
+- 📱 **Better watching in the browser**: channel switching, a "live in #channel" notice, the phone screen no longer goes to sleep, reconnecting resumes watching, a visible button to turn the sound on, fullscreen on iPhone, and a hidden tab gets only the sound.
+- 🔊 **Cleaner sound**: lost packets are patched by Opus, volume and mute without clicks, a limiter instead of clipping, and the tile says when a stream has no sound.
+- ✨ **Sharper picture**: video on whole pixels, a big screen shrunk into a small tile without jaggies, and a slowly changing screen (text, code) much sharper.
+- 🧭 **For newcomers**: "So-and-so started streaming" is clickable, clicking someone who's live watches them, the empty stage shows a big "Watch" card, sharing your screen asks only three things (the rest is under "Advanced"), a "Call" button on the bot's row, and redesigned right-click menus.
+
+<!-- detalhes -->
+
+### All changes
+
+- **Server security**: protocol 7 (the identity goes in the clear before
+  anything else, and only then comes what's encrypted with the password;
+  `--so-protocolo-novo` refuses protocol 6). A gate before the password (caps
+  on pending connections in total and per IP), growing waits for wrong
+  passwords, per-message-type size limits before allocating, a cap on what
+  `file_get` can queue, `X-Forwarded-For` read from the last hop only, admin
+  token compared in constant time and sent only to its own server. Bans by
+  app key (and by IP for 24 h), with a ban list and unban. State file with
+  escaped names and IPs. Server built in ReleaseSafe; app and server are PIE.
+- **Server**: the people list arrives before the chat history; dead
+  connections dropped within seconds; SIGTERM/SIGINT/SIGHUP shut down cleanly;
+  `--atualizar-sozinho` (checks every 6 h, installs after checking the
+  signature and restarts in the same process only when the room has been
+  empty for 2 min; if the new one crashes, goes back to the previous one);
+  `--versao`; log time with seconds; cursor position no longer piles up in a
+  lagging viewer's queue.
+- **Viewer that can't keep up**: after 3 restarts in 30 s they're set apart for
+  1 min (only reference frames, an IDR at most every 10 s, and the streamer's
+  bitrate and fps aren't lowered if they're the minority). The log says
+  "navegador" (browser) and "stopped confirming frames".
+- **Streaming**: automatic fps (60 with the graphics card, 30 without; drops to
+  30 when someone can't decode in time); IDR for a new viewer without waiting
+  1 s; the encoder knows the real frame pace; rate control keeps the ceiling
+  from the start of the episode, recovers in ~11 s, remembers what fit in the
+  room and doesn't reset when fps changes; no preview work when nobody is
+  watching; cached Hyprland cursor; capture and encoder at normal priority
+  with the graphics card; 16-bit color conversion; NVENC without reordering
+  (phone decoders were holding frames).
+- **Watching**: a late decoder skips to an IDR that already arrived or drops
+  the skippable frames before asking for an IDR; a hardware decoder that loses
+  a reference asks for an IDR instead of switching to openh264; a video-only
+  frame reuses the UI drawing; video on whole pixels; 4 samples per pixel when
+  shrinking; hide the small tiles while one is in focus.
+- **UDP**: reassembly deadline proportional to size, NACK only the holes and
+  resend in batches, the last message of a burst is repeated (still screen),
+  voice and sound jump ahead of a big IDR, bad UDP falls back to TCP for 60 s,
+  NACK without a buffer overflow.
+- **Sound**: lost-packet concealment and correct ordering, a stopped output
+  restarted off the network thread, a queue above target drains gradually,
+  volume ramps, a limiter in the mix, "no sound" and "sound hasn't arrived"
+  icons, and the gap between sound and picture is measured (in diagnostics and
+  in the log).
+- **Clips and recording**: a clip isn't wiped when the size changes (it comes
+  out in parts), clip and recording sound placed by packet count, recording
+  writes to disk on its own thread and closes when leaving the room, and the
+  app waits for a clip being saved before closing.
+- **Diagnostics**: diagnostics window on the health dot; Debug shows which way
+  the video goes and why; log with median, p95 and max per stage and the
+  sound state; crash report with graphics card, driver, session, offsets and
+  thread name; log sent through the room at the connection's pace.
+- **Interface**: the new-version notice is a toast inside the room;
+  right-click menus (person, channel, message) with a header, an icon column
+  and highlight; sharing with "Advanced" folded; a "Call" button for a bot
+  outside your call; "Invite people from outside" as a single button with the
+  public link as fallback; without a name, the app uses the system user's;
+  reconnecting keeps the channel password and keeps trying for ~10 min;
+  opening a received file by an allowlist of types (and with the
+  "downloaded from the internet" mark on Windows).
+- **Web page**: channel chips, "live in #channel", reconnecting resumes
+  watching, screen kept awake (asks again when it drops, on every tap, and a
+  muted fallback video), a hidden tab with sound on gets only the sound, tells
+  the server when it can't keep up (automatic fps drops to 30), a pill to turn
+  the sound on, cursor redrawn only when it changes, stable height on phones,
+  fullscreen on iPhone, `#debug=1` with the video path, and the CSP allows
+  `blob:` media (Firefox's MSE path).
+- **Windows**: `telinha://` links registered; Media Foundation decoder without
+  a blocking `Map`; encoder without waiting 1 s; cursor without copying the
+  whole screen; system proxy for updates; a notification that brings the app
+  up; the right version in the `.exe`.
+- **Updater**: the version is inside the signed file, downloads only from the
+  right release (fixed host, size cap), keeps the previous one and goes back
+  on its own if the new one doesn't start; `install.sh` checks the signature;
+  the release is published only with all files.
+- **SDK 0.4.0**: reconnecting returns to the channel and call; the room's
+  identity is pinned (the token doesn't go to another server); a full, locked
+  or closed room retries from time to time; ffmpeg's stderr no longer stalls;
+  re-encoded video at a constant pace.
+- **Bots**: `!play` outside a call brings the bot; Music and Telão don't answer
+  the same command twice; Telão's search button fixed; systemd units with low
+  priority, a memory cap and basic hardening (in the docs).
+- **Site**: a "got an invite?" block, the `/j/` invite page, readable text on
+  phones, nothing animating forever.
+
 ## 3.7.0
 
 Talks to 3.6, 3.5, 3.4, 3.3, 3.2 and 3.1 (an older app doesn't show the crown or the OP actions; on an older server, the new app shows the channel menu only to its creator, as before).

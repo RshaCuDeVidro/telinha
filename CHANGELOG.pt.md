@@ -2,6 +2,106 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.8.0
+
+Conversa com a 3.7, a 3.6, a 3.5, a 3.4, a 3.3, a 3.2 e a 3.1. O protocolo agora é o 7; o app novo entra em servidor antigo e o servidor novo aceita app antigo (protocolo 6) por mais uma versão.
+
+### Destaques
+
+- 🛡️ **Sala mais segura**: o servidor prova quem é antes de qualquer coisa cifrada com a senha (quem conecta uma vez não consegue mais testar senhas fora do ar), senha errada espera cada vez mais, e conexões que não entram não ocupam mais o servidor. Banir pega a pessoa (não quem tem o mesmo nome) e o dono desbane pela lista.
+- 🐢 **Um espectador travando não derruba a sala**: quem vive atrasando (PC ocupado com um jogo, Wi-Fi ruim) passa a receber menos quadros e fica à parte, sem baixar a qualidade de quem está dando conta.
+- 🎬 **60 quadros por segundo sozinho**: com o encoder da placa de vídeo, a transmissão sai a 60 q/s; se alguém não dá conta de decodificar, desce pra 30.
+- 🩺 **Diagnóstico de verdade**: clique na bolinha verde, amarela ou vermelha ao lado do nome e veja o caminho do vídeo etapa por etapa (imagem chegando, sua internet, seu PC, a tela; ou captura, encoder e envio, pra quem transmite), o que fazer e um botão pra copiar.
+- 🔗 **Convite que funciona em qualquer lugar**: o convite agora é um link https que abre o telinha ou ensina a instalar; no Windows, links `telinha://` abrem no app, e um link clicado com o app aberto vai pra janela aberta.
+- 📱 **Assistir pelo navegador melhor**: troca de canal, aviso de "tem gente ao vivo em #canal", a tela do celular não apaga, reconexão volta a assistir, botão à vista pra ligar o som, tela cheia no iPhone e aba escondida recebe só o som.
+- 🔊 **Som mais limpo**: pacote perdido vira remendo do Opus, volume e silenciar sem estalo, limitador em vez de saturar, e o quadro avisa quando a transmissão não tem som.
+- ✨ **Mais nitidez**: vídeo em pixels inteiros, tela grande reduzida num quadradinho sem serrilhado, e tela que muda devagar (texto, código) muito mais nítida.
+- 🧭 **Pra quem chega**: "Fulano começou a transmitir" é clicável, clicar em quem está ao vivo assiste, o palco vazio mostra um cartão grande "Assistir", compartilhar tela com só três escolhas (o resto em "Avançado"), botão "Chamar" na linha do bot e menus de botão direito redesenhados.
+
+<!-- detalhes -->
+
+### Todas as mudanças
+
+- **Segurança do servidor**: protocolo 7 (a identidade vai em claro antes de
+  tudo e só depois vem o que é cifrado com a senha; `--so-protocolo-novo`
+  recusa o 6). Porteiro antes da senha (teto de conexões entrando no total e
+  por IP), senha errada com espera crescente, tetos de tamanho por tipo de
+  mensagem antes de alocar, `file_get` com teto do que está na fila,
+  `X-Forwarded-For` só pelo último salto, token de admin comparado em tempo
+  constante e mandado só pro servidor dele. Ban pela chave do app (e pelo IP
+  por 24 h), lista de banidos com desbanir. Arquivo de estado com nomes e IP
+  escapados. Servidor compilado em ReleaseSafe; app e servidor PIE.
+- **Servidor**: a lista de quem está na sala chega antes do histórico do chat;
+  conexão morta derrubada em segundos; SIGTERM/SIGINT/SIGHUP fecham direito;
+  `--atualizar-sozinho` (confere a cada 6 h, instala com a assinatura
+  conferida e reinicia no mesmo processo só com a sala vazia há 2 min; se a
+  nova cair, volta pra anterior); `--versao`; hora do log com segundos;
+  posição do cursor não acumula na fila de quem está atrasado.
+- **Espectador que não acompanha**: depois de 3 recomeços em 30 s fica à parte
+  por 1 min (recebe só os quadros de referência, IDR no máximo a cada 10 s,
+  não baixa a taxa nem o fps de quem transmite se for a minoria). Log diz
+  "navegador" e "parou de confirmar os quadros".
+- **Transmissão**: fps automático (60 com a placa, 30 sem; desce pra 30 quando
+  alguém não decodifica a tempo); IDR pra quem começa a assistir sem esperar
+  1 s; encoder sabe o ritmo real dos quadros; controle de taxa que guarda o
+  teto do começo do episódio, volta em ~11 s, lembra o que coube na sala e não
+  zera ao trocar fps; prévia sem trabalho quando ninguém assiste; cursor do
+  Hyprland com cache; captura e encoder na prioridade normal com a placa;
+  conversão de cor em 16 bits; NVENC sem reordenação (decoders de celular
+  seguravam quadros).
+- **Quem assiste**: decoder atrasado pula até um IDR que já chegou ou larga os
+  quadros puláveis antes de pedir IDR; decoder da placa que perde referência
+  pede IDR em vez de trocar pelo openh264; quadro só de vídeo reaproveita o
+  desenho da interface; vídeo em pixels inteiros; redução com 4 amostras por
+  pixel; esconder as telas pequenas no destaque.
+- **UDP**: prazo de remontagem proporcional ao tamanho, NACK só dos buracos e
+  reenvio em lotes, última mensagem da rajada repetida (tela parada), voz e som
+  passam na frente de um IDR grande, UDP ruim volta pro TCP por 60 s, NACK sem
+  estouro de buffer.
+- **Som**: remendo de pacote perdido e ordem certa, saída parada religada fora
+  da thread de rede, fila acima do alvo volta aos poucos, rampa no volume,
+  limitador na mixagem, ícone de "sem som" e "o som não chegou", diferença
+  entre som e imagem medida (no diagnóstico e no log).
+- **Clipes e gravação**: clipe não zera ao trocar de tamanho (sai em partes),
+  som do clipe e da gravação posicionado pela contagem de pacotes, gravação
+  escreve no disco numa thread própria, fecha ao sair da sala, e o app espera
+  o clipe terminar antes de fechar.
+- **Diagnóstico**: janela de diagnóstico na bolinha de saúde; Depuração mostra
+  por onde o vídeo passa e por quê; log com mediana, p95 e máximo por etapa e
+  com o estado do som; relatório de travamento com placa, driver, sessão,
+  deslocamentos e nome da thread; log enviado pela sala no ritmo da conexão.
+- **Interface**: aviso de versão nova vira toast dentro da sala; menus de botão
+  direito (pessoa, canal, mensagem) com cabeçalho, ícone em coluna e destaque;
+  compartilhar com o avançado dobrado; botão "Chamar" pro bot fora da call;
+  "Chamar a galera de fora" num botão só, com o link público de reserva; sem
+  nome, o app usa o do usuário do sistema; reconexão com a senha do canal e
+  por até ~10 min; abrir arquivo recebido por lista de tipos permitidos (e com
+  a marca de "baixado da internet" no Windows).
+- **Página web**: chips de canal, "ao vivo em #canal", reconexão que volta a
+  assistir, tela acesa (pede de novo quando cai, a cada toque, e um vídeo mudo
+  de reserva), aba escondida com som recebe só o som, avisa o servidor quando
+  não dá conta (o fps automático desce pra 30), pílula pra ligar o som, cursor
+  redesenhado só quando muda, altura estável no celular, tela cheia no iPhone,
+  `#debug=1` com o caminho do vídeo, e a CSP libera mídia `blob:` (o caminho
+  MSE do Firefox).
+- **Windows**: links `telinha://` registrados; decoder do Media Foundation sem
+  `Map` bloqueante; encoder sem esperar 1 s; cursor sem copiar a tela inteira;
+  proxy do sistema na atualização; notificação que traz o app; versão certa
+  no `.exe`.
+- **Atualizador**: a versão vai dentro do arquivo assinado, só baixa da release
+  certa (host fixo, teto de tamanho), guarda a anterior e volta sozinho se a
+  nova não abrir; `install.sh` confere a assinatura; release publicada só com
+  todos os arquivos.
+- **SDK 0.4.0**: reconectando volta pro canal e pra call; identidade da sala
+  fixada (o token não vai pra outro servidor); sala cheia, trancada ou fechada
+  tenta de novo de tempos em tempos; o stderr do ffmpeg não trava mais; vídeo
+  recodificado em ritmo constante.
+- **Bots**: `!play` fora da call traz o bot; Música e Telão não respondem o
+  mesmo comando em dobro; botão da busca do Telão consertado; units do systemd
+  com prioridade baixa, teto de memória e proteção básica (nos docs).
+- **Site**: bloco "recebeu um convite?", página `/j/` do convite, texto legível
+  no celular, nada animando pra sempre.
+
 ## 3.7.0
 
 Conversa com a 3.6, a 3.5, a 3.4, a 3.3, a 3.2 e a 3.1 (app antigo não mostra a coroa nem as ações de OP; num servidor antigo, o app novo mostra o menu do canal só pra quem criou, como antes).
