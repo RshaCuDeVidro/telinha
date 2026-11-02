@@ -2,6 +2,52 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.9.0
+
+Conversa com a 3.8 e as anteriores (até a 3.1). Mesmo protocolo (7); o painel de bot só aparece com servidor e app 3.9.
+
+### Destaques
+
+- 🎛️ **Controlar o bot de qualquer canal**: bots agora podem ter um painel fixo. O título aparece embaixo do nome dele na lista, e um clique abre os controles (tocar, pausar, pular, parar, repetir e "vem pra minha call"), mesmo você estando em outro canal. O bot de música já usa.
+- ↔️ **Barra de controles onde você quiser**: arraste pela alça (ou clique nela) pra levar a barra de baixo pra esquerda ou pra direita; o botão de recolher deixa só o essencial flutuando e o vídeo ganha o espaço todo.
+- 🖱️ **Menu do botão direito mais bonito**: volume da voz numa régua própria (com ímã no 100%), ícone em todos os itens, "Levar pro canal" no mesmo visual e só o que tira a pessoa em vermelho.
+- 🔵 **Fotos de perfil redondas de verdade**: a borda dos avatares não serrilha mais.
+- 🔗 **Convite https colado sozinho**: copiou o link de convite em qualquer lugar e abriu o telinha, o "Entrar numa sala" já vem preenchido (convites longos, com vários caminhos, não ficavam mais de fora).
+- 🌐 **Página do navegador mais tela cheia**: modo cinema (só o vídeo, tecla `t`), chat que recolhe (`c`), tela cheia (`f`), controles flutuando em vidro e o visual pwnd.
+
+<!-- detalhes -->
+
+### Todas as mudanças
+
+- **Painel de bot**: mensagens novas `bot_panel` (45) e `panel_action` (46) e
+  o recurso de servidor 32. O servidor guarda o último painel de cada bot,
+  manda pra quem entra (logo depois da lista de membros), limita a uma
+  mudança a cada 200 ms e avisa quando o bot sai; o clique chega no bot como
+  o clique de um cartão da mensagem 0, com onde a pessoa está.
+- **SDK 0.5.0**: `await bot.set_panel(embed)` (junta as mudanças seguidas,
+  manda de novo ao reconectar) e `click.panel`; `click.reply` do painel
+  responde só pra quem clicou.
+- **Bot de música**: painel com o que toca, a fila, o volume e os botões; o
+  botão "Here" leva o bot pra call de quem clicou; parado, "Radio" toca uma
+  rádio e "Bring to my call" chama ele.
+- **Lista de pessoas**: bot com painel mostra o título embaixo do nome;
+  clicar nele abre os controles; no clique direito, "Abrir os controles".
+- **Barra de controles**: embaixo, esquerda ou direita (alça com seis
+  pontinhos: arrastar mostra os três lugares, clique troca de lado); recolher
+  e abrir; fica salvo. Ela é uma janela própria, então recolhida por cima do
+  vídeo o clique é dela. O palco perde menos margem com a barra recolhida.
+- **Menus**: régua de volume desenhada no menu, submenu "Levar pro canal" no
+  visual dos itens, separador antes do que tira a pessoa.
+- **Avatares**: borda por um traço antialiasado e círculos com mais lados.
+- **Convite colado**: o link https de convites longos passava do limite de
+  512 bytes e era ignorado; agora cabe até 2 KB.
+- **Página web**: modo cinema, chat recolhível (lembrados no navegador),
+  atalhos `f`/`t`/`c`, ícones SVG no lugar dos símbolos, controles numa
+  cápsula flutuante, cores do tema pwnd.
+- **QA**: cenário `painel_do_bot_e_barra` (painel pela lista, pelo menu e de
+  outro canal; barra nos três lados, recolhida e aberta; painel some quando o
+  bot sai).
+
 ## 3.8.0
 
 Conversa com a 3.7, a 3.6, a 3.5, a 3.4, a 3.3, a 3.2 e a 3.1. O protocolo agora é o 7; o app novo entra em servidor antigo e o servidor novo aceita app antigo (protocolo 6) por mais uma versão.

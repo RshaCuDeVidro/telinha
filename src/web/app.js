@@ -11,7 +11,8 @@ const PT = {
   name: 'Seu nome', pass: 'Senha da sala', join: 'Entrar', people: 'NA SALA', chat: 'CHAT',
   connecting: 'conectando...', online: 'conectado', offline: 'desconectado, tentando de novo...',
   nobody: 'Ninguém está transmitindo agora. Quando alguém começar, aparece aqui.',
-  sound_on: '🔊 Ativar som', sound_off: '🔇 Sem som', send_ph: 'Mensagem',
+  sound_on: 'Ativar som', sound_off: 'Sem som', send_ph: 'Mensagem',
+  hide_chat: 'Esconder o chat (c)', show_chat: 'Mostrar o chat (c)', cinema: 'Modo cinema: só o vídeo (t)', full: 'Tela cheia (f)',
   wrong_pass: 'Senha errada.', nosupport: 'Este navegador não decodifica vídeo pelo WebCodecs. Use o Chrome, Edge, Firefox (130+) ou Safari (16.4+) atualizados.',
   insecure: 'A página precisa ser aberta por https:// pra mostrar o vídeo.',
   waiting_key: 'esperando o primeiro quadro...', image: '[imagem]', screen: 'tela', camera: 'câmera',
@@ -26,7 +27,8 @@ const EN = {
   name: 'Your name', pass: 'Room password', join: 'Join', people: 'IN THE ROOM', chat: 'CHAT',
   connecting: 'connecting...', online: 'connected', offline: 'disconnected, retrying...',
   nobody: 'Nobody is streaming right now. When someone starts, it shows up here.',
-  sound_on: '🔊 Turn on sound', sound_off: '🔇 Muted', send_ph: 'Message',
+  sound_on: 'Turn on sound', sound_off: 'Muted', send_ph: 'Message',
+  hide_chat: 'Hide the chat (c)', show_chat: 'Show the chat (c)', cinema: 'Cinema mode: only the video (t)', full: 'Fullscreen (f)',
   wrong_pass: 'Wrong password.', nosupport: "This browser can't decode video with WebCodecs. Use an up-to-date Chrome, Edge, Firefox (130+) or Safari (16.4+).",
   insecure: 'The page must be opened over https:// to show the video.',
   waiting_key: 'waiting for the first frame...', image: '[image]', screen: 'screen', camera: 'camera',
@@ -362,7 +364,7 @@ function onMessage(u8) {
       st.retry = 1000;
       if (QA && !st.audio) enableSound(); // teste: o navegador do teste deixa tocar sem clique
       status(L.online, 'on');
-      $('join').hidden = true; $('room').hidden = false;
+      $('join').hidden = true; $('room').hidden = false; $('btn-side').hidden = false;
       break;
     }
     case T.denied: {
@@ -697,11 +699,28 @@ function soundPill() {
   p.textContent = L.tap_sound;
   p.hidden = !(s && s.audio && !st.soundOn && st.decoded > 0 && !st.warnedNoAudio);
 }
+const ICON_SOUND = '<svg viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg>';
+const ICON_MUTED = '<svg viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>';
+
+// layout: chat recolhido e modo cinema (só o vídeo), lembrados neste navegador
+function pref(k, v) {
+  try { if (v === undefined) return localStorage.getItem(k) === '1'; localStorage.setItem(k, v ? '1' : '0'); } catch (e) { /* sem armazenamento */ }
+  return false;
+}
+function layout(side, cinema) {
+  document.body.classList.toggle('side-off', side);
+  document.body.classList.toggle('cinema', cinema);
+  $('btn-side').title = side ? L.show_chat : L.hide_chat;
+  $('btn-side').classList.toggle('on', !side);
+  $('btn-cinema').classList.toggle('on', cinema);
+  st.sentH = -1; sendViewSize();
+}
 function soundButton() {
   soundPill();
   const b = $('btn-sound');
   // sem som ainda (o navegador só deixa tocar depois de um clique): o convite pra ligar
-  b.textContent = !st.audio ? L.sound_on : st.soundOn ? '🔊' : L.sound_off;
+  const on = st.audio && st.soundOn;
+  b.innerHTML = (on ? ICON_SOUND : ICON_MUTED) + (on ? '' : `<span>${!st.audio ? L.sound_on : L.sound_off}</span>`);
   b.classList.toggle('attn', !st.soundOn);
 }
 
@@ -973,6 +992,17 @@ function start() {
   $('btn-sound').onclick = () => enableSound();
   $('sound-pill').onclick = (e) => { e.stopPropagation(); enableSound(); };
   $('vol').oninput = () => { if (st.gain && st.soundOn) st.gain.gain.value = $('vol').value / 100; };
+  $('btn-cinema').title = L.cinema; $('btn-full').title = L.full;
+  layout(pref('telinha-sem-chat'), pref('telinha-cinema'));
+  $('btn-side').onclick = () => { const v = !document.body.classList.contains('side-off'); pref('telinha-sem-chat', v); layout(v, document.body.classList.contains('cinema')); };
+  $('btn-cinema').onclick = (e) => { e.stopPropagation(); const v = !document.body.classList.contains('cinema'); pref('telinha-cinema', v); layout(document.body.classList.contains('side-off'), v); };
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey || /^(INPUT|TEXTAREA)$/.test(document.activeElement && document.activeElement.tagName)) return;
+    if (e.key === 'f') $('btn-full').onclick();
+    else if (e.key === 't') $('btn-cinema').onclick(e);
+    else if (e.key === 'c') $('btn-side').onclick();
+    else if (e.key === 'Escape' && document.body.classList.contains('cinema')) $('btn-cinema').onclick(e);
+  });
   $('btn-full').onclick = () => {
     if (document.fullscreenElement) { document.exitFullscreen(); return; }
     const stage = $('stage');

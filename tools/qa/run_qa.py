@@ -1101,6 +1101,60 @@ def bot_telao():
 
 
 @test
+def painel_do_bot_e_barra():
+    """Painel do bot (set_panel): o título aparece embaixo do nome na lista, clicar no bot abre os controles e o botão chega nele (que muda o painel); de outro canal também, e pelo clique direito → "Abrir os controles"; o bot sai e o painel some. E a barra de controles: a alça leva pra esquerda e pra direita, recolhe e abre."""
+    with Session("painel") as s:
+        shots = os.environ.get("QA_SHOTS", s.base)
+        p = port()
+        s.spawn("srv", [SERVER, "--porta", str(p), "--senha", "pw", "--chave", os.path.join(s.base, "srv.key")], {k: os.environ[k] for k in ("HOME", "PATH")})
+        time.sleep(0.6)
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--senha", "pw"])
+        b.wait(lambda st: st["status"] == "connected", 10, "a Bia entrar")
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+        bot = s.spawn("bot", [sys.executable, os.path.join(root, "tools", "qa", "bot_painel.py"), f"telinha://127.0.0.1:{p}#pw"], {"HOME": s.base, "PATH": os.environ["PATH"]})
+        st = b.wait(lambda st: any(pn["title"] == "Painel 0" for pn in st["panels"]), 15, "o painel do bot chegar")
+        bid = st["panels"][0]["bot"]
+        expect(st["panels"][0]["buttons"] == 2, f"painel errado: {st['panels']}")
+        b.click_rect(b.member_row(bid))
+        b.wait(lambda st: st["panel_open"], 5, "os controles abrirem com o clique no bot")
+        b.screenshot(os.path.join(shots, "painel_aberto.png"))
+        b.click(f"##eb{bid ^ 0x5A000000}_0")
+        b.wait(lambda st: any(pn["title"] == "Painel 1" and "Bia em #geral (painel: True)" in pn["description"] for pn in st["panels"]), 10, "o clique chegar no bot e o painel mudar")
+        b.key("Escape")
+        # de outro canal: o bot fica em "bots em outros canais" e o painel continua valendo
+        b.click("##chatin")
+        time.sleep(0.2)
+        b.type("/join outro\n")
+        b.wait(lambda st: st["channel"] == "outro", 5, "a Bia ir pro #outro")
+        b.click_rect(b.member_row(bid), button=3)
+        time.sleep(0.3)
+        b.screenshot(os.path.join(shots, "menu_bot.png"))
+        b.click(contains="###mbotpanel")
+        b.wait(lambda st: st["panel_open"], 5, "os controles abrirem pelo menu")
+        b.click(f"##eb{bid ^ 0x5A000000}_0")
+        b.wait(lambda st: any(pn["title"] == "Painel 2" and "#outro" in pn["description"] for pn in st["panels"]), 10, "o clique de outro canal chegar")
+        b.key("Escape")
+        # a barra: esquerda, direita, recolhida, aberta, embaixo de novo
+        b.click("##dockgrip")
+        b.wait(lambda st: st["dock_side"] == 1, 5, "a barra ir pra esquerda")
+        b.screenshot(os.path.join(shots, "barra_esquerda.png"))
+        b.click("##dockgrip")
+        b.wait(lambda st: st["dock_side"] == 2, 5, "a barra ir pra direita")
+        b.click("##dockmini")
+        b.wait(lambda st: st["dock_mini"], 5, "a barra recolher")
+        b.screenshot(os.path.join(shots, "barra_recolhida.png"))
+        b.click("##dockmini")
+        b.wait(lambda st: not st["dock_mini"], 5, "a barra abrir")
+        b.click("##dockgrip")
+        b.wait(lambda st: st["dock_side"] == 0, 5, "a barra voltar pra baixo")
+        b.screenshot(os.path.join(shots, "barra_embaixo.png"))
+        # o bot sai: o painel some
+        bot.terminate()
+        b.wait(lambda st: not st["panels"], 10, "o painel sumir quando o bot sai")
+        log("painel do bot de qualquer canal (lista, clique e menu) e a barra de controles nos três lados")
+
+
+@test
 def bot_de_outro_canal():
     """Bot em outro canal aparece no painel ("bots em outros canais") e o clique direito → "Chamar pra minha call" traz ele (um /msg !join por baixo)."""
     with Session("botlonge") as s:

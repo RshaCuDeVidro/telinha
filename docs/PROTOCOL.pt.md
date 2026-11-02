@@ -125,7 +125,7 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | tipo | nome | direção | payload |
 |---|---|---|---|
 | 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (o que decodifica, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (canal pra entrar; vazio ou sem o campo = o padrão), `str token_bot` (só bot; ver `feat_bot`), `str senha_do_canal` (se o canal tiver senha; o app manda a última que usou nele, pra voltar pro canal ao reconectar) |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1), `u8 recursos_do_servidor` (`srv_*`: 1 = mensagem privada e resposta citada, 2 = arquivos, 4 = cartões, 8 = apagar canal, 16 = OPs de canal; servidor antigo não manda = 0) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1), `u8 recursos_do_servidor` (`srv_*`: 1 = mensagem privada e resposta citada, 2 = arquivos, 4 = cartões, 8 = apagar canal, 16 = OPs de canal, 32 = painel de bot; servidor antigo não manda = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (servidor fecha em seguida) |
 | 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo), n × `str versão_do_app` (mesma ordem), n × `u8 tipo` (1 = bot, 2 = OP do meu canal de texto, 4 = OP do canal da minha call, 8 = criou o meu canal de texto, 16 = criou o canal da minha call; servidor antigo não manda) |
 | 5 | chat | C→S | `str texto`, imagem (opcional, abaixo), `u32 resposta` (id da mensagem respondida; 0 = nenhuma), `u32 pra` (privada pra esse membro; 0 = o canal), `u32 n` + n bytes de um [cartão](#cartões) (0 = nenhum) |
@@ -182,6 +182,9 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 43 | embed_action | C→S | `u32 id`, `u8 botão`: alguém clicou num botão de um cartão |
 | 43 | embed_action | S→C | `u32 id`, `u8 botão`, `u32 de`, `str nome` e, se o autor do cartão for bot, `str canal`, `str call` de quem clicou; vai só pro autor do cartão |
 | 44 | bans | S→C | `u16 n`, n × (`u32 id`, `str nome`, `u32 há_quantos_s`): quem está banido; só pra admin, depois do `welcome` (se tiver alguém) e sempre que muda (vazia pra quem perdeu o admin). Ação `admin` 9 com `alvo` = `id` desbane (0 = todo mundo) |
+| 45 | bot_panel | C→S | só bot: `u32 n`, cartão (`n = 0` tira o painel); ver "Painel do bot" |
+| 45 | bot_panel | S→C | `u32 id do bot`, `u32 n`, cartão (`n = 0`: não tem mais painel) |
+| 46 | panel_action | C→S | `u32 id do bot`, `u8 botão`: clique num botão do painel; chega no bot como `embed_action` com `id` 0 |
 
 `versão_do_app` ("3.0.0") serve só pra avisar quem está desatualizado (a
 interface mostra "fulano está no telinha X: tem versão nova"); vazia = não
@@ -514,6 +517,17 @@ dele, no máximo um a cada 120 ms por pessoa. Só o autor recebe; ninguém mais
 vê o clique. Bot fica sabendo onde está quem clicou, e onde está quem
 escreveu pra ele (no `chat`, inclusive na privada): é assim que o
 `/msg Bot !join` funciona de qualquer canal.
+
+**Painel do bot** (`bot_panel`, `srv_*` 32): um cartão fixo do bot, fora do
+chat, que aparece pra todo mundo da sala em qualquer canal (no app: clicar no
+bot na lista abre os controles; o título aparece embaixo do nome dele). O bot
+manda `bot_panel` com o cartão (mesmo formato do fim do `chat`; `n = 0` tira),
+no máximo um a cada 200 ms (mais rápido é ignorado; o SDK junta). O servidor
+guarda o último e repassa pra quem entende cartões (não pra bots nem pro
+navegador): na hora, e pra quem entra depois, logo depois da lista de membros.
+Quando o bot sai, todo mundo recebe o painel vazio. Clique: `panel_action`
+(`u32 id do bot`, `u8 botão`), com o mesmo limite do `embed_action`; chega no
+bot como um `embed_action` da mensagem **0**, com quem clicou e onde ele está.
 
 ### Navegador
 

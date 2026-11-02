@@ -187,6 +187,7 @@ const ic = struct {
     const chev_up = &iconArr(0xF077);
     const volume = &iconArr(0xF028);
     const volume_off = &iconArr(0xF6A9);
+    const sliders = &iconArr(0xF1DE);
     const warn = &iconArr(0xF071);
     const globe = &iconArr(0xF0AC);
     const mic = &iconArr(0xF130);
@@ -375,6 +376,89 @@ fn menuItem(label: [:0]const u8, flags: c.ImGuiSelectableFlags) bool {
     return hit;
 }
 
+/// Item que abre um submenu ao lado ("Levar pro canal"), no visual do
+/// menuItem e com a setinha na direita. Quem abre e fecha é o BeginMenu do
+/// ImGui: o rótulo dele vai invisível numa fonte da altura do item e o texto
+/// é desenhado por cima. true = aberto: desenhe os itens e chame menuSubEnd.
+fn menuSub(icon: []const u8, text: []const u8, id: [:0]const u8) bool {
+    const d = c.igGetWindowDrawList();
+    const text_col = c.igGetColorU32_Col(c.ImGuiCol_Text, 1);
+    const f0 = c.igGetFont();
+    const fs0 = c.igGetFontSize();
+    c.igPushStyleColor_U32(c.ImGuiCol_Text, 0);
+    c.igPushFont(font_regular, S(27));
+    const open = c.igBeginMenu(id.ptr, true);
+    // o BeginMenu devolve o item do menu de fora (a linha) como o último item
+    const mn = c.igGetItemRectMin();
+    const mx = v2(mn.x + S(menu_w), c.igGetItemRectMax().y);
+    const h = mx.y - mn.y;
+    const hov = c.igIsItemHovered(0) or open;
+    if (hov) {
+        rectFill(d, mn.x, mn.y, mx.x, mx.y, withAlpha(col.blurple, 44), S(4));
+        rectFill(d, mn.x, mn.y + S(6), mn.x + S(2.5), mx.y - S(6), col.blurple, S(1));
+    }
+    const is = textSizeF(font_regular, 13, icon);
+    drawTextF(d, font_regular, 13, v2(@round(mn.x + S(8) + (S(16) - is.x) / 2), @round(mn.y + (h - is.y) / 2)), if (hov) col.header else col.blurple, icon);
+    const ts = textSizeF(font_regular, 13.5, text);
+    drawTextF(d, font_regular, 13.5, v2(mn.x + S(30), @round(mn.y + (h - ts.y) / 2)), if (hov) col.header else text_col, text);
+    const chev = &iconArr(0xF054);
+    const cs = textSizeF(font_regular, 9.5, chev);
+    drawTextF(d, font_regular, 9.5, v2(mx.x - S(12) - cs.x, @round(mn.y + (h - cs.y) / 2)), withAlpha(text_col, 140), chev);
+    if (!open) {
+        c.igPopFont();
+        c.igPopStyleColor(1);
+        return false;
+    }
+    // dentro do submenu: a fonte e a cor de antes
+    c.igPushStyleColor_U32(c.ImGuiCol_Text, text_col);
+    c.igPushFont(f0, fs0);
+    return true;
+}
+fn menuSubEnd() void {
+    c.igPopFont();
+    c.igPopStyleColor(1);
+    c.igEndMenu();
+    c.igPopFont();
+    c.igPopStyleColor(1);
+}
+
+/// Régua do menu (volume): trilho fino, bolinha, marca no 100% e um ímã
+/// perto dele. true = mudou neste quadro.
+fn menuSlider(id: [:0]const u8, v: *i32, min: i32, max: i32, w: f32) bool {
+    const p = c.igGetCursorScreenPos();
+    const h = S(20);
+    _ = c.igInvisibleButton(id.ptr, v2(w, h), 0);
+    const active = c.igIsItemActive();
+    const hov = c.igIsItemHovered(0);
+    const x0 = p.x + S(7);
+    const x1 = p.x + w - S(7);
+    const span: f32 = @floatFromInt(max - min);
+    var changed = false;
+    if (active) {
+        const t = std.math.clamp((c.igGetIO_Nil().*.MousePos.x - x0) / @max(1, x1 - x0), 0, 1);
+        var nv = min + @as(i32, @intFromFloat(@round(t * span)));
+        if (min < 100 and max > 100 and @abs(nv - 100) <= 4) nv = 100;
+        if (nv != v.*) {
+            v.* = nv;
+            changed = true;
+        }
+    }
+    if (hov or active) c.igSetMouseCursor(c.ImGuiMouseCursor_Hand);
+    const d = c.igGetWindowDrawList();
+    const cy = @round(p.y + h / 2);
+    const kx = x0 + (x1 - x0) * @as(f32, @floatFromInt(v.* - min)) / span;
+    rectFill(d, x0, cy - S(2), x1, cy + S(2), withAlpha(col.text, 30), S(2));
+    if (min < 100 and max > 100) {
+        const mx = @round(x0 + (x1 - x0) * @as(f32, @floatFromInt(100 - min)) / span);
+        rectFill(d, mx - S(0.5), cy - S(5), mx + S(0.5), cy + S(5), withAlpha(col.text, 70), 0);
+    }
+    rectFill(d, x0, cy - S(2), kx, cy + S(2), col.blurple, S(2));
+    if (hov or active) c.ImDrawList_AddCircleFilled(d, v2(kx, cy), S(10), withAlpha(col.blurple, 45), 0);
+    c.ImDrawList_AddCircleFilled(d, v2(kx, cy), S(6.5), if (active) col.blurple_hover else col.blurple, 0);
+    c.ImDrawList_AddCircleFilled(d, v2(kx, cy), S(2.5), col.bg_float, 0);
+    return changed;
+}
+
 /// O começo de um texto numa linha só, pro cabeçalho do menu da mensagem.
 fn menuSnippet(text: []const u8, buf: []u8) []const u8 {
     const t = std.mem.trim(u8, text, " \t\r\n");
@@ -551,7 +635,9 @@ fn drawAvatar(d: *c.ImDrawList, center: c.ImVec2_c, radius: f32, id: u32, name: 
 /// Avatar com o anel verde de "falando" (como no Discord).
 fn drawAvatarSpeaking(d: *c.ImDrawList, center: c.ImVec2_c, radius: f32, id: u32, name: []const u8, live: bool, speaking: bool) void {
     if (speaking) c.ImDrawList_AddCircle(d, center, radius + S(2.5), col.green, 0, S(2.5), 0);
-    c.ImDrawList_AddCircleFilled(d, center, radius, avatarColor(id), 0);
+    c.ImDrawList_AddCircleFilled(d, center, radius - S(0.5), avatarColor(id), 0);
+    // a borda por um traço antialiasado (a borda do preenchimento sozinha serrilha)
+    c.ImDrawList_AddCircle(d, center, radius - S(0.5), avatarColor(id), 0, S(1.2), 0);
     var buf: [5]u8 = undefined;
     const ini = initial(name, &buf);
     const fs = radius * 0.95 / scale;
@@ -970,7 +1056,7 @@ pub const App = struct {
     home_last_frame: u64 = 0,
     home_anim_t: f32 = 0, // relógio da animação da tela inicial (para quando ela para)
     // convite colado sozinho (área de transferência)
-    pasted: [512]u8 = undefined,
+    pasted: [2048]u8 = undefined, // o link https de um convite com vários caminhos passa de 512
     pasted_len: usize = 0,
     paste_hint_until: f64 = 0,
     was_focused: bool = false,
@@ -1092,6 +1178,10 @@ pub const App = struct {
     room_admin_token: [33]u8 = [_]u8{0} ** 33, // gerado ao criar a sala
     menu_target: u32 = 0, // membro do menu de contexto (expulsar)
     open_member_menu: bool = false,
+    panel_bot: u32 = 0, // os controles de que bot estão abertos (botpanel)
+    dock_dragging: bool = false, // arrastando a barra de controles pra outro lado
+    panel_shown: u64 = 0, // quadro em que os controles do bot apareceram (modo de testes)
+    open_panel: bool = false,
 
     audio_err_shown: bool = false,
     img_ready: ?*chatsend.Ready = null, // imagem colada/arrastada esperando o Enviar
@@ -5096,6 +5186,7 @@ pub const App = struct {
             }
         };
         a.memberMenu(cl, all[0..n_all]);
+        a.botPanelPopup(cl);
         c.igEndChild();
         c.igPopStyleColor(1);
         const div_y = list_top + list_h + S(6);
@@ -5126,10 +5217,23 @@ pub const App = struct {
         a.drawChat(cl, v2(inner_w, y1 - div_y - S(6)));
     }
 
-    /// Cápsula de controles embaixo do palco: você, microfone, surdo,
-    /// compartilhar, câmera e sair. Fica num espaço só dela (não cobre vídeo).
+    /// Quanto a barra de controles tira do palco em cada lado (recolhida ela
+    /// flutua por cima e não tira nada).
+    const DockSpace = struct { bottom: f32 = 0, left: f32 = 0, right: f32 = 0 };
+    fn dockSpace(a: *const App) DockSpace {
+        if (a.theater or a.cfg.dock_mini) return .{};
+        return switch (a.cfg.dock_side) {
+            1 => .{ .left = S(80) },
+            2 => .{ .right = S(80) },
+            else => .{ .bottom = S(86) },
+        };
+    }
+
+    /// Barra de controles da sala: você, microfone, surdo, call, compartilhar,
+    /// câmera e sair. Embaixo, na esquerda ou na direita do palco (arrasta pela
+    /// alça; clique na alça troca de lado), num espaço só dela; recolhida vira
+    /// uma pílula pequena por cima do vídeo.
     fn drawDock(a: *App, cl: *Client, o: c.ImVec2_c, size: c.ImVec2_c) void {
-        const d = drawList();
         cl.mutex.lock();
         const my_id = cl.my_id;
         // call separada do canal: botão de entrar/sair da call do lado do surdo
@@ -5143,97 +5247,214 @@ pub const App = struct {
         @memcpy(text_buf[0..text_len], cl.chan_name[0..text_len]);
         cl.mutex.unlock();
         const live = a.sharer != null;
-        const h = S(58);
+        const vertical = a.cfg.dock_side != 0;
+        const mini = a.cfg.dock_mini;
         const bs = S(42);
-        const extra: f32 = if (calls) bs + S(6) else 0;
-        // janela estreita: primeiro some o perfil, depois o texto do compartilhar
-        const btns_w = bs * 2 + S(6) + S(16) + S(16) + bs * 2 + S(6) + S(20) + extra;
+        const gap = S(6);
+        const grip = S(18);
+        const thick = S(58); // a grossura da cápsula
+
+        // o que vai na barra (recolhida: só o essencial)
+        const show_prof = !mini and (vertical or size.x - S(16) >= S(820));
+        const n_small: f32 = if (mini) 2 + @as(f32, @floatFromInt(@intFromBool(calls))) else 4 + @as(f32, @floatFromInt(@intFromBool(calls)));
         const full_share = if (live) S(232) else S(200);
-        const show_prof = size.x - S(16) >= btns_w + full_share + S(176) + S(12);
-        const prof_w: f32 = if (show_prof) S(176) else 0;
-        const share_w = if (size.x - S(16) >= btns_w + full_share + prof_w) full_share else S(56);
-        const w = S(10) + (if (show_prof) prof_w + S(12) else 0) + bs * 2 + S(6) + S(16) + share_w + S(16) + bs * 2 + S(6) + S(10) + extra;
-        const x0 = o.x + @max(S(8), (size.x - w) / 2);
-        const y0 = o.y + size.y - h - S(14);
-        rectFill(d, x0, y0 + S(4), x0 + w, y0 + h + S(4), rgba(0x000000, 70), h / 2);
-        rectFill(d, x0, y0, x0 + w, y0 + h, col.bg_user, h / 2);
-        c.ImDrawList_AddRect(d, v2(x0, y0), v2(x0 + w, y0 + h), withAlpha(col.text, 22), h / 2 * col.round, S(1), 0);
+        const wide_share = !vertical and !mini and size.x - S(16) >= S(176) + full_share + n_small * (bs + gap) + S(120);
+        const share_len = if (wide_share) full_share else bs;
+        const prof_len: f32 = if (!show_prof) 0 else if (vertical) bs + S(10) else S(176) + S(12);
+        const length = S(8) + grip + S(6) + prof_len + n_small * (bs + gap) + S(14) + share_len + S(10) + bs + S(10);
+
+        // onde fica a cápsula
+        var x0: f32 = undefined;
+        var y0: f32 = undefined;
+        var w: f32 = undefined;
+        var h: f32 = undefined;
+        if (vertical) {
+            w = thick;
+            h = length;
+            x0 = if (a.cfg.dock_side == 1) o.x + S(11) else o.x + size.x - thick - S(11);
+            y0 = o.y + @max(S(8), (size.y - h) / 2);
+        } else {
+            w = length;
+            h = thick;
+            x0 = o.x + @max(S(8), (size.x - w) / 2);
+            y0 = o.y + size.y - h - S(14);
+        }
+        // numa janela própria, por cima do palco: recolhida ela flutua sobre o
+        // vídeo e o clique tem que ser dela, não do quadro embaixo
+        c.igSetNextWindowPos(v2(x0 - S(4), y0 - S(4)), 0, v2(0, 0));
+        c.igSetNextWindowSize(v2(w + S(10), h + S(12)), 0);
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(0, 0));
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_WindowBorderSize, 0);
+        _ = c.igBegin("##dock", null, c.ImGuiWindowFlags_NoDecoration | c.ImGuiWindowFlags_NoBackground | c.ImGuiWindowFlags_NoSavedSettings | c.ImGuiWindowFlags_NoMove |
+            c.ImGuiWindowFlags_NoFocusOnAppearing | c.ImGuiWindowFlags_NoNav | c.ImGuiWindowFlags_NoScrollWithMouse | c.ImGuiWindowFlags_NoScrollbar);
+        c.igPopStyleVar(2);
+        defer c.igEnd();
+        const d = drawList();
+        // recolhida flutua por cima do vídeo: meio apagada até o mouse chegar
+        const over = c.igIsMouseHoveringRect(v2(x0 - S(20), y0 - S(20)), v2(x0 + w + S(20), y0 + h + S(20)), false);
+        if (!(mini and !over)) rectFill(d, x0 + S(1), y0 + S(4), x0 + w + S(1), y0 + h + S(4), rgba(0x000000, 70), thick / 2);
+        rectFill(d, x0, y0, x0 + w, y0 + h, if (mini and !over) withAlpha(col.bg_user, 170) else col.bg_user, thick / 2);
+        c.ImDrawList_AddRect(d, v2(x0, y0), v2(x0 + w, y0 + h), withAlpha(col.text, 22), thick / 2 * col.round, S(1), 0);
+
+        // o cursor anda pela cápsula: na horizontal x, na vertical y
+        var at = (if (vertical) y0 else x0) + S(8);
+        const cross = if (vertical) x0 + (w - bs) / 2 else y0 + (h - bs) / 2; // onde os botões ficam no outro eixo
+        const Place = struct {
+            fn pos(vert: bool, along: f32, across: f32) c.ImVec2_c {
+                return if (vert) v2(across, along) else v2(along, across);
+            }
+        };
+
+        // alça: arrastar muda de lado; clique troca pro próximo
+        {
+            const gp = Place.pos(vertical, at, if (vertical) x0 + (w - S(30)) / 2 else y0 + (h - S(30)) / 2);
+            const gsz = if (vertical) v2(S(30), grip) else v2(grip, S(30));
+            c.igSetCursorScreenPos(gp);
+            _ = c.igInvisibleButton("##dockgrip", gsz, 0);
+            const ghov = c.igIsItemHovered(0);
+            const gact = c.igIsItemActive();
+            if (ghov or gact) c.igSetMouseCursor(c.ImGuiMouseCursor_ResizeAll);
+            if (ghov and !gact) tooltipText(tr("Arraste pra levar a barra pra baixo, pra esquerda ou pra direita (clique: troca de lado)"));
+            // seis pontinhos
+            const gc = if (ghov or gact) col.header else withAlpha(col.text, 90);
+            const cx = gp.x + gsz.x / 2;
+            const cy = gp.y + gsz.y / 2;
+            for (0..3) |i| for (0..2) |j| {
+                const along_off = (@as(f32, @floatFromInt(j)) - 0.5) * S(5);
+                const across_off = (@as(f32, @floatFromInt(i)) - 1) * S(5);
+                const pt = if (vertical) v2(cx + across_off, cy + along_off) else v2(cx + along_off, cy + across_off);
+                c.ImDrawList_AddCircleFilled(d, pt, S(1.6), gc, 8);
+            };
+            const io = c.igGetIO_Nil();
+            const drag = gact and c.igIsMouseDragging(0, S(8));
+            if (drag) {
+                a.dock_dragging = true;
+                // os três lugares, com o que está embaixo do mouse aceso
+                const target = dockTarget(o, size, io.*.MousePos);
+                const zones = [_]struct { u8, c.ImVec2_c, c.ImVec2_c }{
+                    .{ 0, v2(o.x + S(80), o.y + size.y - S(90)), v2(o.x + size.x - S(80), o.y + size.y - S(6)) },
+                    .{ 1, v2(o.x + S(6), o.y + S(40)), v2(o.x + S(84), o.y + size.y - S(40)) },
+                    .{ 2, v2(o.x + size.x - S(84), o.y + S(40)), v2(o.x + size.x - S(6), o.y + size.y - S(40)) },
+                };
+                const fg = c.igGetForegroundDrawList_ViewportPtr(null);
+                for (zones) |z| {
+                    const lit = z[0] == target;
+                    rectFill(fg, z[1].x, z[1].y, z[2].x, z[2].y, withAlpha(col.blurple, if (lit) 70 else 22), S(14));
+                    c.ImDrawList_AddRect(fg, z[1], z[2], withAlpha(col.blurple, if (lit) 220 else 90), S(14) * col.round, S(if (lit) 2 else 1), 0);
+                }
+            }
+            if (c.igIsItemDeactivated()) {
+                const io2 = c.igGetIO_Nil();
+                a.cfg.dock_side = if (a.dock_dragging) dockTarget(o, size, io2.*.MousePos) else (a.cfg.dock_side + 1) % 3;
+                a.dock_dragging = false;
+                config.save(&a.cfg);
+            }
+            at += grip + S(6);
+        }
 
         // você
-        var x = x0 + S(10);
         if (show_prof) {
             const me_speaking = if (a.mic) |m| m.speaking.load(.monotonic) else false;
-            drawAvatarSpeaking(d, v2(x + S(20), y0 + h / 2), S(17), my_id, a.myName(), live, me_speaking);
             if (me_speaking) redrawIn(0.15);
-            var name_buf: [32]u8 = undefined;
-            const nm = a.myName();
-            const shown = if (nm.len > 13) std.fmt.bufPrint(&name_buf, "{s}…", .{nm[0..11]}) catch nm else nm;
-            drawTextF(d, font_semibold, 14, v2(x + S(46), y0 + S(11)), col.header, shown);
-            var status_text: []const u8 = tr("Online");
-            var status_col = col.muted;
-            if (a.sharer) |s| {
-                s.mutex.lock();
-                const st = s.state;
-                s.mutex.unlock();
-                status_text = if (st == .starting) tr("Iniciando...") else tr("Ao vivo");
-                status_col = if (st == .starting) col.yellow else col.red;
+            if (vertical) {
+                drawAvatarSpeaking(d, v2(x0 + w / 2, at + bs / 2), S(17), my_id, a.myName(), live, me_speaking);
+                c.igSetCursorScreenPos(v2(x0 + (w - bs) / 2, at));
+                _ = c.igInvisibleButton("##me", v2(bs, bs), 0);
+                if (c.igIsItemHovered(0)) tooltipText(fmtZ("{s}", .{a.myName()}));
+                at += bs + S(4);
+                rectFill(d, x0 + S(16), at, x0 + w - S(16), at + S(1), withAlpha(col.text, 22), 0);
+                at += S(6);
+            } else {
+                drawAvatarSpeaking(d, v2(at + S(20), y0 + h / 2), S(17), my_id, a.myName(), live, me_speaking);
+                var name_buf: [32]u8 = undefined;
+                const nm = a.myName();
+                const shown = if (nm.len > 13) std.fmt.bufPrint(&name_buf, "{s}…", .{nm[0..11]}) catch nm else nm;
+                drawTextF(d, font_semibold, 14, v2(at + S(46), y0 + S(11)), col.header, shown);
+                var status_text: []const u8 = tr("Online");
+                var status_col = col.muted;
+                if (a.sharer) |s| {
+                    s.mutex.lock();
+                    const st = s.state;
+                    s.mutex.unlock();
+                    status_text = if (st == .starting) tr("Iniciando...") else tr("Ao vivo");
+                    status_col = if (st == .starting) col.yellow else col.red;
+                }
+                if (a.sharer == null and calls) {
+                    status_text = if (in_call) fmtZ("Na call #{s}", .{call_buf[0..call_len]}) else tr("Fora da call");
+                    status_col = if (in_call) col.green else col.muted;
+                }
+                if (a.admin_muted) {
+                    status_text = tr("Silenciado pelo admin");
+                    status_col = col.red;
+                }
+                drawTextF(d, font_regular, 12, v2(at + S(46), y0 + S(31)), status_col, status_text);
+                at += S(176);
+                rectFill(d, at + S(4), y0 + S(14), at + S(5), y0 + h - S(14), withAlpha(col.text, 22), 0);
+                at += S(12);
             }
-            if (a.sharer == null and calls) {
-                status_text = if (in_call) fmtZ("Na call #{s}", .{call_buf[0..call_len]}) else tr("Fora da call");
-                status_col = if (in_call) col.green else col.muted;
-            }
-            if (a.admin_muted) {
-                status_text = tr("Silenciado pelo admin");
-                status_col = col.red;
-            }
-            drawTextF(d, font_regular, 12, v2(x + S(46), y0 + S(31)), status_col, status_text);
-            x += prof_w;
-            rectFill(d, x + S(4), y0 + S(14), x + S(5), y0 + h - S(14), withAlpha(col.text, 22), 0);
-            x += S(12);
         }
 
         // microfone e surdo
-        const by = y0 + (h - bs) / 2;
-        c.igSetCursorScreenPos(v2(x, by));
+        c.igSetCursorScreenPos(Place.pos(vertical, at, cross));
         const mic_on = a.mic != null;
         const mic_tip: [:0]const u8 = if (a.admin_muted) tr("O admin silenciou seu microfone") else if (mic_on) tr("Desligar o microfone") else tr("Ligar o microfone");
         if (iconButton("##mic", if (mic_on) ic.mic else ic.mic_slash, bs, if (mic_on) col.text else col.red, col.hover, mic_tip)) a.toggleMic(via_clique);
-        x += bs + S(6);
-        c.igSetCursorScreenPos(v2(x, by));
+        at += bs + gap;
+        const deaf_pos = Place.pos(vertical, at, cross);
+        c.igSetCursorScreenPos(deaf_pos);
         if (iconButton("##deaf", ic.headphones, bs, if (a.deaf) col.red else col.text, col.hover, if (a.deaf) tr("Voltar a ouvir a sala") else tr("Parar de ouvir a sala (surdo)"))) a.toggleDeaf(via_clique);
-        if (a.deaf) slash(d, v2(x, by), bs);
-        x += bs;
+        if (a.deaf) slash(d, deaf_pos, bs);
+        at += bs + gap;
         if (calls) {
-            x += S(6);
-            c.igSetCursorScreenPos(v2(x, by));
+            c.igSetCursorScreenPos(Place.pos(vertical, at, cross));
             const tip = if (in_call) fmtZ("Sair da call do #{s}", .{call_buf[0..call_len]}) else fmtZ("Entrar na call do #{s}", .{text_buf[0..text_len]});
             if (iconButton("##callbtn", if (in_call) ic.phone_slash else ic.phone, bs, if (in_call) col.red else col.green, col.hover, tip)) {
                 if (in_call) cl.joinCall("", "") else a.askChannel(cl, text_buf[0..text_len], true);
             }
-            x += bs;
+            at += bs + gap;
         }
-        x += S(16);
+        at += S(8);
 
-        // compartilhar
-        const sh = S(40);
-        c.igSetCursorScreenPos(v2(x, y0 + (h - sh) / 2));
-        const lbl = if (share_w < full_share) fmtZ("{s}##share", .{ic.desktop}) else if (live) fmtZ("{s}  Ao vivo (configurar)##share", .{ic.desktop}) else fmtZ("{s}  Compartilhar tela##share", .{ic.desktop});
+        // compartilhar (estreita, de lado ou recolhida: o botão redondo com o ícone)
+        const sh = if (wide_share) S(40) else bs;
+        c.igSetCursorScreenPos(Place.pos(vertical, at, if (vertical) x0 + (w - sh) / 2 else y0 + (h - sh) / 2));
+        const lbl = if (!wide_share) fmtZ("{s}##share", .{ic.desktop}) else if (live) fmtZ("{s}  Ao vivo (configurar)##share", .{ic.desktop}) else fmtZ("{s}  Compartilhar tela##share", .{ic.desktop});
         c.igPushStyleVar_Float(c.ImGuiStyleVar_FrameRounding, sh / 2 * col.round);
         if (if (live)
-            primaryButton(lbl, v2(share_w, sh), col.red, col.red_hover, col.red_active)
+            primaryButton(lbl, v2(share_len, sh), col.red, col.red_hover, col.red_active)
         else
-            primaryButton(lbl, v2(share_w, sh), col.blurple, col.blurple_hover, col.blurple_active)) a.openShareModal();
+            primaryButton(lbl, v2(share_len, sh), col.blurple, col.blurple_hover, col.blurple_active)) a.openShareModal();
         c.igPopStyleVar(1);
-        if (share_w < full_share and c.igIsItemHovered(0)) tooltipText(if (live) tr("Ao vivo (configurar)") else tr("Compartilhar tela"));
-        x += share_w + S(16);
+        if (!wide_share and c.igIsItemHovered(0)) tooltipText(if (live) tr("Ao vivo (configurar)") else tr("Compartilhar tela"));
+        at += share_len + S(10);
 
         // câmera e sair
-        c.igSetCursorScreenPos(v2(x, by));
-        const cam_on = a.camera != null;
-        if (iconButton("##camera", if (cam_on) ic.video else ic.video_slash, bs, if (cam_on) col.green else col.text, col.hover, if (cam_on) tr("Desligar a câmera") else tr("Ligar a câmera"))) a.toggleCamera();
-        x += bs + S(6);
-        c.igSetCursorScreenPos(v2(x, by));
-        if (iconButton("##leave", ic.leave, bs, col.red, withAlpha(col.red, 40), if (a.server != null) tr("Fechar a sala") else tr("Sair da sala"))) a.askLeave();
+        if (!mini) {
+            c.igSetCursorScreenPos(Place.pos(vertical, at, cross));
+            const cam_on = a.camera != null;
+            if (iconButton("##camera", if (cam_on) ic.video else ic.video_slash, bs, if (cam_on) col.green else col.text, col.hover, if (cam_on) tr("Desligar a câmera") else tr("Ligar a câmera"))) a.toggleCamera();
+            at += bs + gap;
+            c.igSetCursorScreenPos(Place.pos(vertical, at, cross));
+            if (iconButton("##leave", ic.leave, bs, col.red, withAlpha(col.red, 40), if (a.server != null) tr("Fechar a sala") else tr("Sair da sala"))) a.askLeave();
+            at += bs + gap;
+        }
+
+        // recolher / abrir
+        c.igSetCursorScreenPos(Place.pos(vertical, at, cross));
+        const chev: []const u8 = if (vertical)
+            (if ((a.cfg.dock_side == 1) == mini) &iconArr(0xF054) else &iconArr(0xF053))
+        else if (mini) ic.chev_up else ic.chev_down;
+        if (iconButton("##dockmini", chev, bs, col.muted, col.hover, if (mini) tr("Abrir a barra") else tr("Recolher a barra (o vídeo ganha o espaço dela)"))) {
+            a.cfg.dock_mini = !mini;
+            config.save(&a.cfg);
+        }
+    }
+
+    /// Pra que lado a barra vai, pelo lugar onde ela foi solta.
+    fn dockTarget(o: c.ImVec2_c, size: c.ImVec2_c, m: c.ImVec2_c) u8 {
+        if (m.x < o.x + size.x * 0.25) return 1;
+        if (m.x > o.x + size.x * 0.75) return 2;
+        return 0;
     }
 
     /// Nome curto da rota (tabela das estatísticas).
@@ -5301,9 +5522,30 @@ pub const App = struct {
         // quem está ao vivo: clicar assiste (o clique não fazia nada, e a lista
         // é o primeiro lugar onde o recém-chegado clica); de novo, para
         const live_stream: ?u32 = if (m.id == my_id) null else if (m.streaming) proto.streamId(m.id, proto.kind_screen) else if (m.camera()) proto.streamId(m.id, proto.kind_camera) else null;
-        if (left_click) if (live_stream) |st| {
-            if (a.findView(st) != null) a.unwatch(st) else a.watch(st);
+        // bot com painel: o que ele mostra (o título) embaixo do nome; clicar
+        // abre os controles dele (de qualquer canal)
+        var sub_buf: [120]u8 = undefined;
+        var sub_len: usize = 0;
+        var has_panel = false;
+        if (m.bot) if (a.client) |cl| {
+            cl.mutex.lock();
+            defer cl.mutex.unlock();
+            if (cl.panelOf(m.id)) |pe| {
+                has_panel = true;
+                const t = if (pe.title.len > 0) pe.title else pe.kicker;
+                sub_len = @min(t.len, sub_buf.len);
+                while (sub_len > 0 and sub_len < t.len and t[sub_len] & 0xC0 == 0x80) sub_len -= 1;
+                @memcpy(sub_buf[0..sub_len], t[0..sub_len]);
+            }
         };
+        if (left_click) {
+            if (live_stream) |st| {
+                if (a.findView(st) != null) a.unwatch(st) else a.watch(st);
+            } else if (has_panel) {
+                a.panel_bot = m.id;
+                a.open_panel = true;
+            }
+        }
         if (a.n_member_rects < a.member_rects.len) {
             a.member_rects[a.n_member_rects] = .{ .id = m.id, .x0 = p.x, .y0 = p.y, .x1 = p.x + row_w, .y1 = p.y + h };
             a.n_member_rects += 1;
@@ -5320,7 +5562,7 @@ pub const App = struct {
                 i18n.bufPrint(&ob, "OP do #{s}: manda no canal", .{op.where}) catch ""
             else
                 "";
-            const watch_line: []const u8 = if (live_stream) |st| (if (a.findView(st) != null) tr("Clique: parar de assistir") else tr("Clique: assistir")) else "";
+            const watch_line: []const u8 = if (live_stream) |st| (if (a.findView(st) != null) tr("Clique: parar de assistir") else tr("Clique: assistir")) else if (has_panel) tr("Clique: abrir os controles") else "";
             const t = std.fmt.bufPrintZ(&tip, "{s}{s}{s}{s}{s}{s}{s}{s}", .{
                 watch_line,                       if (watch_line.len > 0 and op_line.len + route.len + action.len > 0) "\n" else "",
                 op_line,                          if (op_line.len > 0 and route.len + action.len > 0) "\n" else "",
@@ -5338,10 +5580,11 @@ pub const App = struct {
         drawAvatarSpeaking(d, v2(p.x + S(22), p.y + h / 2), S(15), m.id, m.nameSlice(), m.streaming, speaking);
         if (speaking) redrawIn(0.15); // a bolinha apaga sozinha quando a pessoa para
         const name_col = if (m.id == my_id) col.header else col.text;
-        drawTextF(d, font_semibold, 14.5, v2(p.x + S(46), p.y + (h - S(18)) / 2), name_col, m.nameSlice());
+        const name_y = if (sub_len > 0) p.y + S(4) else p.y + (h - S(18)) / 2;
+        drawTextF(d, font_semibold, 14.5, v2(p.x + S(46), name_y), name_col, m.nameSlice());
         const ns = textSizeF(font_semibold, 14.5, m.nameSlice());
         var tx = p.x + S(50) + ns.x;
-        if (m.bot) tx += botBadge(d, v2(tx, p.y + (h - S(14)) / 2)) + S(6);
+        if (m.bot) tx += botBadge(d, v2(tx, name_y + S(2))) + S(6);
         if (m.owner) {
             drawTextF(d, font_regular, 11, v2(tx, p.y + (h - S(13)) / 2), col.yellow, ic.crown);
             tx += S(18);
@@ -5380,6 +5623,13 @@ pub const App = struct {
             }
             rx = bx - S(10);
         };
+        if (sub_len > 0) {
+            const sy = p.y + S(23);
+            drawTextF(d, font_regular, 10, v2(p.x + S(46), sy + S(1.5)), if (hovered) col.blurple_hover else col.blurple, ic.music);
+            var eb: [160]u8 = undefined;
+            const sx = p.x + S(46) + S(15);
+            drawTextF(d, font_regular, 11.5, v2(sx, sy), col.muted, ellipsizeMiddle(font_regular, 11.5, sub_buf[0..sub_len], @max(S(20), rx - S(24) - sx), &eb));
+        }
         // câmera, microfone desligado / silenciado pelo admin, surdo, rota
         const iy = p.y + (h - S(14)) / 2;
         if (m.camera()) {
@@ -5447,18 +5697,43 @@ pub const App = struct {
             cl.sendChat("!join", 0, target.id);
             c.igCloseCurrentPopup();
         }
-        c.igDummy(v2(0, S(4)));
-        // volume da voz dessa pessoa, só pra mim (0–200%)
-        textColored(col.faint, tr("Volume da voz"));
+        // o painel do bot (embed fixo dele): controla daqui, de qualquer canal
+        if (target.bot and cl.hasPanel(target.id) and
+            menuItem(fmtZ("{s}  Abrir os controles###mbotpanel", .{ic.sliders}), 0))
+        {
+            a.panel_bot = target.id;
+            a.open_panel = true;
+            c.igCloseCurrentPopup();
+        }
+        menuSection("", 0);
+        // volume da voz dessa pessoa, só pra mim (0–200%): ícone e nome na
+        // coluna dos itens, a porcentagem na direita e a régua embaixo
         var pct: i32 = @intFromFloat(@round(cl.voiceVolume(a.menu_target) * 100));
         const before = pct;
-        sliderStyled("##vvol", &pct, 0, 200, "%d%%", S(220));
-        // salva no arquivo quando solta o slider (não a cada quadro do arrasto)
-        var save = c.igIsItemDeactivatedAfterEdit();
+        const vp = c.igGetCursorScreenPos();
+        const vh = S(22);
+        c.igDummy(v2(S(menu_w), vh));
+        c.igSetCursorScreenPos(v2(vp.x + S(23), vp.y + vh));
+        _ = menuSlider("##vvol", &pct, 0, 200, S(menu_w) - S(26));
+        // salva no arquivo quando solta a régua (não a cada quadro do arrasto)
+        var save = c.igIsItemDeactivated();
         var new_pct: ?i32 = if (pct != before) pct else null;
+        {
+            const vd = c.igGetWindowDrawList();
+            const vi = if (pct == 0) ic.volume_off else ic.volume;
+            const is = textSizeF(font_regular, 13, vi);
+            drawTextF(vd, font_regular, 13, v2(@round(vp.x + S(8) + (S(16) - is.x) / 2), @round(vp.y + (vh - is.y) / 2)), col.blurple, vi);
+            const lbl = tr("Volume da voz");
+            const ls = textSizeF(font_regular, 13.5, lbl);
+            drawTextF(vd, font_regular, 13.5, v2(vp.x + S(30), @round(vp.y + (vh - ls.y) / 2)), col.text, lbl);
+            var pb: [8]u8 = undefined;
+            const ps = std.fmt.bufPrint(&pb, "{d}%", .{pct}) catch "";
+            const pz = textSizeF(fonts_mono.regular, 12, ps);
+            drawTextF(vd, fonts_mono.regular, 12, v2(vp.x + S(menu_w) - S(8) - pz.x, @round(vp.y + (vh - pz.y) / 2)), if (pct == 100) col.muted else col.header, ps);
+        }
         const muted = pct == 0;
         c.igDummy(v2(0, S(2)));
-        if (menuItem(if (muted) tr("Voltar a ouvir###vmute") else tr("Silenciar pra mim###vmute"), 0)) {
+        if (menuItem(if (muted) fmtZ("{s}  Voltar a ouvir###vmute", .{ic.volume}) else fmtZ("{s}  Silenciar pra mim###vmute", .{ic.volume_off}), 0)) {
             new_pct = if (muted) 100 else 0;
             save = true;
         }
@@ -5518,14 +5793,14 @@ pub const App = struct {
             if (can_op and menuItem(if (t_op) fmtZ("{s}  Tirar o OP do #{s}###cop", .{ ic.crown, op_chan }) else fmtZ("{s}  Dar OP no #{s}###cop", .{ ic.crown, op_chan }), 0))
                 cl.chanAdmin(proto.chan_act_op, op_chan, if (t_op) "0" else "1", target.id);
             if (can_manage) {
-                if (ops_known and c.igBeginMenu(fmtZ("{s}  Levar pro canal###cmove", .{ic.arrow_right}), true)) {
+                if (ops_known and menuSub(ic.arrow_right, tr("Levar pro canal"), "###cmove")) {
                     // os abertos e os que eu mando (nos outros o servidor não deixa)
                     for (chans[0..n_chans], 0..) |*ch, i| {
                         if (std.mem.eql(u8, ch.nameSlice(), op_chan)) continue;
                         if (ch.flags & proto.chan_mine == 0 and ch.flags & (proto.chan_locked | proto.chan_password) != 0) continue;
-                        if (c.igMenuItem_Bool(fmtZ("#{s}###omv{d}", .{ ch.nameSlice(), i }), null, false, true)) cl.chanAdmin(proto.chan_act_move, ch.nameSlice(), "", target.id);
+                        if (menuItem(fmtZ("{s}  #{s}###omv{d}", .{ ic.comments, ch.nameSlice(), i }), 0)) cl.chanAdmin(proto.chan_act_move, ch.nameSlice(), "", target.id);
                     }
-                    c.igEndMenu();
+                    menuSubEnd();
                 }
                 c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);
                 if (menuItem(fmtZ("{s}  Tirar do #{s} (não volta)###cban", .{ ic.ban, op_chan }), 0))
@@ -5543,11 +5818,10 @@ pub const App = struct {
             cl.admin(proto.admin_stop_stream, target.id, proto.kind_camera);
         if (i_am_owner and menuItem(if (target.admin) fmtZ("{s}  Tirar o admin###aadmin", .{ic.shield}) else fmtZ("{s}  Dar admin###aadmin", .{ic.shield}), 0))
             cl.admin(proto.admin_set_admin, target.id, @intFromBool(!target.admin));
-        c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);
         if (menuItem(if (target.noDraw()) fmtZ("{s}  Devolver o pincel###adraw", .{ic.pen}) else fmtZ("{s}  Tirar o pincel (apaga os desenhos)###adraw", .{ic.pen}), 0))
             cl.admin(proto.admin_draw, target.id, @intFromBool(target.noDraw()));
         // levar pra outro canal (o chat e a call)
-        if (cl.chans_supported and c.igBeginMenu(fmtZ("{s}  Levar pro canal###amove", .{ic.arrow_right}), true)) {
+        if (cl.chans_supported and menuSub(ic.arrow_right, tr("Levar pro canal"), "###amove")) {
             cl.mutex.lock();
             var names: [proto.max_channels][proto.channel_name_max]u8 = undefined;
             var lens: [proto.max_channels]usize = undefined;
@@ -5558,15 +5832,47 @@ pub const App = struct {
             }
             cl.mutex.unlock();
             for (0..nch) |i| {
-                if (c.igMenuItem_Bool(fmtZ("#{s}###mv{d}", .{ names[i][0..lens[i]], i }), null, false, true)) cl.chanAdmin(proto.chan_act_move, names[i][0..lens[i]], "", target.id);
+                if (menuItem(fmtZ("{s}  #{s}###mv{d}", .{ ic.comments, names[i][0..lens[i]], i }), 0)) cl.chanAdmin(proto.chan_act_move, names[i][0..lens[i]], "", target.id);
             }
-            c.igEndMenu();
+            menuSubEnd();
         }
+        // o que tira a pessoa: vermelho, separado do resto
+        menuSection("", 0);
+        c.igPushStyleColor_U32(c.ImGuiCol_Text, col.red);
         if (op_len > 0 and menuItem(fmtZ("{s}  Tirar do #{s} (não volta)###cban", .{ ic.ban, op_chan }), 0))
             cl.chanAdmin(proto.chan_act_ban, op_chan, "", target.id);
         if (menuItem(fmtZ("{s}  Expulsar da sala###akick", .{ic.ban}), 0)) cl.admin(proto.admin_kick, target.id, 0);
         if (menuItem(fmtZ("{s}  Banir (não volta mais)###aban", .{ic.gavel}), 0)) cl.admin(proto.admin_ban, target.id, 0);
         c.igPopStyleColor(1);
+    }
+
+    /// Os controles de um bot (o painel dele, bot_panel): o cartão flutuando
+    /// com os botões, que funciona de qualquer canal.
+    fn botPanelPopup(a: *App, cl: *Client) void {
+        if (a.open_panel) {
+            _ = c.igOpenPopup_Str("botpanel", 0);
+            a.open_panel = false;
+        }
+        c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, v2(S(6), S(6)));
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_PopupRounding, S(12) * col.round);
+        c.igPushStyleVar_Float(c.ImGuiStyleVar_PopupBorderSize, 0);
+        c.igPushStyleColor_U32(c.ImGuiCol_PopupBg, col.bg_float);
+        defer {
+            c.igPopStyleColor(1);
+            c.igPopStyleVar(3);
+        }
+        if (!c.igBeginPopup("botpanel", 0)) return;
+        defer c.igEndPopup();
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        // o bot saiu ou tirou o painel
+        const e = cl.panelOf(a.panel_bot) orelse return c.igCloseCurrentPopup();
+        a.panel_shown = a.frame_no;
+        const d = drawList();
+        c.ImDrawList_ChannelsSplit(d, 2);
+        c.ImDrawList_ChannelsSetCurrent(d, 1);
+        a.drawEmbed(cl, null, e, S(400), a.panel_bot);
+        c.ImDrawList_ChannelsMerge(d);
     }
 
     fn drawUpnpState(a: *App, m: *upnp.Mapper, d: *c.ImDrawList, inner: f32) void {
@@ -6131,7 +6437,7 @@ pub const App = struct {
         const d = drawList();
         c.ImDrawList_ChannelsSplit(d, 2);
         c.ImDrawList_ChannelsSetCurrent(d, 1);
-        a.drawEmbed(cl, line, line.embed.?, pw);
+        a.drawEmbed(cl, line, line.embed.?, pw, 0);
         c.ImDrawList_ChannelsMerge(d);
         a.panel_h = c.igGetCursorScreenPos().y - top + S(10);
         return h;
@@ -6162,8 +6468,9 @@ pub const App = struct {
             const low = a.moodColor(cl);
             c.ImDrawList_AddRectFilledMultiColor(d, o, v2(o.x + size.x, o.y + size.y), col.bg_main, col.bg_main, low, low);
         }
-        // a cápsula de controles tem o espaço dela embaixo (nada fica por baixo)
-        const dock_h: f32 = if (a.theater) 0 else S(86);
+        // a barra de controles tem o espaço dela (nada fica por baixo), embaixo
+        // ou de lado; recolhida, flutua e o vídeo ganha tudo
+        const ds = a.dockSpace();
         defer if (!a.theater) a.drawDock(cl, o, size);
 
         // monta a lista de quadros
@@ -6226,14 +6533,16 @@ pub const App = struct {
         }
 
         const top_h: f32 = 0;
-        const area_x = o.x + S(if (a.theater) 0 else 16);
-        const area_y = o.y + top_h + S(if (a.theater) 0 else 16);
-        const area_w = size.x - S(if (a.theater) 0 else 32);
-        var area_h = size.y - top_h - S(if (a.theater) 0 else 32) - dock_h;
+        // margem do palco: fina quando a barra está recolhida (tela pro vídeo)
+        const margin = S(if (a.theater) 0 else if (a.cfg.dock_mini) 8 else 16);
+        const area_x = o.x + margin + ds.left;
+        const area_y = o.y + top_h + margin;
+        const area_w = size.x - margin * 2 - ds.left - ds.right;
+        var area_h = size.y - top_h - margin * 2 - ds.bottom;
         area_h -= a.drawStagePanel(cl, tiles[0..n], area_x, area_y + area_h, area_w);
 
         if (n == 0) {
-            a.drawEmpty(cl, v2(o.x, o.y + top_h), v2(size.x, size.y - top_h - dock_h));
+            a.drawEmpty(cl, v2(o.x + ds.left, o.y + top_h), v2(size.x - ds.left - ds.right, size.y - top_h - ds.bottom));
             return;
         }
 
@@ -8143,14 +8452,17 @@ pub const App = struct {
     /// Cartão de bot (embed): barra de cor, capa, título com link, descrição
     /// em markdown, campos, barra de progresso que anda sozinha e botões que
     /// mandam o clique pro bot. O texto da mensagem fica só pra app antigo.
-    fn drawEmbed(a: *App, cl: *Client, line: *const client_mod.ChatLine, e: *const embed_mod.Embed, max_w: f32) void {
+    /// Desenha um cartão. `line` = a mensagem do chat dele (a imagem e o id dos
+    /// botões); null = o painel do bot `panel_bot` (os botões vão pra ele).
+    fn drawEmbed(a: *App, cl: *Client, line: ?*const client_mod.ChatLine, e: *const embed_mod.Embed, max_w: f32, panel_bot: u32) void {
         const d = drawList();
+        const uid: u32 = if (line) |l| l.id else panel_bot ^ 0x5A00_0000;
         const p0 = c.igGetCursorScreenPos();
         const w = @max(S(220), @min(max_w, S(520)));
         const pad = S(14);
         const accent = if (e.color != 0) rgbRuntime(@intCast(e.color & 0xFFFFFF)) else col.blurple;
         const img_in_card = e.flags & (embed_mod.flag_thumb | embed_mod.flag_big_image) != 0;
-        const tex: ?*ImgTex = if (line.img != null and img_in_card) a.chatImageTex(line) else null;
+        const tex: ?*ImgTex = if (line) |l| (if (l.img != null and img_in_card) a.chatImageTex(l) else null) else null;
         const thumb: f32 = if (e.hasThumb() and tex != null) S(88) else 0;
         const left = p0.x + S(4) + pad; // depois da barra de cor
         const right = p0.x + w - pad;
@@ -8170,7 +8482,7 @@ pub const App = struct {
             if (e.url.len > 0) {
                 c.igSetCursorScreenPos(v2(left, y));
                 c.igSetNextItemAllowOverlap();
-                if (c.igInvisibleButton(fmtZ("##et{d}", .{line.id}).ptr, v2(@max(1, ts.x), ts.y), 0)) _ = openPath(e.url);
+                if (c.igInvisibleButton(fmtZ("##et{d}", .{uid}).ptr, v2(@max(1, ts.x), ts.y), 0)) _ = openPath(e.url);
                 if (c.igIsItemHovered(0)) {
                     c.igSetMouseCursor(c.ImGuiMouseCursor_Hand);
                     title_col = accent;
@@ -8185,7 +8497,7 @@ pub const App = struct {
         if (e.description.len > 0) {
             noteEmoji(e.description);
             c.igSetCursorScreenPos(v2(left, y));
-            a.drawRichText(e.description, text_right, line.id ^ 0x7E1A_0000);
+            a.drawRichText(e.description, text_right, uid ^ 0x7E1A_0000);
             y = c.igGetCursorScreenPos().y + S(2);
         }
         // capa no canto (a imagem da mensagem)
@@ -8289,7 +8601,7 @@ pub const App = struct {
                 }
                 c.igSetCursorScreenPos(v2(bx, y));
                 c.igSetNextItemAllowOverlap();
-                const clicked = c.igInvisibleButton(fmtZ("##eb{d}_{d}", .{ line.id, i }).ptr, v2(bw, bh), 0);
+                const clicked = c.igInvisibleButton(fmtZ("##eb{d}_{d}", .{ uid, i }).ptr, v2(bw, bh), 0);
                 const hov = c.igIsItemHovered(0) and !btn.disabled;
                 const held = c.igIsItemActive() and !btn.disabled;
                 const base = switch (btn.style) {
@@ -8310,7 +8622,9 @@ pub const App = struct {
                 }
                 if (btn.label.len > 0) drawTextF(d, font_semibold, 13, v2(tx, y + (bh - S(16)) / 2), fg, btn.label);
                 if (hov) c.igSetMouseCursor(c.ImGuiMouseCursor_Hand);
-                if (clicked and !btn.disabled) cl.sendEmbedAction(line.id, @intCast(i));
+                if (clicked and !btn.disabled) {
+                    if (line) |l| cl.sendEmbedAction(l.id, @intCast(i)) else cl.sendPanelAction(panel_bot, @intCast(i));
+                }
                 bx += bw + S(8);
             }
             y += bh;
@@ -8686,7 +9000,7 @@ pub const App = struct {
             if (line.embed) |em| {
                 c.igDummy(v2(0, S(2)));
                 c.igSetCursorScreenPos(v2(left, c.igGetCursorScreenPos().y));
-                a.drawEmbed(cl, line, em, size.x - S(48) - S(36));
+                a.drawEmbed(cl, line, em, size.x - S(48) - S(36), 0);
             } else if (line.file_id != 0) {
                 a.drawFileCard(cl, line, size.x - S(48) - S(36));
             } else if (text.len > 0 and markdown.hasMarkup(text)) {
@@ -10980,7 +11294,7 @@ pub const App = struct {
         try w.print("{{\"screen\":{f},\"home_error\":{f},\"frames\":{d}", .{ s(@tagName(a.screen)), s(a.home_error[0..a.home_error_len]), frame_count });
         try w.print(",\"mic\":{},\"deaf\":{},\"share_modal\":{},\"settings_modal\":{},\"theater\":{},\"fullscreen\":{},\"controls_hidden\":{}", .{ a.mic != null, a.deaf, a.share_modal, a.settings_modal, a.theater, a.fullscreen, a.controls_hidden });
         if (a.focused) |f| try w.print(",\"focused\":{d}", .{f}) else try w.writeAll(",\"focused\":null");
-        try w.print(",\"hide_strip\":{}", .{a.cfg.hide_strip});
+        try w.print(",\"hide_strip\":{},\"dock_side\":{d},\"dock_mini\":{},\"panel_open\":{}", .{ a.cfg.hide_strip, a.cfg.dock_side, a.cfg.dock_mini, a.panel_shown + 2 >= a.frame_no });
         if (a.diag_stream) |f| try w.print(",\"diag\":{d}", .{f}) else try w.writeAll(",\"diag\":null");
         try w.print(",\"reconnect\":{{\"attempt\":{d},\"waiting\":{}}}", .{ a.reconnect.attempt, a.reconnect.waiting });
         try w.print(",\"home_tab\":{d},\"show_advanced\":{},\"own_tunnel_open\":{},\"chat_visible\":{},\"side_visible\":{},\"chat_unread\":{d}", .{
@@ -11153,6 +11467,11 @@ pub const App = struct {
                     try w.print("{d}", .{id});
                 }
                 try w.writeAll("]}");
+            }
+            try w.writeAll("],\"panels\":[");
+            for (cl.panels[0..cl.n_panels], 0..) |pn, i| {
+                if (i > 0) try w.writeByte(',');
+                try w.print("{{\"bot\":{d},\"title\":{f},\"description\":{f},\"buttons\":{d}}}", .{ pn.bot, s(pn.embed.title), s(pn.embed.description), pn.embed.n_buttons });
             }
             try w.writeAll("],\"pointers\":[");
             for (cl.pointers.items, 0..) |pt, i| {
@@ -11440,6 +11759,8 @@ pub fn applyStyle() void {
     style.*.GrabMinSize = 14;
     ImGuiStyle_ScaleAllSizes(style, scale);
     style.*.FontSizeBase = 15 * scale * font_k;
+    // círculos mais redondos (avatares, bolinhas): mais lados, mesmo custo na prática
+    style.*.CircleTessellationMaxError = 0.12;
     applyThemeStyle();
 }
 

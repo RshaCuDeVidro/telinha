@@ -92,8 +92,15 @@ class Click:
     call: str = ""  # a call de quem clicou ("" = fora de call)
     _client: Any = field(default=None, repr=False, compare=False)
 
+    @property
+    def panel(self) -> bool:
+        """O clique veio do painel do bot (set_panel), não de uma mensagem."""
+        return self.message_id == 0
+
     async def reply(self, text: str, **kw):
-        """Responde citando o cartão (no canal do bot)."""
+        """Responde citando o cartão (no canal do bot); do painel, só pra quem clicou."""
+        if self.panel:
+            return await self.whisper(text)
         return await self._client.send(text, reply_to=self.message_id, **kw)
 
     async def whisper(self, text: str):

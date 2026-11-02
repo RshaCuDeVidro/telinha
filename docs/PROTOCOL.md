@@ -129,7 +129,7 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | type | name | direction | payload |
 |---|---|---|---|
 | 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (what it decodes, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (channel to join; empty or missing = the default), `str token_bot` (bots only; see `feat_bot`), `str senha_do_canal` (if the channel has a password; the app sends the last one it used there, to get back to the channel when it reconnects) |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1), `u8 recursos_do_servidor` (`srv_*`: 1 = private messages and quoted replies, 2 = files, 4 = cards, 8 = deleting channels, 16 = channel OPs; an older server doesn't send it = 0) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1), `u8 recursos_do_servidor` (`srv_*`: 1 = private messages and quoted replies, 2 = files, 4 = cards, 8 = deleting channels, 16 = channel OPs, 32 = bot panel; an older server doesn't send it = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (the server closes right after) |
 | 4 | members | S→C | `u8 sala` (1 = locked), `u16 n`, n × member (below), n × `str versão_do_app` (same order), n × `u8 tipo` (1 = bot, 2 = OP of my text channel, 4 = OP of my call's channel, 8 = created my text channel, 16 = created my call's channel; an older server doesn't send it) |
 | 5 | chat | C→S | `str texto`, image (optional, below), `u32 resposta` (id of the message replied to; 0 = none), `u32 pra` (private to this member; 0 = the channel), `u32 n` + n bytes of a [card](#cards) (0 = none) |
@@ -186,6 +186,9 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | 43 | embed_action | C→S | `u32 id`, `u8 botão`: someone clicked a button on a card |
 | 43 | embed_action | S→C | `u32 id`, `u8 botão`, `u32 de`, `str nome` and, if the card's author is a bot, `str canal`, `str call` of whoever clicked; goes only to the card's author |
 | 44 | bans | S→C | `u16 n`, n × (`u32 id`, `str nome`, `u32 há_quantos_s`): who is banned; only to admins, after `welcome` (if anyone is) and whenever it changes (empty to someone who lost admin). `admin` action 9 with `alvo` = `id` unbans (0 = everyone) |
+| 45 | bot_panel | C→S | bots only: `u32 n`, card (`n = 0` removes the panel); see "Bot panel" |
+| 45 | bot_panel | S→C | `u32 bot id`, `u32 n`, card (`n = 0`: no panel anymore) |
+| 46 | panel_action | C→S | `u32 bot id`, `u8 botão`: click on a panel button; reaches the bot as an `embed_action` with `id` 0 |
 
 `versão_do_app` ("3.0.0") only serves to warn whoever is out of date (the
 interface shows "so-and-so is on telinha X: there is a new version"); empty = not
@@ -528,6 +531,18 @@ own, at most once every 120 ms per person. Only the author gets it; nobody
 else sees the click. A bot learns where whoever clicked is, and where whoever
 wrote to it is (in `chat`, also in private): that's how `/msg Bot !join`
 works from any channel.
+
+**Bot panel** (`bot_panel`, `srv_*` 32): a fixed card of the bot, outside the
+chat, shown to everyone in the room in any channel (in the app: clicking the
+bot in the list opens its controls; the title shows under its name). The bot
+sends `bot_panel` with the card (same format as the end of `chat`; `n = 0`
+removes it), at most once every 200 ms (faster is ignored; the SDK coalesces).
+The server keeps the latest and relays it to whoever understands cards (not to
+bots or the browser): right away, and to whoever joins later, right after the
+member list. When the bot leaves, everyone gets an empty panel. Clicks:
+`panel_action` (`u32 bot id`, `u8 botão`), with the same limit as
+`embed_action`; it reaches the bot as an `embed_action` for message **0**, with
+who clicked and where they are.
 
 ### Browser
 

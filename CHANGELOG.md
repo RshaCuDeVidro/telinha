@@ -2,6 +2,52 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.9.0
+
+Talks to 3.8 and older (back to 3.1). Same protocol (7); the bot panel only shows with a 3.9 server and app.
+
+### Highlights
+
+- 🎛️ **Control the bot from any channel**: bots can now have a fixed panel. Its title shows under the bot's name in the list, and a click opens the controls (play, pause, skip, stop, loop and "come to my call"), even from another channel. The music bot already uses it.
+- ↔️ **Control bar wherever you want**: drag it by the handle (or click the handle) to move the bar from the bottom to the left or right; the collapse button leaves only the essentials floating and the video gets all the space.
+- 🖱️ **Nicer right-click menu**: voice volume on its own slider (snapping to 100%), an icon on every item, "Move to channel" in the same style, and only what removes the person in red.
+- 🔵 **Truly round profile pictures**: avatar edges no longer look jagged.
+- 🔗 **https invite pasted by itself**: copy the invite link anywhere and open telinha, and "Join a room" is already filled in (long invites with several routes were being skipped).
+- 🌐 **Fuller-screen browser page**: cinema mode (only the video, `t` key), collapsible chat (`c`), fullscreen (`f`), floating glass controls and the pwnd look.
+
+<!-- detalhes -->
+
+### All changes
+
+- **Bot panel**: new messages `bot_panel` (45) and `panel_action` (46) and
+  server feature 32. The server keeps each bot's latest panel, sends it to
+  whoever joins (right after the member list), allows one change every 200 ms
+  and clears it when the bot leaves; a click reaches the bot as a card click
+  on message 0, with where the person is.
+- **SDK 0.5.0**: `await bot.set_panel(embed)` (coalesces quick changes, sent
+  again after a reconnect) and `click.panel`; `click.reply` from the panel
+  answers only the person who clicked.
+- **Music bot**: a panel with what's playing, the queue, the volume and the
+  buttons; "Here" brings the bot to the clicker's call; when idle, "Radio"
+  plays a radio and "Bring to my call" calls it.
+- **People list**: a bot with a panel shows its title under the name; clicking
+  it opens the controls; on right-click, "Open the controls".
+- **Control bar**: bottom, left or right (six-dot handle: dragging shows the
+  three places, a click switches sides); collapse and expand; saved. It's its
+  own window, so when collapsed over the video the click is its own. The stage
+  loses less margin with the bar collapsed.
+- **Menus**: volume slider drawn in the menu, the "Move to channel" submenu in
+  the items' style, a separator before what removes the person.
+- **Avatars**: edge drawn with an antialiased stroke and rounder circles.
+- **Pasted invite**: the https link of long invites went past the 512-byte
+  limit and was ignored; it now fits up to 2 KB.
+- **Web page**: cinema mode, collapsible chat (remembered in the browser),
+  `f`/`t`/`c` shortcuts, SVG icons instead of symbols, controls in a floating
+  capsule, pwnd theme colors.
+- **QA**: `painel_do_bot_e_barra` scenario (panel from the list, the menu and
+  another channel; bar on all three sides, collapsed and expanded; panel goes
+  away when the bot leaves).
+
 ## 3.8.0
 
 Talks to 3.7, 3.6, 3.5, 3.4, 3.3, 3.2 and 3.1. The protocol is now 7; the new app joins older servers and the new server accepts older apps (protocol 6) for one more version.

@@ -61,6 +61,8 @@ class MsgType(enum.IntEnum):
     CHAT_EDIT = 42
     EMBED_ACTION = 43
     BANS = 44
+    BOT_PANEL = 45
+    PANEL_ACTION = 46
 
 
 # hello: o que este cliente entende (feat_*)
@@ -75,6 +77,7 @@ FEAT_EMBED = 32
 SRV_DM = 1
 SRV_FILES = 2
 SRV_EMBED = 4
+SRV_BOT_PANEL = 32  # painel de bot (bot_panel, panel_action)
 
 # cartões (embed): ver docs/PROTOCOL.md "Cartões"
 EMBED_VERSION = 1

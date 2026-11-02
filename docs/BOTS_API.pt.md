@@ -269,6 +269,17 @@ O clique chega só no autor do cartão, no máximo a cada 120 ms por pessoa, e
 edição no máximo a cada 200 ms (o SDK espera a vez, então duas edições
 seguidas chegam as duas). O SDK lembra os botões dos últimos 300 cartões.
 
+### Painel do bot
+
+`await bot.set_panel(embed)` põe um cartão fixo do bot fora do chat: todo
+mundo da sala vê de qualquer canal (no app, clicar no bot na lista abre os
+controles, e o título aparece embaixo do nome dele). Os botões funcionam como
+os de um cartão do chat; o clique chega com `click.panel == True`. Chame de
+novo a cada mudança de estado (o SDK junta as seguidas e manda a última; o
+servidor aceita uma a cada 200 ms) e `set_panel(None)` pra tirar. Ao
+reconectar, o SDK manda o painel de novo. Servidor antes da 3.9 ignora. O bot
+de música usa pra tocar, pausar, pular e chamar pra call de quem clicou.
+
 ### Click
 
 | | |
@@ -276,7 +287,8 @@ seguidas chegam as duas). O SDK lembra os botões dos últimos 300 cartões.
 | `message_id`, `button` | qual cartão e qual botão (a partir de 0) |
 | `member_id`, `member_name` | quem clicou |
 | `channel`, `call` | onde a pessoa está |
-| `await reply(texto, **kw)` | responde citando o cartão |
+| `panel` | o clique veio do painel do bot (`set_panel`), não de uma mensagem |
+| `await reply(texto, **kw)` | responde citando o cartão (do painel: só pra quem clicou) |
 | `await whisper(texto)` | responde só pra quem clicou (privada) |
 
 ## Invite

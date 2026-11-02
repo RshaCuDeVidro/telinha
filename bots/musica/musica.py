@@ -84,10 +84,12 @@ class MusicBot(Bot):
     async def _on_ready(self, _welcome) -> None:
         if self._loop_task is None:
             self._loop_task = asyncio.create_task(self._play_loop())
+        await self._update_panel()
 
     def enqueue(self, tracks: list[Track]) -> int:
         self.queue.extend(tracks)
         self.wake.set()
+        self._panel_soon()
         return len(self.queue)
 
     # ---------------------------------------------------------------- tocando
@@ -131,7 +133,7 @@ class MusicBot(Bot):
             return None
 
     # ---------------------------------------------------------------- cartões
-    def _np_embed(self, t: Track, *, closing: str = "") -> Embed:
+    def _np_embed(self, t: Track, *, closing: str = "", buttons: bool = True) -> Embed:
         paused = self.player.paused and not closing
         e = Embed(
             title=t.title[:200],
@@ -150,7 +152,7 @@ class MusicBot(Bot):
         e.add_field("Requested by", t.requested_by or "—")
         nxt = self.queue[0].title if self.queue and not self.shuffle else (f"{len(self.queue)} in the queue (shuffle)" if self.queue else "—")
         e.add_field("Up next", nxt[:80])
-        if not closing:
+        if not closing and buttons:
             e.add_button("Resume" if paused else "Pause", icon=Icon.PLAY if paused else Icon.PAUSE, style="primary", on_click=self._btn_pause)
             e.add_button("Skip", icon=Icon.NEXT, on_click=self._btn_skip, disabled=False)
             e.add_button("Stop", icon=Icon.STOP, style="danger", on_click=self._btn_stop)
@@ -168,8 +170,10 @@ class MusicBot(Bot):
         emb = self._np_embed(t)
         emb.thumbnail = img is not None
         self.card = await self._say(f"Now playing: {t.title}" + (f" — {t.artist}" if t.artist else ""), embed=emb, image=img)
+        await self._update_panel()
 
     async def _refresh_card(self) -> None:
+        await self._update_panel()
         if self.card and self.current:
             emb = self._np_embed(self.current)
             emb.thumbnail = self.card.embed.thumbnail if self.card.embed else False
@@ -188,6 +192,59 @@ class MusicBot(Bot):
         except Exception as e:  # noqa: BLE001
             log.info("couldn't close the card: %s", e)
         self.card = None
+        await self._update_panel()
+
+    # ---------------------------------------------------------------- painel (de qualquer canal)
+    def _panel_embed(self) -> Embed:
+        """O painel fixo do bot (set_panel): o que toca e os controles, pra
+        quem está em qualquer canal (no app: clique no bot na lista)."""
+        where = f"#{self.call}" if self.call else "not in a call"
+        t = self.current
+        if t is None:
+            e = Embed(kicker="MUSIC · IDLE", title="Nothing playing", color=ACCENT_INFO,
+                      description=f"`{self.prefix}play song` in the chat, or start a radio here.",
+                      footer=f"{where} · volume {round(self.player.volume * 100)}%" + (f" · {len(self.queue)} in the queue" if self.queue else ""))
+            if self.src.radios:
+                e.add_button("Radio", icon=Icon.RADIO, style="primary", on_click=self._pnl_radio)
+            e.add_button("Bring to my call", icon=Icon.JOIN, on_click=self._pnl_join)
+            return e
+        e = self._np_embed(t, buttons=False)
+        e.thumbnail = False  # a capa vai na mensagem do chat; o painel é só o cartão
+        e.footer = f"{where} · {e.footer}"
+        paused = self.player.paused
+        e.add_button("Resume" if paused else "Pause", icon=Icon.PLAY if paused else Icon.PAUSE, style="primary", on_click=self._btn_pause)
+        e.add_button("Skip", icon=Icon.NEXT, on_click=self._btn_skip)
+        e.add_button("Stop", icon=Icon.STOP, style="danger", on_click=self._btn_stop)
+        e.add_button(f"Loop {self.loop}" if self.loop != "off" else "Loop", icon=Icon.REPEAT, style="success" if self.loop != "off" else "neutral", on_click=self._btn_loop)
+        e.add_button("Here", icon=Icon.JOIN, on_click=self._pnl_join)
+        return e
+
+    async def _update_panel(self) -> None:
+        try:
+            await self.set_panel(self._panel_embed())
+        except Exception as e:  # noqa: BLE001 (a conexão pode ter caído; volta ao reconectar)
+            log.info("couldn't update the panel: %s", e)
+
+    def _panel_soon(self) -> None:
+        try:
+            self._panel_job = asyncio.get_running_loop().create_task(self._update_panel())
+        except RuntimeError:
+            pass  # fora do loop (testes)
+
+    async def _pnl_join(self, click: Click) -> None:
+        if not click.call:
+            await click.whisper("Join a call first, then click again.")
+        elif click.call == self.call:
+            await click.whisper(f"I'm already in #{self.call}.")
+        elif not await self._go(click.call):
+            await click.whisper(f"Couldn't join #{click.call} (it may have a password or be locked).")
+
+    async def _pnl_radio(self, click: Click) -> None:
+        if not await self._follow_click(click):
+            return
+        r = self.src.radio(random.choice(list(self.src.radios)))
+        r.requested_by = click.member_name
+        self.enqueue([r])
 
     # ---------------------------------------------------------------- botões do cartão
     async def _btn_pause(self, click: Click) -> None:
@@ -285,8 +342,9 @@ class MusicBot(Bot):
         await self.join_call(target)
         for _ in range(30):
             if self.call == target:
-                return True
+                break
             await asyncio.sleep(0.1)
+        await self._update_panel()
         return self.call == target
 
     async def _follow(self, ctx: Context) -> None:
@@ -503,6 +561,7 @@ class MusicBot(Bot):
             self.queue.clear()
             await self.player.stop()
             await self.leave_call()
+            await self._update_panel()
             await ctx.send("Left the call.")
 
         @cmd("help", aliases=["ajuda", "commands", "comandos"], help="this card")

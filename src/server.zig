@@ -104,6 +104,8 @@ const Conn = struct {
     bot: bool = false, // conectou como bot (feat_bot): marcado na lista, nunca admin
     last_edit_ms: u64 = 0, // chat_edit (limite de ritmo)
     last_action_ms: u64 = 0, // embed_action (limite de ritmo)
+    panel: ?[]u8 = null, // painel de bot (bot_panel): o cartão fixo dele
+    last_panel_ms: u64 = 0,
     view_sizes: std.ArrayList(ViewSize) = .empty, // em que tamanho ela mostra cada transmissão
     cursor_sec: u64 = 0, // limite do cursor (como o do ponteiro)
     cursor_count: u32 = 0,
@@ -193,6 +195,7 @@ const Conn = struct {
             self.queue.deinit();
             self.watching.deinit(gpa);
             self.view_sizes.deinit(gpa);
+            if (self.panel) |p| gpa.free(p);
             self.waiting_key.deinit(gpa);
             self.log_buf.deinit(gpa);
             self.flows.deinit(gpa);
@@ -446,6 +449,8 @@ const chat_img_interval_ms = 1500;
 /// Editar mensagem (chat_edit) e clicar em botão de cartão: no máximo tantas por segundo.
 const chat_edit_interval_ms = 200;
 const embed_action_interval_ms = 120;
+/// Painel de bot: no máximo uma mudança a cada tanto (o SDK junta as do meio).
+const panel_interval_ms = 200;
 
 /// O cartão (embed) no fim de chat/chat_edit: u32 tamanho + bytes. null = sem
 /// (tamanho 0, campo ausente de app antigo, ou versão que não é a nossa).
@@ -1524,7 +1529,8 @@ pub const Server = struct {
         const cap: usize = switch (typ) {
             .voice => 8 * 1024,
             .audio => 16 * 1024,
-            .ack, .ping, .keyreq, .watch, .view_size, .cursor, .pointer, .voice_state, .stream_stop, .codec, .react, .kick, .file_cancel, .file_get => 1024,
+            .ack, .ping, .keyreq, .watch, .view_size, .cursor, .pointer, .voice_state, .stream_stop, .codec, .react, .kick, .file_cancel, .file_get, .panel_action => 1024,
+            .bot_panel => 4 + proto.embed_max,
             else => proto.max_msg,
         };
         if (payload.len > cap) return error.BadMessage;
@@ -1594,6 +1600,29 @@ pub const Server = struct {
                 if (now -% cn.last_action_ms < embed_action_interval_ms) return; // clique repetido: ignora
                 cn.last_action_ms = now;
                 try s.embedAction(cn, id, button);
+            },
+            .bot_panel => {
+                const n = try r.u32_();
+                if (n > proto.embed_max) return error.BadMessage;
+                const bytes = try r.take(n);
+                if (n > 0 and bytes[0] != proto.embed_version) return;
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                if (!cn.bot) return;
+                const now = sync.nowMs();
+                if (now -% cn.last_panel_ms < panel_interval_ms) return; // rajada: ignora
+                cn.last_panel_ms = now;
+                try s.setPanel(cn, bytes);
+            },
+            .panel_action => {
+                const bot_id = try r.u32_();
+                const button = try r.u8_();
+                s.mutex.lock();
+                defer s.mutex.unlock();
+                const now = sync.nowMs();
+                if (now -% cn.last_action_ms < embed_action_interval_ms) return; // clique repetido: ignora
+                cn.last_action_ms = now;
+                try s.panelAction(cn, bot_id, button);
             },
             .file_put => try s.onFilePut(cn, &r),
             .file_data => try s.onFileData(cn, &r),
@@ -2369,6 +2398,7 @@ pub const Server = struct {
         // sala parecia vazia, sem botão de assistir); depois o que já foi dito nele
         s.pushChannels(cn);
         try s.broadcastMembersFor(cn.chan, cn.call);
+        s.pushPanels(cn);
         try s.pushHistory(cn);
         if (needs_pw) pushNotice(cn, proto.notice_channel, "Esse canal tem senha.", proto.notice_channel_needs_password) catch {};
         // dá pra chamar gente pelo navegador: o link (o app mostra "copiar")
@@ -2427,6 +2457,8 @@ pub const Server = struct {
         }
         s.log("{s} saiu ({d} na sala)", .{ cn.nameSlice(), s.conns.items.len });
         if (s.stopped.load(.acquire)) return;
+        // o painel do bot que saiu some de quem desenha
+        if (cn.panel != null) s.setPanel(cn, &.{}) catch {};
         var tmp: [96]u8 = undefined;
         s.broadcastChat(cn.chan, std.fmt.bufPrint(&tmp, "{s} saiu da sala", .{cn.nameSlice()}) catch "") catch {};
         if (cn.call) |cc| if (cc != cn.chan) s.dropIfEmpty(cc);
@@ -2552,6 +2584,65 @@ pub const Server = struct {
         author.queue.pushOwned(try b.finish());
     }
 
+    /// Painel de bot: o cartão fixo dele (vazio = tira), pra quem desenha
+    /// cartões, em qualquer canal. Mutex travado.
+    fn setPanel(s: *Server, cn: *Conn, bytes: []const u8) !void {
+        if (bytes.len == 0) {
+            const old = cn.panel orelse return;
+            gpa.free(old);
+            cn.panel = null;
+        } else {
+            const owned = try gpa.dupe(u8, bytes);
+            if (cn.panel) |old| gpa.free(old);
+            cn.panel = owned;
+        }
+        const m = try panelMsg(cn);
+        defer m.release();
+        for (s.conns.items) |o| if (wantsPanels(o)) o.queue.push(m);
+    }
+
+    fn wantsPanels(o: *const Conn) bool {
+        return o.authed and !o.bot and !o.web and o.features & proto.feat_embed != 0;
+    }
+
+    /// bot_panel: u32 id do bot, u32 n, cartão (n = 0: não tem mais).
+    fn panelMsg(bot: *const Conn) !*proto.Msg {
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.bot_panel);
+        try b.u32_(bot.id);
+        const p = bot.panel orelse &.{};
+        try b.u32_(@intCast(p.len));
+        try b.bytes(p);
+        return b.finish();
+    }
+
+    /// Quem acabou de entrar recebe os painéis dos bots que já estão na sala.
+    fn pushPanels(s: *Server, cn: *Conn) void {
+        if (!wantsPanels(cn)) return;
+        for (s.conns.items) |o| if (o != cn and o.bot and o.panel != null) {
+            cn.queue.pushOwned(panelMsg(o) catch return);
+        };
+    }
+
+    /// Clique num botão do painel: vai pro bot como um embed_action da
+    /// mensagem 0, com quem clicou e onde ela está (pra ele ir pra call dela).
+    fn panelAction(s: *Server, cn: *Conn, bot_id: u32, button: u8) !void {
+        if (button >= proto.embed_max_buttons or bot_id == cn.id) return;
+        const bot = for (s.conns.items) |o| {
+            if (o.id == bot_id and o.authed and o.bot and o.panel != null) break o;
+        } else return;
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        try b.begin(.embed_action);
+        try b.u32_(0);
+        try b.u8_(button);
+        try b.u32_(cn.id);
+        try b.str(cn.nameSlice());
+        try writeWhere(&b, cn);
+        bot.queue.pushOwned(try b.finish());
+    }
+
     /// Onde a pessoa está: str canal de texto, str call ("" = fora de call).
     fn writeWhere(b: *proto.Builder, cn: *const Conn) !void {
         try b.str(if (cn.authed) cn.chan.nameSlice() else "");
@@ -2603,7 +2694,7 @@ pub const Server = struct {
     }
 
     fn serverFeatures(s: *Server) u8 {
-        return proto.srv_dm | proto.srv_chan_delete | proto.srv_chan_op | (if (s.files.ok) proto.srv_files else 0);
+        return proto.srv_dm | proto.srv_embed | proto.srv_chan_delete | proto.srv_chan_op | proto.srv_bot_panel | (if (s.files.ok) proto.srv_files else 0);
     }
 
     // ------------------------------------------------------------ arquivos

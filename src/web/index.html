@@ -10,9 +10,10 @@
 </head>
 <body>
 <header class="top">
-  <div class="brand"><span class="logo" aria-hidden="true">▣</span> <b>telinha</b></div>
+  <div class="brand"><svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="4" width="19" height="13" rx="2.5"/><path d="M6.5 9.5l2.5 2-2.5 2M11 14h4"/><path d="M8 20.5h8"/></svg><b>telinha</b></div>
   <div class="room"><span id="room-name"></span> <span id="chan" class="chan"></span></div>
   <div class="status"><span id="dot" class="dot"></span><span id="status-text"></span></div>
+  <button id="btn-side" class="icon-btn" type="button" hidden><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M15 4v16"/></svg></button>
 </header>
 
 <main id="join" class="join" hidden>
@@ -42,7 +43,8 @@
         <button id="btn-sound" class="ctl"></button>
         <input id="vol" type="range" min="0" max="100" value="100" aria-label="volume">
         <span id="info" class="info"></span>
-        <button id="btn-full" class="ctl" title="tela cheia">⛶</button>
+        <button id="btn-cinema" class="ctl sq" type="button"><svg viewBox="0 0 24 24"><rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M2.5 9h19M2.5 15h19"/></svg></button>
+        <button id="btn-full" class="ctl sq" type="button"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
       </div>
     </div>
   </section>
@@ -53,7 +55,7 @@
     <div id="chat" class="chat" aria-live="polite"></div>
     <form id="chat-form" class="chat-form">
       <input id="chat-in" maxlength="4000" autocomplete="off">
-      <button id="btn-send" type="submit">➤</button>
+      <button id="btn-send" type="submit" aria-label="enviar"><svg viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z"/></svg></button>
     </form>
   </aside>
 </main>

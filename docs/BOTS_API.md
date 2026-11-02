@@ -270,6 +270,17 @@ A click reaches only the card's author, at most every 120 ms per person, and
 edits at most every 200 ms (the SDK waits for its turn, so two edits in a row
 both get through). The SDK remembers the buttons of the last 300 cards.
 
+### Bot panel
+
+`await bot.set_panel(embed)` puts a fixed card of the bot outside the chat:
+everyone in the room sees it from any channel (in the app, clicking the bot in
+the list opens its controls, and the title shows under its name). Its buttons
+work like a chat card's; the click arrives with `click.panel == True`. Call it
+again on every state change (the SDK coalesces and sends the latest; the
+server takes one every 200 ms) and `set_panel(None)` to remove it. After a
+reconnect the SDK sends the panel again. Servers before 3.9 ignore it. The
+music bot uses it to play, pause, skip and come to the caller's call.
+
 ### Click
 
 | | |
@@ -277,7 +288,8 @@ both get through). The SDK remembers the buttons of the last 300 cards.
 | `message_id`, `button` | which card and which button (from 0) |
 | `member_id`, `member_name` | who clicked |
 | `channel`, `call` | where they are |
-| `await reply(text, **kw)` | answers quoting the card |
+| `panel` | the click came from the bot panel (`set_panel`), not a message |
+| `await reply(text, **kw)` | answers quoting the card (from the panel: only to whoever clicked) |
 | `await whisper(text)` | answers only to whoever clicked (private) |
 
 ## Invite

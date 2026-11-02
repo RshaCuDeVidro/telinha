@@ -232,6 +232,9 @@ pub const ChatLine = struct {
 /// O servidor provou quem é? (crypto.Identity)
 pub const IdState = enum { unknown, verified, none, mismatch };
 
+/// Painel de um bot (bot_panel): o cartão fixo dele.
+pub const Panel = struct { bot: u32, embed: *embed_mod.Embed };
+
 pub const ChanInfo = struct {
     name: [proto.channel_name_max]u8 = undefined,
     name_len: u8 = 0,
@@ -1007,10 +1010,14 @@ pub const Client = struct {
     members: std.ArrayList(Member) = .empty, // quem está na minha call (e eu)
     chan_members: std.ArrayList(Member) = .empty, // quem está no meu canal de texto
     room_bots: std.ArrayList(Member) = .empty, // bots em outros canais (dá pra chamar pra minha call)
+    // painéis de bot (bot_panel): o cartão fixo de cada bot, usado de qualquer canal
+    panels: [8]Panel = undefined,
+    n_panels: usize = 0,
     chat: std.ArrayList(ChatLine) = .empty,
     chat_count: u64 = 0, // total de mensagens já recebidas (pra rolar o chat)
     chat_new: u64 = 0, // mensagens novas (não de histórico) — notificação
     chat_react_gen: u32 = 0, // muda quando chega reação (a UI redesenha)
+    panel_gen: u32 = 0, // muda quando um painel de bot muda
     chat_edits: u32 = 0, // muda quando uma mensagem é editada (a UI mede de novo)
     /// Último id de mensagem visto (o histórico que chega depois não repete).
     chat_last_id: u32 = 0,
@@ -1168,6 +1175,7 @@ pub const Client = struct {
             cl.members.deinit(gpa);
             cl.chan_members.deinit(gpa);
             cl.room_bots.deinit(gpa);
+            for (cl.panels[0..cl.n_panels]) |p| p.embed.deinit();
             for (cl.chat.items) |*l| l.free();
             cl.chat.deinit(gpa);
             cl.notices.deinit(gpa);
@@ -1893,6 +1901,27 @@ pub const Client = struct {
                     break;
                 }
             },
+            .bot_panel => {
+                // o painel de um bot mudou (n = 0: tirou ou o bot saiu)
+                const bot = try r.u32_();
+                const n = try r.u32_();
+                const e: ?*embed_mod.Embed = if (n > 0 and n <= proto.embed_max) embed_mod.parse(try r.take(n), sync.nowMs()) catch null else null;
+                cl.mutex.lock();
+                defer cl.mutex.unlock();
+                cl.panel_gen +%= 1;
+                for (cl.panels[0..cl.n_panels], 0..) |*p, i| if (p.bot == bot) {
+                    p.embed.deinit();
+                    if (e) |ne| p.embed = ne else {
+                        cl.panels[i] = cl.panels[cl.n_panels - 1];
+                        cl.n_panels -= 1;
+                    }
+                    return;
+                };
+                const ne = e orelse return;
+                if (cl.n_panels == cl.panels.len) return ne.deinit();
+                cl.panels[cl.n_panels] = .{ .bot = bot, .embed = ne };
+                cl.n_panels += 1;
+            },
             .react => {
                 const id = try r.u32_();
                 const from = try r.u32_();
@@ -2338,6 +2367,26 @@ pub const Client = struct {
         std.mem.writeInt(u32, m.payload()[0..4], chat_id, .little);
         m.payload()[4] = button;
         cl.queue.pushOwned(m);
+    }
+
+    /// Clique num botão do painel de um bot.
+    pub fn sendPanelAction(cl: *Client, bot: u32, button: u8) void {
+        const m = proto.Msg.alloc(.panel_action, 5) catch return;
+        std.mem.writeInt(u32, m.payload()[0..4], bot, .little);
+        m.payload()[4] = button;
+        cl.queue.pushOwned(m);
+    }
+
+    /// O painel do bot (mutex travado; o ponteiro vale enquanto ele estiver travado).
+    pub fn panelOf(cl: *Client, bot: u32) ?*embed_mod.Embed {
+        for (cl.panels[0..cl.n_panels]) |p| if (p.bot == bot) return p.embed;
+        return null;
+    }
+
+    pub fn hasPanel(cl: *Client, bot: u32) bool {
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        return cl.panelOf(bot) != null;
     }
 
     pub fn sendReact(cl: *Client, chat_id: u32, emoji: u8, on: bool) void {

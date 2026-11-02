@@ -21,7 +21,7 @@ pub const version: u16 = 7;
 /// O anterior (servidor e app ainda falam com ele; o servidor pode recusar).
 pub const version_old: u16 = 6;
 /// Versão do app (vai no hello/welcome/members pra avisar quem está desatualizado).
-pub const app_version = "3.8.0";
+pub const app_version = "3.9.0";
 pub const max_msg = 32 * 1024 * 1024;
 /// Marcador em claro no lugar do tamanho: "senha errada" (o servidor não
 /// conseguiu decifrar a primeira mensagem).
@@ -100,6 +100,9 @@ pub const Type = enum(u8) {
     chat_edit = 42, // C→S u32 id, str texto, u32 n, embed (só o autor) | S→C o mesmo: a mensagem mudou
     embed_action = 43, // C→S u32 id, u8 botão | S→C u32 id, u8 botão, u32 de, str nome (só pro autor da mensagem)
     bans = 44, // S→C (só pra admin) u16 n, n × (u32 id, str nome, u32 há quantos segundos): quem está banido (admin_unban desfaz)
+    // painel de bot: um cartão fixo dele, que dá pra usar de qualquer canal (ver docs/PROTOCOL.md "Painel do bot")
+    bot_panel = 45, // C→S (só bot) u32 n, embed (n = 0 tira) | S→C u32 id do bot, u32 n, embed
+    panel_action = 46, // C→S u32 id do bot, u8 botão (chega no bot como embed_action com id 0)
     _,
 };
 
@@ -332,7 +335,8 @@ pub const srv_files: u8 = 2; // arquivos na sala (file_*)
 pub const srv_embed: u8 = 4; // cartões, edição e botões (chat_edit, embed_action)
 pub const srv_chan_delete: u8 = 8; // entende chan_act_delete
 pub const srv_chan_op: u8 = 16; // OPs de canal (chan_act_op, chan_creator, member_kind_op_*), OP leva gente
-pub const server_features: u8 = srv_dm | srv_files | srv_embed | srv_chan_delete | srv_chan_op;
+pub const srv_bot_panel: u8 = 32; // painel de bot (bot_panel, panel_action)
+pub const server_features: u8 = srv_dm | srv_files | srv_embed | srv_chan_delete | srv_chan_op | srv_bot_panel;
 /// Cartão (embed): bloco opaco pro servidor, no fim do chat (u32 tamanho + bytes).
 /// Formato em docs/PROTOCOL.md; o primeiro byte é a versão.
 pub const embed_max = 8 * 1024;
