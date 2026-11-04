@@ -14,6 +14,7 @@
   <img alt="Zig 0.16" src="https://img.shields.io/badge/zig-0.16-f7a41d?style=flat-square">
   <img alt="Versão 3.7.0" src="https://img.shields.io/badge/vers%C3%A3o-3.7.0-9333ea?style=flat-square">
   <img alt="Licença MIT" src="https://img.shields.io/badge/licen%C3%A7a-MIT-22c55e?style=flat-square">
+  <a href="https://ko-fi.com/reeshasx"><img alt="Ko-fi" src="https://img.shields.io/badge/Ko--fi-apoie-00b9fe?style=flat-square&logo=ko-fi&logoColor=white"></a>
 </p>
 
 <p align="center">

@@ -489,8 +489,9 @@ def header(lang, base, active, path, page_class=""):
 </header>"""
 
 
-def footer(lang, base):
+def footer(lang, base, kofi=True):
     t = UI[lang]
+    kofi_js = f'<script src="{base}assets/kofi.js" defer></script>\n' if kofi else ""
     lp = "" if lang == "pt" else "en/"
     return f"""<footer class="site-footer">
   <div class="footer-inner">
@@ -501,6 +502,7 @@ def footer(lang, base):
       <a href="{GH}/releases/latest" target="_blank" rel="noopener">releases</a>
       <a href="{GH}/issues" target="_blank" rel="noopener">issues</a>
       <a href="{GH}" target="_blank" rel="noopener">github</a>
+      <a href="https://ko-fi.com/reeshasx" target="_blank" rel="noopener">ko-fi</a>
     </span>
   </div>
 </footer>
@@ -513,7 +515,7 @@ def footer(lang, base):
 </div>
 <button class="tk-top-btn" type="button" aria-label="{t['top']}" title="{t['top']}">{icon("arrow-up")}</button>
 <script src="{base}assets/site.js" defer></script>
-</body>
+{kofi_js}</body>
 </html>
 """
 
@@ -656,7 +658,7 @@ def build(out):
         desc = ("Te chamaram pra uma sala do telinha: abra no app ou veja como instalar." if lang == "pt"
                 else "You're invited to a telinha room: open it in the app or see how to install.")
         page = head(lang, title, desc, base, path, '\n<meta name="robots" content="noindex">') + header(lang, base, "", path)
-        page += f'\n<main class="home" id="conteudo">\n{content}\n</main>\n' + footer(lang, base)
+        page += f'\n<main class="home" id="conteudo">\n{content}\n</main>\n' + footer(lang, base, kofi=False)
         write(os.path.join(out, path, "index.html"), page)
 
     # 4) arquivos: estilo, fontes, imagens, busca, 404, sitemap
@@ -685,7 +687,7 @@ def build(out):
     <div class="dl-row"><a class="btn primary" href="{SITE_PATH}">{t['notfound_back']}</a><a class="btn" href="{SITE_PATH}en/">{UI['en']['notfound_back']}</a></div>
   </div>
 </section></main>
-""" + footer("pt", SITE_PATH)
+""" + footer("pt", SITE_PATH, kofi=False)
     write(os.path.join(out, "404.html"), nf)
     urls = [site.page_path(l) for l in LANGS] + [site.page_path(p["lang"], p["slug"]) for p in site.pages]
     write(os.path.join(out, "sitemap.xml"), '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
