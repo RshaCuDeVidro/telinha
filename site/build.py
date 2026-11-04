@@ -34,6 +34,7 @@ from pygments.util import ClassNotFound
 REPO = "RshaCuDeVidro/telinha"
 GH = f"https://github.com/{REPO}"
 GH_BLOB = f"{GH}/blob/main/"
+KOFI = "https://ko-fi.com/M7E72A1EGZ"
 SITE_URL = f"https://{REPO.split('/')[0].lower()}.github.io/{REPO.split('/')[1]}/"
 SITE_PATH = urlsplit(SITE_URL).path  # "/telinha/" (pro 404, que é servido em qualquer caminho)
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -486,6 +487,7 @@ def header(lang, base, active, path, page_class=""):
     <nav class="main-nav" aria-label="principal">{links}</nav>
     <div class="header-tools">
       <button class="search-btn" type="button" title="{t['searchTitle']}">{icon("search")}<span class="label">{t['search']}</span><kbd>Ctrl K</kbd></button>
+      {kofi_button(lang, base, "kofi-head")}
       <div class="remote" role="group" title="{t['channel']}" aria-label="{t['channel']}">
         <button class="ch-btn" type="button" data-ch-step="-1" aria-label="{t['ch_down']}">{icon("chevron-down")}</button>
         <span class="ch-now" data-ch-now aria-live="polite">CH 00</span>
@@ -496,13 +498,19 @@ def header(lang, base, active, path, page_class=""):
       <button class="icon-btn menu-btn" type="button" aria-expanded="false" aria-controls="mobile-nav" title="{t['menu_btn']}" aria-label="{t['menu_btn']}">{icon("menu", "open")}{icon("close", "shut")}</button>
     </div>
   </div>
-  <nav class="mobile-nav" id="mobile-nav" aria-label="principal" hidden>{links}<a href="{GH}" target="_blank" rel="noopener">GitHub {icon("external")}</a></nav>
+  <nav class="mobile-nav" id="mobile-nav" aria-label="principal" hidden>{links}<a href="{GH}" target="_blank" rel="noopener">GitHub {icon("external")}</a><a href="{KOFI}" target="_blank" rel="noopener">Ko-fi {icon("external")}</a></nav>
 </header>"""
 
 
-def footer(lang, base, kofi=True):
+def kofi_button(lang, base, cls=""):
+    """O botão do Ko-fi: um link e uma imagem servida daqui, sem nenhum script de fora."""
+    alt = "Buy Me a Coffee at ko-fi.com" if lang == "en" else "Me pague um café no ko-fi.com"
+    return (f'<a class="kofi{(" " + cls) if cls else ""}" href="{KOFI}" target="_blank" rel="noopener">'
+            f'<img src="{base}assets/kofi6.png" alt="{alt}" width="580" height="146" decoding="async"></a>')
+
+
+def footer(lang, base):
     t = UI[lang]
-    kofi_js = f'<script src="{base}assets/kofi.js" defer></script>\n' if kofi else ""
     lp = lang_prefix(lang)
     return f"""<footer class="site-footer">
   <div class="footer-inner">
@@ -513,8 +521,8 @@ def footer(lang, base, kofi=True):
       <a href="{GH}/releases/latest" target="_blank" rel="noopener">releases</a>
       <a href="{GH}/issues" target="_blank" rel="noopener">issues</a>
       <a href="{GH}" target="_blank" rel="noopener">github</a>
-      <a href="https://ko-fi.com/reeshasx" target="_blank" rel="noopener">ko-fi</a>
     </span>
+    {kofi_button(lang, base)}
   </div>
 </footer>
 <div class="search-overlay" role="dialog" aria-modal="true" aria-label="{t['searchTitle']}">
@@ -526,7 +534,7 @@ def footer(lang, base, kofi=True):
 </div>
 <button class="tk-top-btn" type="button" aria-label="{t['top']}" title="{t['top']}">{icon("arrow-up")}</button>
 <script src="{base}assets/site.js" defer></script>
-{kofi_js}</body>
+</body>
 </html>
 """
 
@@ -542,7 +550,7 @@ def sidebar(site, lang, base, current):
             cur = ' aria-current="page"' if slug == current else ""
             parts.append(f'<li><a class="tk-tree-link{cls}"{cur} href="{base}{site.page_path(lang, slug)}">{html.escape(p["nav"])}</a></li>')
         parts.append("</ul></li>")
-    parts.append("</ul></aside>")
+    parts.append(f"</ul>{kofi_button(lang, base, 'kofi-side')}</aside>")
     return "".join(parts)
 
 
@@ -641,7 +649,7 @@ def build(out):
         base = "../" * path.count("/")
         content = read(f"site/home.{lang}.html")
         wall = both_langs(read("site/wall.html"), lang).replace("{{husky}}", husky("h1", "on-wall")).replace("{{stream_code}}", stream_code())
-        content = content.replace("{{wall}}", wall).replace("{{channels}}", channel_tiles(lang)).replace("{{husky}}", husky("h2", "asleep"))
+        content = content.replace("{{wall}}", wall).replace("{{channels}}", channel_tiles(lang)).replace("{{husky}}", husky("h2", "asleep")).replace("{{husky_mug}}", husky("h4", "on-mug")).replace("{{kofi}}", kofi_button(lang, base, "kofi-big"))
         for m in re.finditer(r"\{\{img\}\}([^\"']+)", content):
             site.images.add("docs/img/" + m.group(1))
         content = content.replace("{{img}}", base + "img/")
@@ -664,7 +672,7 @@ def build(out):
         desc = ("Te chamaram pra uma sala do telinha: abra no app ou veja como instalar." if lang == "pt"
                 else "You're invited to a telinha room: open it in the app or see how to install.")
         page = head(lang, title, desc, base, path, '\n<meta name="robots" content="noindex">') + header(lang, base, "", path)
-        page += f'\n<main class="home" id="conteudo">\n{content}\n</main>\n' + footer(lang, base, kofi=False)
+        page += f'\n<main class="home" id="conteudo">\n{content}\n</main>\n' + footer(lang, base)
         write(os.path.join(out, path, "index.html"), page)
 
     # 4) arquivos: estilo, fontes, imagens, busca, 404, sitemap
@@ -693,7 +701,7 @@ def build(out):
     <div class="dl-row"><a class="btn primary" href="{SITE_PATH}">{t['notfound_back']}</a><a class="btn" href="{SITE_PATH}pt/">{UI['pt']['notfound_back']}</a></div>
   </div>
 </section></main>
-""" + footer("en", SITE_PATH, kofi=False)
+""" + footer("en", SITE_PATH)
     write(os.path.join(out, "404.html"), nf)
     # o inglês morava em /en/: os links antigos continuam chegando (menos /en/j/, que é real)
     for slug in [None] + [p["slug"] for p in site.pages if p["lang"] == "en"]:

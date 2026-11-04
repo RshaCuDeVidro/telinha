@@ -28,7 +28,7 @@
   const pausing = new IntersectionObserver((list) => {
     list.forEach((e) => { if (e.isIntersecting) delete e.target.dataset.off; else e.target.dataset.off = ''; });
   }, { rootMargin: '80px' });
-  $$('[data-hero], [data-ticker], [data-wire]').forEach((el) => pausing.observe(el));
+  $$('[data-hero], [data-ticker], [data-wire], [data-ad]').forEach((el) => pausing.observe(el));
 
   // ---------------------------------------------------- a faixa do topo: o relógio do programa
   const tc = $('[data-tc]');
@@ -526,6 +526,31 @@
       const src = $('img', b); img.src = src.currentSrc || src.src; img.alt = src.alt; box.showModal();
     }));
     box.addEventListener('click', (e) => { if (e.target === box) box.close(); });
+  }
+
+  // ---------------------------------------------------- o intervalo: dá pra pular o anúncio, como em todo anúncio
+  const ad = $('[data-ad]');
+  if (ad) {
+    const mugHusky = $('.husky.on-mug', ad);
+    mugHusky.addEventListener('click', () => { if (!calm) hearts(mugHusky, 4); });
+    const skip = $('[data-ad-skip]', ad);
+    if (!calm) {
+      let left = 5; let tick = 0;
+      const full = skip.innerHTML;
+      const show = () => { skip.textContent = skip.dataset.wait + ' ' + left; };
+      skip.classList.add('wait'); skip.setAttribute('aria-disabled', 'true'); show();
+      new IntersectionObserver((l, io) => {
+        if (!l[0].isIntersecting) { clearInterval(tick); return; }
+        clearInterval(tick);
+        tick = setInterval(() => {
+          if (document.hidden) return;
+          left--;
+          if (left > 0) { show(); return; }
+          clearInterval(tick); io.disconnect();
+          skip.innerHTML = full; skip.classList.remove('wait'); skip.removeAttribute('aria-disabled');
+        }, 1000);
+      }, { threshold: 0.4 }).observe(ad);
+    }
   }
 
   // ---------------------------------------------------- o outro husky, dormindo no fim da página
