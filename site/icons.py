@@ -5,11 +5,10 @@ terceiros). Vão uma vez por página num <svg> escondido (sprite) e cada uso
 
 PATHS = {
     "search": '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
-    "sun": '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4L6 18M18 6l1.4-1.4"/>',
-    "moon": '<path d="M20 14.2A8.2 8.2 0 1 1 9.8 4a6.6 6.6 0 0 0 10.2 10.2z"/>',
-    "crt": '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M6.5 8h11M6.5 10.5h11M6.5 13h11M9 21h6M12 17v4"/>',
     "menu": '<path d="M4 7h16M4 12h16M4 17h16"/>',
     "close": '<path d="M6 6l12 12M18 6L6 18"/>',
+    "chevron-up": '<path d="M6 15l6-6 6 6"/>',
+    "chevron-down": '<path d="M6 9l6 6 6-6"/>',
     "arrow-up": '<path d="M12 19V5M6 11l6-6 6 6"/>',
     "arrow-right": '<path d="M5 12h14M13 6l6 6-6 6"/>',
     "edit": '<path d="M4 20h4.2L19 9.2 14.8 5 4 15.8V20z"/><path d="M13.3 6.5l4.2 4.2"/>',

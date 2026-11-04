@@ -128,7 +128,7 @@ python3 -m http.server -d _site 8000   # http://127.0.0.1:8000
 ```
 
 Página nova entra em `SECTIONS` no `site/build.py`. A página inicial é
-`site/home.pt.html` / `site/home.en.html`; o visual é o `site/assets/style.css`.
+`site/home.pt.html` / `site/home.en.html`, com a sala de controle em `site/wall.html`; o visual é o `site/assets/style.css`, as animações o `site/assets/home.js`, e os canais vêm do `src/theme.zig`.
 
 ## Soltando uma versão
 

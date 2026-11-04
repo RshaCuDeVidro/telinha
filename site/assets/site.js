@@ -11,17 +11,60 @@
   const T = window.TELINHA || { lang: 'pt', base: './', t: {} };
   const t = (k) => T.t[k] || k;
 
-  // ---------------------------------------------------- tema e CRT
-  $$('.theme-toggle').forEach((b) => b.addEventListener('click', () => {
-    const light = root.dataset.theme !== 'light';
-    root.dataset.theme = light ? 'light' : 'dark';
-    store.set('telinha-theme', root.dataset.theme);
-  }));
-  $$('.crt-toggle').forEach((b) => b.addEventListener('click', () => {
-    const off = root.dataset.crt !== 'off';
-    if (off) root.dataset.crt = 'off'; else delete root.dataset.crt;
-    store.set('telinha-crt', off ? 'off' : 'on');
-  }));
+  // ---------------------------------------------------- canais (os temas do app)
+  const calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (calm) root.classList.add('calm');
+  const channels = T.channels || [];
+  const chIndex = () => Math.max(0, channels.findIndex((c) => c.id === root.dataset.theme));
+  const chLabel = (i) => 'CH ' + String(i).padStart(2, '0');
+  function paintChannel() {
+    const i = chIndex();
+    $$('[data-ch-now]').forEach((el) => { el.textContent = chLabel(i); });
+    $$('[data-channel]').forEach((el) => { el.classList.toggle('on', el.dataset.channel === root.dataset.theme); el.setAttribute('aria-pressed', el.dataset.channel === root.dataset.theme); });
+    const meta = $('meta[name="theme-color"]');
+    if (meta) meta.content = getComputedStyle(root).getPropertyValue('--bg').trim() || meta.content;
+  }
+  // o chiado: uma tela pequena esticada, sorteada por uns poucos quadros e depois some
+  let zapCv = null;
+  function zap(apply) {
+    if (calm) { apply(); return; }
+    if (!zapCv) { zapCv = document.createElement('canvas'); zapCv.className = 'zap'; zapCv.width = 128; zapCv.height = 72; document.body.append(zapCv); }
+    const g = zapCv.getContext('2d'); const img = g.createImageData(128, 72); const px = new Uint32Array(img.data.buffer);
+    const t0 = performance.now(); let applied = false;
+    (function frame(now) {
+      const p = (now - t0) / 280;
+      if (!applied && p >= 0.4) { applied = true; apply(); }
+      if (p >= 1) { zapCv.style.opacity = 0; return; }
+      for (let i = 0; i < px.length; i++) { const v = Math.random() * 255 | 0; px[i] = 0xff000000 | (v << 16) | (v << 8) | v; }
+      g.putImageData(img, 0, 0);
+      zapCv.style.opacity = p < 0.55 ? 0.94 : 0.94 * (1 - (p - 0.55) / 0.45);
+      requestAnimationFrame(frame);
+    })(t0);
+  }
+  let osd = null;
+  function showOsd(i) {
+    if (!osd) { osd = document.createElement('div'); osd.className = 'osd'; osd.setAttribute('aria-hidden', 'true'); document.body.append(osd); }
+    osd.innerHTML = chLabel(i) + '<small></small>'; osd.lastChild.textContent = channels[i].name;
+    osd.classList.remove('show'); void osd.offsetWidth; osd.classList.add('show');
+  }
+  function tune(i) {
+    i = (i + channels.length) % channels.length;
+    if (channels[i].id === root.dataset.theme) { showOsd(i); return; }
+    zap(() => {
+      root.dataset.theme = channels[i].id;
+      store.set('telinha-theme', channels[i].id);
+      paintChannel(); showOsd(i);
+      dispatchEvent(new CustomEvent('telinha-channel', { detail: channels[i] }));
+    });
+  }
+  $$('[data-ch-step]').forEach((b) => b.addEventListener('click', () => tune(chIndex() + Number(b.dataset.chStep))));
+  $$('[data-channel]').forEach((b) => b.addEventListener('click', () => tune(channels.findIndex((c) => c.id === b.dataset.channel))));
+  // como num controle remoto: as teclas 0 a 6 mudam de canal
+  addEventListener('keydown', (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey || !/^[0-9]$/.test(e.key) || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
+    if (channels[Number(e.key)]) tune(Number(e.key));
+  });
+  paintChannel();
   // escolheu o idioma no seletor: a raiz não redireciona mais
   $$('.lang-switch').forEach((a) => a.addEventListener('click', () => store.set('telinha-lang', a.dataset.lang)));
 
@@ -32,7 +75,7 @@
   function onScroll() {
     ticking = false;
     const h = document.documentElement.scrollHeight - innerHeight;
-    if (bar) bar.style.width = (h > 0 ? (scrollY / h) * 100 : 0) + '%';
+    if (bar) bar.style.transform = 'scaleX(' + (h > 0 ? scrollY / h : 0) + ')';
     if (top) top.classList.toggle('show', scrollY > 700);
     spy();
   }
@@ -94,35 +137,6 @@
     mnav.hidden = !mnav.hidden;
     menuBtn.setAttribute('aria-expanded', String(!mnav.hidden));
   });
-
-  // ---------------------------------------------------- o terminal do topo "digita" a sessão
-  // (sem JS, ou com "menos movimento", o texto já está todo lá)
-  const term = $('.term-body[data-boot]');
-  if (term && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    const lines = $$('span', term).map((sp) => ({ cls: sp.className, text: sp.textContent }));
-    const caret = () => { const c = document.createElement('span'); c.className = 'caret'; return c; };
-    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-    const visible = () => new Promise((r) => { if (!document.hidden) r(); else document.addEventListener('visibilitychange', function f() { if (!document.hidden) { document.removeEventListener('visibilitychange', f); r(); } }); });
-    (async function play() {
-      // duas vezes e para (com o texto inteiro na tela): nada fica animando pra sempre
-      for (let round = 0; round < 2; round++) {
-        term.textContent = '';
-        for (const l of lines) {
-          await visible();
-          const sp = document.createElement('span'); sp.className = l.cls; term.append(sp);
-          if (l.cls === 't-cmd') {
-            const c = caret(); sp.append(c);
-            for (const ch of l.text) { c.before(ch); await wait(28 + Math.random() * 45); }
-            await wait(260); c.remove();
-          } else {
-            sp.textContent = l.text; await wait(l.cls === 't-live' ? 700 : 340);
-          }
-        }
-        const c = caret(); term.append(c);
-        if (round === 0) await wait(6500);
-      }
-    })();
-  }
 
   // ---------------------------------------------------- gaveta no celular
   const drawerBtn = $('.tk-drawer-btn');

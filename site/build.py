@@ -39,6 +39,7 @@ SITE_PATH = urlsplit(SITE_URL).path  # "/telinha/" (pro 404, que é servido em q
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from icons import icon, sprite  # noqa: E402
+from husky import husky  # noqa: E402
 TOP = os.path.dirname(HERE)
 LANGS = ("pt", "en")
 
@@ -86,8 +87,8 @@ NAV = {
 UI = {
     "pt": {
         "home": "Início", "docs": "Docs", "server": "Servidor", "news": "Novidades", "bots": "Bots", "menu_btn": "Menu",
-        "search": "buscar", "searchTitle": "Buscar na documentação", "theme": "Tema claro/escuro",
-        "crt": "Efeito CRT", "other_lang": "English", "other_lang_short": "EN",
+        "search": "buscar", "searchTitle": "Buscar na documentação", "channel": "Trocar de canal (os temas do app)",
+        "ch_up": "Próximo canal", "ch_down": "Canal anterior", "other_lang": "English", "other_lang_short": "EN",
         "menu": "páginas", "top": "Voltar ao topo", "on_page": "nesta página",
         "edit": "editar esta página", "source": "ver o .md no GitHub", "updated": "atualizado",
         "read": "min de leitura", "prev": "anterior", "next": "próxima",
@@ -96,15 +97,15 @@ UI = {
         "noResults": "nada encontrado. tenta outra palavra?", "searchFail": "não deu pra carregar o índice da busca",
         "nav_keys": "↑↓ escolher · enter abrir · esc fechar",
         "footer": "telinha · licença MIT · feito com Zig",
-        "notfound_title": "404 — sinal perdido", "notfound": "Essa página não existe (ou mudou de lugar).",
+        "notfound_title": "404 — sinal perdido", "notfound": "Sem sinal: essa página não existe (ou mudou de lugar).",
         "notfound_back": "voltar pro início", "skip": "pular pro conteúdo",
         "callout": {"NOTE": "nota", "TIP": "dica", "IMPORTANT": "importante", "WARNING": "atenção", "CAUTION": "cuidado"},
         "desc": "Compartilhar a tela em grupo, com atraso baixo, no Linux e no Windows. Uma sala estilo Discord onde qualquer um transmite e todo mundo assiste, fala e conversa.",
     },
     "en": {
         "home": "Home", "docs": "Docs", "server": "Server", "news": "What's new", "bots": "Bots", "menu_btn": "Menu",
-        "search": "search", "searchTitle": "Search the docs", "theme": "Light/dark theme",
-        "crt": "CRT effect", "other_lang": "Português", "other_lang_short": "PT",
+        "search": "search", "searchTitle": "Search the docs", "channel": "Change the channel (the app's themes)",
+        "ch_up": "Next channel", "ch_down": "Previous channel", "other_lang": "Português", "other_lang_short": "PT",
         "menu": "pages", "top": "Back to top", "on_page": "on this page",
         "edit": "edit this page", "source": "view the .md on GitHub", "updated": "updated",
         "read": "min read", "prev": "previous", "next": "next",
@@ -113,13 +114,104 @@ UI = {
         "noResults": "nothing found. try another word?", "searchFail": "couldn't load the search index",
         "nav_keys": "↑↓ choose · enter open · esc close",
         "footer": "telinha · MIT license · made with Zig",
-        "notfound_title": "404 — signal lost", "notfound": "This page doesn't exist (or it moved).",
+        "notfound_title": "404 — signal lost", "notfound": "No signal: this page doesn't exist (or it moved).",
         "notfound_back": "back to the home page", "skip": "skip to content",
         "callout": {"NOTE": "note", "TIP": "tip", "IMPORTANT": "important", "WARNING": "warning", "CAUTION": "caution"},
         "desc": "Low-latency group screen sharing for Linux and Windows. A Discord-style room where anyone can go live and everyone can watch, talk and chat.",
     },
 }
 
+
+
+# ------------------------------------------------------------------ canais
+# Os temas do site são os temas do app, lidos do src/theme.zig: mudou lá, muda aqui.
+# O canal 00 (husky, as cores dos olhos do mascote) é só do site e fica no style.css.
+CHANNEL_NAMES = {"escuro": "Dark", "claro": "Light", "pwnd-claro": "pwnd light", "dracula": "Dracula"}
+
+
+def _rgb(hex6):
+    return tuple(int(hex6[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _hex(c):
+    return "#" + "".join(f"{round(v):02x}" for v in c)
+
+
+def _mix(a, b, t):
+    return tuple(a[i] + (b[i] - a[i]) * t for i in range(3))
+
+
+def _contrast(a, b):
+    def lum(c):
+        v = [(x / 255 / 12.92 if x / 255 <= 0.03928 else ((x / 255 + 0.055) / 1.055) ** 2.4) for x in c]
+        return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]
+    la, lb = sorted((lum(a), lum(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def _legible(c, bg, toward, need=4.5):
+    """Cor de texto: puxa `c` pra `toward` até dar pra ler no fundo (faint e alguns destaques não dão)."""
+    for i in range(21):
+        out = _mix(c, toward, i / 20)
+        if _contrast(out, bg) >= need:
+            return out
+    return toward
+
+
+def channels():
+    """[(id, nome pt, nome en, tokens CSS)] de cada tema do app."""
+    src = read("src/theme.zig")
+    out = []
+    for m in re.finditer(r'\.\{ \.id = "([^"]+)", \.name = "([^"]+)", \.pal = \.\{(.*?)\n    \}(, \.mono = true)? \},', src, re.S):
+        tid, name, body, mono = m.groups()
+        pal = {k: _rgb(v) for k, v in re.findall(r"\.(\w+) = rgb\(0x([0-9A-Fa-f]{6})\)", body)}
+        rnd = re.search(r"\.round = ([\d.]+)", body)
+        bg, text, acc = pal["bg_dark"], pal["text"], pal["blurple"]
+        dark = _contrast(bg, (0, 0, 0)) < _contrast(bg, (255, 255, 255))
+        on_accent = (255, 255, 255) if _contrast((255, 255, 255), acc) >= 3.4 else (6, 6, 8)
+        tokens = {
+            "--bg": bg, "--bg-2": pal["bg_side"], "--bg-3": pal["bg_main"], "--bg-4": pal["bg_float"],
+            "--line": _mix(bg, text, 0.14), "--line-2": _mix(bg, text, 0.26),
+            "--text": text, "--text-2": _legible(pal["muted"], bg, text), "--text-3": _legible(pal["faint"], bg, text),
+            "--head": pal["header"], "--accent": acc, "--accent-text": _legible(acc, bg, text),
+            "--on-accent": on_accent, "--accent-2": _legible(pal["yellow"], bg, text),
+            "--live": pal["red"], "--ok": _legible(pal["green"], bg, text),
+            "--fur": _mix(acc, (20, 20, 30), 0.72) if dark else _mix(acc, (40, 40, 60), 0.55),
+        }
+        css = ";".join(f"{k}:{_hex(v)}" for k, v in tokens.items())
+        css += f";--radius:{max(1, round(float(rnd.group(1)) * 8)) if rnd else 8}px;color-scheme:{'dark' if dark else 'light'}"
+        if mono:
+            css += ";--font-body:var(--font-mono);--font-label:var(--font-mono);--body-size:.93em"
+        out.append((tid, name, CHANNEL_NAMES.get(tid, name), css))
+    if len(out) < 6:
+        raise SystemExit("build.py: não achei os temas no src/theme.zig")
+    return out
+
+
+def channel_tiles(lang):
+    """Os botões da seção de canais: cada um é uma salinha pintada com as cores do próprio tema."""
+    tiles = []
+    for i, (tid, pt, en, _) in enumerate([("husky", "husky", "husky", "")] + channels()):
+        tiles.append(f"""<button class="ch-tile" type="button" data-theme="{tid}" data-channel="{tid}">
+  <span class="ch-mini" aria-hidden="true"><i class="m-side"><u></u><u></u><u></u></i><i class="m-main"><b></b><em></em><em></em></i></span>
+  <span class="ch-name"><small>CH {i:02d}</small>{html.escape(pt if lang == 'pt' else en)}</span>
+</button>""")
+    return "\n".join(tiles)
+
+
+def stream_code():
+    """A tela da Ana no topo mostra código de verdade: a corrida de endereços do convite."""
+    text = read("src/connect.zig").split("\n")
+    start = next(i for i, ln in enumerate(text) if ln.startswith("pub fn race("))
+    code = "\n".join(ln.replace("    ", "  ") for ln in text[start:start + 64])
+    lines = highlight(code, get_lexer_by_name("zig"), HtmlFormatter(nowrap=True)).rstrip("\n").split("\n")
+    return "".join(f'<span class="ln"><i>{start + n + 1}</i>{ln or " "}</span>' for n, ln in enumerate(lines))
+
+
+def both_langs(text, lang):
+    """[[inglês||português]] nos pedaços iguais nas duas línguas (uma palavra só fica igual)."""
+    i = 0 if lang == "en" else 1
+    return re.sub(r"\[\[(.*?)\]\]", lambda m: (m.group(1).split("||") + [m.group(1)])[i if "||" in m.group(1) else 0], text, flags=re.S)
 
 
 # ------------------------------------------------------------------ utilidades
@@ -328,7 +420,8 @@ def head(lang, title, desc, base, path, extra=""):
     t = UI[lang]
     other = "en" if lang == "pt" else "pt"
     alt_path = path[3:] if path.startswith("en/") else "en/" + path
-    js = {"lang": lang, "base": base, "t": {k: t[k] for k in ("copy", "copied", "loading", "searchHint", "noResults", "searchFail")}}
+    chans = [{"id": "husky", "name": "husky"}] + [{"id": c[0], "name": c[1] if lang == "pt" else c[2]} for c in channels()]
+    js = {"lang": lang, "base": base, "channels": chans, "t": {k: t[k] for k in ("copy", "copied", "loading", "searchHint", "noResults", "searchFail")}}
     full = f"{title} · telinha" if title != "telinha" else "telinha"
     return f"""<!doctype html>
 <html lang="{'pt-BR' if lang == 'pt' else 'en'}">
@@ -337,23 +430,26 @@ def head(lang, title, desc, base, path, extra=""):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(full)}</title>
 <meta name="description" content="{html.escape(desc)}">
-<meta name="theme-color" content="#050505">
+<meta name="theme-color" content="#07090d">
 <link rel="canonical" href="{SITE_URL}{path}">
 <link rel="alternate" hreflang="{'pt-BR' if lang == 'pt' else 'en'}" href="{SITE_URL}{path}">
 <link rel="alternate" hreflang="{'en' if other == 'en' else 'pt-BR'}" href="{SITE_URL}{alt_path}">
 <meta property="og:type" content="website">
 <meta property="og:title" content="{html.escape(full)}">
 <meta property="og:description" content="{html.escape(desc)}">
-<meta property="og:image" content="{SITE_URL}img/{lang}/room.jpg">
+<meta property="og:image" content="{SITE_URL}assets/og.jpg">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="{base}assets/telinha.svg" type="image/svg+xml">
 <link rel="icon" href="{base}assets/icon.png" type="image/png">
-<link rel="preload" href="{base}assets/fonts/fira-code-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="{base}assets/fonts/barlow-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="{base}assets/fonts/big-shoulders-display.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="{base}assets/style.css">
+<link rel="stylesheet" href="{base}assets/channels.css">
 <script>
-(function(){{var r=document.documentElement,s=null,c=null;try{{s=localStorage.getItem('telinha-theme');c=localStorage.getItem('telinha-crt')}}catch(e){{}}
-r.dataset.theme=s||'dark';if(c==='off')r.dataset.crt='off';}})();
 window.TELINHA={json.dumps(js, ensure_ascii=False)};
+(function(){{var r=document.documentElement,s=null;try{{s=localStorage.getItem('telinha-theme')}}catch(e){{}}
+if(s==='light')s='claro';var ok=window.TELINHA.channels.some(function(c){{return c.id===s}});
+r.dataset.theme=ok?s:'husky';r.classList.add('js');if(/[?&]fx=lite/.test(location.search))r.classList.add('lite');}})();
 </script>{extra}
 </head>"""
 
@@ -369,19 +465,22 @@ def header(lang, base, active, path, page_class=""):
         return f'<a href="{base}{href}"{cls}>{t[key]}</a>'
     links = "".join(nav(k, h) for k, h in (("home", lp), ("docs", lp + "docs/guide/"), ("server", lp + "docs/deploy/"),
                                            ("bots", lp + "docs/bots/"), ("news", lp + "docs/changelog/")))
-    return f"""<body class="bg-grid{(' page-' + page_class) if page_class else ''}">
+    return f"""<body{(' class="page-' + page_class + '"') if page_class else ''}>
 {sprite()}
 <a class="sr-only" href="#conteudo">{t['skip']}</a>
 <div class="scroll-progress" aria-hidden="true"></div>
 <header class="site-header">
   <div class="header-inner">
-    <a class="logo glitch-hover" href="{base}{lp}"><img src="{base}assets/icon.png" alt="" width="26" height="26">telinha<span class="logo-path">~/wiki</span></a>
+    <a class="logo" href="{base}{lp}"><img src="{base}assets/icon.png" alt="" width="26" height="26"><span>telinha</span></a>
     <nav class="main-nav" aria-label="principal">{links}</nav>
     <div class="header-tools">
       <button class="search-btn" type="button" title="{t['searchTitle']}">{icon("search")}<span class="label">{t['search']}</span><kbd>Ctrl K</kbd></button>
+      <div class="remote" role="group" title="{t['channel']}" aria-label="{t['channel']}">
+        <button class="ch-btn" type="button" data-ch-step="-1" aria-label="{t['ch_down']}">{icon("chevron-down")}</button>
+        <span class="ch-now" data-ch-now aria-live="polite">CH 00</span>
+        <button class="ch-btn" type="button" data-ch-step="1" aria-label="{t['ch_up']}">{icon("chevron-up")}</button>
+      </div>
       <a class="icon-btn lang-switch" data-lang="{other}" href="{base}{alt_path}" hreflang="{other}" title="{t['other_lang']}">{t['other_lang_short']}</a>
-      <button class="icon-btn crt-toggle" type="button" title="{t['crt']}" aria-label="{t['crt']}">{icon("crt")}</button>
-      <button class="icon-btn theme-toggle" type="button" title="{t['theme']}" aria-label="{t['theme']}">{icon("sun", "sun")}{icon("moon", "moon")}</button>
       <a class="icon-btn gh-btn" href="{GH}" target="_blank" rel="noopener" title="GitHub" aria-label="GitHub">{icon("github")}</a>
       <button class="icon-btn menu-btn" type="button" aria-expanded="false" aria-controls="mobile-nav" title="{t['menu_btn']}" aria-label="{t['menu_btn']}">{icon("menu", "open")}{icon("close", "shut")}</button>
     </div>
@@ -421,7 +520,7 @@ def footer(lang, base):
 
 def sidebar(site, lang, base, current):
     t = UI[lang]
-    parts = [f'<aside class="tk-sidebar" aria-label="docs"><div class="tk-sidebar-header"><div class="prompt"><b>$</b> ls ~/telinha/docs</div><h2>docs</h2></div><ul class="tk-tree">']
+    parts = [f'<aside class="tk-sidebar" aria-label="docs"><div class="tk-sidebar-header"><h2>docs</h2></div><ul class="tk-tree">']
     for _, names, pages in SECTIONS:
         parts.append(f'<li><div class="tk-tree-cat-name">{icon(names["icon"])}{names[lang]}</div><ul class="tk-tree-pages">')
         for slug, *_ in pages:
@@ -528,6 +627,8 @@ def build(out):
         path = site.page_path(lang)
         base = "../" * path.count("/")
         content = read(f"site/home.{lang}.html")
+        wall = both_langs(read("site/wall.html"), lang).replace("{{husky}}", husky("h1", "on-wall")).replace("{{stream_code}}", stream_code())
+        content = content.replace("{{wall}}", wall).replace("{{channels}}", channel_tiles(lang)).replace("{{husky}}", husky("h2", "asleep"))
         for m in re.finditer(r"\{\{img\}\}([^\"']+)", content):
             site.images.add("docs/img/" + m.group(1))
         content = content.replace("{{img}}", base + "img/")
@@ -550,7 +651,7 @@ def build(out):
         base = "../" * path.count("/")
         content = read(f"site/invite.{lang}.html")
         content = re.sub(r"\{\{icon:([a-z-]+)\}\}", lambda m: icon(m.group(1)), content)
-        content = content.replace("{{base}}", base).replace("{{gh}}", GH)
+        content = content.replace("{{base}}", base).replace("{{gh}}", GH).replace("{{husky}}", husky("h3", "on-card"))
         title = "convite" if lang == "pt" else "invite"
         desc = ("Te chamaram pra uma sala do telinha: abra no app ou veja como instalar." if lang == "pt"
                 else "You're invited to a telinha room: open it in the app or see how to install.")
@@ -560,6 +661,8 @@ def build(out):
 
     # 4) arquivos: estilo, fontes, imagens, busca, 404, sitemap
     shutil.copytree(os.path.join(HERE, "assets"), os.path.join(out, "assets"))
+    write(os.path.join(out, "assets", "channels.css"), "/* gerado do src/theme.zig pelo site/build.py */\n"
+          + "".join(f'[data-theme="{c[0]}"]{{{c[3]}}}\n' for c in channels()))
     for f in ("icon.png", "telinha.svg"):
         shutil.copy(os.path.join(TOP, "assets", f), os.path.join(out, "assets", f))
     for img in sorted(site.images):
@@ -574,11 +677,13 @@ def build(out):
     t = UI["pt"]
     nf = head("pt", "404", t["desc"], SITE_PATH, "404.html") + header("pt", SITE_PATH, "", "")
     nf += f"""
-<main class="home" id="conteudo"><section class="hero wrap">
-  <div class="hero-kicker">error: 404</div>
-  <h1 class="hero-title"><span class="hero-glitch" data-text="404">404</span></h1>
-  <p class="hero-sub cursor-blink">{t['notfound']} / {UI['en']['notfound']}</p>
-  <div class="dl-row"><a class="btn primary" href="{SITE_PATH}">{t['notfound_back']}</a><a class="btn" href="{SITE_PATH}en/">{UI['en']['notfound_back']}</a></div>
+<main class="home" id="conteudo"><section class="no-signal">
+  <div class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+  <div class="no-signal-box">
+    <h1>404</h1>
+    <p>{t['notfound']}<br>{UI['en']['notfound']}</p>
+    <div class="dl-row"><a class="btn primary" href="{SITE_PATH}">{t['notfound_back']}</a><a class="btn" href="{SITE_PATH}en/">{UI['en']['notfound_back']}</a></div>
+  </div>
 </section></main>
 """ + footer("pt", SITE_PATH)
     write(os.path.join(out, "404.html"), nf)

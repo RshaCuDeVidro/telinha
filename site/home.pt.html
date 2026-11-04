@@ -1,178 +1,220 @@
-<section class="hero">
-  <div class="wrap hero-grid">
+<section class="hero" data-hero>
+  <div class="hero-strip">
+    <span class="onair"><i></i>NO AR</span>
+    <span class="tc" data-tc>00:00:00:00</span>
+    <span class="strip-hide">compartilhar a tela em grupo · linux + windows</span>
+    <span class="strip-end">v{{version}}</span>
+  </div>
+  <h1 class="mega" aria-label="telinha"><span aria-hidden="true" data-mega><span>t</span><span>e</span><span>l</span><span class="mega-i">ı<b></b></span><span>n</span><span>h</span><span>a</span></span></h1>
+  <div class="hero-grid">
     <div class="hero-copy">
-      <div class="hero-kicker fade-in">{{icon:signal}} compartilhar tela em grupo · linux + windows</div>
-      <h1 class="hero-title fade-in"><span class="hero-glitch" data-text="telinha">telinha</span></h1>
-      <p class="hero-sub fade-in">Compartilhar a tela com a galera e assistir a deles com atraso baixo de verdade: <b>qualquer um transmite</b>, <b>todo mundo assiste, fala e conversa</b>. Sem conta, sem instalar nada no Windows, sem servidor de terceiros.</p>
-      <div class="dl-row fade-in">
+      <p class="hero-sub">Compartilhe a tela com a galera e assista à deles com atraso baixo de verdade. <b>Qualquer um transmite</b>, <b>todo mundo assiste, fala e conversa</b>. Sem conta e sem anúncio, e no Windows nem precisa instalar.</p>
+      <div class="dl-row">
         <a class="btn" data-os="windows" href="{{gh}}/releases/latest/download/telinha-windows-x86_64.exe">{{icon:windows}}Windows <small>.exe</small></a>
-        <a class="btn" data-os="linux" href="#instalar">{{icon:linux}}Linux <small>1 comando</small></a>
-        <a class="btn" href="{{base}}{{lp}}docs/deploy/">{{icon:server}}servidor</a>
+        <a class="btn" data-os="linux" href="#install">{{icon:linux}}Linux <small>1 comando</small></a>
+        <a class="btn" href="{{base}}{{lp}}docs/deploy/">{{icon:server}}Servidor</a>
       </div>
       <div class="dl-note">v{{version}} · <a href="{{gh}}/releases/latest">todas as versões e arquivos</a> · código aberto (MIT)</div>
+      <dl class="hero-stats">
+        <div><dt><b>17</b>ms</dt><dd>de ponta a ponta, em rede local</dd></div>
+        <div><dt><b>20</b>%</dt><dd>de um núcleo pra 1080p60 em HEVC</dd></div>
+        <div><dt><b>0</b></dt><dd>contas, anúncios ou rastreadores</dd></div>
+      </dl>
     </div>
-    <div class="term corner-accent fade-in" aria-hidden="true">
-      <div class="term-bar"><i></i><i></i><i></i><span>~/telinha — zsh</span></div>
-<pre class="term-body" data-boot="boot"><span class="t-cmd">telinha --criar 7777 --senha ••••••</span>
-<span class="t-ok">sala aberta · porta 7777 · X25519 + ChaCha20</span>
-<span class="t-ok">porta aberta no roteador (UPnP)</span>
-<span class="t-ok">convite copiado · telinha://203.0.113.7:7777!kzdv…</span>
-<span class="t-in">Ana entrou · internet, IPv4</span>
-<span class="t-in">Bia entrou · rede local</span>
-<span class="t-cmd">telinha --transmitir --modo jogo</span>
-<span class="t-live">1920×1080 · 60 q/s · HEVC na placa · 17 ms</span>
-<span class="t-in">Música [bot] tocando na call</span></pre>
-    </div>
-  </div>
-
-  <div class="wrap">
-    <div class="stat-grid">
-      <div class="stat"><b>17<small>ms</small></b><span>de atraso de ponta a ponta, na rede local</span></div>
-      <div class="stat"><b>20<small>%</small></b><span>de um núcleo pra transmitir 1080p60 em HEVC</span></div>
-      <div class="stat"><b>0</b><span>contas, anúncios ou rastreadores</span></div>
-      <div class="stat"><b>X25519</b><span>+ ChaCha20-Poly1305 em toda conexão</span></div>
-    </div>
-    <div class="monitor corner-accent">
-      <div class="monitor-glow" aria-hidden="true"></div>
-      <div class="monitor-bar" aria-hidden="true"><i></i><i></i><i></i><span>telinha — sala ao vivo · tema pwnd</span><span class="live-dot">AO VIVO</span></div>
-      <div class="monitor-screen"><img src="{{img}}pt/room_pwnd.jpg" alt="Uma sala do telinha no tema pwnd: transmissão ao vivo, a lista de pessoas e o chat" width="1600" height="900"></div>
-    </div>
+    {{wall}}
   </div>
 </section>
 
-<div class="wrap">
-  <section class="section">
-    <div class="section-head"><h2>novidades</h2><p>o que entrou na versão mais nova</p></div>
-    <div class="news corner-accent">{{news}}</div>
-  </section>
+<div class="ticker" data-ticker aria-hidden="true">
+  <div class="ticker-run">
+    <span>NVENC · NVDEC · VA-API · Media Foundation</span><span>captura na GPU sem cópia</span><span>X25519 + ChaCha20-Poly1305</span><span>RNNoise e cancelamento de eco</span><span>clipes dos últimos minutos num atalho</span><span>desenho em cima da transmissão</span><span>canais estilo IRC</span><span>música na call</span><span>atualiza sozinho, conferindo a assinatura</span>
+  </div>
+</div>
 
-  <section class="section">
-    <div class="section-head"><h2>por que o telinha</h2></div>
-    <div class="card-grid three">
-      <div class="article-card"><div class="ico">{{icon:zap}}</div><h3>Rápido</h3><p>Captura, codificação e decodificação ficam na placa de vídeo. O atraso é medido em todo quadro, e a transmissão se ajusta antes de acumular.</p></div>
-      <div class="article-card"><div class="ico">{{icon:link}}</div><h3>Um convite e pronto</h3><p>O convite leva todos os caminhos até a sala (rede local, porta no roteador, IPv6, link público). Cada um entra pelo mais rápido que funcionar.</p></div>
-      <div class="article-card"><div class="ico">{{icon:lock}}</div><h3>Privado</h3><p>Toda conexão cifrada com X25519 e ChaCha20-Poly1305, com a senha na derivação das chaves. A identidade do servidor é conferida.</p></div>
-      <div class="article-card"><div class="ico">{{icon:feather}}</div><h3>Leve</h3><p>A interface só redesenha quando algo muda. O que você não usa não custa nada: nem CPU, nem placa, nem rede.</p></div>
-      <div class="article-card"><div class="ico">{{icon:box}}</div><h3>Portátil</h3><p>No Windows é um <code>.exe</code> só. No Linux roda no Wayland e no X11, em qualquer distro com glibc 2.31+.</p></div>
-      <div class="article-card"><div class="ico">{{icon:refresh}}</div><h3>Se atualiza</h3><p>Mostra o que muda, confere a assinatura da release e troca o próprio executável. Um clique, ou sozinho.</p></div>
+<section class="sec" id="latency"><div class="wrap">
+  <header class="sec-head"><span class="sec-ch">Teste ao vivo</span><h2>Sinta os 17 ms</h2><p>Risque a sua tela. A tela do seu amigo recebe com o atraso que você escolher, e aí dá pra sentir o que aquele número quer dizer.</p></header>
+  <div class="lab rv" data-lab>
+    <figure class="mon power"><figcaption><i class="dot"></i>Sua tela</figcaption><canvas data-lab-a></canvas><span class="mon-tip">risque aqui</span></figure>
+    <figure class="mon power"><figcaption><i class="dot live"></i>Tela do seu amigo<b data-lab-val>17 ms</b></figcaption><canvas data-lab-b></canvas></figure>
+    <div class="lab-ctl" role="group" aria-label="Atraso">
+      <span class="lab-label">atraso</span>
+      <button class="chip on" type="button" data-ms="17">17 ms <small>telinha, rede local</small></button>
+      <button class="chip" type="button" data-ms="60">60 ms</button>
+      <button class="chip" type="button" data-ms="150">150 ms</button>
+      <button class="chip" type="button" data-ms="400">400 ms</button>
+      <button class="chip" type="button" data-ms="1000">1 s</button>
     </div>
-  </section>
+  </div>
+  <ol class="wire rv" data-wire>
+    <li><b>Captura</b><span>DMA-BUF ou DXGI, direto do compositor</span></li>
+    <li><b>Codifica</b><span>NVENC, 8 ms</span></li>
+    <li><b>Envia</b><span>UDP, reenviando só o que se perdeu</span></li>
+    <li><b>Decodifica</b><span>NVDEC, 6 ms</span></li>
+    <li><b>Mostra</b><span>direto numa textura OpenGL</span></li>
+  </ol>
+  <p class="foot">Medido num i5-2400S de 2011 com GTX 1050 Ti, em 1080p60 e HEVC, na rede local. Pela internet, some a distância entre vocês. Neste teste, o seu navegador e o seu monitor somam o atraso deles por cima. <a href="{{base}}{{lp}}docs/architecture/">Como o caminho funciona →</a></p>
+</div></section>
 
-  <section class="section" id="convite">
-    <div class="section-head"><h2>recebeu um convite?</h2></div>
-    <div class="card-grid three">
-      <div class="article-card"><div class="ico">{{icon:link}}</div><h3>Um link</h3><p>Clique nele: a página abre o telinha direto na sala ou mostra como baixar no seu sistema. O convite fica só no seu navegador.</p></div>
-      <div class="article-card"><div class="ico">{{icon:copy}}</div><h3>Um <code>telinha://</code></h3><p>Copie e abra o telinha: ele percebe o convite copiado. Ou cole no campo <b>Entrar numa sala</b>.</p></div>
-      <div class="article-card"><div class="ico">{{icon:globe}}</div><h3>No celular</h3><p>Não tem app pra celular. Se a sala tiver a página de assistir no navegador, peça o link dela pra quem te chamou.</p></div>
+<section class="sec" id="news"><div class="wrap">
+  <header class="sec-head"><span class="sec-ch">Boletim</span><h2>Novidades</h2><p>O que entrou na última versão.</p></header>
+  <div class="news rv">{{news}}</div>
+</div></section>
+
+<section class="sec" id="why"><div class="wrap">
+  <header class="sec-head"><span class="sec-ch">Espelho</span><h2>Por que o telinha</h2></header>
+  <ol class="rundown">
+    <li class="rv"><span class="no">01</span><h3>Rápido</h3><p>Captura, codificação e decodificação ficam na GPU. O atraso é medido a cada quadro, e a transmissão se ajusta antes de ele acumular.</p></li>
+    <li class="rv"><span class="no">02</span><h3>Um convite e pronto</h3><p>O convite leva todos os caminhos até a sala: rede local, porta do roteador, IPv6, link público. Cada um entra pelo mais rápido que funcionar.</p></li>
+    <li class="rv"><span class="no">03</span><h3>Privado</h3><p>Toda conexão é criptografada com X25519 e ChaCha20-Poly1305, com a senha entrando na derivação da chave. A identidade do servidor é conferida.</p></li>
+    <li class="rv"><span class="no">04</span><h3>Leve</h3><p>A interface só redesenha quando algo muda. O que você não usa não custa nada: nem CPU, nem GPU, nem banda.</p></li>
+    <li class="rv"><span class="no">05</span><h3>Portátil</h3><p>No Windows é um <code>.exe</code> só. No Linux roda em Wayland e X11, em qualquer distro com glibc 2.31 ou mais nova.</p></li>
+    <li class="rv"><span class="no">06</span><h3>Se atualiza sozinho</h3><p>Mostra o que muda, confere a assinatura da versão e troca o próprio executável. Com um clique, ou sozinho.</p></li>
+  </ol>
+</div></section>
+
+<section class="sec" id="invite"><div class="wrap">
+  <header class="sec-head"><span class="sec-ch">Conexão</span><h2>Um convite, todos os caminhos</h2><p>Você manda um link só. O app faz uma corrida entre os endereços dentro dele, e o primeiro que responde ganha.</p></header>
+  <div class="race rv" data-race>
+    <code class="race-inv">telinha://<span data-part="lan">192.168.0.10:7777</span>,<span data-part="port">203.0.113.7:7777</span>,<span data-part="ipv6">[2804:14c::1]:7777</span>,<span data-part="pub">bore.pub:41234</span><span class="fp">!kzdv…</span></code>
+    <div class="race-tabs" role="group" aria-label="Onde seu amigo está">
+      <button class="chip on" type="button" data-case="home">Na mesma casa</button>
+      <button class="chip" type="button" data-case="far">Longe, com porta aberta</button>
+      <button class="chip" type="button" data-case="cgnat">Longe, atrás de CGNAT</button>
     </div>
-  </section>
+    <ul class="race-rows">
+      <li data-route="lan"><b>Rede local</b><span class="lane"><i></i></span><em data-note="menor atraso">—</em></li>
+      <li data-route="port"><b>Porta do roteador</b><span class="lane"><i></i></span><em data-note="atraso baixo">—</em></li>
+      <li data-route="ipv6"><b>IPv6</b><span class="lane"><i></i></span><em data-note="atraso baixo">—</em></li>
+      <li data-route="pub"><b>Link público</b><span class="lane"><i></i></span><em data-note="atraso médio">—</em></li>
+    </ul>
+    <p class="race-out" data-race-out data-win="entrou por" data-lost="sem resposta" data-stop="parou"></p>
+  </div>
+  <p class="foot">O tempo está em câmera lenta pra dar pra ver. Seja qual for o caminho, a conversa é criptografada de ponta a ponta e o convite leva a impressão digital da sala: um túnel no meio só vê bytes embaralhados. <a href="{{base}}{{lp}}docs/connecting/">Todos os jeitos de conectar →</a></p>
+  <div class="got">
+    <div class="rv"><h3>{{icon:link}} Recebeu um link?</h3><p>Clique nele. A página abre o telinha direto na sala ou mostra como baixar no seu sistema. O convite fica só no seu navegador.</p></div>
+    <div class="rv"><h3>{{icon:copy}} Recebeu um <code>telinha://</code>?</h3><p>Copie e abra o telinha: ele percebe o convite copiado. Ou cole no campo <b>Entrar numa sala</b>.</p></div>
+    <div class="rv"><h3>{{icon:globe}} Tá no celular?</h3><p>Não tem app pra celular. Se a sala tiver a página de assistir no navegador, peça o link dela pra quem te chamou.</p></div>
+  </div>
+</div></section>
 
-  <section class="section" id="instalar">
-    <div class="section-head"><h2>instalar</h2><p>escolha o seu sistema</p></div>
-    <div class="terminal corner-accent">
+<section class="sec" id="inside"><div class="wrap">
+  <header class="sec-head"><span class="sec-ch">Programação</span><h2>O que tem dentro</h2></header>
+  <div class="tiles">
+    <a class="tile power" href="{{base}}{{lp}}docs/guide/#transmitir">{{icon:monitor}}<h3>Transmitir</h3><p>Várias pessoas ao vivo de uma vez. Tela, janela ou um recorte; webcam junto; todo o som do PC, um programa só, ou tudo menos alguns.</p></a>
+    <a class="tile power" href="{{base}}{{lp}}docs/guide/#assistir">{{icon:eye}}<h3>Assistir</h3><p>Zoom com minimapa, ponteiro de "olha aqui", desenho em cima da transmissão, clipes dos últimos minutos num atalho, gravação em MP4 e captura de tela.</p></a>
+    <a class="tile power" href="{{base}}{{lp}}docs/guide/#falar">{{icon:mic}}<h3>Voz</h3><p>Cancelamento de eco, supressão de ruído (RNNoise), aperte-para-falar que funciona dentro do jogo, ganho automático. A voz passa na frente do vídeo.</p></a>
+    <a class="tile power" href="{{base}}{{lp}}docs/guide/#chat">{{icon:message}}<h3>Chat</h3><p>Markdown, imagens, reações, menções, respostas citando, mensagens privadas e arquivos de até 256 MB que baixam em segundo plano.</p></a>
+    <a class="tile power" href="{{base}}{{lp}}docs/guide/#canais">{{icon:hash}}<h3>Canais</h3><p>Estilo IRC: um servidor, várias salas. Chat e call são separados, então dá pra ler um canal e continuar na call de outro.</p></a>
+    <a class="tile power" href="{{base}}{{lp}}docs/guide/#assistir-pelo-navegador">{{icon:globe}}<h3>Pelo navegador</h3><p>Num servidor dedicado, um link pra assistir sem instalar nada, até no celular. Quem transmite não paga nada a mais.</p></a>
+    <a class="tile power" href="{{base}}{{lp}}docs/architecture/">{{icon:cpu}}<h3>Por dentro</h3><p>NVENC/NVDEC, VA-API e Media Foundation; captura na GPU sem cópia; HEVC e AV1 (experimental) quando todo mundo consegue decodificar.</p></a>
+    <a class="tile power" href="{{base}}{{lp}}docs/guide/#para-o-admin">{{icon:crown}}<h3>Controle</h3><p>Expulsar, banir, silenciar, trancar a sala, tirar a caneta de alguém. No servidor dedicado, estatísticas com um palpite do gargalo.</p></a>
+  </div>
+</div></section>
+
+<section class="sec" id="channels"><div class="wrap">
+  <header class="sec-head"><span class="sec-ch">Controle remoto</span><h2>Troque de canal</h2><p>Estes são os temas do próprio app, lidos direto do código dele. Aperte um, ou uma tecla de 0 a 6, e o site inteiro sintoniza, docs inclusive. O canal 00 é só do site: as cores dos olhos do husky.</p></header>
+  <div class="ch-grid rv">
+{{channels}}
+  </div>
+</div></section>
+
+<section class="sec" id="bots"><div class="wrap">
+  <header class="sec-head"><span class="sec-ch">Convidados</span><h2>Bots</h2><p>Música na call, e os seus, em Python.</p></header>
+  <div class="split">
+    <div class="rv">
+      <h3>Um bot é mais um na sala</h3>
+      <p>Ele lê e manda mensagens, responde comandos, reage, toca som na call e mexe com arquivos. Aparece com a etiqueta <b>BOT</b> e nunca vira admin; o dono da sala pode recusar bots ou exigir um token.</p>
+      <ul class="ticks">
+        <li>{{icon:music}}<span><b>Um bot de música pronto:</b> links do YouTube, SoundCloud e Spotify, busca por nome, uma pasta, rádios. <code>!play</code>, <code>!search</code>, <code>!queue</code>, <code>!skip</code>.</span></li>
+        <li>{{icon:spark}}<span><b>Cartões com botões:</b> capa, campos, uma barra de progresso que anda sozinha e botões que qualquer um clica; o bot muda o cartão no lugar.</span></li>
+        <li>{{icon:code}}<span><b>Um SDK em Python:</b> comandos com argumentos tipados, eventos, mensagens privadas, música e arquivos.</span></li>
+        <li>{{icon:server}}<span>Roda numa VPS, num Raspberry Pi ou no seu PC. Não custa nada pra quem transmite.</span></li>
+      </ul>
+      <div class="dl-row">
+        <a class="btn primary" href="{{base}}{{lp}}docs/bots/">{{icon:play}}Começar</a>
+        <a class="btn" href="{{base}}{{lp}}docs/bots-music/">{{icon:music}}Bot de música</a>
+      </div>
+    </div>
+    <div class="split-side rv">
+      <div class="code-card">
+        <div class="bar">{{icon:file}}<span>dado.py</span></div>
+<pre><span class="hl"><span class="kn">import</span> random
+<span class="kn">from</span> telinha <span class="kn">import</span> Bot
+
+bot = Bot(<span class="s">"telinha://minha.sala:7777#senha"</span>, <span class="s">"Dado"</span>)
+
+<span class="nd">@bot.command</span>(<span class="s">"dado"</span>, help=<span class="s">"rola um dado"</span>)
+<span class="k">async def</span> <span class="nf">dado</span>(ctx, lados: <span class="nb">int</span> = <span class="m">6</span>):
+    <span class="k">await</span> ctx.reply(<span class="s">f"deu {random.randint(1, lados)}"</span>)
+
+bot.run()</span></pre>
+      </div>
+      <figure class="bot-shot"><img src="{{img}}pt/bot.png" alt="O bot de música numa sala: o pedido !play e o cartão TOCANDO AGORA com a barra de progresso e os botões" loading="lazy" decoding="async" width="340" height="470"><figcaption><b>No app:</b> o cartão do bot, com a barra que anda sozinha e os botões, e o anel verde de quem está tocando.</figcaption></figure>
+    </div>
+  </div>
+</div></section>
+
+<section class="sec" id="shots"><div class="wrap">
+  <header class="sec-head"><span class="sec-ch">Arquivo</span><h2>Capturas de tela</h2><p>O app de verdade, desta vez nada simulado.</p></header>
+  <div class="shots">
+    <figure class="shot big power"><button type="button" data-zoom>{{icon:external}}<img src="{{img}}pt/room.jpg" alt="Uma sala no tema escuro" loading="lazy" decoding="async"></button><figcaption><b>A sala.</b> Quem está ao vivo em cima, a transmissão no meio, membros e chat do lado.</figcaption></figure>
+    <figure class="shot power"><button type="button" data-zoom>{{icon:external}}<img src="{{img}}pt/share.png" alt="A janela de compartilhar a tela" loading="lazy" decoding="async"></button><figcaption><b>Entrar ao vivo.</b> O que mostrar, qual som, o tipo de conteúdo, resolução, fps e qualidade.</figcaption></figure>
+    <figure class="shot power"><button type="button" data-zoom>{{icon:external}}<img src="{{img}}pt/home.png" alt="A tela inicial" loading="lazy" decoding="async"></button><figcaption><b>Tela inicial.</b> Entre numa sala ou crie uma, direto num canal se quiser.</figcaption></figure>
+    <figure class="shot power"><button type="button" data-zoom>{{icon:external}}<img src="{{img}}pt/stats.png" alt="Estatísticas do servidor" loading="lazy" decoding="async"></button><figcaption><b>Estatísticas do servidor.</b> O que o admin vê: CPU, memória, banda e o gargalo provável.</figcaption></figure>
+    <figure class="shot power"><button type="button" data-zoom>{{icon:external}}<img src="{{img}}pt/shortcuts.png" alt="Configurações de atalhos" loading="lazy" decoding="async"></button><figcaption><b>Atalhos globais.</b> Qualquer tecla ou botão do mouse, valendo com um jogo em foco.</figcaption></figure>
+    <figure class="shot power"><button type="button" data-zoom>{{icon:external}}<img src="{{img}}pt/performance.png" alt="Configurações de desempenho" loading="lazy" decoding="async"></button><figcaption><b>Desempenho.</b> Qualidade automática, cursor fora do vídeo e um teste do seu PC.</figcaption></figure>
+  </div>
+</div></section>
+
+<section class="sec" id="install"><div class="wrap">
+  <header class="sec-head"><span class="sec-ch">Sintonize</span><h2>Instalar</h2><p>Escolha o seu sistema.</p></header>
+  <div class="install">
+    <div class="terminal rv">
       <div class="lang-tabs-bar" role="tablist">
         <button class="lang-tab active" role="tab" aria-selected="true" aria-controls="t-linux" data-os-tab="linux">{{icon:linux}} linux</button>
         <button class="lang-tab" role="tab" aria-selected="false" aria-controls="t-windows" data-os-tab="windows">{{icon:windows}} windows</button>
         <button class="lang-tab" role="tab" aria-selected="false" aria-controls="t-server">{{icon:server}} servidor</button>
       </div>
       <div class="lang-panel" id="t-linux" role="tabpanel">
-        <p>Sem <code>sudo</code>: baixa a última versão, confere o SHA256, põe o telinha em <code>~/.local/bin</code>, cria o atalho no menu e faz os convites <code>telinha://</code> abrirem no app. Rode de novo pra atualizar.</p>
+        <p>Sem <code>sudo</code>: baixa a última versão, confere o SHA256, põe o telinha em <code>~/.local/bin</code>, adiciona ao menu de apps e faz os convites <code>telinha://</code> abrirem no app. Rode de novo pra atualizar.</p>
 <pre><span class="ps">$ </span>curl -fsSL https://raw.githubusercontent.com/RshaCuDeVidro/telinha/main/install.sh | sh</pre>
       </div>
       <div class="lang-panel" id="t-windows" role="tabpanel" hidden>
-        <p>Baixe o <a href="{{gh}}/releases/latest/download/telinha-windows-x86_64.exe">telinha-windows-x86_64.exe</a> e abra. Não precisa instalar. O SmartScreen avisa na primeira vez (o <code>.exe</code> não é assinado): <b>Mais informações → Executar assim mesmo</b>.</p>
-<pre><span class="cm"># opcional: conferir o arquivo com o SHA256SUMS da release</span>
+        <p>Baixe o <a href="{{gh}}/releases/latest/download/telinha-windows-x86_64.exe">telinha-windows-x86_64.exe</a> e rode. Não precisa instalar. O SmartScreen avisa na primeira vez (o <code>.exe</code> não é assinado): <b>Mais informações → Executar assim mesmo</b>.</p>
+<pre><span class="cm"># opcional: confira o arquivo com o SHA256SUMS da versão</span>
 <span class="ps">PS&gt; </span>Get-FileHash .\telinha-windows-x86_64.exe</pre>
       </div>
       <div class="lang-panel" id="t-server" role="tabpanel" hidden>
-        <p>Uma sala sempre ligada numa VPS: binário estático, sem dependência. Com <code>--web</code> e <code>--web-tunel</code>, todo mundo assiste pelo navegador. <a href="{{base}}{{lp}}docs/deploy/">Guia completo →</a></p>
+        <p>Uma sala sempre ligada numa VPS: um binário estático, sem dependências. Com <code>--web</code> e <code>--web-tunel</code>, todo mundo assiste pelo navegador. <a href="{{base}}{{lp}}docs/deploy/">Guia completo →</a></p>
 <pre><span class="ps">$ </span>curl -fsSLo telinha-server {{gh}}/releases/latest/download/telinha-server-linux-x86_64
 <span class="ps">$ </span>chmod +x telinha-server
 <span class="ps">$ </span>./telinha-server --porta 7777 --senha segredo --web 7778 --web-tunel</pre>
       </div>
     </div>
-  </section>
-
-  <section class="section">
-    <div class="section-head"><h2>em 5 passos</h2><p><a href="{{base}}{{lp}}docs/guide/">guia completo →</a></p></div>
     <ol class="steps">
-      <li><b>Crie uma sala.</b> Abra o telinha e clique em <b>Criar sala</b>. A senha é opcional.</li>
-      <li><b>Chame a galera.</b> <b>Abrir porta no roteador</b> pra conexão direta, ou <b>Criar link público</b> se a operadora usa CGNAT. Depois, <b>Copiar convite</b>.</li>
-      <li><b>Entre.</b> Quem recebe cola o convite <code>telinha://…</code> na tela inicial. Se já estiver copiado, cola sozinho.</li>
-      <li><b>Transmita.</b> <b>Compartilhar tela</b>, escolha o que mostrar, o som e a qualidade, e <b>Ao vivo</b>. Dá pra mudar tudo rolando.</li>
-      <li><b>Assista e fale.</b> Clique em quem está ao vivo. <kbd>F11</kbd> tela cheia, <kbd>Ctrl+M</kbd> microfone, <kbd>Ctrl+D</kbd> surdo.</li>
+      <li class="rv"><b>Crie uma sala.</b> Abra o telinha e clique em <b>Criar sala</b>. A senha é opcional.</li>
+      <li class="rv"><b>Chame a galera.</b> <b>Abrir porta no roteador</b> pra conexão direta, ou <b>Criar link público</b> se a operadora usa CGNAT. Depois, <b>Copiar convite</b>.</li>
+      <li class="rv"><b>Entre.</b> Quem recebeu cola o convite <code>telinha://…</code> na tela inicial. Se já estiver copiado, ele se cola sozinho.</li>
+      <li class="rv"><b>Transmita.</b> <b>Compartilhar tela</b>, escolha o que mostrar, o som e a qualidade, e <b>Ao vivo</b>. Dá pra mudar tudo rolando.</li>
+      <li class="rv"><b>Assista e fale.</b> Clique em quem está ao vivo. <kbd>F11</kbd> tela cheia, <kbd>Ctrl+M</kbd> microfone, <kbd>Ctrl+D</kbd> surdo. <a href="{{base}}{{lp}}docs/guide/">Guia completo →</a></li>
     </ol>
-  </section>
+  </div>
+</div></section>
 
-  <section class="section">
-    <div class="section-head"><h2>o que tem</h2></div>
-    <div class="card-grid">
-      <a class="article-card" href="{{base}}{{lp}}docs/guide/#transmitir"><div class="ico">{{icon:monitor}}</div><h3>Transmitir</h3><p>Várias pessoas ao vivo ao mesmo tempo. Tela, janela ou um recorte; câmera junto; o som do computador, de um programa só, ou tudo menos alguns.</p><span class="go">guia {{icon:arrow-right}}</span></a>
-      <a class="article-card" href="{{base}}{{lp}}docs/guide/#assistir"><div class="ico">{{icon:eye}}</div><h3>Assistir</h3><p>Zoom com minimapa, ponteiro "olha aqui", desenhar por cima, clipe dos últimos minutos num atalho, gravação em MP4 e print.</p><span class="go">guia {{icon:arrow-right}}</span></a>
-      <a class="article-card" href="{{base}}{{lp}}docs/guide/#falar"><div class="ico">{{icon:mic}}</div><h3>Voz</h3><p>Cancelamento de eco, supressão de ruído (RNNoise), apertar pra falar que vale dentro do jogo, ganho automático. A voz fura a fila do vídeo.</p><span class="go">guia {{icon:arrow-right}}</span></a>
-      <a class="article-card" href="{{base}}{{lp}}docs/guide/#chat"><div class="ico">{{icon:message}}</div><h3>Chat</h3><p>Markdown, imagens, reações, menções, resposta citando, mensagem privada e arquivos de até 256 MB que baixam em segundo plano.</p><span class="go">guia {{icon:arrow-right}}</span></a>
-      <a class="article-card" href="{{base}}{{lp}}docs/guide/#canais"><div class="ico">{{icon:hash}}</div><h3>Canais</h3><p>Como no IRC: um servidor, várias salas. O chat e a call são separados, então dá pra ler um canal e continuar na call de outro.</p><span class="go">guia {{icon:arrow-right}}</span></a>
-      <a class="article-card" href="{{base}}{{lp}}docs/guide/#assistir-pelo-navegador"><div class="ico">{{icon:globe}}</div><h3>Pelo navegador</h3><p>No servidor dedicado, um link pra assistir sem instalar nada, até no celular. Quem transmite não gasta nada a mais.</p><span class="go">guia {{icon:arrow-right}}</span></a>
-      <a class="article-card" href="{{base}}{{lp}}docs/architecture/"><div class="ico">{{icon:cpu}}</div><h3>Por dentro</h3><p>NVENC/NVDEC, VA-API e Media Foundation; captura sem cópias pela placa; HEVC e AV1 (experimental) quando todo mundo decodifica; UDP com reenvio só do que perdeu.</p><span class="go">arquitetura {{icon:arrow-right}}</span></a>
-      <a class="article-card" href="{{base}}{{lp}}docs/guide/#para-o-admin"><div class="ico">{{icon:crown}}</div><h3>Controle</h3><p>Expulsar, banir, silenciar, trancar a sala, tirar o pincel. No servidor dedicado, estatísticas com o palpite do gargalo.</p><span class="go">guia {{icon:arrow-right}}</span></a>
-    </div>
-  </section>
-
-  <section class="section" id="bots">
-    <div class="section-head"><h2>bots</h2><p>música na call e os seus próprios, em Python</p></div>
-    <div class="split">
-      <div>
-        <h3>{{icon:bot}} Um bot é mais um na sala</h3>
-        <p>Lê e manda mensagens, responde comandos, reage, toca som na call e mexe com arquivos. Aparece com a etiqueta <b>BOT</b> e nunca vira admin; o dono da sala pode recusar bots ou pedir um token.</p>
-        <ul class="ticks">
-          <li>{{icon:music}}<span><b>Bot de música pronto:</b> links do YouTube, SoundCloud e Spotify, busca pelo nome, pasta, rádios. <code>!play</code>, <code>!search</code>, <code>!queue</code>, <code>!skip</code>.</span></li>
-          <li>{{icon:spark}}<span><b>Cartões com botões:</b> capa, campos, barra de progresso que anda sozinha e botões que qualquer um clica; o bot muda o cartão no lugar.</span></li>
-          <li>{{icon:code}}<span><b>SDK em Python:</b> comandos com argumentos pelos tipos, eventos, mensagem privada, música e arquivos.</span></li>
-          <li>{{icon:server}}<span>Roda na VPS, no Raspberry Pi ou no seu PC. Quem transmite não gasta nada.</span></li>
-        </ul>
-        <div class="dl-row left">
-          <a class="btn primary" href="{{base}}{{lp}}docs/bots/">{{icon:play}}começar</a>
-          <a class="btn" href="{{base}}{{lp}}docs/bots-music/">{{icon:music}}bot de música</a>
-        </div>
-      </div>
-      <div>
-        <div class="code-card corner-accent">
-          <div class="bar">{{icon:file}}<span>dado.py</span></div>
-<pre><span class="hl"><span class="kn">import</span> random
-<span class="kn">from</span> telinha <span class="kn">import</span> Bot
-
-bot = Bot(<span class="s">"telinha://minha.sala:7777#senha"</span>, <span class="s">"Dado"</span>)
-
-<span class="nd">@bot.command</span>(help=<span class="s">"joga um dado"</span>)
-<span class="k">async def</span> <span class="nf">dado</span>(ctx, lados: <span class="nb">int</span> = <span class="m">6</span>):
-    <span class="k">await</span> ctx.reply(<span class="s">f"deu {random.randint(1, lados)}"</span>)
-
-bot.run()</span></pre>
-        </div>
-        <figure class="shot-wide"><img src="{{img}}pt/bot.png" alt="O bot de música na sala: o pedido !play e o cartão NOW PLAYING com a barra de progresso e os botões" loading="lazy" width="340" height="470"><figcaption><b>No app:</b> o cartão do bot, com a barra que anda sozinha e os botões, e o anel verde de quem está tocando.</figcaption></figure>
+<section class="signoff">
+  <div class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+  <div class="wrap signoff-in">
+    {{husky}}
+    <div class="signoff-box">
+      <h2>Fim da transmissão</h2>
+      <p>Baixe, crie uma sala e mande o convite. Se travar em alguma parte, a wiki tem o caminho.</p>
+      <div class="dl-row">
+        <a class="btn primary" href="{{base}}{{lp}}docs/guide/">{{icon:book}}Ler o guia</a>
+        <a class="btn" href="{{base}}{{lp}}docs/connecting/">{{icon:link}}Conectar de fora</a>
+        <a class="btn" href="{{base}}{{lp}}docs/faq/">{{icon:spark}}Resolver problemas</a>
       </div>
     </div>
-  </section>
-
-  <section class="section">
-    <div class="section-head"><h2>telas</h2></div>
-    <div class="shots">
-      <figure class="shot"><img src="{{img}}pt/share.png" alt="Janela de compartilhar tela" loading="lazy"><figcaption><b>Ao vivo.</b> O que mostrar, o som, o tipo de conteúdo, resolução, quadros e qualidade.</figcaption></figure>
-      <figure class="shot"><img src="{{img}}pt/room.jpg" alt="Sala no tema escuro" loading="lazy"><figcaption><b>A sala.</b> Quem está ao vivo em cima, a transmissão no meio, pessoas e chat do lado.</figcaption></figure>
-      <figure class="shot"><img src="{{img}}pt/home.png" alt="Tela inicial" loading="lazy"><figcaption><b>Tela inicial.</b> Entrar ou criar uma sala, já direto num canal se quiser.</figcaption></figure>
-      <figure class="shot"><img src="{{img}}pt/stats.png" alt="Estatísticas do servidor" loading="lazy"><figcaption><b>Estatísticas.</b> O que o admin vê: CPU, memória, banda e o gargalo provável.</figcaption></figure>
-      <figure class="shot"><img src="{{img}}pt/shortcuts.png" alt="Configurações de atalhos" loading="lazy"><figcaption><b>Atalhos globais.</b> Qualquer tecla ou botão do mouse, valendo com o jogo em foco.</figcaption></figure>
-      <figure class="shot"><img src="{{img}}pt/performance.png" alt="Configurações de desempenho" loading="lazy"><figcaption><b>Desempenho.</b> Qualidade automática, cursor fora do vídeo e o teste do seu PC.</figcaption></figure>
-    </div>
-  </section>
-
-  <section class="cta corner-accent">
-    <h2>bora?</h2>
-    <p>Baixe, crie a sala e mande o convite. Se travar em algum ponto, a wiki tem o caminho.</p>
-    <div class="dl-row">
-      <a class="btn primary" href="{{base}}{{lp}}docs/guide/">{{icon:book}}ler o guia</a>
-      <a class="btn" href="{{base}}{{lp}}docs/connecting/">{{icon:link}}conectar de fora</a>
-      <a class="btn" href="{{base}}{{lp}}docs/faq/">{{icon:spark}}problemas comuns</a>
-    </div>
-  </section>
-</div>
+  </div>
+</section>
+<dialog class="zoom" data-zoom-box><form method="dialog"><button aria-label="Fechar">{{icon:close}}</button></form><img alt=""></dialog>
+<script src="{{base}}assets/home.js" defer></script>

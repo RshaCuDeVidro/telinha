@@ -132,7 +132,7 @@ python3 -m http.server -d _site 8000   # http://127.0.0.1:8000
 ```
 
 A new page goes into `SECTIONS` in `site/build.py`. The home page is
-`site/home.pt.html` / `site/home.en.html`; the look is `site/assets/style.css`.
+`site/home.pt.html` / `site/home.en.html` with the control room in `site/wall.html`; the look is `site/assets/style.css`, its animations `site/assets/home.js`, and the channels come from `src/theme.zig`.
 
 ## Cutting a release
 

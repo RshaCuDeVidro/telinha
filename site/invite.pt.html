@@ -1,10 +1,11 @@
-<section class="hero invite">
-  <div class="wrap invite-wrap">
-    <div class="hero-kicker">{{icon:link}} convite</div>
-    <h1 class="hero-title"><span class="hero-glitch" data-text="te chamaram">te chamaram</span></h1>
-    <p class="hero-sub">Alguém te chamou pra uma sala do <b>telinha</b>: assistir a tela da galera, falar e conversar. O convite fica só no seu navegador (nada dele é enviado pra este site).</p>
+<section class="invite">
+  <div class="invite-kicker">{{icon:link}} sinal chegando</div>
+  <h1>Te chamaram</h1>
+  <p class="invite-sub">Alguém te chamou pra uma sala do <b>telinha</b>: assistir a tela da galera, falar e conversar. O convite fica só no seu navegador (nada dele é enviado pra este site).</p>
 
-    <div class="invite-card corner-accent" id="inv-ok" hidden>
+  <div class="invite-stage">
+    {{husky}}
+    <div class="invite-card" id="inv-ok" hidden>
       <h2>Já tem o telinha?</h2>
       <div class="dl-row">
         <a class="btn primary" id="inv-open" href="#">{{icon:play}}Abrir no telinha</a>
@@ -14,7 +15,7 @@
       <p class="dl-note" id="inv-where"></p>
     </div>
 
-    <div class="invite-card corner-accent" id="inv-get">
+    <div class="invite-card" id="inv-get">
       <h2>Ainda não tem?</h2>
       <div class="invite-os" data-os-box="windows">
         <p>No Windows é um arquivo só, sem instalar nada:</p>
@@ -34,7 +35,7 @@
       </div>
     </div>
 
-    <div class="invite-card corner-accent" id="inv-bad" hidden>
+    <div class="invite-card" id="inv-bad" hidden>
       <h2>Esse link está incompleto</h2>
       <p>Faltou o convite depois do <code>#</code>. Peça o link de novo pra quem te chamou (no app, o botão <b>Convidar</b> copia).</p>
     </div>

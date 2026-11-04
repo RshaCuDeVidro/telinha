@@ -1,10 +1,11 @@
-<section class="hero invite">
-  <div class="wrap invite-wrap">
-    <div class="hero-kicker">{{icon:link}} invite</div>
-    <h1 class="hero-title"><span class="hero-glitch" data-text="you're invited">you're invited</span></h1>
-    <p class="hero-sub">Someone invited you to a <b>telinha</b> room: watch the gang's screens, talk and chat. The invite stays in your browser (none of it is sent to this site).</p>
+<section class="invite">
+  <div class="invite-kicker">{{icon:link}} incoming signal</div>
+  <h1>You're invited</h1>
+  <p class="invite-sub">Someone invited you to a <b>telinha</b> room: watch the gang's screens, talk and chat. The invite stays in your browser (none of it is sent to this site).</p>
 
-    <div class="invite-card corner-accent" id="inv-ok" hidden>
+  <div class="invite-stage">
+    {{husky}}
+    <div class="invite-card" id="inv-ok" hidden>
       <h2>Already have telinha?</h2>
       <div class="dl-row">
         <a class="btn primary" id="inv-open" href="#">{{icon:play}}Open in telinha</a>
@@ -14,7 +15,7 @@
       <p class="dl-note" id="inv-where"></p>
     </div>
 
-    <div class="invite-card corner-accent" id="inv-get">
+    <div class="invite-card" id="inv-get">
       <h2>Don't have it yet?</h2>
       <div class="invite-os" data-os-box="windows">
         <p>On Windows it's a single file, nothing to install:</p>
@@ -34,7 +35,7 @@
       </div>
     </div>
 
-    <div class="invite-card corner-accent" id="inv-bad" hidden>
+    <div class="invite-card" id="inv-bad" hidden>
       <h2>This link is incomplete</h2>
       <p>The invite after the <code>#</code> is missing. Ask whoever invited you for the link again (in the app, the <b>Invite</b> button copies it).</p>
     </div>

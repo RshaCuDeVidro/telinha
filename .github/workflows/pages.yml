@@ -12,6 +12,8 @@ on:
       - "CHANGELOG*.md"
       - "CONTRIBUTING*.md"
       - "src/proto.zig"
+      - "src/theme.zig"
+      - "src/connect.zig"
       - "assets/icon.png"
       - "assets/telinha.svg"
       - ".github/workflows/pages.yml"

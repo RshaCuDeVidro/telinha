@@ -1,0 +1,82 @@
+<div class="wall" data-wall>
+  {{husky}}
+  <div class="wall-stage" data-stage>
+    <noscript><img src="{{img}}[[en||pt]]/room_pwnd.jpg" alt="[[A telinha room: a live stream, the member list and the chat||Uma sala do telinha: uma transmissão ao vivo, a lista de membros e o chat]]" width="1600" height="900"></noscript>
+
+    <div class="scene s-code" data-scene data-who="Ana" data-what="connect.zig" role="button" tabindex="0">
+      <div class="sc-bar"><i></i><i></i><i></i><b>connect.zig — telinha</b></div>
+      <div class="sc-main">
+        <ul class="sc-tree"><li class="dir">telinha</li><li class="dir sub">src</li><li>capture_linux.c</li><li class="on">connect.zig</li><li>server.zig</li><li>theme.zig</li><li>ui.zig</li><li class="dir sub">bots</li><li>README.md</li></ul>
+        <div class="sc-code"><pre class="hl" data-scroll><code>{{stream_code}}</code></pre></div>
+      </div>
+      <div class="sc-foot"><span>main</span><span>Zig 0.16</span><span>UTF-8</span><span>LF</span></div>
+    </div>
+
+    <div class="scene s-game" data-scene data-who="Bruno" data-what="husky run" role="button" tabindex="0">
+      <canvas width="480" height="270" data-game></canvas>
+    </div>
+
+    <div class="scene s-test" data-scene data-who="[[Big-screen bot||Bot de tela]]" data-what="[[test card||barras de teste]]" role="button" tabindex="0">
+      <div class="bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="castle"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="pluge"><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="dial"><i class="hand"></i><i class="cross"></i><b>telinha</b><span>1920×1080 · 60</span></div>
+    </div>
+
+    <div class="scene s-term" data-scene data-who="Carol" data-what="~/telinha" role="button" tabindex="0">
+      <div class="sc-bar"><i></i><i></i><i></i><b>~/telinha — zsh</b></div>
+      <pre data-term></pre>
+    </div>
+
+    <div class="scene s-room" data-scene data-who="[[Room||Sala]]" data-what="#geral" role="button" tabindex="0">
+      <div class="rm-side">
+        <div class="rm-title">[[in]] #geral · 4</div>
+        <div class="rm-user speak"><i style="--c:#22a867">A</i><b>Ana</b><em>LIVE</em></div>
+        <div class="rm-user"><i style="--c:#ffa51f">B</i><b>Bruno</b></div>
+        <div class="rm-user speak two"><i style="--c:#f2445f">C</i><b>Carol</b></div>
+        <div class="rm-user"><i style="--c:#7b5cff">M</i><b>[[Music||Música]]</b><em class="bot">BOT</em></div>
+      </div>
+      <div class="rm-main">
+        <div class="rm-card">
+          <small>[[NOW PLAYING||TOCANDO AGORA]]</small>
+          <strong>Soma FM — Groove Salad</strong>
+          <span>[[requested by Carol||pedido da Carol]]</span>
+          <div class="rm-bar"><i></i></div>
+          <div class="rm-btns"><u>⏸</u><u>⏭</u><u>[[queue||fila]]</u></div>
+        </div>
+        <div class="rm-chat" data-chat></div>
+        <div class="rm-input">[[Message||Mensagem em]] #geral</div>
+      </div>
+    </div>
+
+    <canvas class="ink" data-ink aria-hidden="true"></canvas>
+    <div class="pgm-hud" data-hud aria-hidden="true">
+      <span class="live-tag">LIVE</span><b data-hud-who>Ana</b><span data-hud-what>connect.zig</span>
+      <span class="hud-right">1080p60 · HEVC · <b>17 ms</b></span>
+    </div>
+    <div class="pen-chip" data-pen aria-hidden="true">Bia</div>
+    <div class="ink-hint" data-hint aria-hidden="true">[[hold and draw on the stream||segure e risque a transmissão]]</div>
+  </div>
+  <p class="wall-note">[[Simulated in your browser, so nothing here is a real stream. Click a small screen to cut to it.||Simulado no seu navegador: nada aqui é transmissão de verdade. Clique numa tela pequena pra cortar pra ela.]]</p>
+  <script type="application/json" id="wall-data">{
+    "chat": [
+      ["Carol", "#f2445f", "[[check this refactor||olha esse refactor]]", ""],
+      ["Bruno", "#ffa51f", "[[nice, ship it!||brabo, manda pra main!]]", "👍 2"],
+      ["Ana", "#22a867", "[[it races every address at once||ele testa todos os endereços de uma vez]]", "❤ 1"],
+      ["Carol", "#f2445f", "[[zoom in on race()||dá um zoom no race()]]", ""],
+      ["Bruno", "#ffa51f", "!play groove salad", ""],
+      ["Ana", "#22a867", "[[17 ms and the husky still judges me||17 ms e o husky ainda me julga]]", "😂 3"]
+    ],
+    "term": [
+      ["t-cmd", "telinha --criar 7777 --senha ••••••"],
+      ["t-ok", "[[room open · port 7777 · X25519 + ChaCha20||sala aberta · porta 7777 · X25519 + ChaCha20]]"],
+      ["t-ok", "[[port opened on the router (UPnP)||porta aberta no roteador (UPnP)]]"],
+      ["t-ok", "[[invite copied||convite copiado]] · telinha://203.0.113.7:7777!kzdv…"],
+      ["t-in", "[[Ana joined · internet, IPv4||Ana entrou · internet, IPv4]]"],
+      ["t-in", "[[Bia joined · local network||Bia entrou · rede local]]"],
+      ["t-cmd", "telinha --transmitir --modo jogo"],
+      ["t-live", "1920×1080 · 60 fps · [[HEVC on the GPU||HEVC na GPU]] · 17 ms"],
+      ["t-in", "[[Music [bot] playing in the call||Música [bot] tocando na call]]"]
+    ]
+  }</script>
+</div>
