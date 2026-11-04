@@ -2,7 +2,7 @@
 """Gera o site do telinha (GitHub Pages) a partir dos .md do repositório.
 
 Os .md continuam sendo a fonte: aqui só vira HTML com a cara do site, nos dois
-idiomas (pt na raiz, en em /en/), com barra lateral, índice da página, busca e
+idiomas (en na raiz, pt em /pt/), com barra lateral, índice da página, busca e
 links entre os docs apontando pras páginas do site. No fim confere cada link
 interno (página e âncora): link quebrado faz o build falhar.
 
@@ -41,7 +41,7 @@ sys.path.insert(0, HERE)
 from icons import icon, sprite  # noqa: E402
 from husky import husky  # noqa: E402
 TOP = os.path.dirname(HERE)
-LANGS = ("pt", "en")
+LANGS = ("en", "pt")
 
 # ------------------------------------------------------------------ páginas
 # (slug, fonte em inglês, fonte em português, trecho do README ou None)
@@ -121,6 +121,18 @@ UI = {
     },
 }
 
+
+
+def lang_prefix(lang):
+    return "" if lang == "en" else "pt/"
+
+
+def other_lang_path(path):
+    """A mesma página no outro idioma. O convite é a exceção: os apps já instalados geram
+    /j/ (português) e /en/j/ (inglês), e esses dois caminhos não podem mudar."""
+    if path in ("j/", "en/j/"):
+        return "en/j/" if path == "j/" else "j/"
+    return path[3:] if path.startswith("pt/") else "pt/" + path
 
 
 # ------------------------------------------------------------------ canais
@@ -388,8 +400,7 @@ class Site:
 
     def page_path(self, lang, slug=None):
         """Caminho (a partir da raiz do site) da página."""
-        prefix = "" if lang == "pt" else "en/"
-        return prefix + ("" if slug is None else f"docs/{slug}/")
+        return lang_prefix(lang) + ("" if slug is None else f"docs/{slug}/")
 
     def fix_links(self, h, src, lang, base):
         srcdir = posixpath.dirname(src)
@@ -419,7 +430,7 @@ class Site:
 def head(lang, title, desc, base, path, extra=""):
     t = UI[lang]
     other = "en" if lang == "pt" else "pt"
-    alt_path = path[3:] if path.startswith("en/") else "en/" + path
+    alt_path = other_lang_path(path)
     chans = [{"id": "husky", "name": "husky"}] + [{"id": c[0], "name": c[1] if lang == "pt" else c[2]} for c in channels()]
     js = {"lang": lang, "base": base, "channels": chans, "t": {k: t[k] for k in ("copy", "copied", "loading", "searchHint", "noResults", "searchFail")}}
     full = f"{title} · telinha" if title != "telinha" else "telinha"
@@ -456,9 +467,9 @@ r.dataset.theme=ok?s:'husky';r.classList.add('js');if(/[?&]fx=lite/.test(locatio
 
 def header(lang, base, active, path, page_class=""):
     t = UI[lang]
-    lp = "" if lang == "pt" else "en/"
+    lp = lang_prefix(lang)
     other = "en" if lang == "pt" else "pt"
-    alt_path = path[3:] if path.startswith("en/") else "en/" + path
+    alt_path = other_lang_path(path)
 
     def nav(key, href):
         cls = ' class="active" aria-current="page"' if active == key else ""
@@ -492,7 +503,7 @@ def header(lang, base, active, path, page_class=""):
 def footer(lang, base, kofi=True):
     t = UI[lang]
     kofi_js = f'<script src="{base}assets/kofi.js" defer></script>\n' if kofi else ""
-    lp = "" if lang == "pt" else "en/"
+    lp = lang_prefix(lang)
     return f"""<footer class="site-footer">
   <div class="footer-inner">
     <span>{t['footer']} · v{app_version()}</span>
@@ -635,15 +646,10 @@ def build(out):
             site.images.add("docs/img/" + m.group(1))
         content = content.replace("{{img}}", base + "img/")
         content = re.sub(r"\{\{icon:([a-z-]+)\}\}", lambda m: icon(m.group(1)), content)
-        content = content.replace("{{base}}", base).replace("{{lp}}", "" if lang == "pt" else "en/")
+        content = content.replace("{{base}}", base).replace("{{lp}}", lang_prefix(lang))
         content = content.replace("{{version}}", version).replace("{{gh}}", GH)
         content = content.replace("{{news}}", news_html(lang, base))
-        redirect = ""
-        if lang == "pt":
-            # primeira visita, navegador em outra língua: vai pro inglês (escolher no seletor vale pra sempre)
-            redirect = "\n<script>(function(){try{if(localStorage.getItem('telinha-lang'))return}catch(e){}var l=(navigator.languages||[navigator.language||''])" \
-                       ".join(',').toLowerCase();if(l&&l.indexOf('pt')<0)location.replace('en/'+location.hash)})();</script>"
-        page = head(lang, "telinha", UI[lang]["desc"], base, path, redirect) + header(lang, base, "home", path)
+        page = head(lang, "telinha", UI[lang]["desc"], base, path) + header(lang, base, "home", path)
         page += f'\n<main class="home" id="conteudo">\n{content}\n</main>\n' + footer(lang, base)
         write(os.path.join(out, path, "index.html"), page)
 
@@ -676,19 +682,29 @@ def build(out):
         shutil.copy(os.path.join(TOP, img), dst)
     for lang in LANGS:
         write(os.path.join(out, f"search-{lang}.json"), json.dumps(search[lang], ensure_ascii=False, separators=(",", ":")))
-    t = UI["pt"]
-    nf = head("pt", "404", t["desc"], SITE_PATH, "404.html") + header("pt", SITE_PATH, "", "")
+    t = UI["en"]
+    nf = head("en", "404", t["desc"], SITE_PATH, "404.html") + header("en", SITE_PATH, "", "")
     nf += f"""
 <main class="home" id="conteudo"><section class="no-signal">
   <div class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
   <div class="no-signal-box">
     <h1>404</h1>
-    <p>{t['notfound']}<br>{UI['en']['notfound']}</p>
-    <div class="dl-row"><a class="btn primary" href="{SITE_PATH}">{t['notfound_back']}</a><a class="btn" href="{SITE_PATH}en/">{UI['en']['notfound_back']}</a></div>
+    <p>{t['notfound']}<br>{UI['pt']['notfound']}</p>
+    <div class="dl-row"><a class="btn primary" href="{SITE_PATH}">{t['notfound_back']}</a><a class="btn" href="{SITE_PATH}pt/">{UI['pt']['notfound_back']}</a></div>
   </div>
 </section></main>
-""" + footer("pt", SITE_PATH, kofi=False)
+""" + footer("en", SITE_PATH, kofi=False)
     write(os.path.join(out, "404.html"), nf)
+    # o inglês morava em /en/: os links antigos continuam chegando (menos /en/j/, que é real)
+    for slug in [None] + [p["slug"] for p in site.pages if p["lang"] == "en"]:
+        old = "en/" + ("" if slug is None else f"docs/{slug}/")
+        to = "../" * old.count("/") + ("" if slug is None else f"docs/{slug}/")
+        write(os.path.join(out, old, "index.html"), f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>telinha</title><meta name="robots" content="noindex">
+<link rel="canonical" href="{SITE_URL}{'' if slug is None else f'docs/{slug}/'}"><meta http-equiv="refresh" content="0; url={to}">
+<script>location.replace({json.dumps(to)} + location.search + location.hash)</script></head>
+<body><a href="{to}">telinha</a></body></html>
+""")
     urls = [site.page_path(l) for l in LANGS] + [site.page_path(p["lang"], p["slug"]) for p in site.pages]
     write(os.path.join(out, "sitemap.xml"), '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
           + "".join(f"  <url><loc>{SITE_URL}{u}</loc><lastmod>{date.today().isoformat()}</lastmod></url>\n" for u in urls) + "</urlset>\n")
@@ -712,7 +728,7 @@ def news_html(lang, base):
         return ""
     md = markdown.Markdown(extensions=["sane_lists"])
     body = strip_emoji(md.convert(hl.group(1)))
-    lp = "" if lang == "pt" else "en/"
+    lp = lang_prefix(lang)
     label = ("v" + title) if title[:1].isdigit() else title
     anchor = gh_slug(title)
     href = f"{base}{lp}docs/changelog/#{anchor}"

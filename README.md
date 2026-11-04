@@ -23,7 +23,7 @@
   <a href="#features">Features</a> ·
   <a href="#performance">Performance</a> ·
   <a href="#building-from-source">Build</a> ·
-  <a href="https://rshacudevidro.github.io/telinha/en/"><b>Website &amp; docs</b></a> ·
+  <a href="https://rshacudevidro.github.io/telinha/"><b>Website &amp; docs</b></a> ·
   <a href="docs/ARCHITECTURE.md">Architecture</a> ·
   <a href="README.pt.md">🇧🇷 Português</a>
 </p>
@@ -262,7 +262,7 @@ To turn a crash report's stack trace into source lines, use `tools/simbolos.py` 
 
 ## Documentation
 
-The same docs, with search, live at **[rshacudevidro.github.io/telinha](https://rshacudevidro.github.io/telinha/en/)**.
+The same docs, with search, live at **[rshacudevidro.github.io/telinha](https://rshacudevidro.github.io/telinha/)**.
 
 - [User guide](docs/GUIDE.md): everything the app does, chat commands, shortcuts and settings.
 - [Troubleshooting](docs/FAQ.md): the questions that come up most.

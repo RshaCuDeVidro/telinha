@@ -13,7 +13,7 @@ Commands: !play, !search, !queue, !skip, !pause, !resume, !stop, !volume,
 !np, !loop, !shuffle, !remove, !clear, !radios, !list, !join, !leave, !help.
 Portuguese aliases work too (!tocar, !fila, !pular...). From any channel:
 /msg Música !join (the bot comes to your call).
-Guide: https://rshacudevidro.github.io/telinha/en/docs/bots-music/
+Guide: https://rshacudevidro.github.io/telinha/docs/bots-music/
 """
 from __future__ import annotations
 

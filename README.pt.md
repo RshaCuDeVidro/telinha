@@ -23,7 +23,7 @@
   <a href="#o-que-tem">O que tem</a> ·
   <a href="#desempenho">Desempenho</a> ·
   <a href="#compilar">Compilar</a> ·
-  <a href="https://rshacudevidro.github.io/telinha/"><b>Site e docs</b></a> ·
+  <a href="https://rshacudevidro.github.io/telinha/pt/"><b>Site e docs</b></a> ·
   <a href="docs/ARCHITECTURE.pt.md">Arquitetura</a> ·
   <a href="README.md">🇺🇸 English</a>
 </p>
@@ -260,7 +260,7 @@ Pra traduzir a pilha de um relatório de travamento em linhas do código, use `t
 
 ## Documentação
 
-Os mesmos docs, com busca, ficam em **[rshacudevidro.github.io/telinha](https://rshacudevidro.github.io/telinha/)**.
+Os mesmos docs, com busca, ficam em **[rshacudevidro.github.io/telinha](https://rshacudevidro.github.io/telinha/pt/)**.
 
 - [Guia de uso](docs/GUIDE.pt.md): tudo o que o app faz, comandos do chat, atalhos e configurações.
 - [Problemas comuns](docs/FAQ.pt.md): as dúvidas que mais aparecem.

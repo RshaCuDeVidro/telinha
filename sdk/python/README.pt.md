@@ -2,7 +2,7 @@
 
 <sub>[🇺🇸 English](README.md) · [🇧🇷 Português](README.pt.md)</sub>
 
-Bots pro [telinha](https://rshacudevidro.github.io/telinha/), o app de
+Bots pro [telinha](https://rshacudevidro.github.io/telinha/pt/), o app de
 compartilhar a tela em grupo com atraso baixo: chat, comandos, cartões com
 botões, reações, privadas, canais, música na call e arquivos.
 
@@ -26,9 +26,9 @@ bot.run()
 O bot aparece na sala com a etiqueta **BOT** e nunca vira admin. Python 3.10+,
 `cryptography`, e o ffmpeg pra tocar som.
 
-- Guia: https://rshacudevidro.github.io/telinha/docs/bots/
-- Tutorial: https://rshacudevidro.github.io/telinha/docs/bots-tutorial/
-- Referência da API: https://rshacudevidro.github.io/telinha/docs/bots-api/
+- Guia: https://rshacudevidro.github.io/telinha/pt/docs/bots/
+- Tutorial: https://rshacudevidro.github.io/telinha/pt/docs/bots-tutorial/
+- Referência da API: https://rshacudevidro.github.io/telinha/pt/docs/bots-api/
 - Exemplos: [`examples/`](examples)
 
 Os testes rodam contra um `telinha-server` de verdade, compilado do

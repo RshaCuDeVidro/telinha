@@ -2,7 +2,7 @@
 
 <sub>[🇺🇸 English](README.md) · [🇧🇷 Português](README.pt.md)</sub>
 
-Bots for [telinha](https://rshacudevidro.github.io/telinha/en/), the low-latency
+Bots for [telinha](https://rshacudevidro.github.io/telinha/), the low-latency
 group screen-sharing app: chat, commands, cards with buttons, reactions, private
 messages, channels, music in the call and files.
 
@@ -26,9 +26,9 @@ bot.run()
 Bots show up in the room with a **BOT** tag and never become admin. Python 3.10+,
 `cryptography`, and ffmpeg to play sound.
 
-- Guide: https://rshacudevidro.github.io/telinha/en/docs/bots/
+- Guide: https://rshacudevidro.github.io/telinha/docs/bots/
 - Tutorial: https://rshacudevidro.github.io/telinha/en/docs/bots-tutorial/
-- API reference: https://rshacudevidro.github.io/telinha/en/docs/bots-api/
+- API reference: https://rshacudevidro.github.io/telinha/docs/bots-api/
 - Examples: [`examples/`](examples)
 
 Tests run against a real `telinha-server` built from the repository (each test

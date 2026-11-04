@@ -16,7 +16,7 @@ python3 -m venv .venv && .venv/bin/pip install ./sdk/python yt-dlp
 `!watch nome ou link`, `!search`, `!queue`, `!skip`, `!pause`, `!stop`,
 `!help`; de qualquer canal / from any channel: `/msg Telão !watch link`.
 
-- Guia: https://rshacudevidro.github.io/telinha/docs/bots-screen/
-- Guide: https://rshacudevidro.github.io/telinha/en/docs/bots-screen/
+- Guia: https://rshacudevidro.github.io/telinha/pt/docs/bots-screen/
+- Guide: https://rshacudevidro.github.io/telinha/docs/bots-screen/
 
 Testes / tests: `python3 -m unittest discover -s bots/telao -v`

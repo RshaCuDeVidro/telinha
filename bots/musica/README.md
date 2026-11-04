@@ -13,8 +13,8 @@ python3 -m venv .venv && .venv/bin/pip install ./sdk/python yt-dlp
 `!play nome ou link`, `!search`, `!queue`, `!skip`, `!np`, `!help`; de qualquer
 canal / from any channel: `/msg Música !join`.
 
-- Guia: https://rshacudevidro.github.io/telinha/docs/bots-music/
-- Guide: https://rshacudevidro.github.io/telinha/en/docs/bots-music/
+- Guia: https://rshacudevidro.github.io/telinha/pt/docs/bots-music/
+- Guide: https://rshacudevidro.github.io/telinha/docs/bots-music/
 
 Testes / tests: `python3 -m unittest discover -s bots/musica -v`
 (`TELINHA_TESTE_REDE=1` inclui os que buscam na internet / includes the ones

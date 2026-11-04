@@ -65,8 +65,6 @@
     if (channels[Number(e.key)]) tune(Number(e.key));
   });
   paintChannel();
-  // escolheu o idioma no seletor: a raiz não redireciona mais
-  $$('.lang-switch').forEach((a) => a.addEventListener('click', () => store.set('telinha-lang', a.dataset.lang)));
 
   // ---------------------------------------------------- barra de progresso e "voltar ao topo"
   const bar = $('.scroll-progress');

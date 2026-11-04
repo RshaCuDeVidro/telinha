@@ -15,7 +15,7 @@ re-encoded by ffmpeg (that one costs about a CPU core at 720p).
 Commands: !watch, !search, !queue, !skip, !pause, !resume, !stop, !join,
 !leave, !help. Portuguese aliases work too (!assistir, !fila, !pular...).
 From any channel: /msg Telão !watch link (the bot comes to your call).
-Guide: https://rshacudevidro.github.io/telinha/en/docs/bots-screen/
+Guide: https://rshacudevidro.github.io/telinha/docs/bots-screen/
 """
 from __future__ import annotations
 
