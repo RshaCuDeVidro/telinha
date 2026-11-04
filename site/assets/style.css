@@ -653,7 +653,9 @@ pre:hover > .code-copy-btn, .code-copy-btn:focus, .lang-panel .code-copy-btn { o
 .invite-sub { margin: 0; max-width: 38em; color: var(--text-2); font-size: 1.06rem; }
 .invite-sub b { color: var(--head); font-weight: 600; }
 .invite-stage { position: relative; margin-top: clamp(62px, 10vw, 90px); }
-.invite-stage .husky { right: 9%; bottom: 100%; margin-bottom: -22px; width: clamp(88px, 16vw, 130px); aspect-ratio: 176 / 146; }
+.invite-stage { --hw: clamp(88px, 16vw, 130px); }
+/* a borda do cartão passa a 89% da altura do desenho, igual à tela do topo */
+.invite-stage .husky { right: 9%; bottom: 100%; margin-bottom: calc(var(--hw) * -.0913); width: var(--hw); aspect-ratio: 176 / 146; }
 .invite-card { position: relative; z-index: 1; padding: 20px 22px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--bg-2); }
 .invite-card + .invite-card { margin-top: 14px; }
 .invite-card h2 { margin: 0 0 8px; font: 800 1.7rem/1.05 var(--font-display); color: var(--head); }
@@ -690,7 +692,7 @@ html.lite .ticker-run, html.lite .rm-bar i, html.lite .dial .hand, html.lite .rm
   .hero-sub, .hero-stats { max-width: 46em; }
   .wall .husky { right: 9%; }
   .mega { font-size: 33vw; }
-  .wall { padding-top: clamp(40px, 8vw, 84px); }
+  .wall { --pad: clamp(58px, 11vw, 84px); --hw: clamp(92px, 15vw, 150px); }
   .wall-note { text-align: left; }
 }
 @media (max-width: 900px) {
