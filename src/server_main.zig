@@ -681,13 +681,18 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(0);
         }
         if (auto_update) au.tick(srv);
-        if (sync.nowMs() -| last_stats_ms < 59_000) continue;
-        last_stats_ms = sync.nowMs();
+        const now_ms = sync.nowMs();
+        if (now_ms -| last_stats_ms < 59_000) continue;
+        const secs = @as(f64, @floatFromInt(now_ms -| last_stats_ms)) / 1000;
+        last_stats_ms = now_ms;
         const total = srv.relayed_bytes.load(.monotonic);
         const n = srv.memberCount();
-        if (n > 0) log(std.fmt.bufPrint(&buf, "{d} na sala, {d:.1} MB encaminhados no último minuto", .{
-            n, @as(f64, @floatFromInt(total - last_bytes)) / (1024 * 1024),
-        }) catch "");
+        var rates_buf: [512]u8 = undefined;
+        const rates = srv.streamerRates(&rates_buf, secs);
+        var line: [768]u8 = undefined;
+        const mb = @as(f64, @floatFromInt(total - last_bytes)) / (1024 * 1024);
+        const sep: []const u8 = if (rates.len > 0) "; chegando de quem transmite: " else "";
+        if (n > 0) log(std.fmt.bufPrint(&line, "{d} na sala, {d:.1} MB encaminhados no último minuto{s}{s}", .{ n, mb, sep, rates }) catch "");
         last_bytes = total;
     }
 }

@@ -247,6 +247,14 @@ pub fn lowerThreadPriority() void {
     }
 }
 
+/// Sobe um degrau a prioridade da thread atual (rede: quase só espera o
+/// socket). Com um jogo usando a CPU toda, a confirmação do servidor esperava
+/// a vez e o controle de taxa achava que a internet tinha piorado. Só no
+/// Windows: no Linux, sem CAP_SYS_NICE, ninguém passa do nice 0.
+pub fn raiseThreadPriority() void {
+    if (is_windows) _ = SetThreadPriority(GetCurrentThread(), 1); // THREAD_PRIORITY_ABOVE_NORMAL
+}
+
 pub fn cpuCount() usize {
     return std.Thread.getCpuCount() catch 4;
 }

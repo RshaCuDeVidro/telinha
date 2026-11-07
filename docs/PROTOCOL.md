@@ -688,8 +688,12 @@ everything is measured with acknowledgements — separately for each stream
   less than 1 s), rate −25%. Delay explained by a recent IDR (slack = the time it
   took, decreasing over 4 s) only causes a frame skip, doesn't lower the rate;
 - delay < 60 ms and 2 s without trouble: climb 12% up to 90% of the "ceiling" (the
-  rate at which there was trouble last time); above that, after 15 s without
-  trouble, only +2%/s. After 30 s without trouble the ceiling is forgotten.
+  rate at which there was trouble last time); above that, after 10 s without
+  trouble, only +2%/s. After 20 s without trouble the ceiling is forgotten.
+- hiccup: if the delay falls back under 60 ms within 0.5 s of the episode's
+  start, it wasn't a queue (the PC froze for an instant, Wi-Fi held a burst):
+  the rate, the ceiling and the calm clock go back to where they were before
+  it. A real queue takes longer to drain after a cut.
 - `viewer_slow tipo piso`: −20% (at most every 2 s), not below `piso`% of the
   target; the rate doesn't climb for 12 s.
 

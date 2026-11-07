@@ -2400,6 +2400,35 @@ def sala_aguenta_carga():
 
 
 @test
+def jogo_pesado_nao_derruba_taxa():
+    """Quem transmite com o PC no limite (jogo pesado): a confirmação do servidor é lida 150 ms atrasada a cada 4 s (TELINHA_SOLUCO). Até a 3.10.2 cada soluço cortava 7% de vez e a taxa ia pro mínimo em poucos minutos (a sala via mosaico até fechar o jogo); agora ela volta depois de cada soluço. QA_SOLUCO_SEG muda a duração (padrão 100 s)."""
+    secs = int(os.environ.get("QA_SOLUCO_SEG", "100"))
+    with Session("soluco") as s:
+        p = port()
+        srv = s.spawn("srv", [SERVER, "--porta", str(p), "--senha", "pw", "--chave", os.path.join(s.base, "srv.key")], {k: os.environ[k] for k in ("HOME", "PATH")})
+        time.sleep(0.6)
+        s.display(91, "1280x720")
+        s.spawn("xterm", ["xterm", "-geometry", "160x50+0+0", "-e", "sh", "-c", "while :; do head -c 900 /dev/urandom | base64; sleep 0.03; done"], dict(os.environ, DISPLAY=":91"))
+        time.sleep(1.0)
+        a = s.app("a", 91, ["--nome", "Ana", "--entrar", f"127.0.0.1:{p}", "--senha", "pw", "--transmitir", "--software", "--fps", "30", "--janela", "0,0,960,540"], size=(1280, 720), extra_env={"TELINHA_SOLUCO": "150/4"})
+        st = a.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 20, "a Ana transmitir")
+        aid = st["my_id"]
+        b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--senha", "pw", "--assistir"])
+        b.wait(lambda st: any(x["stream"] == aid and x["shown"] for x in st["views"]), 25, "a Bia ver a tela")
+        start = a.state()["sharer"]["kbps"]
+        log(f"Ana a {start} kbit/s; soluço de 150 ms a cada 4 s por {secs} s")
+        low = start
+        end = time.time() + secs
+        while time.time() < end:
+            time.sleep(5)
+            low = min(low, a.state()["sharer"]["kbps"])
+            expect(srv.poll() is None, "o servidor caiu")
+        final = a.state()["sharer"]["kbps"]
+        log(f"Ana: começou em {start}, menor {low}, terminou em {final} kbit/s")
+        expect(final >= start * 0.8, f"a taxa escorregou com os soluços: {start} → {final} kbit/s")
+
+
+@test
 def udp_com_perda():
     """Vídeo por UDP com 5% de perda simulada nos dois sentidos: quem assiste continua vendo (reenvio do que falta), sem travar."""
     with Session("udp", audio=True) as s:

@@ -5,7 +5,15 @@
 const std = @import("std");
 const RateControl = @import("ratectl.zig").RateControl;
 
-pub const Phase = struct { until_s: f64, cap_bps: f64 };
+pub const Phase = struct {
+    until_s: f64,
+    cap_bps: f64,
+    /// Soluço do PC de quem transmite (jogo pesado): a cada `stall_every_s` a
+    /// confirmação fica `stall_ms` sem ser lida e o atraso medido sobe junto,
+    /// sem fila nenhuma no link.
+    stall_ms: f64 = 0,
+    stall_every_s: f64 = 0,
+};
 
 pub const Result = struct {
     /// Média enviada (bits/s) em cada fase, contando só a segunda metade dela.
@@ -55,7 +63,11 @@ pub fn run(phases: []const Phase, target: u32, fps: u32) Result {
         }
         // o gargalo escoa a fila
         queue_bits = @max(0, queue_bits - ph.cap_bps * @as(f64, @floatFromInt(dt_us)) / 1e6);
-        const excess_us: u64 = @intFromFloat(queue_bits / ph.cap_bps * 1e6);
+        var excess_us: u64 = @intFromFloat(queue_bits / ph.cap_bps * 1e6);
+        if (ph.stall_every_s > 0) {
+            const into_ms = @mod(now_s, ph.stall_every_s) * 1000;
+            if (into_ms < ph.stall_ms) excess_us += @intFromFloat(into_ms * 1000);
+        }
         res.max_excess_ms = @max(res.max_excess_ms, @as(f64, @floatFromInt(excess_us)) / 1000);
         if (excess_us > RateControl.max_excess_us) res.late_s += @as(f64, @floatFromInt(dt_us)) / 1e6;
         const skip = rc.congested(.{ .now_us = t_us, .excess_us = excess_us });
@@ -127,6 +139,39 @@ test "simlink: link oscilando (quedas curtas): não fica atrasando a cada sondag
     show("5 Mbit/s com quedas de 3 s pra 2, alvo 6", &phases, r);
     try std.testing.expect(r.late_s < 6);
     try std.testing.expect(r.avg_bps[6] > 5e6 * 0.6);
+}
+
+test "simlink: PC soluçando (jogo pesado) com o link sobrando: a taxa não escorrega pro piso" {
+    // 2560x1080 a 60 q/s na qualidade 60. Até a 3.10.2, um soluço de 150 ms a
+    // cada 4 s levava a taxa a 0,2 Mbit/s em 4 min (a sala viu mosaico até
+    // quem transmitia fechar o jogo)
+    const target: u32 = 16_588_800;
+    const cases = [_]struct { ms: f64, every: f64, min_frac: f64 }{
+        .{ .ms = 150, .every = 4, .min_frac = 0.95 },
+        .{ .ms = 150, .every = 9, .min_frac = 0.95 },
+        .{ .ms = 300, .every = 6, .min_frac = 0.9 },
+        .{ .ms = 450, .every = 3, .min_frac = 0.8 },
+    };
+    for (cases) |cs| {
+        const phases = [_]Phase{
+            .{ .until_s = 300, .cap_bps = 50e6, .stall_ms = cs.ms, .stall_every_s = cs.every },
+            .{ .until_s = 330, .cap_bps = 50e6 },
+        };
+        const r = run(&phases, target, 60);
+        show("link de 50 Mbit/s com soluços do PC, alvo 16,6", &phases, r);
+        try std.testing.expect(r.avg_bps[0] > @as(f64, @floatFromInt(target)) * cs.min_frac);
+        try std.testing.expect(r.recover_s[1] >= 0 and r.recover_s[1] < 3);
+    }
+}
+
+test "simlink: link apertado com soluços do PC por cima: continua respeitando o link" {
+    // soluço desfeito não pode virar desculpa pra ficar acima do que o link aguenta
+    const phases = [_]Phase{.{ .until_s = 120, .cap_bps = 4e6, .stall_ms = 150, .stall_every_s = 4 }};
+    const r = run(&phases, 6_000_000, 30);
+    show("link de 4 Mbit/s com soluços do PC, alvo 6", &phases, r);
+    try std.testing.expect(r.avg_bps[0] > 4e6 * 0.75);
+    try std.testing.expect(r.avg_bps[0] < 4e6 * 1.02);
+    try std.testing.expect(r.late_s < 15);
 }
 
 test "simlink/ratectl: transmissão nova começa no que já coube; sem saber, no alvo" {

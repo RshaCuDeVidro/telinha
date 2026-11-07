@@ -137,6 +137,7 @@ const Conn = struct {
     rx_bytes: u64 = 0, // quadro/som/voz que ela mandou
     tx_seen: u64 = 0,
     rx_seen: u64 = 0,
+    rx_logged: u64 = 0, // rx_bytes na última linha do log por minuto
     mic: bool = false, // microfone ligado
     deaf: bool = false, // não quer ouvir a sala (não recebe voz)
     streams: [2]StreamState = .{ .{}, .{} },
@@ -1106,6 +1107,24 @@ pub const Server = struct {
         s.mutex.lock();
         defer s.mutex.unlock();
         return s.conns.items.len;
+    }
+
+    /// Pro log por minuto: quanto chegou de cada um que está transmitindo
+    /// (vídeo, som e voz) desde a última chamada. Diz se a transmissão já
+    /// chegava fraca no servidor ou se o problema era de quem assiste.
+    pub fn streamerRates(s: *Server, out: []u8, secs: f64) []const u8 {
+        s.mutex.lock();
+        defer s.mutex.unlock();
+        var n: usize = 0;
+        for (s.conns.items) |cn| {
+            const delta = cn.rx_bytes -| cn.rx_logged;
+            cn.rx_logged = cn.rx_bytes;
+            if (!cn.streams[0].on and !cn.streams[1].on) continue;
+            const mbps = @as(f64, @floatFromInt(delta)) * 8 / @max(secs, 1) / 1e6;
+            const part = std.fmt.bufPrint(out[n..], "{s}{s} {d:.2} Mbit/s", .{ if (n == 0) "" else ", ", cn.nameSlice(), mbps }) catch break;
+            n += part.len;
+        }
+        return out[0..n];
     }
 
     /// Gente de verdade na sala (bots não contam: o de música fica conectado).

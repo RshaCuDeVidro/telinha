@@ -668,8 +668,12 @@ câmera de alguém têm controles independentes):
   1 s), taxa −25%. Atraso explicado por um IDR recente (folga = o tempo que
   ele levou, diminuindo em 4 s) só faz pular quadro, não baixa a taxa;
 - atraso < 60 ms e 2 s sem problema: sobe 12% até 90% do "teto" (a taxa em que
-  deu problema da última vez); acima disso, depois de 15 s sem problema, só
-  +2%/s. Depois de 30 s sem problema o teto é esquecido.
+  deu problema da última vez); acima disso, depois de 10 s sem problema, só
+  +2%/s. Depois de 20 s sem problema o teto é esquecido.
+- soluço: se o atraso volta abaixo de 60 ms até 0,5 s depois do começo do
+  episódio, não era fila (o PC travou um instante, o Wi-Fi segurou uma
+  rajada): a taxa, o teto e o relógio da calma voltam como estavam antes
+  dele. Fila de verdade demora mais pra escoar depois de um corte.
 - `viewer_slow tipo piso`: −20% (no máximo a cada 2 s), não abaixo de `piso`%
   do alvo; a taxa não sobe por 12 s.
 

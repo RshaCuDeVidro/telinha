@@ -14,6 +14,12 @@
 //!     o teto (o link pode ter melhorado). Medido no simlink.zig: com o teto
 //!     rebaixado a cada corte e 15/30 s, um link de 3 Mbit/s rendia 2,5 e a
 //!     volta pra 10 Mbit/s levava 16 s; agora 2,97 e 11 s.
+//!   - soluço (o atraso passou do limite e voltou ao normal em até 0,5 s: o
+//!     PC travou um instante com um jogo pesado, o Wi-Fi segurou uma rajada):
+//!     não era a nossa taxa enchendo uma fila, então desfaz os cortes e o
+//!     teto. Antes (3.10.2), cada soluço abria um episódio com o teto na taxa
+//!     já cortada e a subida rápida ia só até 90% dele: com um soluço de
+//!     150 ms a cada 4 s, 16,6 Mbit/s viravam 0,2 em 4 min, com o link sobrando.
 //!
 //! Espectador que não dá conta também pede menos (aviso do servidor com um
 //! piso): -20% a cada 2 s no máximo, até o piso pedido, e a taxa não sobe por
@@ -23,6 +29,11 @@ const std = @import("std");
 /// teto, e antes de esquecer o teto.
 const PROBE_AFTER: u64 = 10_000_000;
 const PROBE_FORGET: u64 = 20_000_000;
+/// Episódio que acaba (atraso de volta abaixo de ramp_excess_us) até esse
+/// tempo depois de começar é soluço. Fila de verdade demora mais: depois de
+/// um corte de 7% ela escoa a no máximo 7% da velocidade do link, ~0,6 s só
+/// pra ir de 100 a 60 ms.
+const BLIP: u64 = 500_000;
 
 pub const RateControl = struct {
     target: u32 = 0,
@@ -35,6 +46,10 @@ pub const RateControl = struct {
     last_slow_adjust_us: u64 = 0,
     ceiling: u32 = 0, // taxa em que congestionou da última vez (0 = não sabe)
     changed: bool = false, // `bps` mudou e o encoder ainda não sabe
+    /// Como estava antes do episódio em andamento (pra desfazer se for soluço).
+    undo: ?Undo = null,
+
+    const Undo = struct { at_us: u64, bps: u32, ceiling: u32, last_congestion_us: u64 };
 
     /// Atraso acumulado no upload que já faz pular quadro.
     pub const max_excess_us = 250_000;
@@ -61,6 +76,7 @@ pub const RateControl = struct {
         rc.target = target;
         rc.bps = target;
         rc.changed = true;
+        rc.undo = null;
     }
 
     /// Começa (transmissão nova) numa taxa que já se sabe que cabe nesse
@@ -95,8 +111,22 @@ pub const RateControl = struct {
     /// Congestionou: o teto é a taxa do começo do episódio (um episódio novo
     /// começa depois de 2 s sem problema), não a já cortada.
     fn noteCongestion(rc: *RateControl, now: u64) void {
-        if (rc.last_congestion_us == 0 or now - rc.last_congestion_us > 2_000_000) rc.ceiling = rc.bps;
+        if (rc.last_congestion_us == 0 or now - rc.last_congestion_us > 2_000_000) {
+            rc.undo = .{ .at_us = now, .bps = rc.bps, .ceiling = rc.ceiling, .last_congestion_us = rc.last_congestion_us };
+            rc.ceiling = rc.bps;
+        }
         rc.last_congestion_us = now;
+    }
+
+    /// O atraso voltou ao normal: se o episódio durou até BLIP, foi soluço e
+    /// fica tudo como estava antes dele (taxa, teto e o relógio da calma).
+    fn settle(rc: *RateControl, now: u64) void {
+        const u = rc.undo orelse return;
+        rc.undo = null;
+        if (now -| u.at_us > BLIP) return;
+        rc.ceiling = u.ceiling;
+        rc.last_congestion_us = u.last_congestion_us;
+        if (u.bps > rc.bps) rc.set(@min(rc.target, u.bps), now);
     }
 
     fn set(rc: *RateControl, bps: u32, now: u64) void {
@@ -110,6 +140,7 @@ pub const RateControl = struct {
         const now = sig.now_us;
         if (sig.slow_floor_pct != 0) {
             rc.last_slow_us = now;
+            rc.undo = null; // espectador reclamando é de verdade: o corte fica
             const floor = @max(min_bps, rc.target / 100 * sig.slow_floor_pct);
             if (rc.bps > floor and now - rc.last_slow_adjust_us > 2_000_000) {
                 rc.last_slow_adjust_us = now;
@@ -122,6 +153,7 @@ pub const RateControl = struct {
         const queue_ok = sig.queued_bytes <= @max(96 * 1024, rc.bps / 8 / 4);
         if (excess <= max_excess_us and queue_ok) {
             rc.congested_since_us = 0;
+            if (unexplained <= ramp_excess_us) rc.settle(now);
             if (unexplained > soft_excess_us and now - rc.last_adjust_us > 500_000) {
                 // começando a acumular: desce de leve antes de ter que pular quadro
                 rc.noteCongestion(now);

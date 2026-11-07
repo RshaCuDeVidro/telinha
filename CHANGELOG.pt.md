@@ -2,6 +2,38 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.10.3
+
+Qualidade que não despenca com jogo pesado. Mesmo protocolo (7); o servidor só ganha uma informação a mais no log.
+
+### Destaques
+
+- 🎮 **Jogo pesado não vira mosaico**: com o PC de quem transmite no limite, cada travadinha de uma fração de segundo era lida como internet ruim e a qualidade descia um pouco, sem nunca voltar. Em poucos minutos a transmissão chegava no mínimo (0,2 Mbit/s) e só melhorava fechando o jogo. Agora a qualidade volta assim que a travadinha passa.
+
+<!-- detalhes -->
+
+### Todas as mudanças
+
+- **Controle de taxa** (`ratectl.zig`): cada soluço de mais de 100 ms abria
+  um episódio de congestionamento novo com o teto na taxa já cortada, e a
+  subida rápida ia só até 90% desse teto (abaixo da taxa atual); a sondagem
+  lenta pedia 10 s sem soluço nenhum. Com um soluço a cada 4 s, 16,6 Mbit/s
+  viravam 0,2 em 4 min com o link sobrando. Agora, se o atraso volta ao
+  normal até 0,5 s depois de passar do limite, a taxa, o teto e o relógio da
+  calma voltam como estavam; fila de verdade demora mais pra escoar e segue
+  o caminho de antes (os testes de link estreito dão os mesmos números).
+  Teste novo no `simlink.zig` com soluços periódicos e banda sobrando (falha
+  na 3.10.2) e teste de interface `jogo_pesado_nao_derruba_taxa`, com o app
+  de verdade lendo a confirmação atrasada (gancho `TELINHA_SOLUCO=ms/s`).
+- **Windows**: as threads de rede (`rede`, `rede-envio`, `udp`) rodam um
+  degrau acima do normal, pra confirmação do servidor não esperar a vez
+  atrás do jogo.
+- **Servidor**: a linha do log por minuto diz quanto chega de cada um que
+  está transmitindo (`chegando de quem transmite: Fulano 4.20 Mbit/s`), pra
+  separar transmissão que já chega fraca de espectador com problema.
+- **Documentação**: o PROTOCOL descreve o soluço e corrige os tempos da
+  sondagem (10 s e 20 s, não 15 e 30).
+
 ## 3.10.2
 
 Surdo que faz sentido. Mesmo protocolo (7); servidor igual ao da 3.10.1.

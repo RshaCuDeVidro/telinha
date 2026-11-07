@@ -2,6 +2,38 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.10.3
+
+Quality that doesn't collapse under a heavy game. Same protocol (7); the server only gains one more piece of information in its log.
+
+### Highlights
+
+- 🎮 **A heavy game no longer turns the stream into mosaic**: with the streamer's PC maxed out, every split-second hiccup was read as a bad connection and the quality dropped a little, never coming back. Within a few minutes the stream hit the minimum (0.2 Mbit/s) and only recovered after closing the game. Now the quality comes back as soon as the hiccup passes.
+
+<!-- detalhes -->
+
+### All changes
+
+- **Rate control** (`ratectl.zig`): every hiccup over 100 ms opened a new
+  congestion episode with the ceiling at the already-cut rate, and the fast
+  climb only went up to 90% of that ceiling (below the current rate); the
+  slow probing needed 10 s without any hiccup. With one hiccup every 4 s,
+  16.6 Mbit/s became 0.2 in 4 min with bandwidth to spare. Now, if the delay
+  is back to normal within 0.5 s of crossing the limit, the rate, the ceiling
+  and the calm clock go back to where they were; a real queue takes longer to
+  drain and follows the old path (the narrow-link tests give the same
+  numbers). New `simlink.zig` test with periodic hiccups and spare bandwidth
+  (fails on 3.10.2) and UI test `jogo_pesado_nao_derruba_taxa`, with the real
+  app reading the acknowledgement late (hook `TELINHA_SOLUCO=ms/s`).
+- **Windows**: the network threads (`rede`, `rede-envio`, `udp`) run one step
+  above normal priority, so the server's acknowledgements don't wait behind
+  the game.
+- **Server**: the per-minute log line says how much arrives from each person
+  streaming (`chegando de quem transmite: Fulano 4.20 Mbit/s`), to tell a
+  stream that already arrives weak from a viewer with trouble.
+- **Docs**: PROTOCOL describes the hiccup case and fixes the probing times
+  (10 s and 20 s, not 15 and 30).
+
 ## 3.10.2
 
 Deafen that makes sense. Same protocol (7); server identical to 3.10.1.

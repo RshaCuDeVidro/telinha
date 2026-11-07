@@ -718,6 +718,32 @@ test "sala: frames só vão pra quem assiste, começando por IDR" {
     try testing.expectEqual(@as(usize, 8 + 2 + 2 + 2 + 2 + 200), r.rest().len);
 }
 
+test "log por minuto: diz quanto chega de quem transmite (e só de quem transmite)" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port });
+    defer srv.stop();
+
+    var streamer = try TestClient.connect(port, "Transmissor", "", "");
+    defer streamer.close();
+    try streamer.welcome();
+    var viewer = try TestClient.connect(port, "Espectador", "", "");
+    defer viewer.close();
+    try viewer.welcome();
+    try liveRoom(&streamer, &viewer);
+    try streamer.send(try frameSeq(true, 125_000, 9));
+    _ = try viewer.expect(.frame); // repassado = já contado (a confirmação sai antes da conta)
+
+    var buf: [256]u8 = undefined;
+    // ~125 KB em 1 s = ~1 Mbit/s; o espectador não aparece
+    const line = srv.streamerRates(&buf, 1);
+    try testing.expect(std.mem.startsWith(u8, line, "Transmissor 1.0"));
+    try testing.expect(std.mem.endsWith(u8, line, " Mbit/s"));
+    try testing.expect(std.mem.indexOf(u8, line, "Espectador") == null);
+    // a conta recomeça a cada linha
+    try testing.expectEqualStrings("Transmissor 0.00 Mbit/s", srv.streamerRates(&buf, 1));
+}
+
 test "câmera: transmissão própria (stream com o bit de câmera), separada da tela" {
     net.init();
     const port = freshPort();
@@ -3187,7 +3213,7 @@ test "navegador: a página e os arquivos dela (e nada além)" {
     defer srv.stop();
     try srv.startWeb(web_port);
     for ([_]struct { []const u8, []const u8 }{
-        .{ "/", "text/html" }, .{ "/app.js", "text/javascript" }, .{ "/app.css", "text/css" }, .{ "/audio-worklet.js", "text/javascript" },
+        .{ "/", "text/html" },           .{ "/app.js", "text/javascript" }, .{ "/app.css", "text/css" }, .{ "/audio-worklet.js", "text/javascript" },
         .{ "/../../etc/passwd", "404" },
     }) |want| {
         const s = try net.connect("127.0.0.1", web_port);

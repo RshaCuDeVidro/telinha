@@ -936,6 +936,31 @@ pub const View = struct {
     }
 };
 
+/// Teste (TELINHA_SOLUCO=ms/s, ex. 150/4): a cada `s` segundos uma confirmação
+/// do servidor espera `ms` antes de ser lida, como a thread de rede de um PC
+/// com jogo pesado esperando a vez (o controle de taxa não pode despencar).
+fn testHiccup() void {
+    const S = struct {
+        var read = false;
+        var ms: u32 = 0;
+        var every_ms: u64 = 0;
+        var last_ms: u64 = 0;
+    };
+    if (!S.read) {
+        S.read = true;
+        const v = std.mem.span(std.c.getenv("TELINHA_SOLUCO") orelse return);
+        var it = std.mem.splitScalar(u8, v, '/');
+        const ms = std.fmt.parseInt(u32, it.next() orelse "", 10) catch return;
+        S.every_ms = 1000 * (std.fmt.parseInt(u64, it.next() orelse "", 10) catch return);
+        S.ms = ms;
+    }
+    if (S.ms == 0) return;
+    const now = sync.nowMs();
+    if (now -| S.last_ms < S.every_ms) return;
+    S.last_ms = now;
+    sync.sleepMs(S.ms);
+}
+
 pub const Client = struct {
     refs: std.atomic.Value(u32) = .init(1),
     /// Caminhos pra sala, em ordem de preferência (ver connect.zig).
@@ -1251,6 +1276,7 @@ pub const Client = struct {
 
     fn connectLoop(cl: *Client) void {
         sync.nameThread("rede");
+        sync.raiseThreadPriority();
         defer cl.release();
         defer cl.wake();
         // todos os caminhos do convite ao mesmo tempo (os primeiros com vantagem)
@@ -1406,6 +1432,7 @@ pub const Client = struct {
 
     fn writerLoop(cl: *Client) void {
         sync.nameThread("rede-envio");
+        sync.raiseThreadPriority();
         defer cl.release();
         cl.queue.writerLoop(cl.sock, &cl.channel, &cl.udp);
         // a escritora sai por último: fecha o socket
@@ -1430,6 +1457,7 @@ pub const Client = struct {
     /// sala para de responder, volta pro TCP e continua tentando.
     fn udpLoop(cl: *Client, l: *udp.Link) void {
         sync.nameThread("udp");
+        sync.raiseThreadPriority();
         defer cl.release();
         var timeout_ms: u32 = 10;
         net.setRecvTimeout(l.sock, timeout_ms);
@@ -1979,6 +2007,7 @@ pub const Client = struct {
                 const kind = try r.u8_();
                 const seq = try r.u32_();
                 if (kind > proto.kind_camera) return;
+                testHiccup();
                 cl.inflight_mutex.lock();
                 defer cl.inflight_mutex.unlock();
                 cl.inflight[kind].acked(seq, sync.nowUs());
