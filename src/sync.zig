@@ -189,7 +189,21 @@ pub fn debugOn() bool {
 
 extern "winmm" fn timeBeginPeriod(ms: c_uint) callconv(.winapi) c_uint;
 extern "winmm" fn timeEndPeriod(ms: c_uint) callconv(.winapi) c_uint;
+extern "kernel32" fn SetProcessInformation(process: ?*anyopaque, class: c_int, info: *const anyopaque, size: u32) callconv(.winapi) c_int;
 var hires_users: std.atomic.Value(u32) = .init(0);
+
+/// Windows 11: com a janela coberta (jogo em tela cheia) ou minimizada, o
+/// sistema ignora o timeBeginPeriod e cada Sleep(1) vira ~15,6 ms. Medido
+/// transmitindo (AMD AMF): encode de 9 ms com o telinha à vista e 31 ms (dois
+/// tiques) com o jogo por cima, e a qualidade automática descia até 360p.
+/// `honor`: pede pra respeitar o timer mesmo assim; false devolve ao sistema.
+fn honorTimerResolution(honor: bool) void {
+    const PowerThrottling = extern struct { version: u32 = 1, control: u32, state: u32 = 0 };
+    const ignore_timer_resolution: u32 = 0x4; // PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
+    const s: PowerThrottling = .{ .control = if (honor) ignore_timer_resolution else 0 };
+    // ProcessPowerThrottling = 4; falha calada no Windows 10 antigo (não tem a regra)
+    _ = SetProcessInformation(GetCurrentProcess(), 4, &s, @sizeOf(PowerThrottling));
+}
 
 /// Windows: Sleep() com precisão de 1 ms (cadência da captura e do envio).
 /// Só enquanto alguém precisa (transmitindo, hospedando): o timer de 1 ms
@@ -197,8 +211,14 @@ var hires_users: std.atomic.Value(u32) = .init(0);
 pub fn hiresTimer(on: bool) void {
     if (!is_windows) return;
     if (on) {
-        if (hires_users.fetchAdd(1, .acq_rel) == 0) _ = timeBeginPeriod(1);
-    } else if (hires_users.fetchSub(1, .acq_rel) == 1) _ = timeEndPeriod(1);
+        if (hires_users.fetchAdd(1, .acq_rel) == 0) {
+            honorTimerResolution(true);
+            _ = timeBeginPeriod(1);
+        }
+    } else if (hires_users.fetchSub(1, .acq_rel) == 1) {
+        _ = timeEndPeriod(1);
+        honorTimerResolution(false);
+    }
 }
 
 extern "c" fn mallopt(param: c_int, value: c_int) c_int;
