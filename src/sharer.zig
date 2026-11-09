@@ -116,18 +116,39 @@ fn rateFps(fps: u32, mode: codec.Mode, auto: bool) u32 {
 const autoq = @import("autoq.zig");
 
 /// Teste (TELINHA_ENCODE_LENTO=ms): o encode demora esses ms a mais num
-/// quadro 1080p (proporcional aos pixels), como num PC fraco.
+/// quadro 1080p (proporcional aos pixels), como num PC fraco. Com "fixo" no
+/// fim (TELINHA_ENCODE_LENTO=30fixo), os mesmos ms em qualquer resolução: a
+/// placa integrada dividida com o jogo, em que baixar a resolução não adianta.
 fn slowEncodeUs(w: u32, h: u32) ?u64 {
     const S = struct {
         var ms: ?u64 = null;
+        var fixed = false;
         var read = false;
     };
     if (!S.read) {
         S.read = true;
-        if (std.c.getenv("TELINHA_ENCODE_LENTO")) |v| S.ms = std.fmt.parseInt(u64, std.mem.span(v), 10) catch null;
+        if (std.c.getenv("TELINHA_ENCODE_LENTO")) |v| {
+            const t = std.mem.span(v);
+            S.fixed = std.mem.endsWith(u8, t, "fixo");
+            S.ms = std.fmt.parseInt(u64, if (S.fixed) t[0 .. t.len - 4] else t, 10) catch null;
+        }
     }
     const ms = S.ms orelse return null;
+    if (S.fixed) return ms * 1000;
     return ms * 1000 * w * h / (1920 * 1080);
+}
+/// Teste (TELINHA_FPS_AUTO_60=1): o fps automático vale 60 mesmo no encoder
+/// de software (como na placa), pra testar a descida pra 30 sem placa.
+fn testAuto60() bool {
+    const S = struct {
+        var on = false;
+        var read = false;
+    };
+    if (!S.read) {
+        S.read = true;
+        S.on = std.c.getenv("TELINHA_FPS_AUTO_60") != null;
+    }
+    return S.on;
 }
 /// Teste (TELINHA_TESTE_CONGESTIONADO=1): a rede até o servidor sempre congestionada.
 fn testCongested() bool {
@@ -298,6 +319,10 @@ pub const Sharer = struct {
     /// quanto era antes (pra avisar quem transmite).
     auto_cap: std.atomic.Value(u32) = .init(0),
     auto_from: std.atomic.Value(u32) = .init(0),
+    /// A última mudança desfez uma descida que não baixou o tempo por quadro.
+    auto_reverted: std.atomic.Value(bool) = .init(false),
+    /// fps automático em 30 porque 60 não cabia (a qualidade automática).
+    auto_fps30: std.atomic.Value(bool) = .init(false),
     preview_tex: u32 = 0, // só a UI mexe
     /// Os últimos ~30 s do que codificamos (clipe) e a gravação. null = sem clipes.
     clip: ?*clip.Buffer = null,
@@ -382,6 +407,11 @@ pub const Sharer = struct {
         defer s.client.wake();
         sync.hiresTimer(true); // cadência de captura/envio em ms
         defer sync.hiresTimer(false);
+        // o tamanho pedido era da transmissão anterior: valia como o primeiro
+        // desta, o servidor (ninguém assistindo ainda) mandava "tudo" logo
+        // depois, e o pedido de verdade esperava os 10 s de descer (3 encoders,
+        // 3 IDRs no começo de cada transmissão)
+        s.client.view_want[s.kind].store(proto.view_full, .release);
         var p: Pipeline = .{ .s = s };
         defer p.deinit();
         p.start() catch |e| {
@@ -575,18 +605,36 @@ const Pipeline = struct {
     fn autoQuality(p: *Pipeline, now: u64) void {
         const s = p.s;
         if (!p.settings.auto_quality or s.idle.load(.acquire) or p.h == 0) {
-            if (p.auto.cap != 0 and !p.settings.auto_quality) {
-                p.auto.cap = 0;
+            if ((p.auto.cap != 0 or p.auto.fps30) and !p.settings.auto_quality) {
+                p.auto = .{};
                 s.auto_cap.store(0, .release);
+                s.auto_fps30.store(false, .release);
             }
             return;
         }
         const before = p.auto.cap;
+        const fps_before = p.auto.fps30;
         const load = @max(p.enc_ema_us.load(.monotonic), p.ing_ema_us);
-        if (!p.auto.step(now, load, p.wantFps(), p.h, p.settings.max_height, p.src_h)) return;
-        s.auto_from.store(if (before != 0) before else p.h, .release);
-        s.auto_cap.store(p.auto.cap, .release);
-        if (debugEnabled()) std.debug.print("[telinha] qualidade automática: {d}p -> {s}{d} (encode {d:.1} ms, captura {d:.1} ms, fps {d})\n", .{ p.h, if (p.auto.cap == 0) "sem teto, " else "", p.auto.cap, @as(f32, @floatFromInt(p.enc_ema_us.load(.monotonic))) / 1000, @as(f32, @floatFromInt(p.ing_ema_us)) / 1000, p.wantFps() });
+        const fps = p.wantFps();
+        if (!p.auto.step(now, load, fps, p.autoFps60(), p.h, p.settings.max_height, p.src_h)) return;
+        if (p.auto.fps30 != fps_before) s.auto_fps30.store(p.auto.fps30, .release);
+        if (p.auto.cap != before) {
+            s.auto_reverted.store(p.auto.reverted, .release);
+            s.auto_from.store(if (before != 0) before else p.h, .release);
+            s.auto_cap.store(p.auto.cap, .release);
+        }
+        if (debugEnabled()) {
+            const fps_note = if (p.auto.fps30 == fps_before) "" else if (p.auto.fps30) ", fps automático 60 -> 30" else ", fps automático 30 -> 60";
+            const why = if (p.auto.reverted) " (descer não adiantou: volta e espera)" else "";
+            std.debug.print("[telinha] qualidade automática: {d}p a {d} q/s -> {s}{d}{s}{s} (encode {d:.1} ms, captura {d:.1} ms)\n", .{ p.h, fps, if (p.auto.cap == 0) "sem teto, " else "", p.auto.cap, fps_note, why, @as(f32, @floatFromInt(p.enc_ema_us.load(.monotonic))) / 1000, @as(f32, @floatFromInt(p.ing_ema_us)) / 1000 });
+        }
+    }
+
+    /// O fps é o automático e seria 60 (a qualidade automática pode baixar pra 30).
+    fn autoFps60(p: *const Pipeline) bool {
+        if (p.settings.fps != 0) return false;
+        const slow = sync.nowMs() < p.s.client.decoder_slow_until[p.s.kind].load(.acquire);
+        return (p.use_hw.load(.acquire) or testAuto60()) and !slow;
     }
 
     fn errSlice(p: *Pipeline) []const u8 {
@@ -854,12 +902,10 @@ const Pipeline = struct {
 
     /// O fps que vale agora: o escolhido, ou no automático 60 com o encoder da
     /// placa (quase não custa CPU) e 30 sem (o openh264 a 60 pesa no PC fraco).
+    /// No automático, 30 também quando a qualidade automática viu que 60 não
+    /// cabe (antes de baixar a resolução) ou alguém não decodifica 60 a tempo.
     fn wantFps(p: *const Pipeline) u32 {
-        if (p.settings.fps == 0) {
-            // alguém não decodifica 60 a tempo (e não tem como afinar só pra ele): 30
-            const slow = sync.nowMs() < p.s.client.decoder_slow_until[p.s.kind].load(.acquire);
-            return if (p.use_hw.load(.acquire) and !slow) 60 else 30;
-        }
+        if (p.settings.fps == 0) return if (p.autoFps60() and !p.s.auto_fps30.load(.acquire)) 60 else 30;
         return std.math.clamp(p.settings.fps, 1, 60);
     }
 

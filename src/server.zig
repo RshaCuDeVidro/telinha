@@ -51,6 +51,9 @@ const keyreq_interval_ms = 1000;
 /// Quem começou a assistir pede IDR com um limite próprio, mais curto: com o
 /// de 1 s, entrar logo depois de outro pedido esperava até 1 s pela imagem.
 const watch_keyreq_interval_ms = 400;
+/// Decoder começando (começou a assistir, ou o tamanho mudou): atraso nesse
+/// tempo não é "não dar conta" (ver o keyreq).
+const decoder_warmup_ms = 2000;
 const handshake_timeout_ms = 10_000;
 /// Alguém guardando os últimos segundos pra clipe: um IDR a cada tanto (um
 /// clipe só começa num IDR, e sem isso eles só saem quando alguém entra).
@@ -79,6 +82,8 @@ const StreamState = struct {
     last_slow_ms: u64 = 0,
     last_decoder_hint_ms: u64 = 0, // último "alguém não decodifica a tempo" mandado pra quem transmite
     last_key_ms: u64 = 0, // último IDR que passou
+    last_size: u32 = 0, // largura << 16 | altura do último quadro
+    size_ms: u64 = 0, // quando o tamanho mudou (ou o primeiro quadro): os decoders recomeçam
     codecs_sent: u8 = 0, // codecs liberados que o transmissor já sabe (0 = ainda nada)
     features_sent: u8 = 0, // recursos (feat_*) que todo mundo que assiste entende, já avisados
     view_sent: u16 = 0, // altura pedida já avisada (0 = ainda nada)
@@ -127,6 +132,7 @@ const Conn = struct {
     log_what: u8 = 0,
     log_last_ms: u64 = 0,
     log_refused: bool = false,
+    log_asked_ms: u64 = 0, // quem tem a coroa pediu o log dele (o limite de um por minuto não vale)
     log_buf: std.ArrayList(u8) = .empty, // só com --logs (servidor guarda em disco)
     chan: *Chan = undefined, // o canal de texto em que a pessoa está (depois do join)
     call: ?*Chan = null, // a call (voz e transmissões); null = fora de call
@@ -166,7 +172,7 @@ const Conn = struct {
     /// Estado do que esse espectador recebe de `stream` (cria se precisar).
     fn flow(self: *Conn, stream: u32) ?*Flow {
         for (self.flows.items) |*f| if (f.stream == stream) return f;
-        self.flows.append(gpa, .{ .stream = stream }) catch return null;
+        self.flows.append(gpa, .{ .stream = stream, .born_ms = sync.nowMs() }) catch return null;
         return &self.flows.items[self.flows.items.len - 1];
     }
     fn findFlow(self: *Conn, stream: u32) ?*Flow {
@@ -241,6 +247,7 @@ fn roomStruggle(s: *Server, cn: *Conn, stream: u32, now_ms: u64) struct { viewer
 
 const Flow = struct {
     stream: u32,
+    born_ms: u64 = 0, // começou a receber (o decoder dele começa aí)
     clips: bool = false, // guardando os últimos segundos pra clipe (quer IDR de vez em quando)
     win: proto.AckWindow = .{}, // frames enviados e ainda não confirmados
     draining: bool = false, // atrasou: esperando o que já saiu chegar antes do IDR
@@ -661,6 +668,9 @@ pub const Options = struct {
     /// --coletar-logs: o dono pode pedir o log de quem está na sala (o app
     /// avisa ao entrar; quem desligar nas configurações recusa).
     collect_logs: bool = false,
+    /// --exigir-logs: coleta, e o app manda mesmo com a opção desligada (o
+    /// aviso ao entrar diz que a sala exige; quem não quiser sai).
+    require_logs: bool = false,
 };
 
 const StatsPrev = struct {
@@ -786,6 +796,7 @@ pub const Server = struct {
     admin_token_len: usize = 0,
     no_bots: bool = false,
     collect_logs: bool = false,
+    require_logs: bool = false,
     bot_token: [64]u8 = undefined,
     bot_token_len: usize = 0,
     max_members: u32,
@@ -874,7 +885,8 @@ pub const Server = struct {
         copyInto(&s.admin_token, &s.admin_token_len, opts.admin_token);
         copyInto(&s.bot_token, &s.bot_token_len, opts.bot_token);
         s.no_bots = opts.no_bots;
-        s.collect_logs = opts.collect_logs;
+        s.collect_logs = opts.collect_logs or opts.require_logs;
+        s.require_logs = opts.require_logs;
         sync.hiresTimer(true); // o repasse por UDP cadencia em ms (solto no release)
         s.retain();
         sync.spawn(acceptLoop, .{s}) catch |e| {
@@ -1664,9 +1676,10 @@ pub const Server = struct {
             .log_request => {
                 const id = try r.u32_();
                 const what = try r.u8_();
+                const why = r.u8_() catch proto.log_refused_off; // app até a 3.10.3: sem motivo
                 s.mutex.lock();
                 defer s.mutex.unlock();
-                try s.logRequest(cn, id, what);
+                try s.logRequest(cn, id, what, why);
             },
             .file_put => try s.onFilePut(cn, &r),
             .file_data => try s.onFileData(cn, &r),
@@ -1819,7 +1832,17 @@ pub const Server = struct {
                     return;
                 }
                 const f = cn.flow(stream) orelse return;
+                // decoder começando (começou a assistir, ou o tamanho mudou): o
+                // primeiro quadro demora (NVDEC: 150-260 ms) e o app até a 3.10.3
+                // achava que não dava conta. Era no começo de toda transmissão:
+                // quem transmitia caía pra 30 q/s por 5 min e com taxa menor
+                const warming = if (s.findConn(proto.memberOf(stream))) |sh|
+                    sync.nowMs() -| @max(f.born_ms, sh.streams[proto.kindOf(stream)].size_ms) < decoder_warmup_ms
+                else
+                    false;
                 if (reason == proto.keyreq_slow) {
+                    // começando: o app já largou os puláveis e se virou, nada a fazer
+                    if (warming) return;
                     // sem IDR: o app já largou os quadros puláveis; daqui pra frente só metade
                     const now = sync.nowMs();
                     f.decoder_behind = true;
@@ -1833,6 +1856,10 @@ pub const Server = struct {
                 f.win.dropNewest(cn.queue.dropFrames(stream));
                 addUnique(&cn.waiting_key, stream);
                 const now = sync.nowMs();
+                if (reason == proto.keyreq_behind and warming) {
+                    s.requestKey(stream, false); // só o IDR (ele jogou a fila fora)
+                    return;
+                }
                 if (now >= f.resync_after_ms) s.requestKey(stream, false);
                 _ = f.backoff(now);
                 if (f.chronic(now)) f.resync_after_ms = @max(f.resync_after_ms, now + chronic_key_ms);
@@ -2166,8 +2193,10 @@ pub const Server = struct {
         defer s.mutex.unlock();
         const now = s.nowUs() / 1000;
         if (off == 0) {
-            // log novo: no máximo um por minuto por pessoa
-            cn.log_refused = cn.log_last_ms != 0 and now -| cn.log_last_ms < 60_000;
+            // log novo: no máximo um por minuto por pessoa, menos o que quem
+            // tem a coroa pediu (pedir de novo logo depois era recusado calado)
+            const asked = cn.log_asked_ms != 0 and now -| cn.log_asked_ms < 60_000;
+            cn.log_refused = !asked and cn.log_last_ms != 0 and now -| cn.log_last_ms < 60_000;
             cn.log_id = id;
             cn.log_total = total;
             cn.log_got = 0;
@@ -2175,9 +2204,12 @@ pub const Server = struct {
             cn.log_buf.clearRetainingCapacity();
             if (cn.log_refused) {
                 sendLogAck(cn, id, proto.log_ack_refused, 0);
+                for (s.conns.items) |o| if (o.owner and o != cn) pushNotice(o, proto.notice_log_refused, cn.nameSlice(), proto.log_refused_soon) catch {};
+                s.log("{s} mandou um log menos de 1 min depois do outro: recusado", .{cn.nameSlice()});
                 return;
             }
             cn.log_last_ms = now;
+            cn.log_asked_ms = 0;
         }
         if (id != cn.log_id or cn.log_refused or off != cn.log_got) return;
         // repassa pra quem tem a coroa (menos quem mandou)
@@ -2212,8 +2244,9 @@ pub const Server = struct {
     /// Coleta de logs (--coletar-logs). log_req_ask: quem tem a coroa pede o
     /// log de `id` (vai pra ele um log_request com quem pediu; o app manda
     /// pela sala, como o "pro dono da sala", ou recusa). log_req_refuse: `cn`
-    /// não manda; quem pediu (`id`) recebe um aviso. Mutex travado.
-    fn logRequest(s: *Server, cn: *Conn, id: u32, what: u8) !void {
+    /// não manda (`why`: log_refused_*); quem pediu (`id`) recebe um aviso
+    /// com o motivo. Mutex travado.
+    fn logRequest(s: *Server, cn: *Conn, id: u32, what: u8, why: u8) !void {
         if (!s.collect_logs or !cn.authed) return;
         const o = s.findConn(id) orelse return;
         if (!o.authed or o == cn) return;
@@ -2223,6 +2256,16 @@ pub const Server = struct {
                 const now = s.nowUs() / 1000;
                 if (now -| cn.last_action_ms < 200) return; // clique duplo
                 cn.last_action_ms = now;
+                const ver = std.mem.sliceTo(&o.app_version, 0);
+                if (!proto.answersLogRequest(ver)) {
+                    // app antigo ignora o pedido calado (e quem pediu ficava esperando)
+                    var tb: [96]u8 = undefined;
+                    const text = std.fmt.bufPrint(&tb, "{s} (telinha {s})", .{ o.nameSlice(), if (ver.len > 0) ver else "antigo" }) catch o.nameSlice();
+                    try pushNotice(cn, proto.notice_log_refused, text, proto.log_refused_old);
+                    s.log("{s} pediu o log de {s}, mas o telinha dele ({s}) não sabe mandar", .{ cn.nameSlice(), o.nameSlice(), if (ver.len > 0) ver else "sem versão" });
+                    return;
+                }
+                o.log_asked_ms = now;
                 var b: proto.Builder = .{};
                 defer b.deinit();
                 try b.begin(.log_request);
@@ -2233,8 +2276,13 @@ pub const Server = struct {
             },
             proto.log_req_refuse => {
                 if (!o.owner) return;
-                try pushNotice(o, proto.notice_log_refused, cn.nameSlice(), 0);
-                s.log("{s} recusou mandar o log", .{cn.nameSlice()});
+                try pushNotice(o, proto.notice_log_refused, cn.nameSlice(), why);
+                const what_s = switch (why) {
+                    proto.log_refused_empty => "o log dele está vazio",
+                    proto.log_refused_busy => "já está mandando um",
+                    else => "desligou nas configurações",
+                };
+                s.log("{s} não mandou o log: {s}", .{ cn.nameSlice(), what_s });
             },
             else => {},
         }
@@ -2495,7 +2543,8 @@ pub const Server = struct {
         var tmp: [96]u8 = undefined;
         try s.broadcastChat(cn.chan, std.fmt.bufPrint(&tmp, "{s} entrou na sala", .{name}) catch "");
         try s.broadcastMembers();
-        s.log("{s} entrou ({d} na sala, {s}, #{s})", .{ name, s.conns.items.len, routeName(cn.route), cn.chan.nameSlice() });
+        const ver = std.mem.sliceTo(&cn.app_version, 0);
+        s.log("{s} entrou ({d} na sala, {s}, #{s}, telinha {s})", .{ name, s.conns.items.len, routeName(cn.route), cn.chan.nameSlice(), if (ver.len > 0) ver else "?" });
     }
 
     pub fn routeName(route: u8) []const u8 {
@@ -2777,7 +2826,7 @@ pub const Server = struct {
     }
 
     fn serverFeatures(s: *Server) u8 {
-        return proto.srv_dm | proto.srv_embed | proto.srv_chan_delete | proto.srv_chan_op | proto.srv_bot_panel | (if (s.files.ok) proto.srv_files else 0) | (if (s.collect_logs) proto.srv_logs else 0);
+        return proto.srv_dm | proto.srv_embed | proto.srv_chan_delete | proto.srv_chan_op | proto.srv_bot_panel | (if (s.files.ok) proto.srv_files else 0) | (if (s.collect_logs) proto.srv_logs else 0) | (if (s.require_logs) proto.srv_logs_required else 0);
     }
 
     // ------------------------------------------------------------ arquivos
@@ -4013,6 +4062,13 @@ pub const Server = struct {
         ss.last_frame_ms = now_ms;
         if (droppable) ss.last_droppable_ms = now_ms;
         if (is_key) ss.last_key_ms = now_ms;
+        if (payload.len >= proto.frame_header_len) {
+            const size = @as(u32, std.mem.readInt(u16, payload[13..15], .little)) << 16 | std.mem.readInt(u16, payload[15..17], .little);
+            if (size != ss.last_size) {
+                ss.last_size = size;
+                ss.size_ms = now_ms;
+            }
+        }
         // dá pra afinar quem não dá conta (a transmissão tem quadros puláveis)
         var thinnable = now_ms -| ss.last_droppable_ms < 2000;
         if (thinnable) {

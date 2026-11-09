@@ -42,6 +42,9 @@ const usage =
     \\                         grava o log enquanto está na sala e quem desligar
     \\                         nas configurações recusa. Guardados em --logs
     \\                         (padrão: "logs" do lado do --estado)
+    \\  --exigir-logs          o mesmo, mas o app manda mesmo com a opção desligada
+    \\                         ($TELINHA_EXIGIR_LOGS=1): o aviso ao entrar diz que
+    \\                         a sala exige o log, e quem não quiser sai
     \\  --sem-bots             recusa bots (o sdk/python e afins; $TELINHA_SEM_BOTS=1)
     \\  --so-protocolo-novo    recusa apps de antes da 3.8 (protocolo 6: a senha deles
     \\                         dá pra testar offline a partir de uma conexão;
@@ -487,6 +490,7 @@ pub fn main(init: std.process.Init) !void {
     var new_channels = true;
     var no_bots = if (env("TELINHA_SEM_BOTS")) |v| std.mem.eql(u8, v, "1") else false;
     var collect_logs = if (env("TELINHA_COLETAR_LOGS")) |v| std.mem.eql(u8, v, "1") else false;
+    var require_logs = if (env("TELINHA_EXIGIR_LOGS")) |v| std.mem.eql(u8, v, "1") else false;
     var only_new = if (env("TELINHA_SO_PROTOCOLO_NOVO")) |v| std.mem.eql(u8, v, "1") else false;
     var bot_token: []const u8 = env("TELINHA_TOKEN_BOTS") orelse "";
     var key_path: []const u8 = env("TELINHA_CHAVE") orelse "";
@@ -535,6 +539,10 @@ pub fn main(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, a, "--coletar-logs")) {
             collect_logs = true;
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--exigir-logs")) {
+            require_logs = true;
             continue;
         }
         if (std.mem.eql(u8, a, "--so-protocolo-novo")) {
@@ -605,13 +613,14 @@ pub fn main(init: std.process.Init) !void {
     const state_file = statePath(state_path, key_used[0..key_used_len]);
     var crash_reason_buf: [400]u8 = undefined;
     const crash_reason = checkLastCrash(state_file, &crash_reason_buf);
+    if (require_logs) collect_logs = true;
     if (collect_logs and logs_dir.len == 0) logs_dir = logsDir(state_file);
     if (logs_dir.len > 0) {
         var lb: [300]u8 = undefined;
         const z = std.fmt.bufPrintZ(&lb, "{s}", .{logs_dir}) catch die("pasta de logs longa demais", .{});
         _ = mkdir(z.ptr, 0o750);
     }
-    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir, .channels = channels, .new_channels = new_channels, .identity_seed = seed, .state_path = state_file, .files_dir = filesDir(files_dir, state_file), .no_bots = no_bots, .bot_token = bot_token, .accept_old = !only_new, .collect_logs = collect_logs }) catch
+    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir, .channels = channels, .new_channels = new_channels, .identity_seed = seed, .state_path = state_file, .files_dir = filesDir(files_dir, state_file), .no_bots = no_bots, .bot_token = bot_token, .accept_old = !only_new, .collect_logs = collect_logs, .require_logs = require_logs }) catch
         die("não consegui abrir a porta {d} (já está em uso?)", .{port});
 
     var buf: [256]u8 = undefined;
@@ -625,7 +634,7 @@ pub fn main(init: std.process.Init) !void {
         var cb: [500]u8 = undefined;
         srv.announce(std.fmt.bufPrint(&cb, "O servidor reiniciou depois de uma queda (motivo: {s}). Quem estava na sala volta sozinho.", .{why}) catch "O servidor reiniciou depois de uma queda.");
     }
-    if (collect_logs) log(std.fmt.bufPrint(&buf, "coletando logs: o dono pode pedir o log de quem está na sala (guardados em {s})", .{logs_dir}) catch "coletando logs");
+    if (collect_logs) log(std.fmt.bufPrint(&buf, "coletando logs{s}: o dono pode pedir o log de quem está na sala (guardados em {s})", .{ if (require_logs) " (exigidos: vai até de quem desligou)" else "", logs_dir }) catch "coletando logs");
     if (srv.fingerprint()) |f| {
         fp_suffix[0] = '!';
         @memcpy(fp_suffix[1..], &f);

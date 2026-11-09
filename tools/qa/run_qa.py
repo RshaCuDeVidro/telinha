@@ -2705,6 +2705,31 @@ def coleta_de_logs():
 
 
 @test
+def exigir_logs():
+    """Servidor com --exigir-logs: o aviso ao entrar diz que a sala exige o log, o log do Caio (que desligou "Mandar meu log") grava e vai quando a dona pede, e pedir de novo logo depois também vem (o um por minuto não vale pro pedido)."""
+    import glob
+    with Session("exigir") as s:
+        p = port()
+        s.spawn("srv", [SERVER, "--porta", str(p), "--senha", "pw", "--admin", "tok", "--exigir-logs", "--chave", os.path.join(s.base, "srv.key")], {k: os.environ[k] for k in ("HOME", "PATH")})
+        time.sleep(0.6)
+        a = s.app("a", 91, ["--nome", "Ana", "--entrar", f"127.0.0.1:{p}", "--senha", "pw", "--admin", "tok"])
+        a.wait(lambda st: st["status"] == "connected" and st["collect_seen"], 10, "a Ana entrar")
+        c = s.app("c", 93, ["--nome", "Caio", "--entrar", f"127.0.0.1:{p}", "--senha", "pw"], config={"share_logs": 0})
+        c.wait(lambda st: st["status"] == "connected" and st["collect_seen"] and st["debug_on"], 10, "o log do Caio gravar mesmo desligado")
+        c.toasted("exige o log", 5)
+        cid = a.member_id("Caio")
+        time.sleep(2.5)
+        for i in (1, 2):
+            a.click_rect(a.member_row(cid), button=3)
+            a.click(contains="###alog")
+            c.toasted("pediu o seu log", 10)
+            a.wait(lambda st: len(glob.glob(os.path.join(a.cfg, "telinha", "logs-recebidos", "*_Caio_log.txt"))) >= i, 30, f"o {i}º log do Caio chegar")
+            if i == 1:
+                time.sleep(1.2)  # o segundo nome de arquivo muda de segundo
+        log("dois logs do Caio em seguida, com o envio desligado nele")
+
+
+@test
 def servidor_avisa_queda():
     """O servidor cai (panic de teste): na volta, o motivo (com arquivo e linha) aparece no chat do canal padrão e fica em ultima-queda.txt; morto sem panic (SIGKILL), o chat diz que parou sem avisar."""
     with Session("queda") as s:
@@ -2882,6 +2907,51 @@ def qualidade_automatica():
         ana.wait(lambda st: not st["cfg"]["auto_quality"], 3, "desligar a qualidade automática")
         settings_click(ana, "Fechar")
         ana.wait(lambda st: st["sharer"]["auto_cap"] == 0 and st["sharer"]["h"] > 540, 15, "voltar pra resolução original")
+
+
+@test
+def qualidade_gargalo_fixo():
+    """PC em que o tempo por quadro não depende da resolução (placa integrada dividida com o jogo: os logs da anajumita e do renan): a qualidade automática desce um degrau, vê que não aliviou, volta pra resolução de antes, avisa e não desce de novo (antes ia até 360p e ficava)."""
+    with Session("autoqfixo") as s:
+        p = port()
+        # 80 ms em qualquer resolução: baixar não adianta
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"], extra_env={"TELINHA_ENCODE_LENTO": "80fixo"}, config={"view_size": 0})
+        bia = s.app("bia", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        aid = bia.member_id("Ana")
+        bia.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "a Bia ver a Ana")
+        h0 = ana.wait(lambda st: st["sharer"] and st["sharer"]["h"] > 0, 10, "a transmissão começar")["sharer"]["h"]
+        st = ana.wait(lambda st: st["sharer"]["auto_cap"] != 0, 20, "a qualidade automática descer um degrau")
+        log(f"desceu: {h0}p -> {st['sharer']['auto_cap']}p")
+        st = ana.wait(lambda st: st["sharer"]["auto_cap"] == 0 and st["sharer"]["auto_reverted"] and st["sharer"]["h"] == h0, 20, "voltar pra resolução de antes (descer não aliviou)")
+        ana.toasted("não aliviou", 5)
+        # e não tenta de novo tão cedo (espera 1 min)
+        t0 = time.time()
+        while time.time() - t0 < 20:
+            st = ana.state()["sharer"]
+            expect(st["auto_cap"] == 0 and st["h"] == h0, f"desceu de novo logo depois de ver que não adianta: {st}")
+            time.sleep(1)
+        log(f"ficou em {h0}p (o encode segue lento, mas menos pixels não ajudava)")
+
+
+@test
+def qualidade_fps_antes_da_resolucao():
+    """fps automático a 60 que não cabe: cai pra 30 na mesma resolução, avisa, e só depois mexeria na resolução (gancho TELINHA_FPS_AUTO_60 faz o software se comportar como a placa)."""
+    with Session("autoqfps") as s:
+        p = port()
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"], extra_env={"TELINHA_ENCODE_LENTO": "15fixo", "TELINHA_FPS_AUTO_60": "1"}, config={"view_size": 0})
+        bia = s.app("bia", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        aid = bia.member_id("Ana")
+        bia.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "a Bia ver a Ana")
+        st = ana.wait(lambda st: st["sharer"] and st["sharer"]["target_fps"] == 60 and st["sharer"]["h"] > 0, 10, "começar a 60 q/s")
+        h0 = st["sharer"]["h"]
+        st = ana.wait(lambda st: st["sharer"]["auto_fps30"] and st["sharer"]["target_fps"] == 30, 20, "cair pra 30 q/s")
+        expect(st["sharer"]["auto_cap"] == 0 and st["sharer"]["h"] == h0, f"mexeu na resolução antes do fps: {st['sharer']}")
+        ana.toasted("transmitindo a 30", 5)
+        # a 30 q/s o encode cabe: fica assim, na resolução toda
+        time.sleep(8)
+        st = ana.state()["sharer"]
+        expect(st["auto_cap"] == 0 and st["h"] == h0 and st["target_fps"] == 30, f"não ficou em {h0}p a 30: {st}")
+        log(f"{h0}p a 30 q/s")
 
 
 @test

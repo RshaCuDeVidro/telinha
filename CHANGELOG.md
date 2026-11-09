@@ -2,6 +2,58 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.10.4
+
+Streams that keep their resolution, and log requests that always answer. Same protocol (7); update the server too: it stops treating a viewer's decoder starting up as "can't keep up", answers log requests to old apps and gains `--exigir-logs`.
+
+### Highlights
+
+- 📉 **A busy PC no longer sinks the stream to 360p**: on PCs where the game shares the graphics chip (Ryzen with integrated graphics, like the 5600G and 5700G), lowering the resolution didn't make encoding any faster, and automatic quality kept stepping down to 360p and stayed there. Now it first drops to 30 fps at the same resolution, and a step down that doesn't help is undone.
+- 🚦 **Every stream started on the wrong foot**: the first frame of a new decoder takes 150-260 ms on NVIDIA cards, and the viewer's app reported that as "can't keep up". At the start of every stream (and at every resolution change) the streamer dropped to 30 fps for 5 minutes, with a lower bitrate.
+- 📋 **Log requests always answer**: if the log doesn't come, the room owner is told why (app older than 3.10, already sending one, empty log, turned off). A log the owner asked for is no longer refused for coming less than a minute after the previous one. New server option `--exigir-logs`: the app sends even with the option turned off, and the join notice says the room requires it.
+
+<!-- detalhes -->
+
+### All changes
+
+- **Automatic quality** (`autoq.zig`): with automatic fps at 60 that doesn't
+  fit, it first goes to 30 fps at the same resolution (above 1080p the
+  resolution still goes first) and back to 60 when there's room. A step down is
+  checked on the next decision: if the time per frame didn't fall at least half
+  of what the pixel count promises, it goes back to the previous step, says so
+  ("lowering the resolution didn't help the PC") and doesn't step down again for
+  1 min (doubling up to 10 min). On anajumita's log (Ryzen 7 5700G, AMF) the
+  encode went 34.9 → 28.1 → 25.5 → 27.8 ms from 900p to 360p; on renan's
+  (Ryzen 5 5600G), 768p → 360p in 108 s.
+- **Viewer** (`client.zig`): for 1 s after the first frame, or after a size or
+  codec change, the decoder queue can wait up to 1 s instead of 150 ms before
+  being thrown away (a new decoder opening isn't falling behind).
+- **Server**: the same rule for older apps: within 2 s of the viewer's first
+  frame or of a size change, `keyreq` reason 3 only asks for the IDR, and
+  reason 2 is ignored (it was the "can't decode in time" in the log 2-3 s after
+  every stream started). The join line shows the app version
+  (`renas entrou (…, telinha 3.1.0)`).
+- **Streamer**: the view size from the previous stream no longer counts as the
+  first one of the new stream (it came in, the server sent "everything" right
+  after, and the real request waited the 10 s for going down: 3 encoders and 3
+  IDRs at the start of every stream).
+- **Log collection**: an app older than 3.10.0 ignored the request silently;
+  now the server answers for it ("renas (telinha 3.1.0) can't send logs: ask
+  them to update"). Refusals carry a reason (`log_request` gets a reason byte,
+  notice 13 carries it in `extra`). A log the owner asked for in the last minute
+  goes through the one-per-minute limit, and when the server refuses a log the
+  owners are told. `--exigir-logs` (`$TELINHA_EXIGIR_LOGS=1`, `srv_*` 128).
+- **Windows 11**: the 1 ms timer is honored while telinha is covered by a game
+  or minimized (`SetProcessInformation` with
+  `PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION`, only while streaming or
+  hosting).
+- **Tests**: unit tests for automatic quality (the anajumita case, fps before
+  resolution), integration tests for the decoder warm-up and log collection,
+  UI tests `qualidade_gargalo_fixo`, `qualidade_fps_antes_da_resolucao` and
+  `exigir_logs`. Hooks `TELINHA_ENCODE_LENTO=Nfixo` (same ms at any resolution)
+  and `TELINHA_FPS_AUTO_60`.
+- **Docs**: PROTOCOL describes the reasons, `srv_*` 128 and the decoder warm-up.
+
 ## 3.10.3
 
 Quality that doesn't collapse under a heavy game. Same protocol (7); the server only gains one more piece of information in its log.

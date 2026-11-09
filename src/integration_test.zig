@@ -86,6 +86,11 @@ const TestClient = struct {
     }
 
     fn connectFeats(port: u16, name: []const u8, password: []const u8, token: []const u8, key: u64, codecs: u8, chan: ?[]const u8, feats: u8) !TestClient {
+        return connectVersion(port, name, password, token, key, codecs, chan, feats, proto.app_version);
+    }
+
+    /// Com a versão do app que vai no hello (app antigo: "3.1.0").
+    fn connectVersion(port: u16, name: []const u8, password: []const u8, token: []const u8, key: u64, codecs: u8, chan: ?[]const u8, feats: u8, app_version: []const u8) !TestClient {
         const s = try net.connect("127.0.0.1", port);
         errdefer net.close(s);
         net.setRecvTimeout(s, 5000);
@@ -102,7 +107,7 @@ const TestClient = struct {
         try b.str(name);
         try b.str(token);
         try b.u64_(key);
-        try b.str(proto.app_version);
+        try b.str(app_version);
         try b.u8_(codecs);
         if (chan) |ch| {
             try b.u8_(feats); // recursos
@@ -1092,7 +1097,17 @@ test "assistir: decoder devagar que se virou sozinho (keyreq_slow) não faz pedi
             try c.send(m);
         }
     }.send;
-    sync.sleepMs(1100); // passa o limite de 1 s do pedido anterior
+    // decoder começando (o NVDEC leva 150-260 ms no primeiro quadro): o app
+    // até a 3.10.3 jogava a fila fora e pedia IDR. Isso não vira "não
+    // decodifica a tempo" (era no começo de toda transmissão: 30 q/s por 5 min)
+    try keyreq(&a, t.id, proto.keyreq_behind);
+    try pingPong(&a); // o servidor já tratou o pedido
+    try pingPong(&t); // e o que ele mandou pro transmissor veio antes do pong
+    try testing.expect(!t.seen[@intFromEnum(proto.Type.viewer_slow)]);
+    // o IDR que ele pediu (senão, esperando, o servidor pede outros sozinho)
+    try t.send(try frameSeq(true, 100, 1));
+    try a.ackFrame(try a.expect(.frame));
+    sync.sleepMs(2100); // passa a folga do decoder e o limite de 1 s do pedido anterior
     srv.mutex.lock();
     const n0 = srv.n_keyreqs;
     srv.mutex.unlock();
@@ -1384,6 +1399,107 @@ test "sala: quem entra e sai sem parar não derruba a sala (IDR no máximo 1/s, 
 
 extern "c" fn system(cmd: [*:0]const u8) c_int;
 const c_system = system;
+
+/// Manda um ping e espera o pong: tudo que o servidor tinha pra essa conexão
+/// antes disso já chegou (e ficou marcado em `seen`).
+fn pingPong(c: *TestClient) !void {
+    const m = try proto.Msg.alloc(.ping, 8);
+    std.mem.writeInt(u64, m.payload()[0..8], 1, .little);
+    try c.send(m);
+    _ = try c.expect(.pong);
+}
+
+fn sendLogRequest(c: *TestClient, id: u32, what: u8, why: ?u8) !void {
+    const m = try proto.Msg.alloc(.log_request, if (why != null) 6 else 5);
+    std.mem.writeInt(u32, m.payload()[0..4], id, .little);
+    m.payload()[4] = what;
+    if (why) |w| m.payload()[5] = w;
+    try c.send(m);
+}
+
+fn expectLogRefused(c: *TestClient, why: u8, text_has: []const u8) !void {
+    for (0..20) |_| {
+        var r: proto.Reader = .{ .data = try c.expect(.notice) };
+        if (try r.u8_() != proto.notice_log_refused) continue;
+        const text = try r.str();
+        try testing.expectEqual(why, try r.u8_());
+        try testing.expect(std.mem.indexOf(u8, text, text_has) != null);
+        return;
+    }
+    return error.NotFound;
+}
+
+test "coleta de logs: app antigo, recusa com motivo, pedido fura o um por minuto, sala que exige" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port, .admin_token = "coroa", .collect_logs = true });
+    defer srv.stop();
+    var dono = try TestClient.connect(port, "Dono", "", "coroa");
+    defer dono.close();
+    try dono.welcome();
+    // app de antes da 3.10 ignora o pedido calado: o servidor responde por ele
+    var velho = try TestClient.connectVersion(port, "Velho", "", "", 0, 0, null, 0, "3.1.0");
+    defer velho.close();
+    try velho.welcome();
+    sync.sleepMs(250); // o relógio do servidor começa em zero: antes de 200 ms seria "clique duplo"
+    try sendLogRequest(&dono, velho.id, proto.log_req_ask, null);
+    try expectLogRefused(&dono, proto.log_refused_old, "Velho (telinha 3.1.0)");
+    try pingPong(&velho);
+    try testing.expect(!velho.seen[@intFromEnum(proto.Type.log_request)]);
+
+    // recusa com motivo chega em quem pediu; a do app até a 3.10.3 (sem o byte) vale "desligou"
+    var v = try TestClient.connect(port, "Visita", "", "");
+    defer v.close();
+    try v.welcome();
+    sync.sleepMs(250); // clique duplo
+    try sendLogRequest(&dono, v.id, proto.log_req_ask, null);
+    _ = try v.expect(.log_request);
+    try sendLogRequest(&v, dono.id, proto.log_req_refuse, proto.log_refused_busy);
+    try expectLogRefused(&dono, proto.log_refused_busy, "Visita");
+    try sendLogRequest(&v, dono.id, proto.log_req_refuse, null);
+    try expectLogRefused(&dono, proto.log_refused_off, "Visita");
+
+    // log que ninguém pediu, logo depois de outro: recusado, e o dono fica sabendo
+    try sendLog(&v, 1, "primeiro", 4096);
+    _ = try v.expect(.log_ack);
+    try sendLog(&v, 2, "segundo", 4096);
+    {
+        var r: proto.Reader = .{ .data = try v.expect(.log_ack) };
+        _ = try r.u32_();
+        try testing.expectEqual(proto.log_ack_refused, try r.u8_());
+    }
+    try expectLogRefused(&dono, proto.log_refused_soon, "Visita");
+    // o dono pediu: vem mesmo menos de 1 min depois
+    sync.sleepMs(250);
+    try sendLogRequest(&dono, v.id, proto.log_req_ask, null);
+    _ = try v.expect(.log_request);
+    try sendLog(&v, 3, "pedido", 4096);
+    {
+        var r: proto.Reader = .{ .data = try v.expect(.log_ack) };
+        try testing.expectEqual(@as(u32, 3), try r.u32_());
+        try testing.expectEqual(proto.log_ack_delivered, try r.u8_());
+    }
+
+    // --exigir-logs: o welcome diz que a sala exige (o app manda mesmo desligado)
+    const port2 = freshPort();
+    const srv2 = try Server.start(.{ .port = port2, .require_logs = true });
+    defer srv2.stop();
+    var e = try TestClient.connect(port2, "E", "", "");
+    defer e.close();
+    var r: proto.Reader = .{ .data = try e.expect(.welcome) };
+    _ = try r.u32_();
+    _ = try r.str();
+    _ = try r.u8_();
+    _ = try r.u64_();
+    _ = try r.u64_();
+    _ = try r.u8_();
+    _ = try r.str();
+    if (try r.u8_() == 1) _ = try r.u32_();
+    const feats = try r.u8_();
+    try testing.expect(feats & proto.srv_logs != 0 and feats & proto.srv_logs_required != 0);
+    try testing.expect(proto.answersLogRequest("3.10.0") and proto.answersLogRequest("4.0.1"));
+    try testing.expect(!proto.answersLogRequest("3.9.2") and !proto.answersLogRequest(""));
+}
 
 fn sendLog(c: *TestClient, id: u32, data: []const u8, chunk: usize) !void {
     var off: usize = 0;

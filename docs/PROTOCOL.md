@@ -129,7 +129,7 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | type | name | direction | payload |
 |---|---|---|---|
 | 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (what it decodes, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (channel to join; empty or missing = the default), `str token_bot` (bots only; see `feat_bot`), `str senha_do_canal` (if the channel has a password; the app sends the last one it used there, to get back to the channel when it reconnects) |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1), `u8 recursos_do_servidor` (`srv_*`: 1 = private messages and quoted replies, 2 = files, 4 = cards, 8 = deleting channels, 16 = channel OPs, 32 = bot panel, 64 = collects logs; an older server doesn't send it = 0) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (the host's), `u8 udp` (1 = offers UDP), `u32 token_udp` (if 1), `u8 recursos_do_servidor` (`srv_*`: 1 = private messages and quoted replies, 2 = files, 4 = cards, 8 = deleting channels, 16 = channel OPs, 32 = bot panel, 64 = collects logs, 128 = requires the log; an older server doesn't send it = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (the server closes right after) |
 | 4 | members | S→C | `u8 sala` (1 = locked), `u16 n`, n × member (below), n × `str versão_do_app` (same order), n × `u8 tipo` (1 = bot, 2 = OP of my text channel, 4 = OP of my call's channel, 8 = created my text channel, 16 = created my call's channel; an older server doesn't send it) |
 | 5 | chat | C→S | `str texto`, image (optional, below), `u32 resposta` (id of the message replied to; 0 = none), `u32 pra` (private to this member; 0 = the channel), `u32 n` + n bytes of a [card](#cards) (0 = none) |
@@ -140,7 +140,7 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | 8 | frame | S→C | `u32 stream`, frame |
 | 9 | watch | C→S | `u32 stream`, `u8 ligado`, `u8 opções` (1 = clips: wants an IDR now and then) |
 | 10 | keyreq | S→C | `u8 tipo` (send an IDR for that stream) |
-| 10 | keyreq | C→S | `u32 stream`, `u8 motivo` (0 = I lost the reference, 1 = recording starting, 2 = my decoder is behind but caught up by dropping droppable frames: no IDR, just thin me, 3 = I threw the decoder queue away because it couldn't keep up: like 0, and with no droppable frames the server tells the streamer (`viewer_slow` byte 3); an older server treats 2 and 3 as 0) |
+| 10 | keyreq | C→S | `u32 stream`, `u8 motivo` (0 = I lost the reference, 1 = recording starting, 2 = my decoder is behind but caught up by dropping droppable frames: no IDR, just thin me, 3 = I threw the decoder queue away because it couldn't keep up: like 0, and with no droppable frames the server tells the streamer (`viewer_slow` byte 3), except within 2 s of the viewer's first frame or of a size change, when it only asks for the IDR (a decoder starting up); an older server treats 2 and 3 as 0) |
 | 11 | ping | C→S | `u64 t` |
 | 12 | pong | S→C | `u64 t` (echo), `u64 relógio_µs` |
 | 13 | kick | C→S | `u32 alvo` (the same as `admin` with action 1; still accepted) |
@@ -189,7 +189,7 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | 45 | bot_panel | C→S | bots only: `u32 n`, card (`n = 0` removes the panel); see "Bot panel" |
 | 45 | bot_panel | S→C | `u32 bot id`, `u32 n`, card (`n = 0`: no panel anymore) |
 | 46 | panel_action | C→S | `u32 bot id`, `u8 botão`: click on a panel button; reaches the bot as an `embed_action` with `id` 0 |
-| 47 | log_request | C→S | `u32 id`, `u8 what`: 0 = whoever has the crown asks for `id`'s log; 1 = I refuse `id`'s request; see "Log collection" |
+| 47 | log_request | C→S | `u32 id`, `u8 what`: 0 = whoever has the crown asks for `id`'s log; 1 = I refuse `id`'s request, `[u8 reason]` (notice 13's `extra`); see "Log collection" |
 | 47 | log_request | S→C | `u32 who asked`, `str name`: send your log (or refuse) |
 
 `versão_do_app` ("3.0.0") only serves to warn whoever is out of date (the
@@ -554,8 +554,18 @@ room (whoever turned off "Send my log when the room asks" is only told). Whoever
 has the crown sends `log_request` (0, id); the person gets `log_request` (who
 asked, name) and sends the log the usual way (`log_chunk`, to whoever has the
 crown and to the server's `--logs` folder) or answers `log_request` (1, who
-asked), and the asker gets notice 13. Bots and the browser never get asked. An
-app in such a room also sends its last crash report on its own.
+asked, reason), and the asker gets notice 13 with the reason in `extra`: 0 =
+turned off in settings (apps up to 3.10.3 don't send a reason), 1 = the log is
+empty, 2 = already sending one, 3 = the app is older than 3.10.0 and can't send
+(the server answers for it without forwarding the request; the text carries the
+name and version), 4 = the server refused the log (one per minute per person;
+one the crown holder asked for in the last minute goes through). Bots and the
+browser never get asked. An app in such a room also sends its last crash report
+on its own.
+
+With `--exigir-logs` the server also sets `srv_*` 128: the app sends even with
+"Send my log when the room asks" turned off, and the join notice says the room
+requires the log (whoever doesn't want that leaves).
 
 ### Browser
 
@@ -719,8 +729,9 @@ everything is measured with acknowledgements — separately for each stream
   restarting from an IDR). Whoever asks for an IDR because the decoder couldn't
   keep up is always thinned (half the work for the decoder).
 
-**Viewer:** acknowledges right away; if the decoder falls more than 150 ms behind,
-it first skips to an IDR already in the queue, or drops the droppable frames and
+**Viewer:** acknowledges right away; if the decoder falls more than 150 ms behind
+(1 s right after the first frame or a size or codec change: a new decoder takes
+a while to open, 150-260 ms on NVDEC, and that isn't falling behind), it first skips to an IDR already in the queue, or drops the droppable frames and
 sends `keyreq stream` with reason 2 (no IDR: the server only thins it), giving the
 decoder 100 ms; only when neither helps does it throw the queue away and send
 reason 0 (the server applies the same growing wait). Frames that already have a newer one waiting are

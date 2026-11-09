@@ -125,7 +125,7 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | tipo | nome | direção | payload |
 |---|---|---|---|
 | 1 | hello | C→S | `str nome`, `str token_admin`, `u64 chave_do_cliente`, `str versão_do_app`, `u8 codecs` (o que decodifica, bits `1<<codec`), `u8 recursos` (`feat_*`), `str canal` (canal pra entrar; vazio ou sem o campo = o padrão), `str token_bot` (só bot; ver `feat_bot`), `str senha_do_canal` (se o canal tiver senha; o app manda a última que usou nele, pra voltar pro canal ao reconectar) |
-| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1), `u8 recursos_do_servidor` (`srv_*`: 1 = mensagem privada e resposta citada, 2 = arquivos, 4 = cartões, 8 = apagar canal, 16 = OPs de canal, 32 = painel de bot, 64 = coleta logs; servidor antigo não manda = 0) |
+| 2 | welcome | S→C | `u32 meu_id`, `str nome_da_sala`, `u8 sou_admin`, `u64 relógio_µs`, `u64 instância`, `u8 rota`, `str versão_do_app` (de quem hospeda), `u8 udp` (1 = oferece UDP), `u32 token_udp` (se 1), `u8 recursos_do_servidor` (`srv_*`: 1 = mensagem privada e resposta citada, 2 = arquivos, 4 = cartões, 8 = apagar canal, 16 = OPs de canal, 32 = painel de bot, 64 = coleta logs, 128 = exige o log; servidor antigo não manda = 0) |
 | 3 | denied | S→C | `str motivo`, `u8 código` (servidor fecha em seguida) |
 | 4 | members | S→C | `u8 sala` (1 = trancada), `u16 n`, n × membro (abaixo), n × `str versão_do_app` (mesma ordem), n × `u8 tipo` (1 = bot, 2 = OP do meu canal de texto, 4 = OP do canal da minha call, 8 = criou o meu canal de texto, 16 = criou o canal da minha call; servidor antigo não manda) |
 | 5 | chat | C→S | `str texto`, imagem (opcional, abaixo), `u32 resposta` (id da mensagem respondida; 0 = nenhuma), `u32 pra` (privada pra esse membro; 0 = o canal), `u32 n` + n bytes de um [cartão](#cartões) (0 = nenhum) |
@@ -136,7 +136,7 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 8 | frame | S→C | `u32 stream`, frame |
 | 9 | watch | C→S | `u32 stream`, `u8 ligado`, `u8 opções` (1 = clipes: quer IDR de vez em quando) |
 | 10 | keyreq | S→C | `u8 tipo` (mande um IDR dessa transmissão) |
-| 10 | keyreq | C→S | `u32 stream`, `u8 motivo` (0 = perdi a referência, 1 = gravação começando, 2 = o decoder está atrasando mas se virou largando os quadros puláveis: sem IDR, só me afina, 3 = joguei a fila do decoder fora porque ele não deu conta: como o 0, e sem quadros puláveis o servidor avisa quem transmite (`viewer_slow` byte 3); servidor antigo trata 2 e 3 como 0) |
+| 10 | keyreq | C→S | `u32 stream`, `u8 motivo` (0 = perdi a referência, 1 = gravação começando, 2 = o decoder está atrasando mas se virou largando os quadros puláveis: sem IDR, só me afina, 3 = joguei a fila do decoder fora porque ele não deu conta: como o 0, e sem quadros puláveis o servidor avisa quem transmite (`viewer_slow` byte 3), menos até 2 s depois do primeiro quadro dele ou de mudar o tamanho, quando só pede o IDR (é o decoder começando); servidor antigo trata 2 e 3 como 0) |
 | 11 | ping | C→S | `u64 t` |
 | 12 | pong | S→C | `u64 t` (eco), `u64 relógio_µs` |
 | 13 | kick | C→S | `u32 alvo` (o mesmo que `admin` com ação 1; ainda aceito) |
@@ -185,7 +185,7 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 45 | bot_panel | C→S | só bot: `u32 n`, cartão (`n = 0` tira o painel); ver "Painel do bot" |
 | 45 | bot_panel | S→C | `u32 id do bot`, `u32 n`, cartão (`n = 0`: não tem mais painel) |
 | 46 | panel_action | C→S | `u32 id do bot`, `u8 botão`: clique num botão do painel; chega no bot como `embed_action` com `id` 0 |
-| 47 | log_request | C→S | `u32 id`, `u8 o_que`: 0 = quem tem a coroa pede o log de `id`; 1 = recuso o pedido de `id`; ver "Coleta de logs" |
+| 47 | log_request | C→S | `u32 id`, `u8 o_que`: 0 = quem tem a coroa pede o log de `id`; 1 = recuso o pedido de `id`, `[u8 motivo]` (o `extra` do aviso 13); ver "Coleta de logs" |
 | 47 | log_request | S→C | `u32 quem pediu`, `str nome`: mande o seu log (ou recuse) |
 
 `versão_do_app` ("3.0.0") serve só pra avisar quem está desatualizado (a
@@ -539,8 +539,17 @@ na sala (quem desligou "Mandar meu log quando a sala pedir" só é avisado). Que
 tem a coroa manda `log_request` (0, id); a pessoa recebe `log_request` (quem
 pediu, nome) e manda o log pelo caminho de sempre (`log_chunk`, pra quem tem a
 coroa e pra pasta `--logs` do servidor) ou responde `log_request` (1, quem
-pediu), e quem pediu recebe o aviso 13. Bot e navegador não recebem pedido. O
-app numa sala dessas também manda sozinho o relatório do último travamento.
+pediu, motivo), e quem pediu recebe o aviso 13 com o motivo no `extra`: 0 =
+desligou nas configurações (app até a 3.10.3 não manda o motivo), 1 = o log está
+vazio, 2 = já está mandando um, 3 = o app é anterior à 3.10.0 e não sabe mandar
+(quem responde é o servidor, sem repassar o pedido; o texto leva nome e versão),
+4 = o servidor recusou o log (um por minuto de cada um; o que quem tem a coroa
+pediu no último minuto passa). Bot e navegador não recebem pedido. O app numa
+sala dessas também manda sozinho o relatório do último travamento.
+
+Com `--exigir-logs` o servidor também liga o `srv_*` 128: o app manda mesmo com
+"Mandar meu log quando a sala pedir" desligado, e o aviso ao entrar diz que a
+sala exige o log (quem não quiser sai).
 
 ### Navegador
 
@@ -699,7 +708,9 @@ câmera de alguém têm controles independentes):
   recomeçando de IDR). Quem pede IDR porque o decoder não deu conta é afinado
   sempre (metade do trabalho pro decoder).
 
-**Espectador:** confirma na hora; se o decoder fica mais de 150 ms atrasado,
+**Espectador:** confirma na hora; se o decoder fica mais de 150 ms atrasado
+(1 s logo depois do primeiro quadro ou de mudar o tamanho ou o codec: o decoder
+novo demora pra abrir, 150-260 ms no NVDEC, e isso não é falta de conta),
 primeiro pula até um IDR que já está na fila, ou larga os quadros puláveis e
 manda `keyreq stream` com motivo 2 (sem IDR: o servidor só afina), dando 100 ms
 pro decoder; só quando nada disso resolve joga a fila fora e manda o motivo 0 (o

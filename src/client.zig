@@ -398,6 +398,11 @@ pub const View = struct {
     stop: bool = false,
     waiting_key: bool = true,
     relief_until_us: u64 = 0, // descartou os puláveis: espera o decoder alcançar até aqui
+    /// Decoder (re)começando (primeiro quadro, tamanho ou codec novo): até
+    /// aqui a fila pode atrasar mais (ver enqueue). Tamanho/codec do último quadro:
+    warm_until_us: u64 = 0,
+    last_size: u32 = 0,
+    last_codec: u8 = 0xFF,
     // tempos por quadro pro log de depuração (trace.zig)
     t_decode: trace.Hist = .{}, // decodificar
     /// Por que não está decodificando na placa (vazio = está). Só diagnóstico:
@@ -518,6 +523,8 @@ pub const View = struct {
     /// Atraso máximo esperando o decoder antes de desistir e pedir um IDR.
     /// Folga pra um soluço (um IDR grande demora mais), sem deixar acumular.
     const max_decode_backlog_us = 150_000;
+    /// Folga enquanto o decoder começa (ver enqueue).
+    const decoder_warmup_us = 1_000_000;
 
     fn enqueue(v: *View, frame: []u8) void {
         if (frame.len > 4) v.cursor_apart.store(frame[4] & proto.frame_cursor_apart != 0, .release);
@@ -554,9 +561,23 @@ pub const View = struct {
             return;
         }
         const now = sync.nowUs();
+        // decoder começando: o primeiro quadro, ou tamanho/codec novo (a
+        // qualidade automática, o tamanho de quem assiste) abre um decoder novo,
+        // e o NVDEC leva 150-260 ms no primeiro. Isso não é "não dar conta":
+        // virava "não decodifica a tempo" no servidor no começo de toda
+        // transmissão, e quem transmitia caía pra 30 q/s por 5 min e com taxa menor
+        if (frame.len > proto.frame_header_len) {
+            const size = @as(u32, std.mem.readInt(u16, frame[13..15], .little)) << 16 | std.mem.readInt(u16, frame[15..17], .little);
+            const cdc = frame[4] & proto.frame_codec_mask;
+            if (size != v.last_size or cdc != v.last_codec) v.warm_until_us = now + decoder_warmup_us;
+            v.last_size = size;
+            v.last_codec = cdc;
+        }
+        const warming = now < v.warm_until_us;
+        const max_backlog: u64 = if (warming) decoder_warmup_us else max_decode_backlog_us;
         // decode não está dando conta: primeiro o que não custa a transmissão de
         // ninguém (ver relieveBacklog); só então descarta tudo e pede um IDR
-        if (v.frames.items.len >= 30 or (v.arrivals.items.len > 0 and now - v.arrivals.items[0] > max_decode_backlog_us)) {
+        if (v.frames.items.len >= @as(usize, if (warming) 90 else 30) or (v.arrivals.items.len > 0 and now - v.arrivals.items[0] > max_backlog)) {
             if (v.relieveBacklog(now)) {
                 // conta pro servidor (sem pedir IDR): ele manda só metade dos quadros
                 if (v.backlog_relieved.fetchAdd(1, .monotonic) % 8 == 0) v.client.sendKeyreqReason(v.stream, proto.keyreq_slow);
@@ -2410,10 +2431,11 @@ pub const Client = struct {
     /// Clique num botão do painel de um bot.
     /// Coleta de logs: o dono pede o log de `id` (log_req_ask) ou eu recuso o
     /// pedido de `id` (log_req_refuse).
-    pub fn sendLogRequest(cl: *Client, id: u32, what: u8) void {
-        const m = proto.Msg.alloc(.log_request, 5) catch return;
+    pub fn sendLogRequest(cl: *Client, id: u32, what: u8, why: u8) void {
+        const m = proto.Msg.alloc(.log_request, 6) catch return;
         std.mem.writeInt(u32, m.payload()[0..4], id, .little);
         m.payload()[4] = what;
+        m.payload()[5] = why; // recusando: por quê (log_refused_*)
         cl.queue.pushOwned(m);
     }
 

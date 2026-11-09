@@ -21,7 +21,7 @@ pub const version: u16 = 7;
 /// O anterior (servidor e app ainda falam com ele; o servidor pode recusar).
 pub const version_old: u16 = 6;
 /// Versão do app (vai no hello/welcome/members pra avisar quem está desatualizado).
-pub const app_version = "3.10.3";
+pub const app_version = "3.10.4";
 pub const max_msg = 32 * 1024 * 1024;
 /// Marcador em claro no lugar do tamanho: "senha errada" (o servidor não
 /// conseguiu decifrar a primeira mensagem).
@@ -168,9 +168,23 @@ pub const log_ack_delivered: u8 = 0; // chegou em quem tem a coroa
 pub const log_ack_saved: u8 = 1; // ninguém com a coroa na sala, mas o servidor guardou
 pub const log_ack_nobody: u8 = 2; // ninguém pra receber
 pub const log_ack_refused: u8 = 3; // grande demais ou cedo demais (um por minuto)
-/// log_request: o que é.
+/// log_request: o que é. Recusando, um byte a mais diz por quê (log_refused_*).
 pub const log_req_ask: u8 = 0;
 pub const log_req_refuse: u8 = 1;
+/// Por que o log pedido não veio (extra do notice_log_refused).
+pub const log_refused_off: u8 = 0; // desligou nas configurações (app até a 3.10.3: sempre esse)
+pub const log_refused_empty: u8 = 1; // o log dele está vazio
+pub const log_refused_busy: u8 = 2; // já está mandando um
+pub const log_refused_old: u8 = 3; // app anterior à 3.10.0, que não sabe mandar (texto = nome e versão)
+pub const log_refused_soon: u8 = 4; // o servidor recusou: grande demais, ou um por minuto sem ninguém pedir
+
+/// O app atende log_request? (a coleta de logs é da 3.10.0; vazio = antigo)
+pub fn answersLogRequest(version_str: []const u8) bool {
+    var it = std.mem.splitScalar(u8, version_str, '.');
+    const major = std.fmt.parseInt(u32, it.next() orelse return false, 10) catch return false;
+    const minor = std.fmt.parseInt(u32, it.next() orelse return false, 10) catch return false;
+    return major > 3 or (major == 3 and minor >= 10);
+}
 
 pub const chat_img_none: u8 = 0;
 pub const chat_img_h264: u8 = 1;
@@ -263,7 +277,7 @@ pub const notice_moved: u8 = 9; // um admin te levou pra outro canal
 pub const notice_dm: u8 = 10; // a mensagem privada não foi (o texto diz por quê)
 pub const notice_file_gone: u8 = 11; // o arquivo pedido não está mais na sala
 pub const notice_chat_cleared: u8 = 12; // um admin limpou o chat da sala (o app apaga o que mostra)
-pub const notice_log_refused: u8 = 13; // quem você pediu o log não manda (desligou nas configurações)
+pub const notice_log_refused: u8 = 13; // o log que você pediu não vem (extra = log_refused_*; texto = nome)
 /// notice_channel com extra = 1: o canal pede senha (o app pergunta)
 pub const notice_channel_needs_password: u8 = 1;
 /// Só no app (não vem do servidor): chegou um log mandado pela sala (texto = nome + caminho).
@@ -348,6 +362,9 @@ pub const srv_bot_panel: u8 = 32; // painel de bot (bot_panel, panel_action)
 /// nela (log_request); o app avisa ao entrar e grava o log enquanto está nela.
 /// Fora do server_features: só quando o servidor liga.
 pub const srv_logs: u8 = 64;
+/// Junto com srv_logs (--exigir-logs): o app manda mesmo com "mandar meu log"
+/// desligado (o aviso ao entrar diz que a sala exige; quem não quiser sai).
+pub const srv_logs_required: u8 = 128;
 pub const server_features: u8 = srv_dm | srv_files | srv_embed | srv_chan_delete | srv_chan_op | srv_bot_panel;
 /// Cartão (embed): bloco opaco pro servidor, no fim do chat (u32 tamanho + bytes).
 /// Formato em docs/PROTOCOL.md; o primeiro byte é a versão.

@@ -1235,6 +1235,7 @@ pub const App = struct {
     zoom_dirty: bool = false,
     save_at: f64 = 0, // salvar a configuração quando der essa hora (0 = nada pendente)
     auto_cap_seen: u32 = 0, // último teto da qualidade automática avisado
+    auto_fps30_seen: bool = false, // fps automático em 30 já avisado
     // transmissão que caiu sozinha (sem a UI pedir): retomadas no último minuto
     share_restarts: u8 = 0,
     share_restart_window: f64 = 0,
@@ -2501,20 +2502,24 @@ pub const App = struct {
     /// Sala com --coletar-logs (srv_logs): avisa uma vez ao entrar, grava o log
     /// de depuração enquanto está nela (sem ele não teria o que mandar) e manda
     /// sozinho o relatório do último travamento. Quem desligou "Mandar meu log
-    /// quando a sala pedir" só recebe o aviso.
+    /// quando a sala pedir" só recebe o aviso, menos na sala que exige
+    /// (--exigir-logs): lá o aviso diz que vai de qualquer jeito.
     fn collectLogs(a: *App, cl: *Client) void {
         const on = cl.server_features & proto.srv_logs != 0 and a.server == null;
         if (!on) return;
+        const required = cl.server_features & proto.srv_logs_required != 0;
         if (!a.collect_seen) {
             a.collect_seen = true;
-            if (a.cfg.share_logs)
+            if (required)
+                a.toast("Esta sala exige o log: o dono pode pegar o seu log de diagnóstico (sistema, placa, rede, o que o app fez; nenhuma senha) a qualquer hora, mesmo com o envio desligado. Se não quiser, saia da sala.", .{}, false)
+            else if (a.cfg.share_logs)
                 a.toast("Esta sala coleta logs: o dono pode pegar o seu log de diagnóstico (sistema, placa, rede, o que o app fez; nenhuma senha). Pra não mandar: Configurações → Depuração.", .{}, false)
             else
                 a.toast("Esta sala coleta logs, mas você desligou: se o dono pedir, o seu não vai.", .{}, false);
             // texto longo, aviso que importa: fica mais tempo na tela
             if (a.n_toasts > 0) a.toasts[a.n_toasts - 1].until = c.igGetTime() + 14;
         }
-        if (!a.cfg.share_logs) {
+        if (!a.cfg.share_logs and !required) {
             a.stopAutoLog();
             return;
         }
@@ -2557,16 +2562,20 @@ pub const App = struct {
                 proto.notice_stream_stopped => if (n.extra == proto.kind_camera) a.stopCamera() else a.stopSharing(),
                 proto.notice_log_received => debuglog.line("{s}", .{n.textSlice()}),
                 proto.notice_log_request => {
-                    // o dono pediu o meu log (sala com --coletar-logs)
+                    // o dono pediu o meu log (sala com --coletar-logs). O que não
+                    // for volta pra ele com o motivo (antes ficava esperando calado)
                     const who = n.textSlice();
-                    if (!a.cfg.share_logs) {
-                        cl.sendLogRequest(n.from, proto.log_req_refuse);
+                    const required = cl.server_features & proto.srv_logs_required != 0;
+                    if (!a.cfg.share_logs and !required) {
+                        cl.sendLogRequest(n.from, proto.log_req_refuse, proto.log_refused_off);
                         a.toast("{s} pediu o seu log; não foi (você desligou nas configurações).", .{who}, false);
                     } else if (debuglog.fileSize() == 0) {
+                        cl.sendLogRequest(n.from, proto.log_req_refuse, proto.log_refused_empty);
                         a.toast("{s} pediu o seu log, mas ele está vazio.", .{who}, false);
                     } else {
                         a.debug_sent_via = .room;
                         debuglog.sendWhat(.room, .log, "", config.getStr(&a.cfg.name)) catch {
+                            cl.sendLogRequest(n.from, proto.log_req_refuse, proto.log_refused_busy);
                             a.toast("{s} pediu o seu log; já tem um envio em andamento.", .{who}, false);
                             continue;
                         };
@@ -2575,7 +2584,14 @@ pub const App = struct {
                     continue;
                 },
                 proto.notice_log_refused => {
-                    a.toast("{s} não manda o log (desligou nas configurações).", .{n.textSlice()}, false);
+                    const who = n.textSlice();
+                    switch (n.extra) {
+                        proto.log_refused_empty => a.toast("O log de {s} está vazio.", .{who}, false),
+                        proto.log_refused_busy => a.toast("{s} já está mandando um log: espere ele chegar.", .{who}, false),
+                        proto.log_refused_old => a.toast("{s} não sabe mandar o log: esse app é anterior à 3.10. Peça pra atualizar.", .{who}, true),
+                        proto.log_refused_soon => a.toast("O log de {s} não veio: o servidor só aceita um por minuto de cada um.", .{who}, false),
+                        else => a.toast("{s} não manda o log (desligou nas configurações).", .{who}, false),
+                    }
                     continue;
                 },
                 proto.notice_channel => if (n.extra == proto.notice_channel_needs_password and a.chan_req_len > 0) {
@@ -2665,6 +2681,7 @@ pub const App = struct {
         }
         a.sharer = null;
         a.auto_cap_seen = 0;
+        a.auto_fps30_seen = false;
         a.crop = .{ 0, 0, 1, 1 };
         a.crop_tile = null;
         if (a.focused == 0) a.focused = null;
@@ -3066,14 +3083,29 @@ pub const App = struct {
             const cap = s.auto_cap.load(.acquire);
             if (cap != a.auto_cap_seen) {
                 const from = s.auto_from.load(.acquire);
-                if (cap != 0 and cap > from) {
+                if (s.auto_reverted.load(.acquire)) {
+                    // placa dividida com o jogo e afins: menos pixels não aliviou
+                    if (cap != 0)
+                        a.toast("Baixar a resolução não aliviou o PC (o gargalo é outro): voltou pra {d}p.", .{cap}, false)
+                    else
+                        a.toast("Baixar a resolução não aliviou o PC (o gargalo é outro): voltou pra resolução escolhida.", .{}, false);
+                } else if (cap != 0 and cap > from) {
                     // subindo de volta aos poucos (antes dizia "não estava dando conta")
                     a.toast("Folgou: a transmissão subiu pra {d}p.", .{cap}, false);
                 } else if (cap != 0) {
                     a.toast("O PC não estava dando conta de {d}p no fps escolhido: transmitindo em {d}p (volta sozinho quando folgar).", .{ from, cap }, false);
                 } else a.toast("Folgou: a transmissão voltou pra resolução escolhida.", .{}, false);
-                debuglog.line("qualidade automática: {d}p -> {d}p (0 = a escolhida)", .{ from, cap });
+                debuglog.line("qualidade automática: {d}p -> {d}p (0 = a escolhida){s}", .{ from, cap, if (s.auto_reverted.load(.acquire)) ", descer não adiantou" else "" });
                 a.auto_cap_seen = cap;
+            }
+            const fps30 = s.auto_fps30.load(.acquire);
+            if (fps30 != a.auto_fps30_seen) {
+                a.auto_fps30_seen = fps30;
+                if (fps30)
+                    a.toast("O PC não estava dando conta de 60 q/s: transmitindo a 30, na mesma resolução (volta sozinho quando folgar).", .{}, false)
+                else
+                    a.toast("Folgou: a transmissão voltou pra 60 q/s.", .{}, false);
+                debuglog.line("qualidade automática: fps automático {s}", .{if (fps30) "60 -> 30" else "30 -> 60"});
             }
             if (!a.audio_err_shown and audio_err[0] != 0) {
                 a.audio_err_shown = true;
@@ -5899,8 +5931,8 @@ pub const App = struct {
         if (i_am_owner and cl.server_features & proto.srv_logs != 0 and !target.bot and target.route != proto.route_web and
             menuItem(fmtZ("{s}  Pegar o log###alog", .{ic.bug}), 0))
         {
-            cl.sendLogRequest(target.id, proto.log_req_ask);
-            a.toast("Pedi o log de {s}: chega em logs-recebidos.", .{name}, false);
+            cl.sendLogRequest(target.id, proto.log_req_ask, 0);
+            a.toast("Pedi o log de {s}: chega em logs-recebidos (se não vier, aparece aqui o porquê).", .{name}, false);
         }
         if (menuItem(if (target.noDraw()) fmtZ("{s}  Devolver o pincel###adraw", .{ic.pen}) else fmtZ("{s}  Tirar o pincel (apaga os desenhos)###adraw", .{ic.pen}), 0))
             cl.admin(proto.admin_draw, target.id, @intFromBool(target.noDraw()));
@@ -11027,7 +11059,10 @@ pub const App = struct {
         c.igPushTextWrapPos(c.igGetCursorPosX() + w);
         pushFont(font_regular, 12.5);
         const collecting = if (a.client) |cl| cl.isConnected() and cl.server_features & proto.srv_logs != 0 and a.server == null else false;
-        if (collecting)
+        const required = if (a.client) |cl| collecting and cl.server_features & proto.srv_logs_required != 0 else false;
+        if (required)
+            textColored(col.yellow, tr("Esta sala exige o log: ele fica gravando enquanto você está nela, e o dono pode pegar mesmo com isso desmarcado."))
+        else if (collecting)
             textColored(if (a.cfg.share_logs) col.yellow else col.muted, if (a.cfg.share_logs) tr("Esta sala coleta logs: enquanto você está nela o log fica gravando, e o dono pode pegar.") else tr("Esta sala coleta logs, mas o seu não vai."))
         else
             textColored(col.faint, tr("Servidor dedicado com --coletar-logs: o app avisa ao entrar, grava o log enquanto você está lá e o dono pode pegar sem precisar te pedir."));
@@ -11499,7 +11534,7 @@ pub const App = struct {
             defer sh.mutex.unlock();
             const audio_on = sh.audio_on;
             const aerr: [160]u8 = sh.audio_err;
-            try w.print(",\"sharer\":{{\"state\":{f},\"w\":{d},\"h\":{d},\"fps\":{d:.1},\"backend\":{f},\"encoder\":{f},\"audio\":{},\"audio_err\":{f},\"auto_cap\":{d},\"frames\":{d},\"cursor_msgs\":{d},\"target_fps\":{d},\"kbps\":{d}}}", .{ s(@tagName(sh.state)), sh.w, sh.h, sh.fps, s(sh.backendSlice()), s(sh.encoder_name), audio_on, s(std.mem.sliceTo(&aerr, 0)), sh.auto_cap.load(.acquire), sh.frames_sent.load(.monotonic), sh.cursor_msgs.load(.monotonic), sh.target_fps.load(.monotonic), sh.bitrate_kbps });
+            try w.print(",\"sharer\":{{\"state\":{f},\"w\":{d},\"h\":{d},\"fps\":{d:.1},\"backend\":{f},\"encoder\":{f},\"audio\":{},\"audio_err\":{f},\"auto_cap\":{d},\"auto_fps30\":{},\"auto_reverted\":{},\"frames\":{d},\"cursor_msgs\":{d},\"target_fps\":{d},\"kbps\":{d}}}", .{ s(@tagName(sh.state)), sh.w, sh.h, sh.fps, s(sh.backendSlice()), s(sh.encoder_name), audio_on, s(std.mem.sliceTo(&aerr, 0)), sh.auto_cap.load(.acquire), sh.auto_fps30.load(.acquire), sh.auto_reverted.load(.acquire), sh.frames_sent.load(.monotonic), sh.cursor_msgs.load(.monotonic), sh.target_fps.load(.monotonic), sh.bitrate_kbps });
         } else try w.writeAll(",\"sharer\":null");
         // avisos na tela
         try w.writeAll(",\"toasts\":[");

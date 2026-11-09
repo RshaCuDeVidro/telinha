@@ -2,6 +2,58 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.10.4
+
+Transmissão que não perde a resolução, e pedido de log que sempre responde. Mesmo protocolo (7); atualize o servidor também: ele para de tratar o decoder de quem assiste começando como "não dá conta", responde pelos apps antigos no pedido de log e ganha o `--exigir-logs`.
+
+### Destaques
+
+- 📉 **PC ocupado não afunda mais a transmissão em 360p**: nos PCs em que o jogo divide a placa (Ryzen com vídeo integrado, como o 5600G e o 5700G), baixar a resolução não deixava o encode mais rápido, e a qualidade automática ia descendo até 360p e ficava lá. Agora ela primeiro cai pra 30 q/s na mesma resolução, e uma descida que não ajuda é desfeita.
+- 🚦 **Toda transmissão começava com o pé esquerdo**: o primeiro quadro de um decoder novo leva 150-260 ms nas placas NVIDIA, e o app de quem assiste dizia que não estava dando conta. No começo de toda transmissão (e a cada troca de resolução) quem transmitia caía pra 30 q/s por 5 minutos, com taxa menor.
+- 📋 **Pedido de log sempre responde**: se o log não vier, o dono da sala fica sabendo por quê (app anterior à 3.10, já mandando um, log vazio, desligado). O log que o dono pediu não é mais recusado por vir menos de um minuto depois do anterior. Opção nova no servidor, `--exigir-logs`: o app manda mesmo com a opção desligada, e o aviso ao entrar diz que a sala exige.
+
+<!-- detalhes -->
+
+### Todas as mudanças
+
+- **Qualidade automática** (`autoq.zig`): com o fps automático a 60 que não
+  cabe, primeiro vai pra 30 q/s na mesma resolução (acima de 1080p a resolução
+  continua indo antes) e volta pra 60 quando folga. Cada descida é conferida na
+  decisão seguinte: se o tempo por quadro não caiu pelo menos metade do que a
+  conta dos pixels promete, volta pro degrau de antes, avisa ("baixar a
+  resolução não aliviou o PC") e não desce de novo por 1 min (dobrando até 10
+  min). No log da anajumita (Ryzen 7 5700G, AMF) o encode foi 34,9 → 28,1 →
+  25,5 → 27,8 ms de 900p a 360p; no do renan (Ryzen 5 5600G), 768p → 360p em 108 s.
+- **Quem assiste** (`client.zig`): por 1 s depois do primeiro quadro, ou de
+  mudar o tamanho ou o codec, a fila do decoder pode esperar até 1 s em vez de
+  150 ms antes de ser jogada fora (decoder novo abrindo não é ficar pra trás).
+- **Servidor**: a mesma regra pros apps antigos: até 2 s depois do primeiro
+  quadro de quem assiste ou de mudar o tamanho, o `keyreq` com motivo 3 só pede
+  o IDR, e o motivo 2 é ignorado (era o "não decodifica a tempo" no log 2-3 s
+  depois do começo de toda transmissão). A linha de entrada diz a versão do app
+  (`renas entrou (…, telinha 3.1.0)`).
+- **Quem transmite**: o tamanho pedido na transmissão anterior não vale mais
+  como o primeiro da nova (entrava, o servidor mandava "tudo" logo depois, e o
+  pedido de verdade esperava os 10 s de descer: 3 encoders e 3 IDRs no começo
+  de toda transmissão).
+- **Coleta de logs**: app anterior à 3.10.0 ignorava o pedido calado; agora o
+  servidor responde por ele ("renas (telinha 3.1.0) não sabe mandar o log: peça
+  pra atualizar"). Recusa vem com o motivo (o `log_request` ganha um byte de
+  motivo, que o aviso 13 leva no `extra`). Log que o dono pediu no último
+  minuto passa pelo limite de um por minuto, e quando o servidor recusa um log
+  os donos ficam sabendo. `--exigir-logs` (`$TELINHA_EXIGIR_LOGS=1`, `srv_*` 128).
+- **Windows 11**: o timer de 1 ms vale mesmo com o telinha coberto pelo jogo
+  ou minimizado (`SetProcessInformation` com
+  `PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION`, só transmitindo ou
+  hospedando).
+- **Testes**: unitários da qualidade automática (o caso da anajumita, fps antes
+  da resolução), de integração da folga do decoder e da coleta de logs, de
+  interface `qualidade_gargalo_fixo`, `qualidade_fps_antes_da_resolucao` e
+  `exigir_logs`. Ganchos `TELINHA_ENCODE_LENTO=Nfixo` (os mesmos ms em qualquer
+  resolução) e `TELINHA_FPS_AUTO_60`.
+- **Documentação**: o PROTOCOL descreve os motivos, o `srv_*` 128 e a folga do
+  decoder.
+
 ## 3.10.3
 
 Qualidade que não despenca com jogo pesado. Mesmo protocolo (7); o servidor só ganha uma informação a mais no log.
