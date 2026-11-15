@@ -137,7 +137,7 @@ def other_lang_path(path):
 
 
 # ------------------------------------------------------------------ canais
-# Os temas do site são os temas do app, lidos do src/theme.zig: mudou lá, muda aqui.
+# Os temas do site são os temas do app, lidos dos .kdl em src/assets/temas: mudou lá, muda aqui.
 # O canal 00 (husky, as cores dos olhos do mascote) é só do site e fica no style.css.
 CHANNEL_NAMES = {"escuro": "Dark", "claro": "Light", "pwnd-claro": "pwnd light", "dracula": "Dracula"}
 
@@ -172,32 +172,53 @@ def _legible(c, bg, toward, need=4.5):
 
 
 def channels():
-    """[(id, nome pt, nome en, tokens CSS)] de cada tema do app."""
-    src = read("src/theme.zig")
+    """[(id, nome pt, nome en, tokens CSS)] de cada tema embutido do app (os .kdl
+    de src/assets/temas, na ordem do src/theme.zig). O husky do app fica de fora:
+    o site já começa no husky dele."""
+    order = re.findall(r'\.id = "([^"]+)", \.src = @embedFile\("assets/temas/[^"]+\.kdl"\)', read("src/theme.zig"))
     out = []
-    for m in re.finditer(r'\.\{ \.id = "([^"]+)", \.name = "([^"]+)", \.pal = \.\{(.*?)\n    \}(, \.mono = true)? \},', src, re.S):
-        tid, name, body, mono = m.groups()
-        pal = {k: _rgb(v) for k, v in re.findall(r"\.(\w+) = rgb\(0x([0-9A-Fa-f]{6})\)", body)}
-        rnd = re.search(r"\.round = ([\d.]+)", body)
-        bg, text, acc = pal["bg_dark"], pal["text"], pal["blurple"]
+    for tid in order:
+        if tid == "husky":
+            continue
+        kdl = read(f"src/assets/temas/{tid}.kdl")
+        head = re.search(r'^theme "([^"]+)"(.*?)(?<!\\)$', kdl, re.M)
+        name = re.search(r'\bname="([^"]+)"', head.group(2)).group(1) if head and 'name="' in head.group(2) else tid
+        name_en = re.search(r'\bname-en="([^"]+)"', kdl)
+        block = re.search(r"^colors \{(.*?)^\}", kdl, re.M | re.S).group(1)
+        pal = {k: _rgb(v) for k, v in re.findall(r'^\s+([a-z0-9-]+)\s+"#([0-9A-Fa-f]{6})"', block, re.M)}
+        fonts = re.search(r'^fonts .*?\bui="([^"]+)"', kdl, re.M)
+        mono = bool(fonts and fonts.group(1).lower().startswith("fira"))
+        radius = re.search(r"^metrics .*?\bradius=([\d.]+)", kdl, re.M)
+        bg, text, acc = pal["bg"], pal["text"], pal["accent"]
+        # o tema pode deixar cores de fora (o app deriva): o mesmo aqui
+        pal.setdefault("panel", _mix(bg, text, 0.04))
+        pal.setdefault("surface", _mix(bg, text, 0.02))
+        pal.setdefault("float", _mix(bg, text, 0.06))
+        pal.setdefault("muted", _mix(text, bg, 0.35))
+        pal.setdefault("faint", _mix(pal["muted"], bg, 0.35))
+        pal.setdefault("heading", text)
+        pal.setdefault("warning", (250, 204, 21))
+        pal.setdefault("success", (34, 197, 94))
+        pal.setdefault("danger", pal.get("live", (242, 68, 95)))
         dark = _contrast(bg, (0, 0, 0)) < _contrast(bg, (255, 255, 255))
         on_accent = (255, 255, 255) if _contrast((255, 255, 255), acc) >= 3.4 else (6, 6, 8)
         tokens = {
-            "--bg": bg, "--bg-2": pal["bg_side"], "--bg-3": pal["bg_main"], "--bg-4": pal["bg_float"],
+            "--bg": bg, "--bg-2": pal["panel"], "--bg-3": pal["surface"], "--bg-4": pal["float"],
             "--line": _mix(bg, text, 0.14), "--line-2": _mix(bg, text, 0.26),
             "--text": text, "--text-2": _legible(pal["muted"], bg, text), "--text-3": _legible(pal["faint"], bg, text),
-            "--head": pal["header"], "--accent": acc, "--accent-text": _legible(acc, bg, text),
-            "--on-accent": on_accent, "--accent-2": _legible(pal["yellow"], bg, text),
-            "--live": pal["red"], "--ok": _legible(pal["green"], bg, text),
+            "--head": pal["heading"], "--accent": acc, "--accent-text": _legible(acc, bg, text),
+            "--on-accent": on_accent, "--accent-2": _legible(pal["warning"], bg, text),
+            "--live": pal["danger"], "--ok": _legible(pal["success"], bg, text),
             "--fur": _mix(acc, (20, 20, 30), 0.72) if dark else _mix(acc, (40, 40, 60), 0.55),
         }
         css = ";".join(f"{k}:{_hex(v)}" for k, v in tokens.items())
-        css += f";--radius:{max(1, round(float(rnd.group(1)) * 8)) if rnd else 8}px;color-scheme:{'dark' if dark else 'light'}"
+        # metrics radius= é em px de canto (o app usa radius/5 como fator; o site, 8 px no fator 1)
+        css += f";--radius:{max(1, round(float(radius.group(1)) / 5 * 8)) if radius else 8}px;color-scheme:{'dark' if dark else 'light'}"
         if mono:
             css += ";--font-body:var(--font-mono);--font-label:var(--font-mono);--body-size:.93em"
-        out.append((tid, name, CHANNEL_NAMES.get(tid, name), css))
+        out.append((tid, name, CHANNEL_NAMES.get(tid, name_en.group(1) if name_en else name), css))
     if len(out) < 6:
-        raise SystemExit("build.py: não achei os temas no src/theme.zig")
+        raise SystemExit("build.py: não achei os temas em src/assets/temas (ordem no src/theme.zig)")
     return out
 
 
@@ -677,7 +698,7 @@ def build(out):
 
     # 4) arquivos: estilo, fontes, imagens, busca, 404, sitemap
     shutil.copytree(os.path.join(HERE, "assets"), os.path.join(out, "assets"))
-    write(os.path.join(out, "assets", "channels.css"), "/* gerado do src/theme.zig pelo site/build.py */\n"
+    write(os.path.join(out, "assets", "channels.css"), "/* gerado dos temas do app (src/assets/temas) pelo site/build.py */\n"
           + "".join(f'[data-theme="{c[0]}"]{{{c[3]}}}\n' for c in channels()))
     for f in ("icon.png", "telinha.svg"):
         shutil.copy(os.path.join(TOP, "assets", f), os.path.join(out, "assets", f))
