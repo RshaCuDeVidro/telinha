@@ -2349,6 +2349,27 @@ pub const Client = struct {
         cl.queue.pushOwned(b.finish() catch return);
     }
 
+    /// Servidor 3.11 ou mais novo: o `channel` leva a call junto (joinBoth).
+    pub fn channelWithCall(cl: *Client) bool {
+        cl.mutex.lock();
+        defer cl.mutex.unlock();
+        const v = proto.parseVersion(cl.server_version[0..cl.server_version_len]) orelse return false;
+        return !proto.versionLess(v, .{ 3, 11, 0 });
+    }
+
+    /// Entra no chat e na call de um canal com um pedido só (servidor 3.11+;
+    /// o mais velho só troca o chat: ver channelWithCall).
+    pub fn joinBoth(cl: *Client, name: []const u8, password: []const u8) void {
+        cl.rememberPw(name, password);
+        var b: proto.Builder = .{};
+        defer b.deinit();
+        b.begin(.channel) catch return;
+        b.str(name) catch return;
+        b.str(password) catch return;
+        b.u8_(1) catch return;
+        cl.queue.pushOwned(b.finish() catch return);
+    }
+
     /// Entra na call de um canal (nome vazio = sai da call).
     pub fn joinCall(cl: *Client, name: []const u8, password: []const u8) void {
         cl.rememberPw(name, password);

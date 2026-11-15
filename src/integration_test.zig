@@ -2635,6 +2635,60 @@ test "call separada do canal: trocar o chat não tira da call; sair da call para
     try testing.expectEqual(@as(u16, 1), l.in_call[l.index("geral").?]);
 }
 
+fn sendChannelBoth(c: *TestClient, name: []const u8, pw: []const u8) !void {
+    var b: proto.Builder = .{};
+    defer b.deinit();
+    try b.begin(.channel);
+    try b.str(name);
+    try b.str(pw);
+    try b.u8_(1);
+    try c.send(try b.finish());
+}
+
+test "canal com a call junto (3.11): um pedido troca chat e call; no mesmo chat fora da call, volta pra call" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port, .channels = "geral,jogos" });
+    defer srv.stop();
+    var a = try TestClient.connectCalls(port, "Ana", "", "", 0);
+    defer a.close();
+    try a.welcome();
+    _ = try a.channels();
+    // um pedido só: o chat e a call vão pro #jogos
+    try sendChannelBoth(&a, "jogos", "");
+    var l = try waitList(&a, struct {
+        fn f(x: *const ChanList) bool {
+            return std.mem.eql(u8, x.current(), "jogos") and std.mem.eql(u8, x.callName(), "jogos");
+        }
+    }.f);
+    try testing.expectEqual(@as(u16, 1), l.in_call[l.index("jogos").?]);
+    // sai da call (fica lendo o #jogos) e pede o #jogos de novo: volta pra call
+    sync.sleepMs(900);
+    try sendCall(&a, "", "");
+    _ = try waitList(&a, struct {
+        fn f(x: *const ChanList) bool {
+            return x.call_len == 0;
+        }
+    }.f);
+    sync.sleepMs(900);
+    try sendChannelBoth(&a, "jogos", "");
+    l = try waitList(&a, struct {
+        fn f(x: *const ChanList) bool {
+            return std.mem.eql(u8, x.callName(), "jogos");
+        }
+    }.f);
+    try testing.expectEqualStrings("jogos", l.current());
+    // sem o byte (app de antes): só o chat troca, a call fica
+    sync.sleepMs(900);
+    try sendChannel(&a, "geral", "");
+    l = try waitList(&a, struct {
+        fn f(x: *const ChanList) bool {
+            return std.mem.eql(u8, x.current(), "geral");
+        }
+    }.f);
+    try testing.expectEqualStrings("jogos", l.callName());
+}
+
 test "canais: quem criou manda (senha, invisível, tirar alguém); vazio fica e sobrevive a reiniciar" {
     net.init();
     const port = freshPort();

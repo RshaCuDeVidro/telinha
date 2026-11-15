@@ -43,8 +43,8 @@ apagar também.
 ### Tem pra macOS ou celular?
 
 App não. Mas, se a sala estiver num [servidor dedicado](DEPLOY.pt.md) com
-`--web`, dá pra **assistir pelo navegador**, inclusive no celular: o botão da TV
-na sala copia o link.
+`--web`, dá pra **assistir pelo navegador**, inclusive no celular: o menu da
+sala (clique no nome dela) copia o link.
 
 ## Conectar
 
@@ -143,9 +143,10 @@ sempre é melhor que o link público.
 
 ### Entrei na sala e não vejo vídeo nenhum
 
-Ninguém vê nada sem querer: clique em quem está **AO VIVO** (na lista de quem
-está na sala, ou nas pílulas em cima do palco). Se ninguém estiver ao vivo, o
-palco diz isso. Pra assistir sozinho assim que entrar, use `--assistir` na
+Ninguém vê nada sem querer: clique em **Assistir** no cartão de quem está ao
+vivo (no meio da tela, ou em **Pessoas**, na barra de baixo). Se ninguém
+estiver ao vivo, o palco diz isso; se tem gente ao vivo em outro canal,
+**Pessoas** mostra em *Ao vivo em outros canais*. Pra assistir sozinho assim que entrar, use `--assistir` na
 linha de comando.
 
 ### Assistir trava (principalmente em notebook com AMD ou Intel)

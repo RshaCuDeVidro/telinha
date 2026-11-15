@@ -84,11 +84,13 @@ sudo dnf install libportal pipewire-libs
 
 1. **Crie uma sala.** Abra o telinha e clique em **Criar sala**. A porta padrão é 7777 e a senha é opcional.
 2. **Chame a galera de fora.** No card *Chamando a galera de fora*, clique em **Abrir porta no roteador** pra uma conexão direta, com o menor atraso. Se a operadora usa CGNAT, clique em **Criar link público**. Depois é só **Copiar convite** e mandar. Não deu? O [guia de conexão](docs/CONNECTING.pt.md) tem todos os outros jeitos (abrir a porta na mão, IPv6, VPN de jogo, túnel por SSH), nenhum com chave de API.
-3. **Entre.** Cole o convite `telinha://…` na tela inicial. Se ele já estiver copiado, o telinha cola sozinho.
-4. **Transmita.** Clique em **Compartilhar tela**, escolha resolução, fps, qualidade e tipo de conteúdo, e clique em **Ao vivo**. Dá pra mudar tudo com a transmissão rolando.
-5. **Assista.** Clique em quem está ao vivo. **F11** é tela cheia, **duplo clique** é modo cinema e **Esc** sai.
+3. **Entre.** Cole o convite `telinha://…` na tela inicial. Se ele já estiver copiado, o telinha cola sozinho, e as salas em que você entrou ficam em **Salas recentes** pra entrar de novo com um clique.
+4. **Transmita.** Clique em **Compartilhar tela**, na barra de baixo, escolha o que mostrar e o som, e clique em **Começar a transmitir**. Dá pra mudar tudo com a transmissão rolando; o botão vermelho do lado para.
+5. **Assista.** Clique em **Assistir** no cartão de quem está ao vivo (no meio da tela, ou em **Pessoas**, na barra de baixo). **F11** é tela cheia, **duplo clique** é modo cinema e **Esc** sai.
 6. **Fale.** **Ctrl+M** liga e desliga o microfone e **Ctrl+D** deixa você surdo. Clique direito em alguém pra mudar o volume da voz dessa pessoa.
-7. **Pule entre canais.** Um servidor pode ter várias salas ao mesmo tempo, como no IRC. Clique num canal no painel, aperte **+** pra criar um, ou digite `/join nome` no chat. A sua transmissão vai junto.
+7. **Pule entre canais.** Um servidor pode ter várias salas ao mesmo tempo, como no IRC. Os canais são as abas em cima: clique numa pra ir pra lá (o chat, a voz e as telas de lá), aperte **+** pra criar um, ou digite `/join nome` no chat. A sua transmissão vai junto.
+
+Perdido? O botão **?** da sala (ou **F1**) explica tudo, e na primeira vez numa sala um tour rápido mostra onde fica cada coisa.
 
 No Wayland o sistema pergunta qual tela ou janela compartilhar na primeira vez e depois lembra.
 

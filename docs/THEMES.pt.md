@@ -103,6 +103,8 @@ letra em **Tamanho da letra**.
   placa de vídeo.
 - `metrics radius=` (cantos em px, 0 = retos) e `border=` (espessura das bordas).
 - `effects glow=`: força do brilho neon em volta de botões, telas e avisos.
+- `effects gradient=0`: tema chapado. Os degradês viram a cor de base e a linha neon das bordas some (o Husky, o padrão, é assim).
+- `effects terminal=0`: tira o jeito de terminal: o `>` antes dos títulos e os cantos de visor em volta das telas.
 
 As animações (botões acendendo, abas deslizando) param sozinhas quando chegam no
 lugar: o telinha parado não redesenha. Quem prefere sem movimento liga **Reduzir

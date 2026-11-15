@@ -81,7 +81,7 @@ pub const Type = enum(u8) {
     view_size = 26, // C→S u32 stream, u16 altura (pixels em que aparece; view_full = quer tudo) | S→C u8 tipo, u16 altura (a maior entre quem assiste; view_full = sem limite)
     log_chunk = 27, // C→S u32 id, u8 o_que (log_what_*), u32 total, u32 posição, bytes | S→C u32 de, str nome + o mesmo: log de depuração pro dono da sala, em pedaços
     log_ack = 28, // S→C u32 id, u8 resultado (log_ack_*), u8 quantos donos receberam
-    channel = 29, // C→S str canal: entra (cria, se não existir) | S→C str canal_atual, u8 n, n × (str nome, u16 pessoas, u8 flags chan_*)
+    channel = 29, // C→S str canal, str senha, u8 junto (1 = a call vem junto; 3.11+): entra (cria, se não existir) | S→C str canal_atual, u8 n, n × (str nome, u16 pessoas, u8 flags chan_*)
     stats = 30, // C→S u8 ligado (só quem entrou com o token de admin) | S→C estatísticas do servidor (ver docs/PROTOCOL.md)
     chan_admin = 32, // C→S u8 ação (chan_*_act), str canal, str valor, u32 alvo: admin mexe num canal
     call = 33, // C→S str canal (vazio = sai da call), str senha: entra na call de um canal (a voz e as transmissões; o chat é o do `channel`)

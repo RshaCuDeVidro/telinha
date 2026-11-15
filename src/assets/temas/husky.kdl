@@ -1,0 +1,45 @@
+// husky: o tema padrão. As duas cores são os olhos do husky da telinha (um
+// azul-gelo, um âmbar) num grafite frio; tudo chapado, sem degradê nem brilho
+theme "husky" name="Husky" name-en="Husky" author="telinha" mode=dark \
+    description="Grafite frio com o azul-gelo e o âmbar dos olhos do husky. Chapado, sem degradê nem brilho." \
+    description-en="Cool graphite with the ice blue and amber of the husky's eyes. Flat, no gradients or glow."
+
+colors {
+    bg             "#0D1015"
+    panel          "#151A21"
+    surface        "#11151B"
+    elevated       "#1A2029"
+    float          "#1C222B"
+    input          "#0E1217"
+    chat-input     "#1A2029"
+    hover          "#212833"
+    selected       "#243447"
+    text           "#E2E7EE"
+    muted          "#98A3B2"
+    faint          "#687382"
+    heading        "#F6F8FB"
+    accent         "#5BC0F8"
+    accent-hover   "#82D0FA"
+    accent-active  "#3BA8E5"
+    success        "#3DD68C"
+    success-hover  "#5FE0A2"
+    success-active "#2BBF77"
+    danger         "#FF5D6C"
+    danger-hover   "#FF7A86"
+    danger-active  "#E94858"
+    leave          "#3A1820"
+    warning        "#F5C451"
+    button         "#232A34"
+    button-hover   "#2C3542"
+    button-active  "#353F4D"
+    check          "#5BC0F8"
+    scroll         "#2C3542"
+    scroll-hover   "#3B4655"
+    accent-2       "#EBA35E"
+    border         "#252C36"
+    live           "#FF5D6C"
+}
+background gradient="#0D1015 #10141B #0D1015 #0B0E12" pattern=none
+fonts ui="Inter" heading="Inter" mono="Fira Code" size=15
+metrics radius=6
+effects glow=0 gradient=0 terminal=0

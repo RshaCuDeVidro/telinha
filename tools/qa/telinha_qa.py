@@ -378,8 +378,21 @@ class App:
             })
         return win, out
 
+    # a caixa do chat fica na aba Chat do painel da sala: procurando por ela com
+    # o painel em Pessoas (ou fechado), abre o chat
+    CHAT_ITEMS = ("##chatin", "##send", "##attach")
+
+    def show_chat(self):
+        st = self.state()
+        cfg = st.get("cfg") or {}
+        if st.get("screen") == "room" and not (cfg.get("show_chat") and cfg.get("panel_page") == 0):
+            self.click("##chatbtn")
+            time.sleep(0.5)  # o painel entra deslizando
+
     def find(self, label=None, contains=None, window=None, within=None, timeout=5.0, need=True):
         """Item visível com esse rótulo (ou contendo o texto), dentro de `within` (x0,y0,x1,y1)."""
+        if label in self.CHAT_ITEMS:
+            self.show_chat()
         t0 = time.time()
         last_key = None
         while True:
@@ -445,12 +458,25 @@ class App:
         t = next(t for t in st["tiles"] if t["stream"] == owner)
         return (t["x0"], t["y0"], t["x1"], t["y1"])
 
+    def show_people(self):
+        """Abre a página Pessoas do painel da sala (quem está ao vivo e no canal), se não estiver aberta."""
+        st = self.state()
+        cfg = st.get("cfg") or {}
+        if not (cfg.get("show_chat") and cfg.get("panel_page") == 1):
+            self.click("##peoplebtn")
+            time.sleep(0.5)  # o painel entra deslizando
+
     def member_row(self, mid, timeout=10.0):
+        # as linhas de quem está na sala ficam na página Pessoas do painel
+        if not any(r["id"] == mid for r in self.state().get("member_rows") or []):
+            self.show_people()
         st = self.wait(lambda s: any(r["id"] == mid for r in s["member_rows"]), timeout, f"a linha do membro {mid}")
         r = next(r for r in st["member_rows"] if r["id"] == mid)
         return (r["x0"], r["y0"], r["x1"], r["y1"])
 
     def live_row(self, stream, timeout=10.0):
+        if not any(r["stream"] == stream for r in self.state().get("live_rows") or []):
+            self.show_people()
         st = self.wait(lambda s: any(r["stream"] == stream for r in s["live_rows"]), timeout, f"a linha ao vivo de {stream}")
         r = next(r for r in st["live_rows"] if r["stream"] == stream)
         return (r["x0"], r["y0"], r["x1"], r["y1"])

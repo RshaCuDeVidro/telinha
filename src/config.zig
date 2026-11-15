@@ -69,7 +69,8 @@ pub const Config = struct {
     camera_device: [160]u8 = zstr("", 160), // vazio = a primeira câmera
     camera_res: i32 = 1, // 0 = 480p, 1 = 720p, 2 = 1080p
     language: [8]u8 = zstr("auto", 8), // idioma: "auto" (o do sistema), "pt" ou "en"
-    theme: [24]u8 = zstr("pwnd", 24), // tema da interface (id em theme.zig); o pwnd é a cara do telinha
+    theme: [24]u8 = zstr("husky", 24), // tema da interface (id em theme.zig); o husky é a cara do telinha
+    theme_picked: bool = false, // escolheu o tema na Aparência (senão, o pwnd de antes da 3.11 vira o husky)
     custom_theme: [96]u8 = zstr("", 96), // cores do tema personalizado (theme.encodeBase)
     custom_css: [512]u8 = zstr("", 512), // arquivo CSS do tema personalizado (atualiza sozinho)
     auto_quality: bool = true, // transmitindo: baixa a resolução sozinho se o PC não der conta
@@ -95,6 +96,9 @@ pub const Config = struct {
     font_ui: [16]u8 = zstr("", 16), // fonte do texto ("" = a do tema; inter, atkinson, fira)
     font_scale: i32 = 100, // tamanho da letra, % do tamanho do tema (85 a 140)
     reduce_motion: bool = false, // acessibilidade: nada desliza nem aparece aos poucos
+    panel_page: u8 = 0, // o painel do lado da sala: 0 chat, 1 pessoas (show_chat: aberto)
+    swap_sides: bool = false, // o painel na esquerda do palco
+    tour_done: bool = false, // já viu o tour da sala (a primeira vez numa sala)
     draw_color: u8 = 0, // cor do pincel (proto.draw_colors; 0 = a minha cor)
     draw_size: u8 = 0, // espessura (0 normal, 1 fina, 2 grossa, 3 marca-texto)
     show_drawings: bool = true, // mostrar os desenhos dos outros por cima das transmissões // tela inicial animada (parada quando o telinha não está em foco)
@@ -250,6 +254,9 @@ pub var fresh = false;
 
 pub fn load() Config {
     var cfg = loadFile();
+    // o pwnd era o padrão até a 3.10: quem nunca escolheu tema passa pro husky
+    // (o padrão novo); escolhendo na Aparência, fica o que escolheu
+    if (!cfg.theme_picked and std.mem.eql(u8, getStr(&cfg.theme), "pwnd")) setStr(&cfg.theme, "husky");
     if (cfg.client_key == 0) {
         fresh = true;
         var rnd: [8]u8 = undefined;
@@ -404,6 +411,14 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         cfg.font_scale = std.math.clamp(int, 85, 140);
     } else if (std.mem.eql(u8, k, "reduce_motion")) {
         cfg.reduce_motion = int != 0;
+    } else if (std.mem.eql(u8, k, "panel_page")) {
+        cfg.panel_page = @intCast(std.math.clamp(int, 0, 1));
+    } else if (std.mem.eql(u8, k, "swap_sides")) {
+        cfg.swap_sides = int != 0;
+    } else if (std.mem.eql(u8, k, "tour_done")) {
+        cfg.tour_done = int != 0;
+    } else if (std.mem.eql(u8, k, "theme_picked")) {
+        cfg.theme_picked = int != 0;
     } else if (std.mem.eql(u8, k, "theme")) {
         setStr(&cfg.theme, v);
     }
@@ -506,8 +521,10 @@ fn writeAll(cfg: *const Config, f: *c.FILE) bool {
     var cb: [560]u8 = undefined;
     const cs = std.fmt.bufPrint(&cb, "custom_css={s}\n", .{getStr(&cfg.custom_css)}) catch return false;
     ok = ok and c.fwrite(cs.ptr, 1, cs.len, f) == cs.len;
-    var ab: [128]u8 = undefined;
-    const acc = std.fmt.bufPrint(&ab, "font_ui={s}\nfont_scale={d}\nreduce_motion={d}\n", .{ getStr(&cfg.font_ui), cfg.font_scale, @intFromBool(cfg.reduce_motion) }) catch return false;
+    var ab: [256]u8 = undefined;
+    const acc = std.fmt.bufPrint(&ab, "font_ui={s}\nfont_scale={d}\nreduce_motion={d}\npanel_page={d}\nswap_sides={d}\ntour_done={d}\ntheme_picked={d}\n", .{
+        getStr(&cfg.font_ui), cfg.font_scale, @intFromBool(cfg.reduce_motion), cfg.panel_page, @intFromBool(cfg.swap_sides), @intFromBool(cfg.tour_done), @intFromBool(cfg.theme_picked),
+    }) catch return false;
     ok = ok and c.fwrite(acc.ptr, 1, acc.len, f) == acc.len;
     return ok;
 }

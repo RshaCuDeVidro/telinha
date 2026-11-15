@@ -3,7 +3,9 @@
 <sub>[🇺🇸 English](GUIDE.md) · [🇧🇷 Português](GUIDE.pt.md)</sub>
 
 Tudo o que dá pra fazer no telinha, do primeiro convite às configurações. Se
-você só quer começar logo, os três primeiros tópicos bastam.
+você só quer começar logo, os três primeiros tópicos bastam. Dentro do app, o
+botão **?** (ou **F1**) da sala explica o básico, e na primeira vez numa sala
+um tour de cinco passos mostra onde fica cada coisa.
 
 ## Criar uma sala
 
@@ -26,9 +28,10 @@ No card *Chamando a galera de fora*:
 3. Clique em **Copiar convite** e mande pra galera. O botão **Convidar**, na
    barra de cima, copia o mesmo convite a qualquer hora.
 
-Quem entra numa sala sem ninguém ao vivo vê no palco os três passos: chamar a
-galera (com o botão de copiar o convite), compartilhar a tela e, do outro
-lado, a galera clica em **Assistir**.
+Numa sala sem ninguém ao vivo, o meio da tela mostra dois cartões grandes,
+**Compartilhar a minha tela** e **Chamar a galera** (que copia o convite), e
+embaixo o passo a passo: alguém convida, alguém compartilha, os outros clicam
+em **Assistir**.
 
 O botão **Convidar** copia um link da página de convite do site
 (`https://…/telinha/j/#i=…`): ele é clicável no Discord e no navegador, abre o
@@ -48,12 +51,30 @@ jeitos: abrir a porta na mão, IPv6, VPN de jogo, túnel por SSH.
 
 Cole o convite (o link https ou o `telinha://`) na tela inicial e clique em
 **Entrar**. Se o convite já estiver copiado quando você abrir o telinha, ele
-cola sozinho. Clicar num link `telinha://` abre o app: no Windows ele se
+cola sozinho.
+
+As salas em que você entrou aparecem em **Salas recentes**, embaixo do
+cartão: um clique entra de novo (com a senha e o canal), e o **x** tira da
+lista. Clicar num link `telinha://` abre o app: no Windows ele se
 registra sozinho ao abrir pela primeira vez, no Linux o `install.sh` registra.
 Com o telinha já aberto, o link vai pra janela aberta.
 
 Dá pra entrar direto num canal: escreva o nome dele no campo de canal da tela
 inicial.
+
+## A sala
+
+| Onde | O que tem |
+|---|---|
+| **Em cima** | O nome da sala (clique: o menu dela, com o convite, o link do navegador e, pra quem é admin, trancar, limpar o chat, banidos e estatísticas), as **abas dos canais**, o **Convidar**, a ajuda (**?**) e as configurações |
+| **No meio** | As transmissões. Sem ninguém assistido, quem está ao vivo aparece aqui com o botão **Assistir**. Assistindo, a barra em cima diz o que está passando e tem **Grade** ou **Destaque**, **Assistir todas**, **Parar de assistir** e **Cinema** |
+| **Do lado** | O painel, com duas abas: **Chat** (o chat do canal) e **Pessoas** (*Ao vivo agora*, um cartão por transmissão com o **Assistir**, e quem está no canal). Ele abre e fecha deslizando |
+| **Embaixo** | A barra de controles, com o nome de cada botão: **Microfone**, **Ouvir**, **Câmera**, **Compartilhar tela** (ao vivo, o botão vermelho do lado para), **Chat** e **Pessoas** (abrem o painel; o número em cima diz as mensagens novas e quantos estão ao vivo) e **Sair** |
+
+**Ctrl+J** abre e fecha o chat e **Ctrl+B**, as pessoas. A borda do painel
+muda de largura arrastando (duplo clique volta ao normal). Em
+**Configurações → Aparência → Layout da sala**, o painel vai pra esquerda e a
+barra de controles fica embaixo, de lado ou recolhida. Tudo fica salvo.
 
 ## Transmitir
 
@@ -67,8 +88,9 @@ Clique em **Compartilhar tela** e escolha:
 | **Resolução, quadros e qualidade** | A taxa cai sozinha se a internet de alguém não aguentar e volta a subir quando melhora. |
 | **Usar a placa de vídeo** | NVIDIA, e no Windows também AMD e Intel. Sem placa que sirva, vai pela CPU. |
 
-Clique em **Ao vivo**. Dá pra mudar tudo com a transmissão rolando, sem
-ninguém perder a imagem.
+Clique em **Começar a transmitir**. Dá pra mudar tudo com a transmissão
+rolando, sem ninguém perder a imagem. Pra parar, o botão vermelho do lado do
+**Ao vivo**, na barra de baixo (ou o **Parar** do seu cartão na lista).
 
 > [!NOTE]
 > No Wayland, o sistema abre um seletor pra escolher a tela ou janela na
@@ -80,15 +102,17 @@ menos rede pra todos) e volta a subir na hora em que alguém amplia.
 
 ## Assistir
 
-Clique em quem está ao vivo. Várias transmissões ficam numa grade que deixa
-cada vídeo o maior possível. Se ninguém da sua call está transmitindo mas tem
-gente ao vivo em outro canal, aparece o botão *Tem gente ao vivo no #canal: ir
-e assistir*: um clique e você já está lá, assistindo.
+Clique em **Assistir** no cartão de quem está ao vivo (no meio da tela, ou em
+**Pessoas**). Várias transmissões ficam numa grade que deixa cada vídeo o
+maior possível; a barra do palco troca pra **Destaque** (uma grande e as
+outras embaixo), assiste todas de uma vez ou para de assistir tudo. Se tem
+gente ao vivo em outro canal, **Pessoas** mostra em *Ao vivo em outros
+canais*: um clique e você já está lá, assistindo.
 
 Um bot de tela (como o [Telão](BOTS_SCREEN.pt.md)) se assiste do mesmo jeito.
 Se ele tem um painel, o painel fica encaixado embaixo do vídeo, com os botões
 dele (pausar, pular...), enquanto a transmissão dele está sozinha ou em
-destaque. Bot em outro canal aparece no painel da sala, em *Bots em outros
+destaque. Bot em outro canal aparece em **Pessoas**, em *Bots em outros
 canais*: clique direito → **Chamar pra minha call**.
 
 A bolinha do lado do nome de quem transmite diz como a transmissão está
@@ -157,19 +181,21 @@ do microfone.
 
 ## Canais
 
-Um servidor pode ter várias salas ao mesmo tempo, como no IRC. Cada canal tem
-o seu chat, e a **call** (voz e transmissões) é separada: dá pra ler um canal
-e continuar na call de outro.
+Um servidor pode ter várias salas ao mesmo tempo, como no IRC. Os canais são
+as **abas** em cima. Cada um tem o seu chat, a sua voz e as suas telas.
 
-- Clique num canal no painel pra ler o chat dele.
-- Clique no ícone de fone do canal pra entrar na call dele. A sua transmissão vai
-  junto.
-- O **+** cria um canal. Ele continua na lista mesmo vazio (e se o servidor
+- Clique numa aba pra ir pro canal: o chat e a call (voz e transmissões) vão
+  juntos, e a sua transmissão também. A bolinha vermelha na aba diz que tem
+  gente ao vivo lá.
+- Clique direito na aba: **Só ler o chat** (continua na call de agora) ou
+  **Sair da call** (fica só no chat; a barra de baixo ganha o **Entrar** pra
+  voltar). Pra quem é OP ou admin, as opções do canal ficam no mesmo menu.
+- O **+** do lado das abas cria um canal. Ele continua na lista mesmo vazio (e se o servidor
   reiniciar); só some depois de 3 dias sem ninguém. Os fixados pelo admin ficam
   pra sempre.
 - **Quem cria o canal é OP dele**, com uma **coroa azul** do lado do nome na
   lista (a amarela é do dono da sala). O OP manda no canal: pelo clique
-  direito no canal, senha, trancar, tópico e deixar **invisível** (fora da
+  direito na aba, senha, trancar, tópico e deixar **invisível** (fora da
   lista; entra quem sabe o nome e a senha); pelo clique direito na pessoa,
   **dar OP** pra ela, **levar** ela pra outro canal (um aberto ou um em que
   você também é OP) e **tirar** ela do canal sem volta. Em quem criou o canal
@@ -188,8 +214,8 @@ e continuar na call de outro.
 
 | Comando | Também | O que faz |
 |---|---|---|
-| `/join canal` | `/j`, `/canal`, `/entrar` | Vai pro chat desse canal (cria se não existir). |
-| `/call canal` | `/voz`, `/voice` | Entra na call desse canal. Sem nome: sai da call. |
+| `/join canal` | `/j`, `/canal`, `/entrar` | Vai pra esse canal, o chat e a call (cria se não existir). |
+| `/call canal` | `/voz`, `/voice` | Entra só na call desse canal. Sem nome: sai da call. |
 | `/canais` | `/channels`, `/list` | Mostra os canais e quantas pessoas tem em cada. |
 | `/msg nome texto` | `/m`, `/w`, `/pm`, `/dm`, `/privado` | Mensagem privada. Só o nome: a caixa passa a mandar em privado pra essa pessoa. |
 | `/arquivo caminho` | `/file`, `/enviar` | Manda um arquivo (ou arraste o arquivo pra janela). |
@@ -205,6 +231,9 @@ Qualquer outra coisa começando com `/` vai pro chat como texto normal.
 | duplo clique | Modo cinema |
 | **Ctrl+M** | Microfone |
 | **Ctrl+D** | Surdo |
+| **Ctrl+J** | Abre e fecha o chat |
+| **Ctrl+B** | Abre e fecha Pessoas (quem está ao vivo) |
+| **F1** | Como usar (a ajuda) |
 | **Enter** / **Shift+Enter** | Manda / quebra a linha no chat |
 
 **Atalhos globais** (funcionam com outro programa em foco, como um jogo):
@@ -215,19 +244,19 @@ clipe, microfone, surdo, transmitir, print e um que liga e desliga todos. Em
 
 Quem cria a sala (ou entra num servidor dedicado com o token de admin) pode,
 com o clique direito na pessoa: expulsar, banir, silenciar, parar a
-transmissão, tirar o pincel, dar ou tirar o admin. Também pode trancar a sala,
-cuidar dos canais e **limpar o chat da sala** (a borracha no topo, com dois
+transmissão, tirar o pincel, dar ou tirar o admin. No menu da sala (clique no
+nome dela, em cima), pode trancar a sala e **limpar o chat da sala** (dois
 cliques): o histórico de todos os canais e os arquivos somem pra todo mundo,
-sem reiniciar o servidor.
+sem reiniciar o servidor. Os canais ele cuida pelo clique direito nas abas.
 
-Num servidor dedicado, o admin vê as **estatísticas do servidor**: CPU,
+Num servidor dedicado, o admin vê as **estatísticas do servidor** (no menu da sala): CPU,
 memória, banda chegando e saindo, gente por canal, quem está atrasando e um
 palpite em português claro de qual é o gargalo.
 
 ## Assistir pelo navegador
 
-Num [servidor dedicado](DEPLOY.pt.md) com `--web`, aparece na sala um botão de TV
-que copia um link. Quem abrir o link assiste pelo navegador, sem instalar
+Num [servidor dedicado](DEPLOY.pt.md) com `--web`, o menu da sala ganha o
+**Copiar o link pra assistir no navegador**. Quem abrir o link assiste pelo navegador, sem instalar
 nada: vídeo, som da transmissão, voz da call e chat. O servidor só repassa os
 mesmos quadros, então quem transmite não gasta nada a mais.
 
@@ -241,7 +270,7 @@ O botão da engrenagem abre as configurações, na sala ou na tela inicial.
 | Página | O que tem |
 |---|---|
 | **Geral** | Nome, idioma, notificações, estatísticas sempre à mostra, aviso de versão nova (e instalar sozinho), clipes e a duração deles |
-| **Aparência** | Temas: pwnd (neon, o padrão), escuro, claro, pwnd claro, Nord, Drácula ou o seu próprio CSS (atualiza sozinho quando você salva o arquivo); tamanho da interface; efeito CRT; **clima da sala** (o fundo muda de tom com a energia da sala, sem animação contínua); animações da tela inicial; mostrar ou esconder os desenhos dos outros. O painel do chat fica mais largo ou estreito arrastando a borda dele, e o chat fica mais alto arrastando a linha de cima dele (duplo clique volta ao automático) |
+| **Aparência** | Temas: Husky (o padrão, chapado), pwnd (neon), escuro, neon, aurora, alto contraste, claro, pwnd claro, Nord, Drácula, os seus em `.kdl` ou o seu próprio CSS (atualiza sozinho quando você salva o arquivo); tamanho da interface; efeito CRT; **clima da sala** (o fundo muda de tom com a energia da sala, sem animação contínua); animações da tela inicial; mostrar ou esconder os desenhos dos outros; o layout da sala (painel na esquerda, barra de controles) e **Fazer o tour da sala de novo** |
 | **Voz** | Ativação por voz ou apertar pra falar, microfone, sensibilidade, volume, ganho automático, supressão de ruído, cancelamento de eco, entrar com o microfone ligado, sons de aviso |
 | **Atalhos** | Atalhos globais (e um interruptor geral) |
 | **Câmera** | Qual câmera e a resolução |

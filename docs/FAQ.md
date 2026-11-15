@@ -42,8 +42,8 @@ delete them too.
 ### Is there a macOS or phone app?
 
 No app. But if the room is on a [dedicated server](DEPLOY.md) with `--web`, you
-can **watch from a browser**, phones included: the TV button in the room copies
-the link.
+can **watch from a browser**, phones included: the room menu (click the room's
+name) copies the link.
 
 ## Connecting
 
@@ -142,9 +142,10 @@ almost always better than the public link.
 
 ### I joined the room and see no video
 
-Nobody sees anything by accident: click whoever is **LIVE** (in the list of
-people in the room, or in the pills above the stage). If nobody is live, the
-stage says so. To start watching as soon as you join, use `--assistir` on the
+Nobody sees anything by accident: click **Watch** on the card of whoever is
+live (in the middle of the screen, or under **People** on the bottom bar). If
+nobody is live, the stage says so; if someone is live in another channel,
+**People** shows it under *Live in other channels*. To start watching as soon as you join, use `--assistir` on the
 command line.
 
 ### Watching stutters (especially on laptops with AMD or Intel graphics)

@@ -10,6 +10,9 @@ const c = @import("c.zig").c;
 
 /// "Reduzir movimento" (acessibilidade) ou modo econômico: tudo vai direto pro alvo.
 pub var reduce_motion = false;
+/// Tema chapado (`effects gradient=0`): degradê vira a cor de base e a linha
+/// neon das bordas não aparece.
+pub var flat = false;
 /// Alguma animação ainda está andando neste quadro.
 pub var moving = false;
 
@@ -20,8 +23,10 @@ var frame_no: u32 = 0;
 /// Começo do quadro completo (com a hora do ImGui).
 pub fn beginFrame(t: f64) void {
     const d: f32 = @floatCast(t - now);
-    // primeiro quadro, ou depois de dormir: não pula a animação inteira de uma vez
-    dt = if (now == 0 or d <= 0) 1.0 / 60.0 else @min(d, 1.0 / 20.0);
+    // primeiro quadro, ou o primeiro depois de dormir (o laço parado e um
+    // clique): um passo normal. Contar o tempo dormido fazia a animação dar um
+    // salto de metade do caminho no começo (o "solavanco" do painel abrindo)
+    dt = if (now == 0 or d <= 0 or d > 0.1) 1.0 / 60.0 else @min(d, 1.0 / 30.0);
     now = t;
     moving = false;
     frame_no +%= 1;
@@ -29,6 +34,17 @@ pub fn beginFrame(t: f64) void {
 
 pub fn time() f64 {
     return now;
+}
+
+/// Vai e volta com começo e fim suaves (o painel do lado): de `from` até
+/// `to` em `secs`, contando de `t0`. Pede quadro enquanto não chega.
+pub fn tween(from: f32, to: f32, t0: f64, secs: f32) f32 {
+    if (reduce_motion or secs <= 0) return to;
+    const t: f32 = @floatCast(std.math.clamp((now - t0) / secs, 0, 1));
+    if (t < 1) moving = true;
+    // ease-in-out cúbica
+    const e = if (t < 0.5) 4 * t * t * t else 1 - std.math.pow(f32, -2 * t + 2, 3) / 2;
+    return from + (to - from) * e;
 }
 
 const Slot = struct { id: u32 = 0, v: f32 = 0, used: u32 = 0 };
@@ -71,6 +87,14 @@ fn slotFor(id: u32, start: f32) *Slot {
 
 /// Valor que anda suavemente até `target` (sem passar). `speed`: quanto maior,
 /// mais rápido (10 ≈ 90% em 0,23 s). Começa em `target` na primeira vez.
+/// Perto o bastante pra parar: em fração (0 a 1: cor, opacidade) quase nada
+/// se vê abaixo de 1%; em pixels (posição da linha das abas), um quarto de
+/// pixel. Mais fino que isso, a animação pedia quadro por meio segundo a mais
+/// depois de já parecer parada.
+fn settleEps(target: f32, v: f32) f32 {
+    return if (@abs(target) > 2 or @abs(v) > 2) 0.25 else 0.008;
+}
+
 pub fn smooth(id: u32, target: f32, speed: f32) f32 {
     const s = slotFor(id, target);
     s.used = frame_no;
@@ -80,7 +104,7 @@ pub fn smooth(id: u32, target: f32, speed: f32) f32 {
     }
     const k = 1 - @exp(-speed * dt);
     s.v += (target - s.v) * k;
-    if (@abs(target - s.v) < 0.003) s.v = target else moving = true;
+    if (@abs(target - s.v) < settleEps(target, s.v)) s.v = target else moving = true;
     return s.v;
 }
 
@@ -95,7 +119,7 @@ pub fn enter(id: u32, from: f32, target: f32, speed: f32) f32 {
     }
     const k = 1 - @exp(-speed * dt);
     s.v += (target - s.v) * k;
-    if (@abs(target - s.v) < 0.003) s.v = target else moving = true;
+    if (@abs(target - s.v) < settleEps(target, s.v)) s.v = target else moving = true;
     return s.v;
 }
 
@@ -144,6 +168,13 @@ pub const Dir = enum { horizontal, vertical, diagonal };
 /// Retângulo arredondado com degradê de `c0` pra `c1` (o alfa de cada cor vale).
 pub fn gradRect(d: *c.ImDrawList, x0: f32, y0: f32, x1: f32, y1: f32, c0: u32, c1: u32, rounding: f32, dir: Dir) void {
     if (x1 <= x0 or y1 <= y0) return;
+    if (flat) {
+        // a base é a segunda cor (a primeira é o toque de luz); a linha que
+        // some nas pontas (edgeLine) usa a mais forte das duas
+        const base = if ((c1 >> 24) >= (c0 >> 24)) c1 else c0;
+        c.ImDrawList_AddRectFilled(d, v2(x0, y0), v2(x1, y1), base, rounding, 0);
+        return;
+    }
     if (c0 == c1) {
         c.ImDrawList_AddRectFilled(d, v2(x0, y0), v2(x1, y1), c0, rounding, 0);
         return;
@@ -183,14 +214,16 @@ pub fn gradRect(d: *c.ImDrawList, x0: f32, y0: f32, x1: f32, y1: f32, c0: u32, c
 /// Sombra suave em volta de um retângulo arredondado: camadas que somem pra
 /// fora. `size` em pixels; `color` com o alfa do miolo.
 pub fn shadow(d: *c.ImDrawList, x0: f32, y0: f32, x1: f32, y1: f32, rounding: f32, size: f32, color: u32) void {
-    const layers = 6;
+    // cada camada é um contorno arredondado (centenas de vértices nos cantos
+    // grandes): o tema chapado vai com duas, os outros com quatro
+    const layers: f32 = if (flat) 2 else 4;
     const a: f32 = @floatFromInt((color >> 24) & 0xFF);
-    var i: usize = 0;
+    var i: f32 = 0;
     while (i < layers) : (i += 1) {
-        const t = @as(f32, @floatFromInt(i + 1)) / layers;
-        const o = size * t;
-        const k = (1 - t) * (1 - t);
-        const ca: u32 = @intFromFloat(@round(a * k / 2.2));
+        // a camada de dentro mais forte, as de fora sumindo
+        const o = size * (i + 1) / layers;
+        const f = 1 - i / layers;
+        const ca: u32 = @intFromFloat(@round(a * f * f / 2.4));
         if (ca == 0) continue;
         c.ImDrawList_AddRect(d, v2(x0 - o, y0 - o), v2(x1 + o, y1 + o), (color & 0x00FFFFFF) | (ca << 24), rounding + o, size / layers + 0.5, 0);
     }
@@ -204,10 +237,46 @@ pub fn glow(d: *c.ImDrawList, x0: f32, y0: f32, x1: f32, y1: f32, rounding: f32,
 
 /// Linha fina com degradê que some nas pontas (a borda neon das barras).
 pub fn edgeLine(d: *c.ImDrawList, x0: f32, x1: f32, y: f32, thick: f32, c0: u32, c1: u32) void {
-    if (x1 <= x0) return;
+    if (x1 <= x0 or flat) return;
     const mid = (x0 + x1) / 2;
     gradRect(d, x0, y, mid, y + thick, fade(c0, 0), c0, 0, .horizontal);
     gradRect(d, mid, y, x1, y + thick, c1, fade(c1, 0), 0, .horizontal);
+}
+
+test "fx: depois de dormir não salta; o painel vai e volta sem passar do ponto; pixel para logo" {
+    // parado 3 s e um clique: o primeiro passo é de um quadro, não de meio caminho
+    beginFrame(10.0);
+    const id = idOf("salto");
+    _ = smooth(id, 0, 13);
+    beginFrame(13.0);
+    const first = smooth(id, 1, 13);
+    try std.testing.expect(first > 0 and first < 0.25);
+    // a curva do painel: começa devagar, nunca passa de 1 e chega em 0,26 s
+    var t: f64 = 20.0;
+    beginFrame(t);
+    const t0 = t;
+    var last: f32 = 0;
+    var steps: usize = 0;
+    while (t - t0 < 0.3) : (t += 1.0 / 60.0) {
+        beginFrame(t);
+        const k = tween(0, 1, t0, 0.26);
+        try std.testing.expect(k >= last and k <= 1);
+        if (steps == 1) try std.testing.expect(k < 0.05);
+        last = k;
+        steps += 1;
+    }
+    try std.testing.expectEqual(@as(f32, 1), last);
+    // a linha das abas (pixels): para em menos de meio segundo
+    const px = idOf("linha");
+    beginFrame(t);
+    _ = smooth(px, 100, 16);
+    var frames: usize = 0;
+    while (frames < 60) : (frames += 1) {
+        t += 1.0 / 60.0;
+        beginFrame(t);
+        if (smooth(px, 400, 16) == 400) break;
+    }
+    try std.testing.expect(frames < 30);
 }
 
 test "fx: animação chega no alvo e para; reduzir movimento vai direto" {

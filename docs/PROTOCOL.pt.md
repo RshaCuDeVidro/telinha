@@ -163,7 +163,7 @@ da direção + 4 zeros (começa em 0, nunca repete numa conexão). Máximo 32 Mi
 | 27 | log_chunk | C→S | `u32 id`, `u8 o_que` (0 = log de depuração, 1 = relatório de travamento), `u32 total`, `u32 posição`, bytes: log pro dono da sala, em pedaços de até 64 KB (no máximo 8 MB, um por minuto) |
 | 27 | log_chunk | S→C | `u32 de`, `str nome` + os mesmos campos: repassado pra todo mundo que entrou com o token de admin |
 | 28 | log_ack | S→C | `u32 id`, `u8 resultado` (0 = entregue, 1 = só o servidor guardou, 2 = ninguém pra receber, 3 = recusado), `u8 quantos donos receberam` |
-| 29 | channel | C→S | `str canal`: troca pra esse canal (cria se não existir e o servidor deixar) |
+| 29 | channel | C→S | `str canal`, `str senha`, `u8 junto` (1 = a call vem junto: chat e call trocam juntos; 3.11+, o servidor mais velho só troca o chat): troca pra esse canal (cria se não existir e o servidor deixar) |
 | 29 | channel | S→C | `str atual` (o canal em que você está), `u8 n`, n × (`str nome`, `u16 pessoas`, `u8 flags`: 1 = alguém ao vivo, 2 = fixo) |
 | 30 | stats | C→S | `u8 ligado`: começa/para de receber as estatísticas do servidor (só quem entrou com o token de admin) |
 | 30 | stats | S→C | estatísticas do servidor, a cada 2 s enquanto ligado (abaixo) |

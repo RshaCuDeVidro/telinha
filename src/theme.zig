@@ -81,6 +81,8 @@ pub const Palette = struct {
     border: u32 = rgba(0xFFFFFF, 18), // contorno de painéis e cartões
     live: u32 = rgb(0xF2445F), // ao vivo
     glow: f32 = 0.5, // força do brilho neon (0 = nenhum)
+    flat: bool = false, // sem degradê nem a linha neon das bordas (effects gradient=0)
+    terminal: bool = true, // o ">" dos títulos e os cantos de visor (effects terminal=0 tira)
     border_w: f32 = 1, // espessura dos contornos (alto contraste: 2)
     pattern: Pattern = .none, // desenho parado no fundo do palco
     pattern_color: u32 = 0,
@@ -183,6 +185,7 @@ pub const fallback: Palette = .{
 pub var list: []Theme = &.{};
 
 const builtin_files = [_]struct { id: []const u8, src: []const u8 }{
+    .{ .id = "husky", .src = @embedFile("assets/temas/husky.kdl") },
     .{ .id = "escuro", .src = @embedFile("assets/temas/escuro.kdl") },
     .{ .id = "neon", .src = @embedFile("assets/temas/neon.kdl") },
     .{ .id = "pwnd", .src = @embedFile("assets/temas/pwnd.kdl") },
@@ -733,6 +736,8 @@ pub fn fromKdl(a: std.mem.Allocator, src: []const u8, id: []const u8, err: *Load
     }
     if (doc.find("effects")) |fx| {
         if (fx.propNum("glow")) |g| t.pal.glow = @floatCast(std.math.clamp(g, 0, 1.5));
+        if (fx.propNum("gradient")) |g| t.pal.flat = g < 0.5;
+        if (fx.propNum("terminal")) |g| t.pal.terminal = g >= 0.5;
     }
     return t;
 }
@@ -945,7 +950,7 @@ pub fn toKdl(a: std.mem.Allocator, t: *const Theme, new_id: []const u8) ![]u8 {
     try out.print(a, "\" pattern={s}", .{@tagName(t.pal.pattern)});
     if (t.pal.pattern != .none) try out.print(a, " pattern-color=\"{s}\" pattern-size={d}", .{ w.hex(t.pal.pattern_color, &hb), t.pal.pattern_size });
     try out.print(a, "\nfonts ui=\"{s}\" heading=\"{s}\" mono=\"{s}\" size={d}\n", .{ t.font_ui.label(), t.font_heading.label(), t.font_mono.label(), t.font_size });
-    try out.print(a, "metrics radius={d} border={d}\neffects glow={d}\n", .{ t.pal.round * 5, t.pal.border_w, t.pal.glow });
+    try out.print(a, "metrics radius={d} border={d}\neffects glow={d} gradient={d} terminal={d}\n", .{ t.pal.round * 5, t.pal.border_w, t.pal.glow, @as(u8, @intFromBool(!t.pal.flat)), @as(u8, @intFromBool(t.pal.terminal)) });
     return out.toOwnedSlice(a);
 }
 
@@ -973,8 +978,13 @@ test "temas: os embutidos carregam e o texto fica legível em cima dos botões" 
             }
         }
     }
-    try std.testing.expectEqual(@as(usize, 2), find("pwnd"));
+    try std.testing.expectEqual(@as(usize, 3), find("pwnd"));
+    // o que não existe cai no padrão: o husky, chapado e sem o terminal
     try std.testing.expectEqual(@as(usize, 0), find("nao-existe"));
+    const hk = list[find("husky")];
+    try std.testing.expectEqualStrings("husky", hk.id);
+    try std.testing.expect(hk.pal.flat and !hk.pal.terminal and hk.pal.glow == 0);
+    try std.testing.expect(!list[find("pwnd")].pal.flat and list[find("pwnd")].pal.terminal);
     // o pwnd lê bem (Atkinson no texto) e guarda o terminal nos títulos
     const pw = list[find("pwnd")];
     try std.testing.expectEqual(Font.atkinson, pw.font_ui);

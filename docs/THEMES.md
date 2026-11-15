@@ -102,6 +102,8 @@ text bigger in **Text size**.
   `pattern-size` (8 to 128). It's a still drawing: no GPU cost.
 - `metrics radius=` (corners in px, 0 = square) and `border=` (border thickness).
 - `effects glow=`: strength of the neon glow around buttons, screens and notices.
+- `effects gradient=0`: a flat theme. Gradients become the base color and the neon edge line goes away (Husky, the default, is like that).
+- `effects terminal=0`: drops the terminal look: the `>` before headers and the viewfinder corners around screens.
 
 Animations (buttons lighting up, tabs sliding) stop by themselves once they
 arrive: an idle telinha doesn't redraw. Anyone who prefers no motion can turn on

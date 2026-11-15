@@ -46,9 +46,12 @@ def port():
 
 
 def host_path(app, label):
-    """Clica num dos caminhos de "Chamando a galera de fora" (atrás de "Escolher o caminho")."""
+    """Clica num dos caminhos de "Chamando a galera de fora" (atrás de "Escolher o caminho"; rola o palco até eles)."""
     if app.find(contains=label, need=False, timeout=0.6) is None:
+        achar_rolando(app, label="##hostadv")
         app.click("##hostadv")
+        time.sleep(0.3)
+    achar_rolando(app, contains=label)
     app.click(contains=label)
 
 
@@ -219,12 +222,12 @@ def admin_menu():
         conv.wait(lambda st: st["admin"], 5, "o convidado virar admin")
         menu("Tirar o admin")
         conv.wait(lambda st: not st["admin"], 5, "o convidado perder o admin")
-        # tranca a sala: ninguém novo entra
-        dono.click("##lockroom")
+        # tranca a sala (menu da sala): ninguém novo entra
+        menu_sala(dono, "###lockroom")
         dono.wait(lambda st: st["locked"], 5, "a sala trancar")
         outro = s.app("outro", 93, ["--nome", "Outro", "--entrar", f"127.0.0.1:{p}"])
         outro.wait(lambda st: st["screen"] == "home" and "trancada" in st["home_error"], 10, "a entrada ser recusada")
-        dono.click("##lockroom")
+        menu_sala(dono, "###lockroom")
         dono.wait(lambda st: not st["locked"], 5, "a sala destrancar")
         menu("Expulsar da sala")
         st = conv.wait(lambda st: st["final"], 5, "o convidado ser expulso")
@@ -234,13 +237,13 @@ def admin_menu():
         vis = s.app("vis", 94, ["--nome", "Visita", "--entrar", f"127.0.0.1:{p}"], config=key)
         vid = vis.wait(lambda st: st["status"] == "connected", 10, "a visita entrar")["my_id"]
         dono.wait(lambda st: any(m["id"] == vid for m in st["members"]), 5, "o dono ver a visita")
-        expect(not dono.find("##bans", need=False, timeout=0.3), "botão de banidos sem ninguém banido")
+        expect(not tem_no_menu_sala(dono, "###bans"), "banidos no menu sem ninguém banido")
         menu("Banir", vid)
         st = vis.wait(lambda st: st["final"], 5, "a visita ser banida")
         expect(st["deny"] == 2, f"motivo errado: {st['deny']}")
         de_novo = s.app("vis2", 95, ["--nome", "Outro Nome", "--entrar", f"127.0.0.1:{p}"], config=key)
         de_novo.wait(lambda st: st["screen"] == "home" and "banido" in st["home_error"], 10, "a visita não voltar com outro nome")
-        dono.click("##bans")
+        menu_sala(dono, "###bans")
         dono.click("Desbanir")
         dono.wait(lambda st: any("desbaniu Visita" in c["text"] for c in st["chat"]), 5, "o aviso de desbanido")
         volta = s.app("vis3", 96, ["--nome", "Visita", "--entrar", f"127.0.0.1:{p}"], config=key)
@@ -417,7 +420,7 @@ def tela_inicial_parada():
 
 @test
 def canais():
-    """Canais (como no IRC) com a call separada: /join e o clique no nome trocam só o chat (a call continua); o fone do canal troca a call e a transmissão vai junto; quem assistia na call velha para; entrar pela tela inicial num canal já põe na call dele; o convite leva o canal; o + cria; canal vazio continua na lista (some depois de dias)."""
+    """Canais: a aba (e o /join) leva pro canal inteiro, o chat e a call, e a transmissão vai junto; clique direito na aba: só ler o chat (a call continua) e sair da call; fora da call, o Entrar da barra volta; quem assistia na call velha para; entrar pela tela inicial num canal já põe na call dele; o convite leva o canal; o + cria; canal vazio continua na lista (some depois de dias)."""
     with Session("canais") as s:
         p = port()
         a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--senha", "pw"])
@@ -427,23 +430,17 @@ def canais():
         b.wait(lambda st: st["status"] == "connected" and st["channels_supported"], 10, "o Bruno entrar")
         bid = b.state()["my_id"]
         a.wait(lambda st: any(m["id"] == bid and m["streaming"] for m in st["members"]), 15, "o Bruno ao vivo no geral")
-        # /join no chat: troca só o chat; o Bruno continua na call (e ao vivo) do geral
+        # /join no chat (como o clique na aba): vai pro jogos inteiro, o chat e a call (a transmissão vai junto)
         b.click("##chatin")
         time.sleep(0.2)
         b.type("/join Jogos\n")
-        b.wait(lambda st: st["channel"] == "jogos" and st["call"] == "geral" and not any(l["text"].startswith("/join") for l in st["chat"]), 5, "o Bruno lendo o jogos, ainda na call do geral")
-        st = a.wait(lambda st: bid not in st["chan_members"] and any(c["name"] == "jogos" and c["people"] == 1 for c in st["channels"]), 10, "o Bruno fora do chat do geral")
-        expect(any(m["id"] == bid and m["streaming"] for m in st["members"]), "o Bruno saiu da call do geral só por trocar o chat")
+        b.wait(lambda st: st["channel"] == "jogos" and st["call"] == "jogos" and not any(l["text"].startswith("/join") for l in st["chat"]), 5, "o Bruno no jogos (chat e call)")
+        a.wait(lambda st: bid not in st["chan_members"] and not any(m["id"] == bid for m in st["members"]) and any(c["name"] == "jogos" and c["in_call"] == 1 and c["live"] for c in st["channels"]), 10, "o Bruno ao vivo no jogos, fora do geral")
         # chat de um canal não vaza pro outro
         a.click("##chatin")
         time.sleep(0.2)
         a.type("so no geral\n")
         a.wait(lambda st: any(l["text"] == "so no geral" for l in st["chat"]), 5, "a mensagem no geral")
-        # o fone do jogos: a call (e a transmissão) vão pro jogos
-        time.sleep(1.0)
-        b.click("##call1")
-        b.wait(lambda st: st["call"] == "jogos", 5, "o Bruno na call do jogos")
-        a.wait(lambda st: not any(m["id"] == bid for m in st["members"]) and any(c["name"] == "jogos" and c["in_call"] == 1 and c["live"] for c in st["channels"]), 10, "o Bruno ao vivo na call do jogos")
         # Carol entra direto no jogos pela tela inicial (chat e call) e assiste o Bruno
         c = s.app("c", 93, [], config={"name": "Carol"})
         c.wait(lambda st: st["screen"] == "home", 10, "a tela inicial")
@@ -453,31 +450,41 @@ def canais():
         c.click("Entrar##go")
         c.wait(lambda st: st["status"] == "connected" and st["channel"] == "jogos" and st["call"] == "jogos", 10, "a Carol no jogos")
         c.wait(lambda st: any(m["id"] == bid and m["streaming"] for m in st["members"]), 10, "a Carol ver o Bruno ao vivo")
+        c.show_people()
         c.click("live")
         c.wait(lambda st: any(v["stream"] == bid and v["shown"] for v in st["views"]), 20, "a Carol assistindo o Bruno")
         expect(not any(l["text"] == "so no geral" for l in b.state()["chat"]), "o chat do geral apareceu no jogos")
         # o convite de quem está no jogos leva pro jogos
         c.click("##invite")
         c.wait(lambda st: st["clipboard"].startswith("telinha://") and "/jogos" in st["clipboard"] and st["clipboard"].endswith("#pw"), 3, "o convite com o canal")
-        # o Bruno vai ler o geral: a Carol continua assistindo (a call é a mesma)
-        b.click("#geral")
+        # o Bruno vai só ler o geral (clique direito na aba): a Carol continua assistindo (a call é a mesma)
+        time.sleep(1.0)
+        b.click("#geral", button=3)
+        time.sleep(0.3)
+        b.click("###cread")
         b.wait(lambda st: st["channel"] == "geral" and st["call"] == "jogos", 5, "o Bruno lendo o geral, na call do jogos")
         time.sleep(1.0)
         expect(c.state()["views"], "a Carol parou de assistir só porque o Bruno trocou o chat")
-        # sai da call (botão da cápsula): a Carol para de ver
-        b.click("##callbtn")
+        # sai da call (clique direito na aba do jogos): a Carol para de ver
+        b.click("#jogos", button=3)
+        time.sleep(0.3)
+        b.click("###cleave")
         b.wait(lambda st: st["call"] == "", 5, "o Bruno fora da call")
         c.wait(lambda st: not st["views"], 10, "a Carol parar de assistir (o Bruno saiu da call)")
-        # + do painel: cria um canal; voltando, o canal vazio continua na lista
+        # fora da call, a barra de baixo tem o Entrar no lugar do Ouvir: volta pra call do geral
+        time.sleep(1.0)
+        b.click("##callbtn")
+        b.wait(lambda st: st["call"] == "geral" and st["channel"] == "geral", 5, "o Bruno de volta na call do geral")
+        # + das abas: cria um canal; voltando, o canal vazio continua na lista
         c.click("##newchan")
         time.sleep(0.3)
         c.click("##chanin")
         c.type("Filmes\n")
-        c.wait(lambda st: st["channel"] == "filmes", 5, "a Carol no filmes")
+        c.wait(lambda st: st["channel"] == "filmes" and st["call"] == "filmes", 5, "a Carol no filmes")
         a.wait(lambda st: any(ch["name"] == "filmes" for ch in st["channels"]), 5, "o filmes na lista")
         time.sleep(1.0)  # limite de troca
         c.click("#geral")
-        c.wait(lambda st: st["channel"] == "geral", 5, "a Carol no geral")
+        c.wait(lambda st: st["channel"] == "geral" and st["call"] == "geral", 5, "a Carol no geral")
         a.wait(lambda st: any(ch["name"] == "filmes" and ch["people"] == 0 for ch in st["channels"]), 5, "o canal vazio continuar na lista")
 
 
@@ -492,10 +499,7 @@ def ao_vivo_em_outro_canal():
         b.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 20, "o Bruno ao vivo")
         b.click("##chatin")
         b.type("/join Jogos\n")
-        b.wait(lambda st: st["channel"] == "jogos", 5, "o Bruno no jogos")
-        time.sleep(1.0)
-        b.click("##call1")
-        b.wait(lambda st: st["call"] == "jogos", 5, "o Bruno na call do jogos")
+        b.wait(lambda st: st["channel"] == "jogos" and st["call"] == "jogos", 5, "o Bruno no jogos (chat e call)")
         a.wait(lambda st: any(c["name"] == "jogos" and c["live"] for c in st["channels"]) and not st["views"], 10, "a Ana ver o jogos ao vivo")
         a.screenshot(os.path.join(s.base, "ao_vivo_em_outro.png"))
         a.click(contains="ao vivo no #jogos")
@@ -541,9 +545,8 @@ def canais_admin():
         time.sleep(1.0)
         b.click("#geral")
         b.wait(lambda st: any("trancado" in t for t in st["toasts"]), 5, "a Bia barrada no geral trancado")
-        a.click("#geral")
-        a.wait(lambda st: st["channel"] == "geral", 5, "a Ana (admin) entra no trancado")
-        a.wait(lambda st: any(m["id"] == bid for m in st["members"]), 5, "a Bia ainda na call do geral")
+        # as duas no vip (a aba leva o chat e a call): a Ana leva a Bia pelo menu dela
+        a.wait(lambda st: any(m["id"] == bid for m in st["members"]), 5, "a Bia no vip com a Ana")
         a.click_rect(a.member_row(bid), button=3)
         a.click(contains="###amove")
         time.sleep(0.4)
@@ -553,7 +556,7 @@ def canais_admin():
 
 @test
 def canal_do_dono():
-    """Quem criou o canal (sem ser admin): põe senha pelo menu e, pra voltar, digita a senha como todo mundo; apaga o canal pelo menu (com confirmação) e quem estava nele volta pro #geral avisado; quem não criou nem vê o menu."""
+    """Quem criou o canal (sem ser admin): põe senha pelo menu e, pra voltar, digita a senha como todo mundo; apaga o canal pelo menu (com confirmação) e quem estava nele volta pro #geral avisado; quem não criou não vê as opções de dono."""
     with Session("canaldono") as s:
         p = port()
         a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)])
@@ -601,7 +604,7 @@ def canal_do_dono():
 
 @test
 def op_do_canal():
-    """OP de canal: quem cria é OP (coroa azul na lista), dá OP pra outra pessoa pelo menu dela; a OP deixa o canal invisível pelo menu do canal e leva gente pro #geral pelo menu da pessoa (em quem criou ela não mexe); quem criou tira o OP. E o chat muda de altura arrastando a divisa de cima dele (duplo clique volta ao automático)."""
+    """OP de canal: quem cria é OP (coroa azul na lista), dá OP pra outra pessoa pelo menu dela; a OP deixa o canal invisível pelo menu do canal e leva gente pro #geral pelo menu da pessoa (em quem criou ela não mexe); quem criou tira o OP."""
     with Session("opcanal") as s:
         p = port()
         a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)])
@@ -657,28 +660,11 @@ def op_do_canal():
         b.click(contains="###cop")
         c.wait(lambda st: not any(ch["name"] == "zika" and ch["mine"] for ch in st["channels"]), 5, "o Caio perder o OP")
         b.wait(lambda st: st["chan_ops"] == [bid], 5, "a coroa do Caio sumir")
-        # o chat: arrastar a divisa pra cima aumenta; duplo clique volta
-        expect(b.state()["cfg"]["chat_h"] == 0, "o chat já começou com altura escolhida")
-        it = b.find("##chatsplit")
-        x, y = b._abs(it)
-        b.move(x, y)
-        b.press()
-        for i in range(1, 9):
-            b.move(x, y - 160 * i / 8)
-        b.release()
-        st = b.wait(lambda st: st["cfg"]["chat_h"] > 0, 3, "a altura do chat mudar")
-        b.screenshot(os.path.join(s.base, "chat_maior.png"))
-        h1 = st["cfg"]["chat_h"]
-        it = b.find("##chatsplit")
-        x2, y2 = b._abs(it)
-        expect(y2 < y - 100, f"a divisa não subiu ({y} → {y2})")
-        b.click_at(x2, y2, double=True)
-        b.wait(lambda st: st["cfg"]["chat_h"] == 0, 3, f"o duplo clique voltar ao automático (estava {h1})")
 
 
 @test
 def estatisticas_servidor():
-    """Estatísticas do servidor: o botão só aparece pra quem entrou com o token de admin; abre, chegam números (pessoas, canais, CPU), fecha e para de pedir."""
+    """Estatísticas do servidor: o item do menu da sala só aparece pra quem entrou com o token de admin; abre, chegam números (pessoas, canais, CPU), fecha e para de pedir."""
     with Session("estat") as s:
         p = port()
         a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)])
@@ -686,8 +672,8 @@ def estatisticas_servidor():
         b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}"])
         b.wait(lambda st: st["status"] == "connected" and st["channels_supported"], 10, "o Bruno entrar")
         a.wait(lambda st: len(st["members"]) == 2, 5, "os dois na sala")
-        expect(b.find("##srvstats", timeout=1.0, need=False) is None, "quem não é dono vê o botão das estatísticas")
-        a.click("##srvstats")
+        expect(not tem_no_menu_sala(b, "###srvstats"), "quem não é dono vê as estatísticas no menu da sala")
+        menu_sala(a, "###srvstats")
         st = a.wait(lambda st: st["stats_open"] and st["stats_gen"] >= 2, 8, "as estatísticas chegarem")
         expect(st["stats"]["conns"] == 2 and st["stats"]["people"] == 2 and st["stats"]["channels"] == 1, f"números errados: {st['stats']}")
         expect(st["stats"]["hosted"] and st["stats"]["rss_kb"] > 0, f"memória/sala dentro do app: {st['stats']}")
@@ -880,8 +866,8 @@ def navegador_assiste():
         a = s.app("a", 91, ["--nome", "Ana", "--entrar", f"127.0.0.1:{p}", "--senha", "pw", "--transmitir", "--software", "--janela", "1240,620,360,280"], size=(1600, 900))
         b = s.app("b", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--senha", "pw"])
         b.wait(lambda st: st["status"] == "connected", 10, "a Bia entrar")
-        # o app mostra o botão de copiar o link do navegador (com a senha e o canal depois do #)
-        b.click("##weblink")
+        # o menu da sala tem o copiar o link do navegador (com a senha e o canal depois do #)
+        menu_sala(b, "###weblink")
         b.wait(lambda st: st["clipboard"] == "https://sala-teste.trycloudflare.com/#s=pw&c=geral", 3, "copiar o link do navegador")
         a.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 20, "a Ana transmitir")
         # o navegador: headless, tudo dentro da pasta do teste (nunca o perfil/chaveiro de verdade)
@@ -1161,9 +1147,12 @@ def painel_do_bot_e_barra():
         b.screenshot(os.path.join(shots, "barra_embaixo.png"))
         # arrastando de verdade (as zonas acesas por cima de tudo: o 3.9.1 caía
         # aqui com SIGSEGV, o clique sozinho nunca desenhava as zonas)
+        # o palco fica entre a lista (esquerda) e o chat (direita)
         split = b.find("##panelsplit")
         right_x = split["vx0"] - 40
-        for side, tx in ((1, 30), (2, right_x), (0, right_x / 2)):
+        side_split = b.find("##sidesplit", need=False, timeout=0.5)
+        left_x = (side_split["vx1"] + 30) if side_split else 30
+        for side, tx in ((1, left_x), (2, right_x), (0, (left_x + right_x) / 2)):
             g = b.find("##dockgrip")
             gx, gy = (g["vx0"] + g["vx1"]) / 2, (g["vy0"] + g["vy1"]) / 2
             drag_abs(b, gx, gy, tx, 300, steps=12)
@@ -1285,7 +1274,7 @@ def sala_controles():
         a.click("##chatin")
         a.type("enquanto escondido\n")
         b.wait(lambda st: st["chat_unread"] >= 1, 5, "contar mensagem não lida")
-        b.click("##showchat")
+        b.click("##chatbtn")
         b.wait(lambda st: st["chat_visible"] and st["chat_unread"] == 0, 3, "mostrar o chat")
         # surdo
         b.click("##deaf")
@@ -1340,12 +1329,13 @@ def sala_controles():
         a.click("Cancelar", window="Compartilhar")
         a.wait(lambda st: not st["share_modal"] and st["sharer"] is None, 3, "cancelar sem transmitir")
         a.click(contains="Compartilhar tela##share")
-        a.click(contains="Ao vivo", window="Compartilhar")
+        a.click(contains="###golive", window="Compartilhar")
         a.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 15, "ficar ao vivo")
         a.click("##share")
         a.click("Aplicar")
         a.toasted("Configurações aplicadas")
-        # Bruno assiste pela barra lateral e para; depois pelo card
+        # Bruno assiste pela lista de Pessoas e para; depois pelo card do palco
+        b.show_people()
         b.click("live")
         b.wait(lambda st: any(v["stream"] == aid for v in st["views"]), 5, "assistir pela barra lateral")
         b.click("live")
@@ -1405,15 +1395,21 @@ def upnp_e_tunel_proprio():
         a.wait(lambda st: st["tunnel"]["state"] == "failed", 10, "falhar de novo")
         a.click("Fechar##tunel")
         a.wait(lambda st: st["tunnel"] is None, 3, "fechar o aviso")
-        # túnel próprio: comandos e convite com o endereço digitado
+        # túnel próprio: comandos e convite com o endereço digitado (embaixo, no palco que rola)
+        achar_rolando(a, label="##own")
         a.click("##own")
         a.wait(lambda st: st["own_tunnel_open"], 3, "abrir o túnel próprio")
+        time.sleep(0.3)
+        achar_rolando(a, label="##cp")
         a.click("##cp")
         a.wait(lambda st: st["clipboard"].startswith("ngrok tcp ") or st["clipboard"].startswith("bore ") or st["clipboard"].startswith("ssh "), 3, "copiar um comando")
+        achar_rolando(a, label="##pub")
         a.fill("##pub", "0.tcp.sa.ngrok.io:12345")
+        achar_rolando(a, contains="Copiar convite##proprio")
         a.click(contains="Copiar convite##proprio")
         a.wait(lambda st: "0.tcp.sa.ngrok.io:12345" in (invite_addrs(st["clipboard"], "pw2") or []), 3, "o convite do túnel próprio")
         # o guia com os outros jeitos (no teste o link só é anotado)
+        achar_rolando(a, label="###guia")
         a.click("###guia")
         a.wait(lambda st: "docs/CONNECTING" in st["opened"], 3, "abrir o guia de conexão")
 
@@ -1712,6 +1708,7 @@ def convite_colado():
         # convite colado no campo do nome: sai do nome e vai pro endereço
         c = s.app("c", 93, [])
         c.wait(lambda st: st["screen"] == "home", 10, "a tela inicial")
+        time.sleep(1.0)  # a tela inicial entra animada (e a janela recém-aberta às vezes perde as primeiras teclas)
         c.fill("##name", f"telinha://127.0.0.1:{p}#x")
         c.key("Tab")
         c.wait(lambda st: st["cfg"]["name"] == "" and st["cfg"]["join_addr"] == f"127.0.0.1:{p}" and st["cfg"]["join_pass"] == "x", 5, "o convite sair do nome e ir pro endereço")
@@ -1789,7 +1786,7 @@ def notificacoes():
         n0 = b.state()["notifications_sent"]
         time.sleep(2.1)
         a.click(contains="Compartilhar tela##share")
-        a.click(contains="Ao vivo", window="Compartilhar")
+        a.click(contains="###golive", window="Compartilhar")
         b.wait(lambda st: st["notifications_sent"] > n0, 10, "notificar o ao vivo")
         # desligada nas configurações: nada
         b.click("##gear")
@@ -2186,7 +2183,7 @@ def som_de_um_programa():
         ana.click("##audio")
         ana.click(contains="Só o som do Tocador A", window="##Combo")
         ana.wait(lambda st: st["cfg"]["audio_app"] == "Tocador A", 3, "escolher o Tocador A")
-        ana.click(contains="Ao vivo", window="Compartilhar")
+        ana.click(contains="###golive", window="Compartilhar")
         st = ana.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live" and st["sharer"]["audio"], 20, "transmitir com som")
         aid = bia.member_id("Ana")
         bia.wait(lambda st: any(v["stream"] == aid and v["audio"] for v in st["views"]), 20, "a Bia ouvir o som da Ana")
@@ -2224,7 +2221,7 @@ def excluir_programa_do_som():
         ana.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
         ana.click(contains="Compartilhar tela##share")
         ana.wait(lambda st: st["share_modal"], 5, "a janela de compartilhar")
-        ana.click(contains="Ao vivo", window="Compartilhar")
+        ana.click(contains="###golive", window="Compartilhar")
         ana.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live" and st["sharer"]["audio"], 20, "transmitir com som")
         aid = bia.member_id("Ana")
         bia.wait(lambda st: any(v["stream"] == aid and v["audio"] for v in st["views"]), 20, "a Bia ouvir o som da Ana")
@@ -2454,7 +2451,7 @@ def udp_com_perda():
         samples = []
         t0 = time.time()
         while time.time() - t0 < 12:
-            ana.click("##hidechat") if ana.find("##hidechat", timeout=0.3, need=False) else ana.click("##showchat")
+            ana.key("j", ctrl=True)  # abre e fecha o chat (o painel desliza)
             time.sleep(0.4)
             v = next((v for v in bia.state()["views"] if v["stream"] == aid), None)
             if v:
@@ -2473,23 +2470,20 @@ def udp_ruim_volta_pro_tcp():
     with Session("udp-ruim") as s:
         perda = {"TELINHA_UDP_PERDA": "45"}
         p = port()
-        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--fps", "30"], extra_env=perda)
+        # a tela da Ana mexendo sempre: um terminal cuspindo texto do lado da janela dela
+        s.display(91, "1280x760")
+        s.spawn("xterm", ["xterm", "-geometry", "90x40+0+0", "-e", "sh", "-c", "while :; do head -c 600 /dev/urandom | base64; sleep 0.05; done"], dict(os.environ, DISPLAY=":91"))
+        time.sleep(1.0)
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--fps", "30", "--janela", "880,460,400,300"], size=(1280, 760), extra_env=perda)
         bia = s.app("bia", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"], extra_env=perda)
         aid = bia.member_id("Ana")
         bia.wait(lambda st: st["udp"] and st["udp"]["active"], 10, "a Bia abrir o UDP")
-        # tela mexendo: mensagens de verdade (e perdidas)
-        t0 = time.time()
-        while time.time() - t0 < 30 and bia.state()["udp"]["active"]:
-            ana.click("##hidechat") if ana.find("##hidechat", timeout=0.3, need=False) else ana.click("##showchat")
-            time.sleep(0.4)
+        # quadros de verdade (e perdidos) até a Bia largar o UDP
+        bia.wait(lambda st: not st["udp"]["active"], 30, "a Bia largar o UDP")
         st = bia.state()
         log(f"UDP Bia {st['udp']}")
-        expect(not st["udp"]["active"], f"o UDP devia ter sido largado: {st['udp']}")
         # e o vídeo continua (pelo TCP)
-        before = next(v for v in st["views"] if v["stream"] == aid)
-        for _ in range(6):
-            ana.click("##hidechat") if ana.find("##hidechat", timeout=0.3, need=False) else ana.click("##showchat")
-            time.sleep(0.5)
+        time.sleep(3.0)
         after = next(v for v in bia.state()["views"] if v["stream"] == aid)
         log(f"depois de largar o UDP: {after['fps']} q/s")
         expect(after["fps"] > 0, "o vídeo parou depois de largar o UDP")
@@ -2567,13 +2561,13 @@ def idioma_ingles():
         a.click("Create room##go")
         a.wait(lambda st: st["home_error"] == "Invalid port.", 3, "o erro de porta em inglês")
         # sala trancada: o motivo vem do servidor em português e aparece em inglês
-        dono.click("##lockroom")
+        menu_sala(dono, "###lockroom")
         dono.wait(lambda st: st["locked"], 5, "a sala trancar")
         a.click("Join a room")
         a.fill("##addr", f"127.0.0.1:{p}")
         a.click("Join##go")
         a.wait(lambda st: st["screen"] == "home" and st["home_error"] == "The room is locked: no one new can join right now.", 10, "a recusa em inglês")
-        dono.click("##lockroom")
+        menu_sala(dono, "###lockroom")
         dono.wait(lambda st: not st["locked"], 5, "a sala destrancar")
         a.click("Join##go")
         a.wait(lambda st: st["screen"] == "room" and st["status"] == "connected", 10, "entrar na sala")
@@ -2844,12 +2838,12 @@ def log_depuracao():
 
 @test
 def temas():
-    """Temas: o pwnd é o padrão de quem instala; troca nas configurações na hora (escuro, claro...), fica salvo e volta igual ao abrir de novo."""
+    """Temas: o Husky é o padrão de quem instala; troca nas configurações na hora (escuro, claro...), fica salvo e volta igual ao abrir de novo; quem estava no pwnd sem ter escolhido passa pro Husky, quem escolheu continua."""
     with Session("temas") as s:
         p = port()
         a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)])
         st = a.wait(lambda st: st["status"] == "connected", 10, "a sala abrir")
-        expect(st["cfg"]["theme"] == "pwnd", f"tema inicial: {st['cfg']['theme']}")
+        expect(st["cfg"]["theme"] == "husky", f"tema inicial: {st['cfg']['theme']}")
         a.click("##gear")
         a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
         a.click("##cfg-aparencia")
@@ -2857,14 +2851,14 @@ def temas():
             a.click(f"##tema-{t}", window="###configuracoes")
             a.wait(lambda st: st["cfg"]["theme"] == t, 3, f"trocar pro tema {t}")
         ini = open(os.path.join(a.cfg, "telinha", "config.ini")).read()
-        expect("theme=pwnd" in ini, "o tema não foi salvo")
+        expect("theme=pwnd" in ini and "theme_picked=1" in ini, "o tema (escolhido) não foi salvo")
         # personalizado: cola o CSS do pwnd.blog e copia de volta
         css = os.path.join(s.base, "tema.css")
         with open(css, "w") as f:
             f.write(":root {\n  --neon-fuchsia: #d946ef;\n  --neon-purple: #9333ea;\n  --terminal-green: #22c55e;\n  --bg-dark: #050505;\n  --bg-card: #0a050f;\n  --text-main: #e5e7eb;\n}\n")
         s.spawn("xclip", ["xclip", "-quiet", "-selection", "clipboard", "-i", css], dict(os.environ, DISPLAY=f":{a.num}"))
         time.sleep(0.8)
-        a.click("##tema-personalizado", window="###configuracoes")
+        settings_click(a, "##tema-personalizado")
         a.wait(lambda st: st["cfg"]["theme"] == "personalizado", 3, "escolher o personalizado")
         settings_click(a, "##csspaste")
         a.wait(lambda st: st["cfg"]["custom_theme"].startswith("050505,0a050f,9333ea,d946ef,e5e7eb,22c55e"), 3, "montar o tema do CSS")
@@ -2883,9 +2877,15 @@ def temas():
         settings_click(a, "Fechar")
         a.wait(lambda st: not st["settings_modal"], 3, "fechar as configurações")
         a.stop()
-        b = s.app("b", 92, ["--nome", "Ana"], config={"theme": "pwnd"})
+        b = s.app("b", 92, ["--nome", "Ana"], config={"theme": "pwnd", "theme_picked": 1})
         st = b.wait(lambda st: st["screen"] == "home", 10, "abrir de novo")
         expect(st["cfg"]["theme"] == "pwnd", f"tema depois de abrir de novo: {st['cfg']['theme']}")
+        b.stop()
+        # o pwnd era o padrão até a 3.10: quem nunca escolheu vai pro Husky
+        v = s.app("v", 94, ["--nome", "Ana"], config={"theme": "pwnd"})
+        st = v.wait(lambda st: st["screen"] == "home", 10, "abrir com o pwnd de antes")
+        expect(st["cfg"]["theme"] == "husky", f"quem estava no pwnd sem escolher devia ir pro Husky: {st['cfg']['theme']}")
+        v.stop()
         # id desconhecido (config de versão futura): cai no padrão sem quebrar
         c2 = s.app("c", 93, ["--nome", "Ana"], config={"theme": "nao-existe"})
         c2.wait(lambda st: st["screen"] == "home", 10, "abrir com tema desconhecido")
@@ -2976,6 +2976,24 @@ def achar_rolando(a, label=None, contains=None, tries=10):
         a.scroll(cx, cy, -3 if k < tries else 3)
         time.sleep(0.25)
     return a.find(label, contains, timeout=1.0)
+
+
+def menu_sala(a, item=None):
+    """Abre o menu da sala (clique no nome dela, em cima) e clica num item (ou só abre)."""
+    a.click("##roommenu")
+    time.sleep(0.3)
+    if item is not None:
+        a.click(item)
+        time.sleep(0.2)
+
+
+def tem_no_menu_sala(a, item):
+    """O menu da sala tem esse item? (abre, olha e fecha)"""
+    menu_sala(a)
+    achou = a.find(item, need=False, timeout=0.5) is not None
+    a.key("Escape")
+    time.sleep(0.2)
+    return achou
 
 
 @test
@@ -3428,7 +3446,7 @@ def decoder_lento_tela():
         time.sleep(1.0)
         dono.click(contains="Compartilhar tela##share")
         dono.wait(lambda st: st["share_modal"], 3, "abrir o compartilhar tela")
-        dono.click(contains="Ao vivo", window="Compartilhar")
+        dono.click(contains="###golive", window="Compartilhar")
         st = dono.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 15, "ficar ao vivo")
         if "NVENC" not in st["sharer"]["encoder"]:
             log(f"sem encoder da placa aqui ({st['sharer']['encoder']}): o fps automático já é 30, nada a testar")
@@ -3546,7 +3564,7 @@ def novato_assiste():
         # câmera não é "começou a transmitir": o aviso é da tela. Então: a tela
         dono.click(contains="Compartilhar tela##share")
         dono.wait(lambda st: st["share_modal"], 3, "abrir o compartilhar tela")
-        dono.click(contains="Ao vivo", window="Compartilhar")
+        dono.click(contains="###golive", window="Compartilhar")
         dono.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 15, "a tela ao vivo")
         conv.wait(lambda st: any("clique pra assistir" in t for t in st["toasts"]), 10, "o aviso clicável")
         time.sleep(0.4)
@@ -3735,7 +3753,7 @@ def windows_exe():
         w.screenshot(os.path.join(s.base, "miniaturas.png"))
         w.click(contains="Janela:", window="srcgrid")
         w.wait(lambda st: st["sources"][st["source_idx"]]["name"].startswith("Janela:"), 5, "escolher a janela")
-        w.click(contains="Ao vivo", window="Compartilhar")
+        w.click(contains="###golive", window="Compartilhar")
         st = w.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 30, "o .exe transmitir a janela")
         st = w.wait(lambda st: st["sharer"]["backend"] != "", 10, "o método de captura")
         log(f"transmitindo a janela: {st['sharer']}")
@@ -3771,7 +3789,7 @@ def windows_janela_minimizada():
         log(f"fontes: {names}")
         w.click(contains="minimizada", window="srcgrid")
         w.wait(lambda st: st["sources"][st["source_idx"]]["name"].endswith("minimizada"), 5, "escolher a janela minimizada")
-        w.click(contains="Ao vivo", window="Compartilhar")
+        w.click(contains="###golive", window="Compartilhar")
         try:
             st = w.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live" and st["sharer"]["frames"] >= 1 and st["sharer"]["w"] > 200, 30, "transmitir a janela que estava minimizada (no tamanho dela, não no do ícone)")
         except QAError:
@@ -3864,7 +3882,7 @@ def windows_canais_e_estatisticas():
         time.sleep(0.2)
         a.type("/join jogos\n")
         w.wait(lambda st: any(ch["name"] == "jogos" and ch["people"] == 1 for ch in st["channels"]), 10, "o .exe ver o canal novo")
-        w.click("##srvstats")
+        menu_sala(w, "###srvstats")
         st = w.wait(lambda st: st["stats_gen"] >= 2 and st["stats"]["rss_kb"] > 0, 15, "as estatísticas no .exe")
         log(f"estatísticas no .exe: {st['stats']}")
         expect(st["stats"]["conns"] == 2 and st["stats"]["channels"] == 2, f"números errados: {st['stats']}")
@@ -3965,6 +3983,188 @@ def windows_decoder():
         v = vista(w.wait(vendo, 10, "o .exe continuar vendo"))
         expect(v["decoder"] == esperado, f"o decoder virou {v['decoder']} depois de mudar a resolução")
         confere("mf_depois.png")
+
+
+@test
+def layout_da_sala():
+    """Sala estilo Meet: o painel do lado (Chat e Pessoas) abre e fecha pelos botões da barra de baixo, pelas abas dele e por Ctrl+J / Ctrl+B; a borda muda a largura (duplo clique volta); nas configurações ele vai pra esquerda; fica salvo."""
+    with Session("layout") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)], size=(1440, 860))
+        st = a.wait(lambda st: st["status"] == "connected", 10, "a sala")
+        expect(st["chat_visible"] and not st["side_visible"], f"o chat devia começar aberto: {st['chat_visible']} {st['side_visible']}")
+        # os botões da barra de baixo: Pessoas troca a página, de novo fecha
+        a.click("##peoplebtn")
+        a.wait(lambda st: st["side_visible"] and st["cfg"]["panel_page"] == 1, 3, "o Pessoas abrir a lista")
+        a.click("##peoplebtn")
+        a.wait(lambda st: not st["side_visible"] and not st["cfg"]["show_chat"], 3, "o Pessoas de novo fechar o painel")
+        time.sleep(0.6)  # o painel sai deslizando (e a barra, no meio do palco, anda junto)
+        a.click("##chatbtn")
+        a.wait(lambda st: st["chat_visible"], 3, "o Chat abrir o painel no chat")
+        time.sleep(0.6)  # o painel entra deslizando
+        # as abas do painel
+        a.click("Pessoas###ptab1")
+        a.wait(lambda st: st["side_visible"], 3, "a aba Pessoas")
+        a.click("Chat###ptab0")
+        a.wait(lambda st: st["chat_visible"], 3, "a aba Chat")
+        # atalhos
+        a.move(500, 400)
+        a.key("j", ctrl=True)
+        a.wait(lambda st: not st["chat_visible"] and not st["cfg"]["show_chat"], 3, "o Ctrl+J fechar o chat")
+        a.key("b", ctrl=True)
+        a.wait(lambda st: st["side_visible"], 3, "o Ctrl+B abrir Pessoas")
+        a.key("j", ctrl=True)
+        a.wait(lambda st: st["chat_visible"], 3, "o Ctrl+J trocar pro chat")
+        time.sleep(0.6)  # o painel termina de entrar
+        # a borda do painel: arrastar pra esquerda alarga; duplo clique volta ao normal
+        it = a.find("##panelsplit")
+        x, y = a._abs(it)
+        drag_abs(a, x, y, x - 90, y, steps=9)
+        a.wait(lambda st: st["cfg"]["panel_w"] > 400, 3, "a largura do painel mudar")
+        it = a.find("##panelsplit")
+        x2, y2 = a._abs(it)
+        expect(x2 < x - 50, f"a borda do painel não andou ({x} → {x2})")
+        a.click_at(x2, y2, double=True)
+        a.wait(lambda st: st["cfg"]["panel_w"] == 350, 3, "o duplo clique voltar a largura ao normal")
+        # nas configurações (Aparência), o painel vai pra esquerda
+        a.click("##gear")
+        a.click("##cfg-aparencia")
+        achar_rolando(a, contains="###cfg_swap")
+        a.click(contains="###cfg_swap")
+        a.wait(lambda st: st["cfg"]["swap_sides"], 3, "o painel na esquerda")
+        a.key("Escape")
+        a.wait(lambda st: not st["settings_modal"], 3, "fechar as configurações")
+        time.sleep(0.6)
+        expect(a.find("##hidechat")["x0"] < 720, "com o painel na esquerda, o fechar devia estar na metade esquerda")
+        a.screenshot(os.path.join(s.base, "painel_esquerda.png"))
+        # fica salvo: fecha o painel, abre o app de novo, continua fechado
+        a.key("j", ctrl=True)
+        a.wait(lambda st: not st["cfg"]["show_chat"], 3, "fechar o painel")
+        a.stop()
+        b = s.app("a", 91, ["--nome", "Ana", "--criar", str(port())], size=(1440, 860))
+        b.wait(lambda st: st["status"] == "connected" and not st["chat_visible"] and st["cfg"]["swap_sides"], 10, "o painel continuar fechado (e na esquerda) depois de abrir de novo")
+
+
+@test
+def tour_e_ajuda():
+    """Primeira vez numa sala: o tour aparece sozinho (passo a passo, Próximo e Pular) e não volta mais; a ajuda (botão ? e F1) explica e refaz o tour."""
+    with Session("tour") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p)], size=(1440, 860), extra_env={"TELINHA_QA_TOUR": "1"})
+        a.wait(lambda st: st["status"] == "connected", 10, "a sala")
+        a.wait(lambda st: st["tour_on"] and st["tour_step"] == 0, 5, "o tour começar sozinho")
+        a.screenshot(os.path.join(s.base, "tour_1.png"))
+        a.click("Próximo###tournext")
+        a.wait(lambda st: st["tour_step"] == 1, 3, "o segundo passo")
+        a.click("Próximo###tournext")
+        a.wait(lambda st: st["tour_step"] == 2, 3, "o terceiro passo")
+        # enquanto o tour está na tela, o resto não responde (o clique não abre as configurações)
+        a.click_at(*a._abs(a.find("##gear")))
+        time.sleep(0.4)
+        expect(not a.state()["settings_modal"], "o clique passou pelo tour")
+        a.click("Pular###tourskip")
+        a.wait(lambda st: not st["tour_on"] and st["cfg"]["tour_done"], 3, "pular o tour (e lembrar)")
+        # a ajuda: botão ? e F1
+        a.click("##help")
+        a.wait(lambda st: st["help_open"], 3, "a ajuda abrir")
+        a.find(contains="Fazer o tour de novo")
+        a.click("Entendi###helpok")
+        a.wait(lambda st: not st["help_open"], 3, "a ajuda fechar")
+        a.move(700, 400)
+        a.key("F1")
+        a.wait(lambda st: st["help_open"], 3, "o F1 abrir a ajuda")
+        a.click(contains="###tourreplay")
+        a.wait(lambda st: st["tour_on"] and st["tour_step"] == 0 and not st["help_open"], 3, "refazer o tour pela ajuda")
+        for i in range(1, 5):
+            a.click("Próximo###tournext" if i < 5 else "Entendi!###tournext")
+            time.sleep(0.25)
+        a.click("Entendi!###tournext")
+        a.wait(lambda st: not st["tour_on"], 3, "o tour acabar no último passo")
+        # abre de novo: o tour não volta
+        a.stop()
+        b = s.app("a", 91, ["--nome", "Ana", "--criar", str(port())], size=(1440, 860), extra_env={"TELINHA_QA_TOUR": "1"})
+        b.wait(lambda st: st["status"] == "connected", 10, "a sala de novo")
+        time.sleep(1.5)
+        expect(not b.state()["tour_on"], "o tour voltou depois de visto")
+
+
+@test
+def salas_recentes():
+    """A tela inicial lista as salas em que a pessoa entrou: um clique entra de novo (com a senha e o canal); o x tira da lista."""
+    with Session("recentes") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--senha", "pw"])
+        a.wait(lambda st: st["status"] == "connected", 10, "a sala")
+        b = s.app("b", 92, [], config={"name": "Bia"})
+        b.wait(lambda st: st["screen"] == "home" and st["n_recent"] == 0, 10, "a tela inicial sem recentes")
+        b.fill("##addr", f"telinha://127.0.0.1:{p}#pw")
+        b.click("Entrar##go")
+        b.wait(lambda st: st["status"] == "connected", 10, "a Bia entrar pelo convite")
+        b.click("##leave")
+        b.wait(lambda st: st["screen"] == "home" and st["n_recent"] == 1, 10, "a sala nas recentes")
+        b.screenshot(os.path.join(s.base, "recentes.png"))
+        # apaga o que estava no campo: entra só pela lista (com a senha guardada)
+        b.fill("##addr", "")
+        b.fill("##pass", "")
+        # clica no "Entrar" desenhado na direita da linha (o clique tem que cair
+        # na linha que aparece, não só no item)
+        time.sleep(0.5)
+        row = b.find("###recent")
+        go = b.find("Entrar##go")
+        expect(abs(row["x0"] - go["x0"]) < 60, f"a linha clicável da sala recente não está embaixo do cartão (x {row['x0']} e o Entrar em {go['x0']})")
+        win, _ = b.items()
+        b.click_at(win[0] + row["x1"] - 70, win[1] + (row["y0"] + row["y1"]) / 2)
+        b.wait(lambda st: st["screen"] == "room" and st["status"] == "connected", 10, "entrar de novo pela lista")
+        b.click("##leave")
+        b.wait(lambda st: st["screen"] == "home", 10, "voltar pra tela inicial")
+        time.sleep(1.0)  # o cartão entra deslizando
+        b.click("##recentx")
+        b.wait(lambda st: st["n_recent"] == 0, 3, "o x tirar a sala da lista")
+
+
+@test
+def assistir_pela_lista():
+    """Quem está ao vivo aparece na lista da esquerda com Assistir; a barra do palco para de assistir e assiste todas; grade e destaque com duas telas."""
+    with Session("pelalista") as s:
+        p = port()
+        a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"], size=(1440, 860))
+        b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}", "--transmitir", "--software"], size=(1440, 860))
+        c = s.app("c", 93, ["--nome", "Carol", "--entrar", f"127.0.0.1:{p}"], size=(1440, 860))
+        c.wait(lambda st: sum(1 for m in st["members"] if m["streaming"]) == 2, 20, "os dois ao vivo")
+        expect(not c.state()["views"], "assistiu sozinho")
+        # o cartão da lista de Pessoas: um clique assiste
+        c.show_people()
+        c.click("live")
+        c.wait(lambda st: len(st["views"]) == 1 and st["views"][0]["shown"], 20, "assistir pela lista")
+        # a barra do palco: assistir a outra, parar de assistir
+        c.click(contains="###watchall")
+        c.wait(lambda st: len(st["views"]) == 2, 20, "assistir as duas pela barra do palco")
+        c.click("Destaque")
+        c.wait(lambda st: st["focused"] is not None, 3, "o destaque")
+        c.click("Grade")
+        c.wait(lambda st: st["focused"] is None, 3, "a grade")
+        c.screenshot(os.path.join(s.base, "duas_telas.png"))
+        c.click(contains="###unwatchall")
+        c.wait(lambda st: not st["views"], 5, "parar de assistir tudo")
+
+
+@test
+def canal_com_servidor_antigo():
+    """App novo com servidor de antes da 3.11 (QA_SERVER_ANTIGO): a aba leva o chat e a call juntos mesmo assim (a call já, o chat logo depois)."""
+    old = os.environ.get("QA_SERVER_ANTIGO")
+    if not old:
+        log("sem QA_SERVER_ANTIGO (o telinha-server de uma versão antes da 3.11): pulei")
+        return
+    with Session("srvantigo") as s:
+        p = port()
+        s.spawn("srv", [old, "--porta", str(p), "--canais", "geral,jogos"], {k: os.environ[k] for k in ("HOME", "PATH")})
+        time.sleep(0.6)
+        a = s.app("a", 91, ["--nome", "Ana", "--entrar", f"127.0.0.1:{p}"])
+        a.wait(lambda st: st["status"] == "connected" and st["channels_supported"], 10, "a Ana entrar")
+        time.sleep(1.0)
+        a.click("#jogos")
+        a.wait(lambda st: st["call"] == "jogos" and st["channel"] == "jogos", 5, "a call e o chat irem pro jogos")
+        expect(not any("rápido demais" in t for t in a.state()["toasts"]), f"o servidor reclamou da troca: {a.state()['toasts']}")
 
 
 # ---------------------------------------------------------------------------

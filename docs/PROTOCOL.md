@@ -167,7 +167,7 @@ u32 size | ChaCha20-Poly1305( u8 type | payload ) | tag (16 bytes)
 | 27 | log_chunk | C→S | `u32 id`, `u8 what` (0 = debug log, 1 = crash report), `u32 total`, `u32 offset`, bytes: a debug log for the room owner, in pieces of up to 64 KB (8 MB max, one per minute) |
 | 27 | log_chunk | S→C | `u32 from`, `str name` + the same fields: relayed to everyone who joined with the admin token |
 | 28 | log_ack | S→C | `u32 id`, `u8 result` (0 = delivered, 1 = only saved on the server, 2 = nobody to receive it, 3 = refused), `u8 how many owners got it` |
-| 29 | channel | C→S | `str canal`: switch to that channel (created if it doesn't exist and the server allows it) |
+| 29 | channel | C→S | `str canal`, `str senha`, `u8 junto` (1 = the call comes along: chat and call switch together; 3.11+, an older server only switches the chat): switch to that channel (created if it doesn't exist and the server allows it) |
 | 29 | channel | S→C | `str atual` (the channel you are in), `u8 n`, n × (`str nome`, `u16 pessoas`, `u8 flags`: 1 = someone live, 2 = fixed) |
 | 30 | stats | C→S | `u8 ligado`: start/stop receiving server statistics (only whoever joined with the admin token) |
 | 30 | stats | S→C | server statistics, every 2 s while on (below) |

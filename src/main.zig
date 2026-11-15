@@ -130,9 +130,8 @@ pub fn main(init: std.process.Init) !void {
     qa.init(); // TELINHA_QA: modo de testes (posição dos botões + estado em arquivos)
     const base = 15 * ui.scale;
     var emoji_loaded = false;
+    ui.font_base = base;
     ui.fonts_sans = fonts.load(io.*.Fonts, base);
-    ui.fonts_mono = fonts.loadMono(io.*.Fonts, base);
-    ui.fonts_atk = fonts.loadAtkinson(io.*.Fonts, base);
     ui.useFonts(ui.fonts_sans, 1.0);
     ui.loadThemes(); // os embutidos e os da pasta temas/ (antes de aplicar o tema)
     ui.applyStyle();
@@ -265,9 +264,11 @@ pub fn main(init: std.process.Init) !void {
         // primeiro emoji na tela: carrega a fonte de emoji (uma vez)
         if (ui.emoji_wanted and !emoji_loaded) {
             emoji_loaded = true;
-            const ok = fonts.addEmoji(io.*.Fonts, ui.fonts_sans, base) and fonts.addEmoji(io.*.Fonts, ui.fonts_mono, base) and fonts.addEmoji(io.*.Fonts, ui.fonts_atk, base);
+            const ok = ui.mergeEmoji(io.*.Fonts);
             debuglog.line("emoji: {s}", .{if (ok) "fonte do sistema carregada" else "nenhuma fonte de emoji no sistema"});
         }
+        // fonte que o tema (ou o chat) pediu e ainda não estava no atlas
+        if (ui.loadPendingFonts(io.*.Fonts)) app.theme_dirty = true;
         const t_build = sync.nowUs();
         c.igNewFrame();
         app.updateUnread();

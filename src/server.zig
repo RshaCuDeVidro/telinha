@@ -1939,9 +1939,11 @@ pub const Server = struct {
             .channel => {
                 const name = try r.str();
                 const pw = r.str() catch "";
+                // 1: a call vem junto (o app 3.11 troca os dois com um clique; antes, só o chat)
+                const with_call = (r.u8_() catch 0) & 1 != 0;
                 s.mutex.lock();
                 defer s.mutex.unlock();
-                try s.switchChannel(cn, name, pw);
+                try s.switchChannel(cn, name, pw, with_call);
             },
             .call => {
                 const name = try r.str();
@@ -3563,16 +3565,23 @@ pub const Server = struct {
         return false;
     }
 
-    /// Troca o canal de texto de `cn`. App que não separa call de canal leva
-    /// a call junto (como antes). Chamado com o mutex travado.
-    fn switchChannel(s: *Server, cn: *Conn, raw: []const u8, pw: []const u8) !void {
+    /// Troca o canal de texto de `cn`. App que não separa call de canal, ou
+    /// que pediu (`with_call`), leva a call junto. Chamado com o mutex travado.
+    fn switchChannel(s: *Server, cn: *Conn, raw: []const u8, pw: []const u8, with_call: bool) !void {
         var nb: [proto.channel_name_max]u8 = undefined;
-        if (normalizeChannel(raw, &nb)) |nm| if (std.mem.eql(u8, nm, cn.chan.nameSlice())) return s.pushChannels(cn);
+        if (normalizeChannel(raw, &nb)) |nm| if (std.mem.eql(u8, nm, cn.chan.nameSlice())) {
+            // já no chat de lá; com a call junto, só ela muda (estava fora da call, ou em outra)
+            if (!with_call or cn.call == cn.chan) return s.pushChannels(cn);
+            if (try switchTooFast(cn)) return s.pushChannels(cn);
+            cn.chan_switch_ms = sync.nowMs();
+            s.moveCall(cn, cn.chan);
+            return s.broadcastMembers();
+        };
         if (try switchTooFast(cn)) return s.pushChannels(cn);
         const target = (try s.reachChan(cn, raw, pw)) orelse return s.pushChannels(cn);
         cn.chan_switch_ms = sync.nowMs();
-        // app antigo: a call vai junto (primeiro ela, pra lista já sair sem o canal que esvaziou)
-        if (!cn.calls_aware) s.moveCall(cn, target);
+        // a call vai junto (primeiro ela, pra lista já sair sem o canal que esvaziou)
+        if (!cn.calls_aware or with_call) s.moveCall(cn, target);
         try s.moveText(cn, target);
         try s.broadcastMembers();
     }

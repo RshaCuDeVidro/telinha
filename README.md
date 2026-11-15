@@ -84,11 +84,13 @@ sudo dnf install libportal pipewire-libs
 
 1. **Create a room.** Open telinha and pick **Create room**. The default port is 7777 and the password is optional.
 2. **Invite friends from outside your network.** In the *Inviting people from outside* card, click **Open port on router** for a direct, lowest-latency connection. If your ISP uses CGNAT, click **Create public link** instead. Then **Copy invite** and send it. No luck? The [connection guide](docs/CONNECTING.md) has every other way (manual port forwarding, IPv6, gaming VPNs, SSH tunnels), none needing an API key.
-3. **Join.** Paste the `telinha://…` invite on the home screen. telinha pre-fills it if it's already on your clipboard.
-4. **Go live.** Click **Share screen**, choose resolution, frame rate, quality and content type, then **Go live**. Everything can be changed mid-stream.
-5. **Watch.** Click anyone who is live. Press **F11** for fullscreen, **double-click** for theater mode and **Esc** to leave.
+3. **Join.** Paste the `telinha://…` invite on the home screen. telinha pre-fills it if it's already on your clipboard, and the rooms you joined stay under **Recent rooms** for one-click rejoining.
+4. **Go live.** Click **Share screen** on the bottom bar, pick what to show and the sound, then **Start streaming**. Everything can be changed mid-stream; the red button next to it stops.
+5. **Watch.** Click **Watch** on a live card (in the middle of the screen, or under **People** on the bottom bar). Press **F11** for fullscreen, **double-click** for theater mode and **Esc** to leave.
 6. **Talk.** Toggle the microphone with **Ctrl+M** and deafen with **Ctrl+D**. Right-click a member to change their voice volume.
-7. **Hop between channels.** A server can hold several rooms at once, IRC-style. Click a channel in the panel, press **+** to create one, or type `/join name` in the chat. Your stream comes along.
+7. **Hop between channels.** A server can hold several rooms at once, IRC-style. The channels are tabs at the top: click one to go there (its chat, voice and screens), press **+** to create one, or type `/join name` in the chat. Your stream comes along.
+
+Lost? The **?** button in the room (or **F1**) explains it all, and the first time you're in a room a short tour shows where everything is.
 
 On Wayland, the system asks which screen or window to share the first time and remembers your choice.
 

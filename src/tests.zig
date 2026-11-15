@@ -31,6 +31,7 @@ test {
     _ = @import("autoq.zig");
     _ = @import("fx.zig");
     _ = @import("kdl.zig");
+    _ = @import("recent.zig");
     _ = @import("pctest.zig");
     _ = @import("arrow.zig");
     _ = @import("simlink.zig");
