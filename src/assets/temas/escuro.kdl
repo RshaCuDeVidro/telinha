@@ -1,0 +1,44 @@
+// Escuro: convertido do tema embutido da 3.10 (mesmas cores)
+theme "escuro" name="Escuro" name-en="Dark" author="telinha" mode=dark \
+    description="Tinta azul-escura com destaque violeta: o telinha de sempre." \
+    description-en="Dark blue ink with a violet accent: classic telinha."
+
+colors {
+    bg             "#0D0F15"
+    panel          "#151823"
+    surface        "#11141C"
+    elevated       "#1B1F2D"
+    float          "#1D2232"
+    input          "#0B0D13"
+    chat-input     "#1E2333"
+    hover          "#232838"
+    selected       "#2C3248"
+    text           "#E3E6EE"
+    muted          "#979FB3"
+    faint          "#646C82"
+    heading        "#F7F8FC"
+    accent         "#7B5CFF"
+    accent-hover   "#6A4AF0"
+    accent-active  "#5A3CD6"
+    success        "#22A867"
+    success-hover  "#1B8D56"
+    success-active "#167447"
+    danger         "#F2445F"
+    danger-hover   "#D03650"
+    danger-active  "#B12A42"
+    leave          "#3A1E2A"
+    warning        "#FFC24B"
+    button         "#2A3044"
+    button-hover   "#353C56"
+    button-active  "#424A69"
+    check          "#FFFFFF"
+    scroll         "#0B0D13"
+    scroll-hover   "#05060A"
+    accent-2       "#2DD4FF"
+    border         "alpha(#FFFFFF, 0.07)"
+    live           "#F2445F"
+}
+background gradient="#0D0F15 #1A1532 #0D0F15 #0A0B10" pattern=dots pattern-color="alpha(#7B5CFF, 0.06)" pattern-size=26
+fonts ui="Inter" heading="Inter" mono="Fira Code" size=15
+metrics radius=6
+effects glow=0.55

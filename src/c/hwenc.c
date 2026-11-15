@@ -55,7 +55,20 @@ enum { KIND_NV = 1, KIND_MF = 2, KIND_VA = 3, KIND_NV_AV1 = 4 };
 struct hwenc {
     int kind;
     void *impl;
+    // Media Foundation e VA-API não mudam o fps depois de abrir: a taxa por
+    // quadro vale bitrate/fps de quando abriu. Com a tela mudando devagar (5
+    // q/s num encoder aberto a 60) cada quadro ganhava 1/12 dos bits e a
+    // transmissão saía borrada com a banda sobrando. Aqui a taxa pedida ao
+    // encoder é corrigida pelo ritmo de verdade (ver hwenc_set_fps)
+    int fps, real_fps, bitrate;
 };
+
+static int scaled_bitrate(const hwenc *h) {
+    if (h->real_fps <= 0 || h->fps <= 0 || h->real_fps >= h->fps) return h->bitrate;
+    const long long b = (long long)h->bitrate * h->fps / h->real_fps;
+    const long long cap = (long long)h->bitrate * 4; // quem chama já limita o fps a 1/4 do nominal
+    return (int)(b < cap ? b : cap);
+}
 
 static volatile int g_effort = 1;
 
@@ -70,6 +83,8 @@ int hwenc_effort(void) {
 hwenc *hwenc_open(int codec, int width, int height, int fps, int bitrate, int screen_mode, int temporal_layers, char *err, int errlen) {
     hwenc *h = calloc(1, sizeof *h);
     if (!h) return NULL;
+    h->fps = fps;
+    h->bitrate = bitrate;
     // AV1 (experimental): só o NVENC das RTX 40+; não deu, quem chama volta pro HEVC/H.264
     if (codec == HW_CODEC_AV1) {
         h->impl = getenv("TELINHA_SEM_NVENC") ? NULL : nvenc_av1_open(codec, width, height, fps, bitrate, screen_mode, temporal_layers, err, errlen);
@@ -164,14 +179,15 @@ int hwenc_encode_dev(hwenc *h, uint64_t dev, int pitch, int format, int force_id
 }
 
 void hwenc_set_bitrate(hwenc *h, int bitrate) {
+    h->bitrate = bitrate;
 #ifdef _WIN32
     if (h->kind == KIND_MF) {
-        mfenc_set_bitrate(h->impl, bitrate);
+        mfenc_set_bitrate(h->impl, scaled_bitrate(h));
         return;
     }
 #else
     if (h->kind == KIND_VA) {
-        vaenc_set_bitrate(h->impl, bitrate);
+        vaenc_set_bitrate(h->impl, scaled_bitrate(h));
         return;
     }
 #endif
@@ -180,9 +196,13 @@ void hwenc_set_bitrate(hwenc *h, int bitrate) {
 }
 
 void hwenc_set_fps(hwenc *h, int fps) {
-    // VA-API e Media Foundation: ficam no fps de quando abriu
     if (h->kind == KIND_NV_AV1) nvenc_av1_set_fps(h->impl, fps);
     else if (h->kind == KIND_NV) nvenc_set_fps(h->impl, fps);
+    else {
+        // VA-API e Media Foundation ficam no fps de quando abriram: corrige a taxa
+        h->real_fps = fps;
+        hwenc_set_bitrate(h, h->bitrate);
+    }
 }
 
 const char *hwenc_name(hwenc *h) {

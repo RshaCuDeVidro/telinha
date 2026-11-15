@@ -76,19 +76,74 @@ pub const Palette = struct {
     white: u32 = rgb(0xFFFFFF),
     shadow: u32 = rgba(0x000000, 140),
     overlay: u32 = rgba(0x000000, 170),
+    // dos temas em KDL (com padrão pros temas antigos e o personalizado)
+    accent2: u32 = rgb(0x2DD4FF), // segunda cor de destaque (degradês, brilho)
+    border: u32 = rgba(0xFFFFFF, 18), // contorno de painéis e cartões
+    live: u32 = rgb(0xF2445F), // ao vivo
+    glow: f32 = 0.5, // força do brilho neon (0 = nenhum)
+    border_w: f32 = 1, // espessura dos contornos (alto contraste: 2)
+    pattern: Pattern = .none, // desenho parado no fundo do palco
+    pattern_color: u32 = 0,
+    pattern_size: f32 = 28,
+    light: bool = false,
+};
+
+pub const Pattern = enum(u8) { none, grid, dots, scanlines };
+
+/// Famílias de fonte embutidas (ver fonts.zig).
+pub const Font = enum(u8) {
+    inter,
+    atkinson,
+    fira,
+
+    pub fn fromName(name: []const u8) ?Font {
+        const t = std.mem.trim(u8, name, " ");
+        if (std.ascii.eqlIgnoreCase(t, "inter")) return .inter;
+        if (std.ascii.startsWithIgnoreCase(t, "atkinson")) return .atkinson;
+        if (std.ascii.startsWithIgnoreCase(t, "fira") or std.ascii.eqlIgnoreCase(t, "mono") or std.ascii.eqlIgnoreCase(t, "monospace")) return .fira;
+        return null;
+    }
+    pub fn label(f: Font) [:0]const u8 {
+        return switch (f) {
+            .inter => "Inter",
+            .atkinson => "Atkinson Hyperlegible",
+            .fira => "Fira Code",
+        };
+    }
+    /// id do config.ini
+    pub fn id(f: Font) []const u8 {
+        return switch (f) {
+            .inter => "inter",
+            .atkinson => "atkinson",
+            .fira => "fira",
+        };
+    }
 };
 
 pub const Theme = struct {
-    id: []const u8, // o que vai pro config.ini (não muda com o idioma)
-    name: [:0]const u8, // em português (a interface traduz)
+    id: []const u8, // o que vai pro config.ini (o nome do arquivo, sem .kdl)
+    name: []const u8,
+    name_en: []const u8 = "",
+    description: []const u8 = "",
+    description_en: []const u8 = "",
+    author: []const u8 = "",
     pal: Palette,
-    mono: bool = false, // fonte monoespaçada (Fira Code)
+    font_ui: Font = .inter,
+    font_heading: Font = .inter,
+    font_mono: Font = .fira,
+    font_size: f32 = 15,
+    path: []const u8 = "", // tema da pasta temas/ (vazio = embutido)
+
+    pub fn displayName(t: *const Theme, english: bool) []const u8 {
+        return if (english and t.name_en.len > 0) t.name_en else t.name;
+    }
+    pub fn displayDescription(t: *const Theme, english: bool) []const u8 {
+        return if (english and t.description_en.len > 0) t.description_en else t.description;
+    }
 };
 
-pub const list = [_]Theme{
-    // o tema padrão: tinta azul-escura, destaque violeta (a cara do telinha,
-    // longe do cinza do Discord)
-    .{ .id = "escuro", .name = "Escuro", .pal = .{
+/// O tema de antes de carregar os arquivos (e se um arquivo embutido quebrar).
+pub const fallback: Palette = .{
         .bg_dark = rgb(0x0D0F15),
         .bg_side = rgb(0x151823),
         .bg_main = rgb(0x11141C),
@@ -120,176 +175,23 @@ pub const list = [_]Theme{
         .scroll = rgb(0x0B0D13),
         .scroll_hover = rgb(0x05060A),
         .home_grad = .{ rgb(0x0D0F15), rgb(0x1C1638), rgb(0x0D0F15), rgb(0x0B1B24) },
-    } },
-    .{ .id = "claro", .name = "Claro", .pal = .{
-        .bg_dark = rgb(0xE3E5E8),
-        .bg_side = rgb(0xF2F3F5),
-        .bg_main = rgb(0xFFFFFF),
-        .bg_user = rgb(0xEBEDEF),
-        .bg_float = rgb(0xF2F3F5),
-        .input = rgb(0xE3E5E8),
-        .chat_input = rgb(0xEBEDEF),
-        .hover = rgb(0xE6E8EB),
-        .selected = rgb(0xD4D7DC),
-        .text = rgb(0x313338),
-        .muted = rgb(0x5C5E66),
-        .faint = rgb(0x80848E),
-        .header = rgb(0x060607),
-        .blurple = rgb(0x5865F2),
-        .blurple_hover = rgb(0x4752C4),
-        .blurple_active = rgb(0x3C45A5),
-        .green = rgb(0x248046),
-        .green_hover = rgb(0x1A6334),
-        .green_active = rgb(0x15562C),
-        .red = rgb(0xDA373C),
-        .red_hover = rgb(0xA12D2F),
-        .red_active = rgb(0x8F2022),
-        .leave = rgb(0xF6D4D5),
-        .yellow = rgb(0xB57A0E),
-        .button = rgb(0x6D6F78),
-        .button_hover = rgb(0x4E5058),
-        .button_active = rgb(0x41434A),
-        .check = rgb(0x5865F2),
-        .scroll = rgb(0xC4C9CE),
-        .scroll_hover = rgb(0xA3A6AA),
-        .home_grad = .{ rgb(0xE3E5E8), rgb(0xDCDFF7), rgb(0xE3E5E8), rgb(0xD8DADE) },
-    } },
-    // cores do pwnd.blog: preto, fúcsia e roxo neon, verde de terminal, cantos quase retos
-    .{ .id = "pwnd", .name = "pwnd", .pal = .{
-        .bg_dark = rgb(0x050505),
-        .bg_side = rgb(0x0A050F),
-        .bg_main = rgb(0x0D0716),
-        .bg_user = rgb(0x07030C),
-        .bg_float = rgb(0x030208),
-        .input = rgb(0x050505),
-        .chat_input = rgb(0x140A20),
-        .hover = rgb(0x1A0F29),
-        .selected = rgb(0x2A1442),
-        .text = rgb(0xE5E7EB),
-        .muted = rgb(0x9D8CB3),
-        .faint = rgb(0x6B7280),
-        .header = rgb(0xF5F3FF),
-        .blurple = rgb(0x9333EA),
-        .blurple_hover = rgb(0xC026D3),
-        .blurple_active = rgb(0x7E22CE),
-        .green = rgb(0x22C55E),
-        .green_hover = rgb(0x16A34A),
-        .green_active = rgb(0x15803D),
-        .red = rgb(0xF43F5E),
-        .red_hover = rgb(0xE11D48),
-        .red_active = rgb(0xBE123C),
-        .leave = rgb(0x2A0A16),
-        .yellow = rgb(0xFACC15),
-        .button = rgb(0x1F1030),
-        .button_hover = rgb(0x2E1747),
-        .button_active = rgb(0x3B1D5C),
-        .check = rgb(0xD946EF),
-        .scroll = rgb(0x9333EA),
-        .scroll_hover = rgb(0xD946EF),
-        .home_grad = .{ rgb(0x050505), rgb(0x14061F), rgb(0x050505), rgb(0x030208) },
-        .round = 0.25,
-    }, .mono = true },
-    // a variante clara do mesmo CSS (body.light-theme)
-    .{ .id = "pwnd-claro", .name = "pwnd claro", .pal = .{
-        .bg_dark = rgb(0xF1F5F9),
-        .bg_side = rgb(0xF8FAFC),
-        .bg_main = rgb(0xFFFFFF),
-        .bg_user = rgb(0xEEF2F6),
-        .bg_float = rgb(0xF8FAFC),
-        .input = rgb(0xE5E7EB),
-        .chat_input = rgb(0xF1F5F9),
-        .hover = rgb(0xEDE9FE),
-        .selected = rgb(0xDDD6FE),
-        .text = rgb(0x111827),
-        .muted = rgb(0x4B5563),
-        .faint = rgb(0x6B7280),
-        .header = rgb(0x1E1036),
-        .blurple = rgb(0x7C3AED),
-        .blurple_hover = rgb(0x6D28D9),
-        .blurple_active = rgb(0x5B21B6),
-        .green = rgb(0x15803D),
-        .green_hover = rgb(0x166534),
-        .green_active = rgb(0x14532D),
-        .red = rgb(0xDC2626),
-        .red_hover = rgb(0xB91C1C),
-        .red_active = rgb(0x991B1B),
-        .leave = rgb(0xFDE2E4),
-        .yellow = rgb(0x92400E),
-        .button = rgb(0x64748B),
-        .button_hover = rgb(0x475569),
-        .button_active = rgb(0x334155),
-        .check = rgb(0x7C3AED),
-        .scroll = rgb(0xD1D5DB),
-        .scroll_hover = rgb(0x7C3AED),
-        .home_grad = .{ rgb(0xF8FAFC), rgb(0xEDE9FE), rgb(0xF8FAFC), rgb(0xF1F5F9) },
-        .round = 0.25,
-    }, .mono = true },
-    .{ .id = "nord", .name = "Nord", .pal = .{
-        .bg_dark = rgb(0x242933),
-        .bg_side = rgb(0x2E3440),
-        .bg_main = rgb(0x3B4252),
-        .bg_user = rgb(0x292E39),
-        .bg_float = rgb(0x1F232B),
-        .input = rgb(0x2E3440),
-        .chat_input = rgb(0x434C5E),
-        .hover = rgb(0x434C5E),
-        .selected = rgb(0x4C566A),
-        .text = rgb(0xE5E9F0),
-        .muted = rgb(0xA3ADBF),
-        .faint = rgb(0x7B88A1),
-        .header = rgb(0xECEFF4),
-        .blurple = rgb(0x5E81AC),
-        .blurple_hover = rgb(0x6C8EBA),
-        .blurple_active = rgb(0x4C6F99),
-        .green = rgb(0xA3BE8C),
-        .green_hover = rgb(0x93AE7C),
-        .green_active = rgb(0x84A06D),
-        .red = rgb(0xBF616A),
-        .red_hover = rgb(0xA9545C),
-        .red_active = rgb(0x94484F),
-        .leave = rgb(0x4A3A44),
-        .yellow = rgb(0xEBCB8B),
-        .button = rgb(0x4C566A),
-        .button_hover = rgb(0x5B657B),
-        .button_active = rgb(0x697388),
-        .check = rgb(0x88C0D0),
-        .scroll = rgb(0x4C566A),
-        .scroll_hover = rgb(0x5E81AC),
-        .home_grad = .{ rgb(0x242933), rgb(0x2B3445), rgb(0x242933), rgb(0x20242D) },
-    } },
-    .{ .id = "dracula", .name = "Drácula", .pal = .{
-        .bg_dark = rgb(0x1E1F29),
-        .bg_side = rgb(0x21222C),
-        .bg_main = rgb(0x282A36),
-        .bg_user = rgb(0x1E1F29),
-        .bg_float = rgb(0x191A21),
-        .input = rgb(0x21222C),
-        .chat_input = rgb(0x343746),
-        .hover = rgb(0x343746),
-        .selected = rgb(0x44475A),
-        .text = rgb(0xF8F8F2),
-        .muted = rgb(0xB0B4CE),
-        .faint = rgb(0x7D88B8),
-        .header = rgb(0xFFFFFF),
-        .blurple = rgb(0xBD93F9),
-        .blurple_hover = rgb(0xCAA9FA),
-        .blurple_active = rgb(0xA87FE6),
-        .green = rgb(0x50FA7B),
-        .green_hover = rgb(0x6BFB90),
-        .green_active = rgb(0x3EDB66),
-        .red = rgb(0xFF5555),
-        .red_hover = rgb(0xFF6E6E),
-        .red_active = rgb(0xE04545),
-        .leave = rgb(0x3D2533),
-        .yellow = rgb(0xF1FA8C),
-        .button = rgb(0x44475A),
-        .button_hover = rgb(0x565970),
-        .button_active = rgb(0x6272A4),
-        .check = rgb(0xBD93F9),
-        .scroll = rgb(0x44475A),
-        .scroll_hover = rgb(0x6272A4),
-        .home_grad = .{ rgb(0x21222C), rgb(0x2B2440), rgb(0x21222C), rgb(0x1C1D26) },
-    } },
+    };
+
+/// Os temas que dá pra escolher: os embutidos (assets/temas/*.kdl, nessa ordem)
+/// e os da pasta temas/ da configuração (um com o id de um embutido troca ele).
+/// Vazio até o loadAll (antes disso, find devolve o fallback).
+pub var list: []Theme = &.{};
+
+const builtin_files = [_]struct { id: []const u8, src: []const u8 }{
+    .{ .id = "escuro", .src = @embedFile("assets/temas/escuro.kdl") },
+    .{ .id = "neon", .src = @embedFile("assets/temas/neon.kdl") },
+    .{ .id = "pwnd", .src = @embedFile("assets/temas/pwnd.kdl") },
+    .{ .id = "aurora", .src = @embedFile("assets/temas/aurora.kdl") },
+    .{ .id = "alto-contraste", .src = @embedFile("assets/temas/alto-contraste.kdl") },
+    .{ .id = "claro", .src = @embedFile("assets/temas/claro.kdl") },
+    .{ .id = "pwnd-claro", .src = @embedFile("assets/temas/pwnd-claro.kdl") },
+    .{ .id = "nord", .src = @embedFile("assets/temas/nord.kdl") },
+    .{ .id = "dracula", .src = @embedFile("assets/temas/dracula.kdl") },
 };
 
 // ---------------------------------------------------------------------------
@@ -508,7 +410,557 @@ pub fn find(id: []const u8) usize {
     return 0;
 }
 
-test "temas: texto legível em cima dos botões" {
+// ---------------------------------------------------------------------------
+// Temas em KDL (assets/temas/*.kdl e a pasta temas/ da configuração)
+
+const kdl = @import("kdl.zig");
+const builtin = @import("builtin");
+
+/// O bloco `colors` de um tema enquanto as cores são lidas: cada nome com a
+/// expressão; @nome resolve outra cor do mesmo bloco (sem ciclo).
+const ColorCtx = struct {
+    names: []const []const u8,
+    exprs: []const []const u8,
+    memo: []?u32,
+    busy: []bool,
+
+    fn index(ctx: *const ColorCtx, name: []const u8) ?usize {
+        for (ctx.names, 0..) |n, i| if (sameKey(n, name)) return i;
+        return null;
+    }
+    fn get(ctx: *ColorCtx, name: []const u8) ?u32 {
+        const i = ctx.index(name) orelse return null;
+        if (ctx.memo[i]) |v| return v;
+        if (ctx.busy[i]) return null; // a = @b, b = @a
+        ctx.busy[i] = true;
+        defer ctx.busy[i] = false;
+        const v = evalColor(ctx.exprs[i], ctx) orelse return null;
+        ctx.memo[i] = v;
+        return v;
+    }
+};
+
+/// "accent-2", "accent_2" e "Accent2" são a mesma chave.
+fn sameKey(a: []const u8, b: []const u8) bool {
+    var i: usize = 0;
+    var j: usize = 0;
+    while (true) {
+        while (i < a.len and (a[i] == '-' or a[i] == '_')) i += 1;
+        while (j < b.len and (b[j] == '-' or b[j] == '_')) j += 1;
+        if (i == a.len or j == b.len) return i == a.len and j == b.len;
+        if (std.ascii.toLower(a[i]) != std.ascii.toLower(b[j])) return false;
+        i += 1;
+        j += 1;
+    }
+}
+
+/// Cor ABGR (com alfa) de uma expressão: "#rgb", "#rgba", "#rrggbb",
+/// "#rrggbbaa", "rgb(r, g, b)", "rgba(r, g, b, a)", "white", "black",
+/// "transparent", "@nome" e alpha(cor, a), mix(cor, cor, t), lighten(cor, t),
+/// darken(cor, t). null = não entendeu.
+pub fn evalColor(expr: []const u8, ctx: ?*ColorCtx) ?u32 {
+    var e: Expr = .{ .s = expr, .ctx = ctx };
+    const v = e.color() orelse return null;
+    e.ws();
+    if (e.i != e.s.len) return null;
+    return v;
+}
+
+const Expr = struct {
+    s: []const u8,
+    i: usize = 0,
+    ctx: ?*ColorCtx,
+    depth: u8 = 0,
+
+    fn ws(e: *Expr) void {
+        while (e.i < e.s.len and (e.s[e.i] == ' ' or e.s[e.i] == '\t')) e.i += 1;
+    }
+    fn eat(e: *Expr, ch: u8) bool {
+        e.ws();
+        if (e.i < e.s.len and e.s[e.i] == ch) {
+            e.i += 1;
+            return true;
+        }
+        return false;
+    }
+    fn word(e: *Expr) []const u8 {
+        e.ws();
+        const start = e.i;
+        while (e.i < e.s.len and (std.ascii.isAlphanumeric(e.s[e.i]) or e.s[e.i] == '-' or e.s[e.i] == '_')) e.i += 1;
+        return e.s[start..e.i];
+    }
+    fn number(e: *Expr) ?f32 {
+        e.ws();
+        const start = e.i;
+        while (e.i < e.s.len and (std.ascii.isDigit(e.s[e.i]) or e.s[e.i] == '.' or e.s[e.i] == '-' or e.s[e.i] == '+')) e.i += 1;
+        var v = std.fmt.parseFloat(f32, e.s[start..e.i]) catch return null;
+        if (e.i < e.s.len and e.s[e.i] == '%') {
+            e.i += 1;
+            v /= 100;
+        }
+        return v;
+    }
+    fn color(e: *Expr) ?u32 {
+        if (e.depth > 16) return null;
+        e.depth += 1;
+        defer e.depth -= 1;
+        e.ws();
+        if (e.i >= e.s.len) return null;
+        if (e.s[e.i] == '#') {
+            e.i += 1;
+            const start = e.i;
+            while (e.i < e.s.len and std.ascii.isHex(e.s[e.i])) e.i += 1;
+            return hexColor(e.s[start..e.i]);
+        }
+        if (e.s[e.i] == '@') {
+            e.i += 1;
+            const name = e.word();
+            const ctx = e.ctx orelse return null;
+            return ctx.get(name);
+        }
+        const w = e.word();
+        if (std.ascii.eqlIgnoreCase(w, "white")) return 0xFFFFFFFF;
+        if (std.ascii.eqlIgnoreCase(w, "black")) return 0xFF000000;
+        if (std.ascii.eqlIgnoreCase(w, "transparent")) return 0;
+        if (!e.eat('(')) return null;
+        if (std.ascii.eqlIgnoreCase(w, "rgb") or std.ascii.eqlIgnoreCase(w, "rgba")) {
+            var ch: [4]f32 = .{ 0, 0, 0, 1 };
+            var n: usize = 0;
+            while (n < 4) : (n += 1) {
+                ch[n] = e.number() orelse return null;
+                if (!e.eat(',')) break;
+            }
+            if (n < 2 or !e.eat(')')) return null;
+            const a = if (n == 3) ch[3] else 1;
+            return packColor(ch[0], ch[1], ch[2], a * 255);
+        }
+        const c1 = e.color() orelse return null;
+        if (!e.eat(',')) return null;
+        if (std.ascii.eqlIgnoreCase(w, "mix")) {
+            const c2 = e.color() orelse return null;
+            if (!e.eat(',')) return null;
+            const t = e.number() orelse return null;
+            if (!e.eat(')')) return null;
+            return mixAbgr(c1, c2, std.math.clamp(t, 0, 1));
+        }
+        const t = e.number() orelse return null;
+        if (!e.eat(')')) return null;
+        const k = std.math.clamp(t, 0, 1);
+        if (std.ascii.eqlIgnoreCase(w, "alpha")) return withAlpha(c1, @intFromFloat(@round(k * 255)));
+        if (std.ascii.eqlIgnoreCase(w, "lighten")) return mixAbgr(c1, 0xFFFFFFFF, k) & 0x00FFFFFF | (c1 & 0xFF000000);
+        if (std.ascii.eqlIgnoreCase(w, "darken")) return mixAbgr(c1, 0xFF000000, k) & 0x00FFFFFF | (c1 & 0xFF000000);
+        return null;
+    }
+};
+
+fn packColor(r: f32, g: f32, b: f32, a: f32) u32 {
+    const f = struct {
+        fn ch(v: f32) u32 {
+            return @intFromFloat(std.math.clamp(@round(v), 0, 255));
+        }
+    }.ch;
+    return (f(a) << 24) | (f(b) << 16) | (f(g) << 8) | f(r);
+}
+
+fn hexColor(h: []const u8) ?u32 {
+    const x = std.fmt.parseInt(u32, h, 16) catch return null;
+    return switch (h.len) {
+        3 => packColor(@floatFromInt(((x >> 8) & 0xF) * 17), @floatFromInt(((x >> 4) & 0xF) * 17), @floatFromInt((x & 0xF) * 17), 255),
+        4 => packColor(@floatFromInt(((x >> 12) & 0xF) * 17), @floatFromInt(((x >> 8) & 0xF) * 17), @floatFromInt(((x >> 4) & 0xF) * 17), @floatFromInt((x & 0xF) * 17)),
+        6 => packColor(@floatFromInt((x >> 16) & 0xFF), @floatFromInt((x >> 8) & 0xFF), @floatFromInt(x & 0xFF), 255),
+        8 => packColor(@floatFromInt((x >> 24) & 0xFF), @floatFromInt((x >> 16) & 0xFF), @floatFromInt((x >> 8) & 0xFF), @floatFromInt(x & 0xFF)),
+        else => null,
+    };
+}
+
+/// Mistura duas cores ABGR (alfa junto).
+fn mixAbgr(a: u32, b: u32, t: f32) u32 {
+    var out: u32 = 0;
+    inline for (0..4) |k| {
+        const sh: u5 = @intCast(k * 8);
+        const ca: f32 = @floatFromInt((a >> sh) & 0xFF);
+        const cb: f32 = @floatFromInt((b >> sh) & 0xFF);
+        out |= @as(u32, @intFromFloat(std.math.clamp(@round(ca + (cb - ca) * t), 0, 255))) << sh;
+    }
+    return out;
+}
+
+/// ABGR → 0xRRGGBB (sem alfa), pra Base.
+fn hex24(c: u32) u24 {
+    return @intCast(((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF));
+}
+
+/// Cada chave do bloco `colors` e o campo da paleta que ela troca.
+const color_keys = [_]struct { key: []const u8, field: []const u8 }{
+    .{ .key = "bg", .field = "bg_dark" },
+    .{ .key = "panel", .field = "bg_side" },
+    .{ .key = "surface", .field = "bg_main" },
+    .{ .key = "elevated", .field = "bg_user" },
+    .{ .key = "float", .field = "bg_float" },
+    .{ .key = "input", .field = "input" },
+    .{ .key = "chat-input", .field = "chat_input" },
+    .{ .key = "hover", .field = "hover" },
+    .{ .key = "selected", .field = "selected" },
+    .{ .key = "text", .field = "text" },
+    .{ .key = "muted", .field = "muted" },
+    .{ .key = "faint", .field = "faint" },
+    .{ .key = "heading", .field = "header" },
+    .{ .key = "accent", .field = "blurple" },
+    .{ .key = "accent-hover", .field = "blurple_hover" },
+    .{ .key = "accent-active", .field = "blurple_active" },
+    .{ .key = "success", .field = "green" },
+    .{ .key = "success-hover", .field = "green_hover" },
+    .{ .key = "success-active", .field = "green_active" },
+    .{ .key = "danger", .field = "red" },
+    .{ .key = "danger-hover", .field = "red_hover" },
+    .{ .key = "danger-active", .field = "red_active" },
+    .{ .key = "leave", .field = "leave" },
+    .{ .key = "warning", .field = "yellow" },
+    .{ .key = "button", .field = "button" },
+    .{ .key = "button-hover", .field = "button_hover" },
+    .{ .key = "button-active", .field = "button_active" },
+    .{ .key = "check", .field = "check" },
+    .{ .key = "scroll", .field = "scroll" },
+    .{ .key = "scroll-hover", .field = "scroll_hover" },
+    .{ .key = "accent-2", .field = "accent2" },
+    .{ .key = "border", .field = "border" },
+    .{ .key = "live", .field = "live" },
+    .{ .key = "shadow", .field = "shadow" },
+    .{ .key = "overlay", .field = "overlay" },
+};
+
+pub const LoadError = struct { file: []const u8, line: u32, msg: []const u8 };
+
+/// Lê um tema. `id`: o nome do arquivo (o `theme "id"` do arquivo, se tiver,
+/// ganha). As sete de base (bg, panel, accent, accent-hover, text, success,
+/// danger) montam a paleta inteira; qualquer outra chave troca a sua parte.
+pub fn fromKdl(a: std.mem.Allocator, src: []const u8, id: []const u8, err: *LoadError) !Theme {
+    var diag: kdl.Diag = .{};
+    var doc = kdl.parse(a, src, &diag) catch |e| {
+        err.* = .{ .file = id, .line = diag.line, .msg = if (e == error.TooDeep) "blocos dentro de blocos demais" else diag.msg };
+        return error.Syntax;
+    };
+    // a arena do documento vira parte da arena de quem chamou (os textos ficam)
+    const head = doc.find("theme");
+    var t: Theme = .{ .id = id, .name = id, .pal = fallback };
+    if (head) |h| {
+        if (h.argStr(0)) |tid| if (tid.len > 0 and tid.len <= 48) {
+            t.id = tid;
+        };
+        t.name = h.propStr("name") orelse t.id;
+        t.name_en = h.propStr("name-en") orelse "";
+        t.description = h.propStr("description") orelse "";
+        t.description_en = h.propStr("description-en") orelse "";
+        t.author = h.propStr("author") orelse "";
+    }
+    // cores
+    if (doc.find("colors")) |cb| {
+        const n = cb.children.len;
+        const names = try a.alloc([]const u8, n);
+        const exprs = try a.alloc([]const u8, n);
+        const memo = try a.alloc(?u32, n);
+        const busy = try a.alloc(bool, n);
+        for (cb.children, 0..) |*ch, i| {
+            names[i] = ch.name;
+            exprs[i] = ch.argStr(0) orelse "";
+            memo[i] = null;
+            busy[i] = false;
+        }
+        var ctx: ColorCtx = .{ .names = names, .exprs = exprs, .memo = memo, .busy = busy };
+        // toda cor tem que fazer sentido: o erro diz qual
+        for (names, 0..) |nm, i| if (ctx.get(nm) == null) {
+            err.* = .{ .file = id, .line = 0, .msg = try std.fmt.allocPrint(a, "a cor \"{s}\" ({s}) não deu pra entender", .{ nm, exprs[i] }) };
+            return error.BadColor;
+        };
+        const bg = ctx.get("bg") orelse abgr(0x0D0F15);
+        const text = ctx.get("text") orelse (if (luminance(bg) < 0.35) abgr(0xE3E6EE) else abgr(0x111214));
+        const dark = luminance(bg) < 0.35;
+        const accent = ctx.get("accent") orelse abgr(0x7B5CFF);
+        const ink: u32 = if (dark) 0xFFFFFFFF else 0xFF000000;
+        const base: Base = .{
+            .bg = hex24(bg),
+            .side = hex24(ctx.get("panel") orelse mixAbgr(bg, text, 0.04)),
+            .accent = hex24(accent),
+            .accent2 = hex24(ctx.get("accent-hover") orelse mixAbgr(accent, ink, 0.14)),
+            .text = hex24(text),
+            .ok = hex24(ctx.get("success") orelse abgr(0x23A55A)),
+            .danger = hex24(ctx.get("danger") orelse abgr(0xF23F43)),
+        };
+        t.pal = derive(base);
+        t.pal.light = !dark;
+        t.pal.accent2 = ctx.get("accent-2") orelse mixAbgr(accent, abgr(0x2DD4FF), 0.6);
+        t.pal.border = ctx.get("border") orelse withAlpha(text, 18);
+        t.pal.live = ctx.get("live") orelse t.pal.red;
+        inline for (color_keys) |ck| {
+            if (ctx.get(ck.key)) |v| @field(t.pal, ck.field) = v;
+        }
+        // "elevated" sozinho vale pro campo do chat também
+        if (ctx.index("elevated") != null and ctx.index("chat-input") == null) t.pal.chat_input = t.pal.bg_user;
+    }
+    if (doc.find("background")) |bgn| {
+        if (bgn.propStr("gradient")) |g| {
+            var cols: [4]u32 = undefined;
+            var n: usize = 0;
+            var it = std.mem.tokenizeScalar(u8, g, ' ');
+            while (it.next()) |part| {
+                if (n == 4) break;
+                cols[n] = evalColor(part, null) orelse {
+                    err.* = .{ .file = id, .line = 0, .msg = "o degradê do fundo tem uma cor que não deu pra entender (use #rrggbb separadas por espaço)" };
+                    return error.BadColor;
+                };
+                n += 1;
+            }
+            if (n == 1) cols = .{ cols[0], cols[0], cols[0], cols[0] };
+            if (n == 2) cols = .{ cols[0], cols[1], cols[0], cols[1] };
+            if (n == 3) cols[3] = cols[0];
+            if (n > 0) t.pal.home_grad = cols;
+        }
+        if (bgn.propStr("pattern")) |pn| t.pal.pattern = std.meta.stringToEnum(Pattern, pn) orelse .none;
+        if (bgn.propStr("pattern-color")) |pc| t.pal.pattern_color = evalColor(pc, null) orelse withAlpha(t.pal.blurple, 14);
+        if (bgn.propNum("pattern-size")) |ps| t.pal.pattern_size = @floatCast(std.math.clamp(ps, 8, 128));
+        if (t.pal.pattern != .none and t.pal.pattern_color == 0) t.pal.pattern_color = withAlpha(t.pal.blurple, 14);
+    }
+    if (doc.find("fonts")) |f| {
+        if (f.propStr("ui")) |v| t.font_ui = Font.fromName(v) orelse t.font_ui;
+        t.font_heading = t.font_ui;
+        if (f.propStr("heading")) |v| t.font_heading = Font.fromName(v) orelse t.font_heading;
+        if (f.propStr("mono")) |v| t.font_mono = Font.fromName(v) orelse t.font_mono;
+        if (f.propNum("size")) |v| t.font_size = @floatCast(std.math.clamp(v, 11, 24));
+    }
+    if (doc.find("metrics")) |m| {
+        if (m.propNum("radius")) |r| t.pal.round = @floatCast(std.math.clamp(r / 5.0, 0, 4));
+        if (m.propNum("border")) |b| t.pal.border_w = @floatCast(std.math.clamp(b, 0.5, 4));
+    }
+    if (doc.find("effects")) |fx| {
+        if (fx.propNum("glow")) |g| t.pal.glow = @floatCast(std.math.clamp(g, 0, 1.5));
+    }
+    return t;
+}
+
+var registry_arena: ?std.heap.ArenaAllocator = null;
+/// Erros do último loadAll (arquivo, linha, o quê), pra tela de temas mostrar.
+pub var load_errors: [8]LoadError = undefined;
+pub var n_load_errors: usize = 0;
+
+/// (Re)carrega os temas: os embutidos e os .kdl de `user_dir` (vazio = só os
+/// embutidos). Só a thread da interface chama; a paleta em uso é uma cópia.
+pub fn loadAll(gpa: std.mem.Allocator, user_dir: []const u8) void {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    const a = arena.allocator();
+    var out: std.ArrayList(Theme) = .empty;
+    n_load_errors = 0;
+    for (builtin_files) |bf| {
+        var e: LoadError = .{ .file = bf.id, .line = 0, .msg = "" };
+        const t = fromKdl(a, bf.src, bf.id, &e) catch {
+            noteError(e);
+            continue;
+        };
+        out.append(a, t) catch break;
+    }
+    if (user_dir.len > 0) {
+        var ctx: UserLoad = .{ .a = a, .out = &out };
+        forEachKdl(a, user_dir, &ctx, UserLoad.add);
+    }
+    if (out.items.len == 0) out.append(a, .{ .id = "escuro", .name = "Escuro", .name_en = "Dark", .pal = fallback }) catch {};
+    list = out.items;
+    if (registry_arena) |*old| old.deinit();
+    registry_arena = arena;
+}
+
+fn noteError(e: LoadError) void {
+    if (n_load_errors < load_errors.len) {
+        load_errors[n_load_errors] = e;
+        n_load_errors += 1;
+    }
+}
+
+const UserLoad = struct {
+    a: std.mem.Allocator,
+    out: *std.ArrayList(Theme),
+
+    fn add(ctx: *UserLoad, path: [:0]const u8, stem: []const u8) void {
+        const src = readSmallFile(ctx.a, path, 256 * 1024) orelse {
+            noteError(.{ .file = ctx.a.dupe(u8, stem) catch stem, .line = 0, .msg = "não consegui ler o arquivo" });
+            return;
+        };
+        const id = ctx.a.dupe(u8, stem) catch return;
+        var e: LoadError = .{ .file = id, .line = 0, .msg = "" };
+        var t = fromKdl(ctx.a, src, id, &e) catch {
+            noteError(e);
+            return;
+        };
+        t.path = ctx.a.dupe(u8, path) catch "";
+        // o mesmo id de um embutido: o do usuário troca ele (dá pra mexer num embutido copiando o arquivo)
+        for (ctx.out.items) |*old| if (std.mem.eql(u8, old.id, t.id)) {
+            old.* = t;
+            return;
+        };
+        ctx.out.append(ctx.a, t) catch {};
+    }
+};
+
+// ---------------------------------------------------------------- arquivos
+
+extern "c" fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque;
+extern "c" fn fread(ptr: [*]u8, size: usize, n: usize, f: *anyopaque) usize;
+extern "c" fn fwrite(ptr: [*]const u8, size: usize, n: usize, f: *anyopaque) usize;
+extern "c" fn fclose(f: *anyopaque) c_int;
+extern "c" fn _wfopen(path: [*:0]const u16, mode: [*:0]const u16) ?*anyopaque;
+extern "c" fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
+extern "kernel32" fn CreateDirectoryW(path: [*:0]const u16, attr: ?*anyopaque) callconv(.winapi) c_int;
+
+const WIN32_FIND_DATAW = extern struct {
+    dwFileAttributes: u32,
+    ftCreationTime: [2]u32,
+    ftLastAccessTime: [2]u32,
+    ftLastWriteTime: [2]u32,
+    nFileSizeHigh: u32,
+    nFileSizeLow: u32,
+    dwReserved0: u32,
+    dwReserved1: u32,
+    cFileName: [260]u16,
+    cAlternateFileName: [14]u16,
+};
+extern "kernel32" fn FindFirstFileW(name: [*:0]const u16, data: *WIN32_FIND_DATAW) callconv(.winapi) ?*anyopaque;
+extern "kernel32" fn FindNextFileW(h: *anyopaque, data: *WIN32_FIND_DATAW) callconv(.winapi) c_int;
+extern "kernel32" fn FindClose(h: *anyopaque) callconv(.winapi) c_int;
+
+fn openFile(path: [:0]const u8, mode: [:0]const u8) ?*anyopaque {
+    if (builtin.os.tag == .windows) {
+        var w: [1024:0]u16 = undefined;
+        const n = std.unicode.utf8ToUtf16Le(&w, path) catch return null;
+        if (n >= w.len) return null;
+        w[n] = 0;
+        var wm: [8:0]u16 = undefined;
+        for (mode, 0..) |ch, i| wm[i] = ch;
+        wm[mode.len] = 0;
+        return _wfopen(&w, &wm);
+    }
+    return fopen(path.ptr, mode.ptr);
+}
+
+/// O arquivo inteiro (até `max` bytes; maior = null).
+pub fn readSmallFile(a: std.mem.Allocator, path: [:0]const u8, max: usize) ?[]u8 {
+    const f = openFile(path, "rb") orelse return null;
+    defer _ = fclose(f);
+    var buf = a.alloc(u8, max + 1) catch return null;
+    var n: usize = 0;
+    while (n < buf.len) {
+        const got = fread(buf[n..].ptr, 1, buf.len - n, f);
+        if (got == 0) break;
+        n += got;
+    }
+    if (n > max) return null;
+    return buf[0..n];
+}
+
+pub fn writeFile(path: [:0]const u8, data: []const u8) bool {
+    const f = openFile(path, "wb") orelse return false;
+    defer _ = fclose(f);
+    return fwrite(data.ptr, 1, data.len, f) == data.len;
+}
+
+pub fn makeDir(path: [:0]const u8) void {
+    if (builtin.os.tag == .windows) {
+        var w: [1024:0]u16 = undefined;
+        const n = std.unicode.utf8ToUtf16Le(&w, path) catch return;
+        if (n >= w.len) return;
+        w[n] = 0;
+        _ = CreateDirectoryW(&w, null);
+    } else _ = mkdir(path.ptr, 0o755);
+}
+
+/// Cada *.kdl de `dir` (em ordem de nome): f(ctx, caminho, nome sem .kdl).
+fn forEachKdl(a: std.mem.Allocator, dir: []const u8, ctx: anytype, comptime f: anytype) void {
+    var names: std.ArrayList([]const u8) = .empty;
+    if (builtin.os.tag == .windows) {
+        var pat_buf: [1100]u8 = undefined;
+        const pat = std.fmt.bufPrint(&pat_buf, "{s}\\*.kdl", .{dir}) catch return;
+        var w: [1100:0]u16 = undefined;
+        const n = std.unicode.utf8ToUtf16Le(&w, pat) catch return;
+        if (n >= w.len) return;
+        w[n] = 0;
+        var fd: WIN32_FIND_DATAW = undefined;
+        const h = FindFirstFileW(&w, &fd) orelse return;
+        if (@intFromPtr(h) == std.math.maxInt(usize)) return; // INVALID_HANDLE_VALUE
+        defer _ = FindClose(h);
+        while (true) {
+            const wn = std.mem.sliceTo(&fd.cFileName, 0);
+            if (fd.dwFileAttributes & 0x10 == 0) { // não é pasta
+                if (std.unicode.utf16LeToUtf8Alloc(a, wn)) |u8name| names.append(a, u8name) catch {} else |_| {}
+            }
+            if (FindNextFileW(h, &fd) == 0) break;
+        }
+    } else {
+        var zb: [1024]u8 = undefined;
+        const dz = std.fmt.bufPrintZ(&zb, "{s}", .{dir}) catch return;
+        const d = std.c.opendir(dz.ptr) orelse return;
+        defer _ = std.c.closedir(d);
+        while (std.c.readdir(d)) |ent| {
+            const name = std.mem.sliceTo(@as([*:0]const u8, @ptrCast(&ent.name)), 0);
+            if (name.len > 4 and std.ascii.endsWithIgnoreCase(name, ".kdl") and name[0] != '.') names.append(a, a.dupe(u8, name) catch continue) catch {};
+        }
+    }
+    std.mem.sort([]const u8, names.items, {}, struct {
+        fn lt(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.lessThan(u8, x, y);
+        }
+    }.lt);
+    for (names.items) |name| {
+        if (name.len <= 4) continue;
+        const stem = name[0 .. name.len - 4];
+        const sep = if (builtin.os.tag == .windows) "\\" else "/";
+        const path = std.fmt.allocPrintSentinel(a, "{s}{s}{s}", .{ dir, sep, name }, 0) catch continue;
+        f(ctx, path, stem);
+    }
+}
+
+/// O tema como arquivo KDL (todas as cores, pra copiar e mexer).
+pub fn toKdl(a: std.mem.Allocator, t: *const Theme, new_id: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    const w = struct {
+        fn hex(c: u32, buf: *[10]u8) []const u8 {
+            const al = (c >> 24) & 0xFF;
+            if (al == 255) return std.fmt.bufPrint(buf, "#{X:0>6}", .{hex24(c)}) catch "";
+            return std.fmt.bufPrint(buf, "#{X:0>6}{X:0>2}", .{ hex24(c), al }) catch "";
+        }
+    };
+    try out.print(a,
+        \\// {s}: feito a partir do tema "{s}" do telinha. Mude o que quiser e salve:
+        \\// o telinha atualiza sozinho. Cores: "#rrggbb", "#rrggbbaa", "alpha(@accent, 0.2)",
+        \\// "mix(@bg, @text, 0.1)", "lighten(@accent, 0.1)", "darken(...)". Fontes: "Inter",
+        \\// "Atkinson Hyperlegible" (a mais fácil de ler) ou "Fira Code". Guia em docs/THEMES.pt.md
+        \\theme "{s}" name="{s}" author="você"
+        \\
+        \\colors {{
+        \\
+    , .{ new_id, t.id, new_id, new_id });
+    var hb: [10]u8 = undefined;
+    inline for (color_keys) |ck| {
+        try out.print(a, "    {s} \"{s}\"\n", .{ ck.key, w.hex(@field(t.pal, ck.field), &hb) });
+    }
+    try out.appendSlice(a, "}\n");
+    try out.print(a, "background gradient=\"", .{});
+    for (t.pal.home_grad, 0..) |g, i| try out.print(a, "{s}{s}", .{ if (i > 0) " " else "", w.hex(g, &hb) });
+    try out.print(a, "\" pattern={s}", .{@tagName(t.pal.pattern)});
+    if (t.pal.pattern != .none) try out.print(a, " pattern-color=\"{s}\" pattern-size={d}", .{ w.hex(t.pal.pattern_color, &hb), t.pal.pattern_size });
+    try out.print(a, "\nfonts ui=\"{s}\" heading=\"{s}\" mono=\"{s}\" size={d}\n", .{ t.font_ui.label(), t.font_heading.label(), t.font_mono.label(), t.font_size });
+    try out.print(a, "metrics radius={d} border={d}\neffects glow={d}\n", .{ t.pal.round * 5, t.pal.border_w, t.pal.glow });
+    return out.toOwnedSlice(a);
+}
+
+test "temas: os embutidos carregam e o texto fica legível em cima dos botões" {
+    loadAll(std.testing.allocator, "");
+    defer if (registry_arena) |*ar| {
+        ar.deinit();
+        registry_arena = null;
+        list = &.{};
+    };
+    if (n_load_errors > 0) {
+        std.debug.print("tema {s} linha {d}: {s}\n", .{ load_errors[0].file, load_errors[0].line, load_errors[0].msg });
+        return error.TemaQuebrado;
+    }
+    try std.testing.expectEqual(builtin_files.len, list.len);
     for (list) |t| {
         for ([_]u32{ t.pal.blurple, t.pal.green, t.pal.red, t.pal.button, t.pal.blurple_hover, t.pal.red_hover }) |fill| {
             const fg = textOn(fill);
@@ -523,6 +975,15 @@ test "temas: texto legível em cima dos botões" {
     }
     try std.testing.expectEqual(@as(usize, 2), find("pwnd"));
     try std.testing.expectEqual(@as(usize, 0), find("nao-existe"));
+    // o pwnd lê bem (Atkinson no texto) e guarda o terminal nos títulos
+    const pw = list[find("pwnd")];
+    try std.testing.expectEqual(Font.atkinson, pw.font_ui);
+    try std.testing.expectEqual(Font.fira, pw.font_heading);
+    // as cores convertidas da 3.10 ficaram iguais
+    try std.testing.expectEqual(rgb(0x9333EA), pw.pal.blurple);
+    try std.testing.expectEqual(rgb(0x0A050F), pw.pal.bg_side);
+    const ac = list[find("alto-contraste")];
+    try std.testing.expect(ac.font_size >= 16 and ac.pal.border_w >= 2);
 }
 
 test "tema do CSS: as variáveis do pwnd.blog viram um tema legível" {
@@ -572,4 +1033,59 @@ test "tema do CSS: as variáveis do pwnd.blog viram um tema legível" {
     try std.testing.expect(parseCss("body { color: red; }") == null);
     try std.testing.expect(parseColor("rgb)(") == null); // malformado não quebra
     try std.testing.expect(parseCss(":root { --bg: rgb)(; --accent: #fff; }") == null);
+}
+
+test "temas: expressões de cor, referências e erros" {
+    try std.testing.expectEqual(@as(?u32, rgb(0xAABBCC)), evalColor("#abc", null));
+    try std.testing.expectEqual(@as(?u32, rgb(0x123456)), evalColor(" #123456 ", null));
+    try std.testing.expectEqual(@as(?u32, rgba(0x123456, 0x80)), evalColor("#12345680", null));
+    try std.testing.expectEqual(@as(?u32, rgba(0xFFFFFF, 128)), evalColor("alpha(white, 0.5)", null));
+    try std.testing.expectEqual(@as(?u32, rgb(0x808080)), evalColor("mix(black, white, 0.5)", null));
+    try std.testing.expectEqual(@as(?u32, rgba(0x0A0B0C, 255)), evalColor("rgb(10, 11, 12)", null));
+    try std.testing.expectEqual(@as(?u32, rgba(0x0A0B0C, 128)), evalColor("rgba(10, 11, 12, 0.5)", null));
+    try std.testing.expectEqual(@as(?u32, rgb(0x808080)), evalColor("lighten(black, 50%)", null));
+    try std.testing.expect(evalColor("alpha(#fff)", null) == null);
+    try std.testing.expect(evalColor("#12", null) == null);
+    try std.testing.expect(evalColor("mix(#000, #fff, 0.5) lixo", null) == null);
+    try std.testing.expect(evalColor("@accent", null) == null);
+    const src =
+        \\theme "meu" name="Meu tema"
+        \\colors {
+        \\    bg "#101010"
+        \\    accent "#FF0000"
+        \\    hover "alpha(@accent, 0.25)"
+        \\    selected "mix(@bg, @accent, 0.5)"
+        \\}
+        \\fonts ui="Atkinson Hyperlegible" size=17
+        \\metrics radius=10
+        \\effects glow=0.8
+        \\background gradient="#000 #111" pattern=grid
+    ;
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    var e: LoadError = .{ .file = "", .line = 0, .msg = "" };
+    const t = try fromKdl(ar.allocator(), src, "arquivo", &e);
+    try std.testing.expectEqualStrings("meu", t.id);
+    try std.testing.expectEqualStrings("Meu tema", t.name);
+    try std.testing.expectEqual(rgb(0xFF0000), t.pal.blurple);
+    try std.testing.expectEqual(rgba(0xFF0000, 64), t.pal.hover);
+    try std.testing.expectEqual(rgb(0x880808), t.pal.selected);
+    try std.testing.expectEqual(Font.atkinson, t.font_ui);
+    try std.testing.expectEqual(Font.atkinson, t.font_heading); // sem heading: o mesmo do texto
+    try std.testing.expectEqual(@as(f32, 17), t.font_size);
+    try std.testing.expectEqual(@as(f32, 2), t.pal.round);
+    try std.testing.expectEqual(Pattern.grid, t.pal.pattern);
+    try std.testing.expect(t.pal.pattern_color != 0);
+    // ciclo e cor ruim: erro dizendo qual
+    try std.testing.expectError(error.BadColor, fromKdl(ar.allocator(), "colors {\n a \"@b\"\n b \"@a\"\n}", "x", &e));
+    try std.testing.expect(std.mem.indexOf(u8, e.msg, "\"a\"") != null);
+    try std.testing.expectError(error.Syntax, fromKdl(ar.allocator(), "colors {\n bg \"#000\"\n", "x", &e));
+    try std.testing.expect(e.line >= 2);
+    // ida e volta: o tema exportado lê igual
+    const out = try toKdl(ar.allocator(), &t, "copia");
+    const back = try fromKdl(ar.allocator(), out, "copia", &e);
+    try std.testing.expectEqual(t.pal.blurple, back.pal.blurple);
+    try std.testing.expectEqual(t.pal.hover, back.pal.hover);
+    try std.testing.expectEqual(t.font_ui, back.font_ui);
+    try std.testing.expectEqual(t.pal.round, back.pal.round);
 }

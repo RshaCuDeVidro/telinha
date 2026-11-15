@@ -671,6 +671,10 @@ pub const Options = struct {
     /// --exigir-logs: coleta, e o app manda mesmo com a opção desligada (o
     /// aviso ao entrar diz que a sala exige; quem não quiser sai).
     require_logs: bool = false,
+    /// --versao-minima: app mais velho que isso não entra (ver deny_outdated).
+    /// Vazio = qualquer um. `releases`: onde baixar (vai no motivo da recusa).
+    min_version: []const u8 = "",
+    releases: []const u8 = "",
 };
 
 const StatsPrev = struct {
@@ -797,6 +801,9 @@ pub const Server = struct {
     no_bots: bool = false,
     collect_logs: bool = false,
     require_logs: bool = false,
+    min_ver: ?[3]u32 = null,
+    releases_buf: [160]u8 = undefined,
+    releases_len: usize = 0,
     bot_token: [64]u8 = undefined,
     bot_token_len: usize = 0,
     max_members: u32,
@@ -886,6 +893,8 @@ pub const Server = struct {
         copyInto(&s.bot_token, &s.bot_token_len, opts.bot_token);
         s.no_bots = opts.no_bots;
         s.collect_logs = opts.collect_logs or opts.require_logs;
+        s.min_ver = proto.parseVersion(opts.min_version);
+        copyInto(&s.releases_buf, &s.releases_len, opts.releases);
         s.require_logs = opts.require_logs;
         sync.hiresTimer(true); // o repasse por UDP cadencia em ms (solto no release)
         s.retain();
@@ -2442,6 +2451,19 @@ pub const Server = struct {
         const is_owner = s.admin_token_len > 0 and constEql(token, s.admin_token[0..s.admin_token_len]);
         var base_buf: [32]u8 = undefined;
         const base = safeName(raw_name, &base_buf);
+        // app velho demais (bot e navegador não têm versão de app)
+        if (s.min_ver) |min| if (!cn.bot and !cn.web) {
+            const ver = std.mem.sliceTo(&cn.app_version, 0);
+            const v = proto.parseVersion(ver);
+            if (v == null or proto.versionLess(v.?, min)) {
+                var rb: [320]u8 = undefined;
+                const where = if (s.releases_len > 0) s.releases_buf[0..s.releases_len] else "";
+                const reason = std.fmt.bufPrint(&rb, "Seu telinha ({s}) está desatualizado: esta sala pede o {d}.{d}.{d} ou mais novo. Baixe o novo {s}{s}", .{ if (ver.len > 0) ver else "antigo", min[0], min[1], min[2], if (where.len > 0) "em " else "na página do telinha", where }) catch "Seu telinha está desatualizado: baixe a versão nova.";
+                s.log("{s} recusado: telinha {s}, a sala pede o {d}.{d}.{d}", .{ base, if (ver.len > 0) ver else "sem versão", min[0], min[1], min[2] });
+                refuse(cn, proto.deny_outdated, reason);
+                return error.Outdated;
+            }
+        };
         if (!is_owner) {
             if (s.banned(cn)) {
                 s.log("{s} tentou entrar, mas foi banido", .{base});
@@ -2545,6 +2567,16 @@ pub const Server = struct {
         try s.broadcastMembers();
         const ver = std.mem.sliceTo(&cn.app_version, 0);
         s.log("{s} entrou ({d} na sala, {s}, #{s}, telinha {s})", .{ name, s.conns.items.len, routeName(cn.route), cn.chan.nameSlice(), if (ver.len > 0) ver else "?" });
+        // app mais velho que o da sala: avisa (o app novo mostra o botão de
+        // atualizar; o antigo, o texto). Bot e navegador não têm o que atualizar
+        if (!cn.bot and !cn.web) if (proto.parseVersion(ver)) |v| {
+            const mine = proto.parseVersion(proto.app_version).?;
+            if (proto.versionLess(v, mine)) {
+                var ob: [200]u8 = undefined;
+                const text = std.fmt.bufPrint(&ob, "Seu telinha ({s}) está desatualizado: a sala já está no {s}. Atualize pra ter as correções.", .{ ver, proto.app_version }) catch "";
+                pushNotice(cn, proto.notice_outdated, text, 0) catch {};
+            }
+        };
     }
 
     pub fn routeName(route: u8) []const u8 {

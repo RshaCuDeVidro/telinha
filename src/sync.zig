@@ -221,6 +221,19 @@ pub fn hiresTimer(on: bool) void {
     }
 }
 
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "kernel32" fn SetEnvironmentVariableA(name: [*:0]const u8, value: ?[*:0]const u8) callconv(.winapi) c_int;
+
+/// Variável de ambiente pros processos que este abrir (a versão nova depois de
+/// atualizar). No Windows vai pro ambiente do processo, que é o que o
+/// CreateProcess passa adiante. Nunca apaga (ver tuneMalloc/hardExit: o Zig
+/// guarda o environ do começo): pra "desligar", sobrescreve com "".
+pub fn setEnv(name: [*:0]const u8, value: [*:0]const u8) void {
+    if (is_windows) {
+        _ = SetEnvironmentVariableA(name, value);
+    } else _ = setenv(name, value, 1);
+}
+
 extern "c" fn mallopt(param: c_int, value: c_int) c_int;
 extern "c" fn malloc_trim(pad: usize) c_int;
 
@@ -365,7 +378,10 @@ pub const Pool = struct {
 
     fn worker(self: *Pool) void {
         nameThread("pool");
-        lowerThreadPriority();
+        // prioridade normal: quem espera as faixas é a captura (normal com o
+        // encoder da placa), e com o jogo usando a CPU toda uma faixa "abaixo
+        // do normal" atrasava o quadro inteiro. Quem codifica em software já
+        // baixa a própria thread (ver sharer.zig)
         while (true) {
             self.mutex.lock();
             while (self.len == 0) self.cond.wait(&self.mutex);

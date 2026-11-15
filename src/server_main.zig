@@ -49,6 +49,10 @@ const usage =
     \\  --so-protocolo-novo    recusa apps de antes da 3.8 (protocolo 6: a senha deles
     \\                         dá pra testar offline a partir de uma conexão;
     \\                         $TELINHA_SO_PROTOCOLO_NOVO=1)
+    \\  --versao-minima V      app mais velho que V (ex.: 3.10.0) não entra: vê o
+    \\                         motivo e onde baixar, e o app novo mostra o botão
+    \\                         de atualizar ($TELINHA_VERSAO_MINIMA). Quem entra
+    \\                         com app mais velho que o do servidor é avisado
     \\  --token-bots TXT       só aceita bots que mandarem esse token
     \\                         ($TELINHA_TOKEN_BOTS); sem isso, qualquer bot com
     \\                         a senha da sala entra. Bot nunca vira admin
@@ -492,6 +496,7 @@ pub fn main(init: std.process.Init) !void {
     var collect_logs = if (env("TELINHA_COLETAR_LOGS")) |v| std.mem.eql(u8, v, "1") else false;
     var require_logs = if (env("TELINHA_EXIGIR_LOGS")) |v| std.mem.eql(u8, v, "1") else false;
     var only_new = if (env("TELINHA_SO_PROTOCOLO_NOVO")) |v| std.mem.eql(u8, v, "1") else false;
+    var min_version: []const u8 = env("TELINHA_VERSAO_MINIMA") orelse "";
     var bot_token: []const u8 = env("TELINHA_TOKEN_BOTS") orelse "";
     var key_path: []const u8 = env("TELINHA_CHAVE") orelse "";
     var state_path: []const u8 = env("TELINHA_ESTADO") orelse "";
@@ -572,6 +577,8 @@ pub fn main(init: std.process.Init) !void {
             logs_dir = v;
         } else if (std.mem.eql(u8, a, "-e") or std.mem.eql(u8, a, "--estado")) {
             state_path = v;
+        } else if (std.mem.eql(u8, a, "--versao-minima")) {
+            min_version = v;
         } else if (std.mem.eql(u8, a, "--token-bots")) {
             bot_token = v;
         } else if (std.mem.eql(u8, a, "--arquivos")) {
@@ -620,7 +627,10 @@ pub fn main(init: std.process.Init) !void {
         const z = std.fmt.bufPrintZ(&lb, "{s}", .{logs_dir}) catch die("pasta de logs longa demais", .{});
         _ = mkdir(z.ptr, 0o750);
     }
-    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir, .channels = channels, .new_channels = new_channels, .identity_seed = seed, .state_path = state_file, .files_dir = filesDir(files_dir, state_file), .no_bots = no_bots, .bot_token = bot_token, .accept_old = !only_new, .collect_logs = collect_logs, .require_logs = require_logs }) catch
+    if (min_version.len > 0 and proto.parseVersion(min_version) == null) die("--versao-minima: \"{s}\" não é uma versão (ex.: 3.10.0)", .{min_version});
+    var rel_buf: [160]u8 = undefined;
+    const releases = if (server_options.repo.len > 0) std.fmt.bufPrint(&rel_buf, "https://github.com/{s}/releases/latest", .{server_options.repo}) catch "" else "";
+    const srv = Server.start(.{ .port = port, .password = password, .room_name = room, .admin_token = admin, .max_members = max, .log = log, .logs_dir = logs_dir, .channels = channels, .new_channels = new_channels, .identity_seed = seed, .state_path = state_file, .files_dir = filesDir(files_dir, state_file), .no_bots = no_bots, .bot_token = bot_token, .accept_old = !only_new, .collect_logs = collect_logs, .require_logs = require_logs, .min_version = min_version, .releases = releases }) catch
         die("não consegui abrir a porta {d} (já está em uso?)", .{port});
 
     var buf: [256]u8 = undefined;
@@ -634,6 +644,7 @@ pub fn main(init: std.process.Init) !void {
         var cb: [500]u8 = undefined;
         srv.announce(std.fmt.bufPrint(&cb, "O servidor reiniciou depois de uma queda (motivo: {s}). Quem estava na sala volta sozinho.", .{why}) catch "O servidor reiniciou depois de uma queda.");
     }
+    if (min_version.len > 0) log(std.fmt.bufPrint(&buf, "versão mínima: apps mais velhos que o {s} não entram", .{min_version}) catch "versão mínima ligada");
     if (collect_logs) log(std.fmt.bufPrint(&buf, "coletando logs{s}: o dono pode pedir o log de quem está na sala (guardados em {s})", .{ if (require_logs) " (exigidos: vai até de quem desligou)" else "", logs_dir }) catch "coletando logs");
     if (srv.fingerprint()) |f| {
         fp_suffix[0] = '!';

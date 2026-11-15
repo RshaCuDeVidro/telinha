@@ -1,0 +1,42 @@
+// Drácula: convertido do tema embutido da 3.10 (mesmas cores)
+theme "dracula" name="Drácula" name-en="Dracula" author="telinha" mode=dark \
+    description="O clássico roxo dos editores." \
+    description-en="The classic purple editor theme."
+
+colors {
+    bg             "#1E1F29"
+    panel          "#21222C"
+    surface        "#282A36"
+    elevated       "#1E1F29"
+    float          "#191A21"
+    input          "#21222C"
+    chat-input     "#343746"
+    hover          "#343746"
+    selected       "#44475A"
+    text           "#F8F8F2"
+    muted          "#B0B4CE"
+    faint          "#7D88B8"
+    heading        "#FFFFFF"
+    accent         "#BD93F9"
+    accent-hover   "#CAA9FA"
+    accent-active  "#A87FE6"
+    success        "#50FA7B"
+    success-hover  "#6BFB90"
+    success-active "#3EDB66"
+    danger         "#FF5555"
+    danger-hover   "#FF6E6E"
+    danger-active  "#E04545"
+    leave          "#3D2533"
+    warning        "#F1FA8C"
+    button         "#44475A"
+    button-hover   "#565970"
+    button-active  "#6272A4"
+    check          "#BD93F9"
+    scroll         "#44475A"
+    scroll-hover   "#6272A4"
+    accent-2       "#FF79C6"
+    border         "alpha(#F8F8F2, 0.07)"
+}
+background gradient="#21222C #2B2440 #21222C #1C1D26"
+fonts ui="Inter" heading="Inter" mono="Fira Code"
+effects glow=0.4

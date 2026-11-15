@@ -1,0 +1,26 @@
+// aurora: noite polar, verde-água e violeta suaves. Bonito sem cansar a vista.
+theme "aurora" name="Aurora" name-en="Aurora" author="telinha" mode=dark \
+    description="Noite polar com verde-água e violeta suaves." \
+    description-en="Polar night with soft teal and violet."
+
+colors {
+    bg        "#0B1218"
+    panel     "#101B23"
+    accent    "#34D3B4"
+    accent-2  "#8B7CFF"
+    text      "#DDEBF0"
+    success   "#34D399"
+    danger    "#F87171"
+
+    surface   "#0E171E"
+    elevated  "#16242E"
+    heading   "#F2FBFF"
+    border    "alpha(#34D3B4, 0.12)"
+    hover     "alpha(#34D3B4, 0.09)"
+    selected  "alpha(#8B7CFF, 0.22)"
+    live      "#F87171"
+}
+background gradient="#0B1218 #0F2A2A #0B1218 #17123A" pattern=dots pattern-color="alpha(#34D3B4, 0.05)" pattern-size=24
+fonts ui="Inter" heading="Inter" mono="Fira Code" size=15
+metrics radius=10
+effects glow=0.6

@@ -1317,9 +1317,14 @@ def sala_controles():
         a.click("Jogo e vídeo")
         # resolução, q/s, qualidade, cursor e placa ficam no "Avançado" (dobrado)
         a.click("##shareadvbtn")
+        time.sleep(0.3)  # o modal cresce e se recentraliza
         a.click("720p")
         a.click("15")
         a.wait(lambda st: st["cfg"]["mode"] == 1 and st["cfg"]["resolution"] == 2 and st["cfg"]["fps"] == 15, 3, "as opções mudarem")
+        # a qualidade fica no fim da área que rola
+        o = a.find("720p", window="Compartilhar")
+        a.scroll(*a._abs(o, 0.5, 0.5), -3)
+        time.sleep(0.3)
         a.drag("##q", 0.5, 0.95)
         a.wait(lambda st: st["cfg"]["quality"] > 85, 3, "a qualidade subir")
         c0 = a.state()["cfg"]
@@ -1337,7 +1342,7 @@ def sala_controles():
         a.click(contains="Compartilhar tela##share")
         a.click(contains="Ao vivo", window="Compartilhar")
         a.wait(lambda st: st["sharer"] and st["sharer"]["state"] == "live", 15, "ficar ao vivo")
-        a.click(contains="Ao vivo (configurar)##share")
+        a.click("##share")
         a.click("Aplicar")
         a.toasted("Configurações aplicadas")
         # Bruno assiste pela barra lateral e para; depois pelo card
@@ -1365,7 +1370,7 @@ def sala_controles():
         b.click(contains="Voltar a ouvir")
         b.wait(lambda st: any(m["id"] == aid and m["voice_volume"] == 1 for m in st["members"]), 3, "voltar a ouvir a Ana")
         # parar a transmissão pelo modal
-        a.click(contains="Ao vivo (configurar)##share")
+        a.click("##share")
         a.click("Parar")
         a.wait(lambda st: st["sharer"] is None, 5, "parar de transmitir")
         b.wait(lambda st: not st["views"], 5, "o Bruno parar de ver a Ana")
@@ -1889,11 +1894,13 @@ def print_da_transmissao():
         a = s.app("a", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"])
         b = s.app("b", 92, ["--nome", "Bruno", "--entrar", f"127.0.0.1:{p}", "--assistir"])
         aid = b.member_id("Ana")
-        st = b.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "ver a Ana")
-        v = next(v for v in st["views"] if v["stream"] == aid)
+        b.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "ver a Ana")
+        # a Ana desce pro tamanho do quadro do Bruno logo no começo: espera assentar
+        time.sleep(2.0)
         tile = b.tile(aid)
         b.click("##print", within=tile, hover_first=center(tile))
         st = b.wait(lambda st: st["last_saved"].endswith(".png") and os.path.exists(st["last_saved"]), 10, "salvar o print")
+        v = next(v for v in st["views"] if v["stream"] == aid)
         with open(st["last_saved"], "rb") as f:
             head = f.read(24)
         expect(head[:8] == b"\x89PNG\r\n\x1a\n", "não é PNG")
@@ -2051,8 +2058,11 @@ def cursor_e_tamanho():
         st = a.wait(lambda st: st["sharer"] and 0 < st["sharer"]["h"] <= 540, 10, "a Ana mandar no tamanho do quadro do Bruno")
         expect(st["sharer"]["h"] < 760, "a Ana continuou mandando na resolução toda")
         log(f"Bruno mostra em até {v['view_sent_h']} linhas; a Ana manda {st['sharer']['w']}x{st['sharer']['h']}")
-        # cursor: mexe o mouse fora da janela da Ana (tela parada ali)
+        # cursor: mexe o mouse fora da janela da Ana (tela parada ali). Antes, os
+        # avisos somem (saindo, eles mudam a tela, e a tela da Ana aparece dentro
+        # do quadro dela mesma: cada quadro da saída vira mais alguns)
         a.move(1000, 650)
+        a.wait(lambda st: not st["toasts"], 20, "os avisos sumirem")
         time.sleep(1.5)
         f0 = a.state()["sharer"]["frames"]
         m0 = a.state()["sharer"]["cursor_msgs"]
@@ -2114,7 +2124,7 @@ def janela_flutuante():
         # aberta e a Ana para de transmitir: fecha sozinha
         b.click("##pip", within=b.tile(aid), hover_first=center(b.tile(aid)))
         b.wait(lambda st: st["pips"], 5, "abrir de novo")
-        a.click(contains="Ao vivo (configurar)##share")
+        a.click("##share")
         a.click("Parar")
         b.wait(lambda st: not st["pips"], 10, "fechar sozinha quando a transmissão acaba")
 
@@ -2187,7 +2197,7 @@ def som_de_um_programa():
         log(f"ligados na captura: {links}")
         expect(links == {"tom-a"}, f"só o Tocador A deveria estar ligado, está: {links}")
         # troca pra tudo com a transmissão rolando
-        ana.click(contains="Ao vivo (configurar)##share")
+        ana.click("##share")
         ana.wait(lambda st: st["share_modal"], 5, "abrir as configurações da transmissão")
         ana.click("##audio")
         ana.click(contains="Todo o som do computador", window="##Combo")
@@ -2223,7 +2233,7 @@ def excluir_programa_do_som():
             time.sleep(0.3)
         expect(capture_links(s) == {"tom-a", "tom-b"}, f"os dois deveriam estar ligados: {capture_links(s)}")
         # exclui o "Discord" com a transmissão rolando
-        ana.click(contains="Ao vivo (configurar)##share")
+        ana.click("##share")
         ana.wait(lambda st: st["share_modal"], 5, "abrir as configurações da transmissão")
         ana.click("##audioexcl")
         ana.click(contains="Discord###excl")
@@ -2574,6 +2584,7 @@ def idioma_ingles():
         # resolução e afins ficam no "avançado" (dobrado)
         if a.find("Original", window="Share screen", timeout=1.0, need=False) is None:
             a.click("##shareadvbtn")
+            time.sleep(0.3)
         for label in ["Game and video", "Original"]:
             a.find(label, window="Share screen")
         o = a.find("Original", window="Share screen")
@@ -2954,6 +2965,108 @@ def qualidade_fps_antes_da_resolucao():
         log(f"{h0}p a 30 q/s")
 
 
+def achar_rolando(a, label=None, contains=None, tries=10):
+    """Item de uma página que rola (configurações): rola a página no meio da janela até ele aparecer, descendo e depois subindo."""
+    win, _ = a.items()
+    cx, cy = win[0] + a.size[0] / 2, win[1] + a.size[1] / 2
+    for k in range(tries * 2):
+        it = a.find(label, contains, timeout=0.3, need=False)
+        if it is not None:
+            return it
+        a.scroll(cx, cy, -3 if k < tries else 3)
+        time.sleep(0.25)
+    return a.find(label, contains, timeout=1.0)
+
+
+@test
+def parar_pelo_dock():
+    """Ao vivo, o dock mostra "Ao vivo · tempo" e um botão vermelho de parar do lado: um clique para a transmissão (antes o único botão abria as configurações)."""
+    with Session("pararDock") as s:
+        p = port()
+        ana = s.app("ana", 91, ["--nome", "Ana", "--criar", str(p), "--transmitir", "--software"])
+        bia = s.app("bia", 92, ["--nome", "Bia", "--entrar", f"127.0.0.1:{p}", "--assistir"])
+        aid = bia.member_id("Ana")
+        bia.wait(lambda st: any(v["stream"] == aid and v["shown"] for v in st["views"]), 20, "a Bia ver a Ana")
+        ana.find("##stopshare", timeout=5)
+        ana.click("##stopshare")
+        ana.wait(lambda st: not st["sharer"], 5, "a transmissão parar pelo botão do dock")
+        bia.wait(lambda st: not any(v["stream"] == aid for v in st["views"]), 10, "a Bia ver que parou")
+        expect(ana.find("##stopshare", timeout=1.0, need=False) is None, "o botão de parar continuou depois de parar")
+
+
+@test
+def temas_da_pasta():
+    """Tema em .kdl na pasta temas/: aparece na galeria depois de Recarregar, dá pra escolher, e salvar o arquivo muda a cor na hora (sem reiniciar); arquivo quebrado mostra a linha do erro."""
+    with Session("temasPasta") as s:
+        a = s.app("a", 91, ["--nome", "Ana"])
+        a.wait(lambda st: st["screen"] == "home", 10, "a tela inicial")
+        tdir = os.path.join(a.cfg, "telinha", "temas")
+        os.makedirs(tdir, exist_ok=True)
+        tema = os.path.join(tdir, "qa-tema.kdl")
+        def escreve(accent):
+            with open(tema, "w") as f:
+                f.write('theme "qa-tema" name="Tema do QA"\ncolors {\n    bg "#101010"\n    accent "%s"\n    text "#EEEEEE"\n}\nfonts ui="Atkinson Hyperlegible"\n' % accent)
+        escreve("#FF0000")
+        a.click("##homegear")
+        a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        a.click("##cfg-aparencia")
+        achar_rolando(a, contains="###themereload")
+        a.click(contains="###themereload")
+        achar_rolando(a, "##tema-qa-tema")
+        a.click("##tema-qa-tema")
+        st = a.wait(lambda st: st["cfg"]["theme"] == "qa-tema" and st["theme_accent"] == "ff0000", 5, "o tema da pasta valer")
+        log(f"tema da pasta em uso: {st['theme_name']} ({st['theme_font']})")
+        expect(st["theme_font"] == "atkinson", f"a fonte do tema não valeu: {st['theme_font']}")
+        # salvou no editor: muda sozinho
+        time.sleep(1.2)
+        escreve("#00FF00")
+        a.wait(lambda st: st["theme_accent"] == "00ff00", 8, "a cor nova valer sem reiniciar")
+        # arquivo quebrado: o erro aparece com a linha
+        with open(os.path.join(tdir, "quebrado.kdl"), "w") as f:
+            f.write('theme "quebrado"\ncolors {\n    bg "#000"\n')
+        achar_rolando(a, contains="###themereload")
+        a.click(contains="###themereload")
+        a.wait(lambda st: any("quebrado.kdl" in e for e in st["theme_errors"]), 5, "o erro do arquivo quebrado aparecer")
+
+
+@test
+def fonte_acessivel():
+    """Aparência → Fonte do texto (Atkinson Hyperlegible) e Tamanho da letra: valem na hora e ficam guardados; Reduzir movimento liga."""
+    with Session("fonteAcess") as s:
+        a = s.app("a", 91, ["--nome", "Ana"], config={"theme": "pwnd"})
+        a.wait(lambda st: st["screen"] == "home", 10, "a tela inicial")
+        a.click("##homegear")
+        a.wait(lambda st: st["settings_modal"], 3, "abrir as configurações")
+        a.click("##cfg-aparencia")
+        achar_rolando(a, contains="Inter###seg")
+        a.click(contains="Inter###seg")
+        a.wait(lambda st: st["cfg"]["font_ui"] == "inter" and st["theme_font"] == "inter", 3, "a fonte do texto virar Inter")
+        a.click(contains="Atkinson###seg")
+        a.wait(lambda st: st["cfg"]["font_ui"] == "atkinson" and st["theme_font"] == "atkinson", 3, "a fonte do texto virar Atkinson")
+        achar_rolando(a, contains="Grande###seg")
+        a.click(contains="Grande###seg")
+        a.wait(lambda st: st["cfg"]["font_scale"] == 112, 3, "a letra ficar grande")
+        achar_rolando(a, contains="###reducemotion")
+        a.click(contains="###reducemotion")
+        a.wait(lambda st: st["cfg"]["reduce_motion"], 3, "reduzir movimento ligar")
+
+
+@test
+def versao_minima():
+    """Servidor com --versao-minima acima da versão do app: a entrada é recusada com o código de desatualizado e o motivo diz a versão pedida e onde baixar."""
+    with Session("versaoMin") as s:
+        p = port()
+        s.spawn("srv", [SERVER, "--porta", str(p), "--versao-minima", "99.0.0", "--chave", os.path.join(s.base, "srv.key")], {k: os.environ[k] for k in ("HOME", "PATH")})
+        time.sleep(0.6)
+        a = s.app("a", 91, ["--nome", "Ana", "--entrar", f"127.0.0.1:{p}"])
+        # recusado: volta pra tela inicial com o motivo, e o app já procura a atualização
+        st = a.wait(lambda st: st["screen"] == "home" and "99.0.0" in st["home_error"], 10, "a entrada ser recusada (app desatualizado)")
+        expect("desatualizado" in st["home_error"] and "página do telinha" in st["home_error"], f"o motivo não diz onde baixar: {st['home_error']}")
+        expect(st["update_hint"], "o app não foi procurar a atualização depois da recusa")
+        expect(any("Atualizar" in t for t in st["toasts"]), f"sem o aviso do botão Atualizar: {st['toasts']}")
+        log(f"recusado: {st['home_error']}")
+
+
 @test
 def congestionado_sem_girar():
     """Rede congestionada com alguém pedindo IDR: o encoder espera o próximo quadro em vez de girar sem parar (antes: centenas de milhares de quadros 'pulados' e um núcleo a 100%)."""
@@ -3311,7 +3424,7 @@ def decoder_lento_tela():
         dono.wait(lambda st: st["status"] == "connected", 10, "o dono entrar")
         did = dono.state()["my_id"]
         # algo mexendo na tela de quem transmite (as engrenagens do glxgears)
-        s.spawn("gears", ["glxgears", "-geometry", "900x600+0+0"], dict(os.environ, DISPLAY=f":{dono.num}", vblank_mode="0"))
+        s.spawn("gears", ["glxgears", "-geometry", "640x360+0+0"], dict(os.environ, DISPLAY=f":{dono.num}", vblank_mode="0"))  # sem cobrir os botões do modal (embaixo)
         time.sleep(1.0)
         dono.click(contains="Compartilhar tela##share")
         dono.wait(lambda st: st["share_modal"], 3, "abrir o compartilhar tela")
@@ -3836,11 +3949,13 @@ def windows_decoder():
         confere("mf_antes.png")
         h0 = v["h"]
         # quem transmite muda a resolução: SPS novo no meio, o decoder renegocia
-        a.click(contains="Ao vivo (configurar)##share")
+        a.click("##share")
         a.wait(lambda st: st["share_modal"], 3, "abrir as configurações da transmissão")
         if a.find("480p", timeout=1.0, need=False) is None:
             a.click("##shareadvbtn")
+            time.sleep(0.3)  # o modal cresce e se recentraliza
         a.click("480p")
+        a.wait(lambda st: st["cfg"]["resolution"] == 3, 3, "escolher 480p")
         a.click("Aplicar")
         a.toasted("Configurações aplicadas")
         v = vista(w.wait(lambda st: vendo(st, 480), 30, "o .exe ver a tela em 480p"))

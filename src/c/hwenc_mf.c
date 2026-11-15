@@ -21,6 +21,8 @@
 
 #include "hwenc.h"
 
+int hwenc_effort(void); // hwenc.c: 0 = leve, 1 = equilibrado, 2 = qualidade
+
 // GUIDs (conferidos com o SDK; definidos aqui pra não depender da mfuuid)
 static const GUID G_CAT_VIDEO_ENCODER = {0xf79eac7d, 0xe545, 0x4387, {0xbd, 0xee, 0xd6, 0x47, 0xd7, 0xbd, 0xe4, 0x2a}};
 static const GUID G_MEDIATYPE_VIDEO = {0x73646976, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
@@ -207,8 +209,12 @@ static HRESULT configure(struct mfenc *e, int bitrate, int screen_mode) {
         codec_u32(e->codec, &G_MEAN_BITRATE, (UINT32)bitrate);
         codec_u32(e->codec, &G_GOP_SIZE, 0xFFFF);
         codec_u32(e->codec, &G_B_FRAMES, 0);
-        // tela/texto: mais qualidade por bit; jogo: mais velocidade
-        codec_u32(e->codec, &G_QUALITY_SPEED, screen_mode ? 70 : 40);
+        // o "esforço da placa" das configurações (antes só o NVENC olhava: aqui
+        // ficava 70, que no AMF é o preset mais lento, mesmo com o jogo
+        // disputando a placa integrada). AMF e Quick Sync dividem a faixa em
+        // velocidade (0-33), equilíbrio (34-66) e qualidade (67-100)
+        const int effort = hwenc_effort();
+        codec_u32(e->codec, &G_QUALITY_SPEED, effort == 0 ? 0 : effort == 1 ? 50 : (screen_mode ? 100 : 70));
     }
     // saída antes da entrada (é o que os encoders pedem)
     IMFMediaType *t = NULL;
@@ -390,13 +396,16 @@ static int pull_output(struct mfenc *e) {
 }
 
 // Encoder assíncrono: processa eventos por até `ms`. Para quando `until` acontecer.
+// O prazo é de relógio: contar voltas de Sleep(1) fazia "500 ms" virar até
+// 7,8 s com o timer do Windows em 15,6 ms (janela coberta, sem timeBeginPeriod).
 static int pump(struct mfenc *e, int until, int ms) {
-    for (int waited = 0; waited <= ms;) {
+    const ULONGLONG t0 = GetTickCount64();
+    for (;;) {
         IMFMediaEvent *ev = NULL;
         HRESULT hr = IMFMediaEventGenerator_GetEvent(e->events, 1 /* MF_EVENT_FLAG_NO_WAIT */, &ev);
         if (hr == E_NO_EVENTS) {
+            if (GetTickCount64() - t0 >= (ULONGLONG)ms) return 0;
             Sleep(1);
-            waited += 1;
             continue;
         }
         if (FAILED(hr) || !ev) return -1;
@@ -409,7 +418,6 @@ static int pump(struct mfenc *e, int until, int ms) {
         }
         if ((int)type == until) return 1;
     }
-    return 0;
 }
 
 static int submit(struct mfenc *e, IMFSample *sample, int force_idr, const uint8_t **out, int *out_len, int *is_idr);

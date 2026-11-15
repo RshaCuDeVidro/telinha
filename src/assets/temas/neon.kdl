@@ -1,0 +1,30 @@
+// neon: preto profundo, ciano e magenta com brilho. O mais "uau" da lista.
+theme "neon" name="Neon" name-en="Neon" author="telinha" mode=dark \
+    description="Preto profundo com ciano e magenta brilhando nas bordas." \
+    description-en="Deep black with cyan and magenta glowing on the edges."
+
+colors {
+    // as sete de base: o resto sai delas (dá pra trocar qualquer outra também)
+    bg        "#05060A"
+    panel     "#0A0D16"
+    accent    "#00E5FF"
+    accent-2  "#FF2BD6"
+    text      "#E8F7FF"
+    success   "#2BFF88"
+    danger    "#FF3366"
+
+    surface   "#080A12"
+    elevated  "#10142A"
+    float     "#0B0E1C"
+    heading   "#FFFFFF"
+    muted     "#8FA3C0"
+    border    "alpha(#00E5FF, 0.20)"
+    hover     "alpha(#00E5FF, 0.08)"
+    selected  "alpha(#FF2BD6, 0.20)"
+    button    "#151A33"
+    live      "#FF3366"
+}
+background gradient="#05060A #0A1630 #05060A #1A0620" pattern=grid pattern-color="alpha(#00E5FF, 0.045)" pattern-size=32
+fonts ui="Inter" heading="Fira Code" mono="Fira Code" size=15
+metrics radius=8
+effects glow=1.0

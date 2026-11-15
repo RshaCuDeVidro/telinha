@@ -1,0 +1,42 @@
+// Claro: convertido do tema embutido da 3.10 (mesmas cores)
+theme "claro" name="Claro" name-en="Light" author="telinha" mode=light \
+    description="Claro e limpo, com destaque violeta." \
+    description-en="Clean and light, violet accent."
+
+colors {
+    bg             "#E3E5E8"
+    panel          "#F2F3F5"
+    surface        "#FFFFFF"
+    elevated       "#EBEDEF"
+    float          "#F2F3F5"
+    input          "#E3E5E8"
+    chat-input     "#EBEDEF"
+    hover          "#E6E8EB"
+    selected       "#D4D7DC"
+    text           "#313338"
+    muted          "#5C5E66"
+    faint          "#80848E"
+    heading        "#060607"
+    accent         "#5865F2"
+    accent-hover   "#4752C4"
+    accent-active  "#3C45A5"
+    success        "#248046"
+    success-hover  "#1A6334"
+    success-active "#15562C"
+    danger         "#DA373C"
+    danger-hover   "#A12D2F"
+    danger-active  "#8F2022"
+    leave          "#F6D4D5"
+    warning        "#B57A0E"
+    button         "#6D6F78"
+    button-hover   "#4E5058"
+    button-active  "#41434A"
+    check          "#5865F2"
+    scroll         "#C4C9CE"
+    scroll-hover   "#A3A6AA"
+    accent-2       "#0EA5E9"
+    border         "alpha(#000000, 0.09)"
+}
+background gradient="#E3E5E8 #DCDFF7 #E3E5E8 #D8DADE"
+fonts ui="Inter" heading="Inter" mono="Fira Code"
+effects glow=0.4

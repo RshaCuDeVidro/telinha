@@ -43,6 +43,9 @@ typedef struct cap_frame {
     const uint8_t *preview;
     int preview_w, preview_h;
     int preview_full; // 1 = é a fonte inteira (sem recorte)
+    // Janela transmitida que fechou (ou sumiu): a captura continua esperando
+    // ela voltar (ou outra do mesmo jogo) e diz isso aqui; sem quadro novo.
+    int source_wait;
 } cap_frame;
 
 

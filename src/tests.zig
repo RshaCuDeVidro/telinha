@@ -29,6 +29,8 @@ test {
     _ = @import("debuglog.zig");
     _ = @import("theme.zig");
     _ = @import("autoq.zig");
+    _ = @import("fx.zig");
+    _ = @import("kdl.zig");
     _ = @import("pctest.zig");
     _ = @import("arrow.zig");
     _ = @import("simlink.zig");

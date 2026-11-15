@@ -92,6 +92,9 @@ pub const Config = struct {
     panel_w: i32 = 350, // largura do painel da direita (chat), em pixels na escala 1
     chat_h: i32 = 0, // altura do chat no painel, em pixels na escala 1 (0 = sozinha: o que sobra da lista)
     eco: bool = false, // modo econômico: interface a 30 q/s, sem animação nem efeito (PC fraco)
+    font_ui: [16]u8 = zstr("", 16), // fonte do texto ("" = a do tema; inter, atkinson, fira)
+    font_scale: i32 = 100, // tamanho da letra, % do tamanho do tema (85 a 140)
+    reduce_motion: bool = false, // acessibilidade: nada desliza nem aparece aos poucos
     draw_color: u8 = 0, // cor do pincel (proto.draw_colors; 0 = a minha cor)
     draw_size: u8 = 0, // espessura (0 normal, 1 fina, 2 grossa, 3 marca-texto)
     show_drawings: bool = true, // mostrar os desenhos dos outros por cima das transmissões // tela inicial animada (parada quando o telinha não está em foco)
@@ -395,6 +398,12 @@ fn loadMore(cfg: *Config, k: []const u8, v: []const u8, int: i32) void {
         setStr(&cfg.custom_css, v);
     } else if (std.mem.eql(u8, k, "custom_theme")) {
         setStr(&cfg.custom_theme, v);
+    } else if (std.mem.eql(u8, k, "font_ui")) {
+        setStr(&cfg.font_ui, v);
+    } else if (std.mem.eql(u8, k, "font_scale")) {
+        cfg.font_scale = std.math.clamp(int, 85, 140);
+    } else if (std.mem.eql(u8, k, "reduce_motion")) {
+        cfg.reduce_motion = int != 0;
     } else if (std.mem.eql(u8, k, "theme")) {
         setStr(&cfg.theme, v);
     }
@@ -497,6 +506,9 @@ fn writeAll(cfg: *const Config, f: *c.FILE) bool {
     var cb: [560]u8 = undefined;
     const cs = std.fmt.bufPrint(&cb, "custom_css={s}\n", .{getStr(&cfg.custom_css)}) catch return false;
     ok = ok and c.fwrite(cs.ptr, 1, cs.len, f) == cs.len;
+    var ab: [128]u8 = undefined;
+    const acc = std.fmt.bufPrint(&ab, "font_ui={s}\nfont_scale={d}\nreduce_motion={d}\n", .{ getStr(&cfg.font_ui), cfg.font_scale, @intFromBool(cfg.reduce_motion) }) catch return false;
+    ok = ok and c.fwrite(acc.ptr, 1, acc.len, f) == acc.len;
     return ok;
 }
 

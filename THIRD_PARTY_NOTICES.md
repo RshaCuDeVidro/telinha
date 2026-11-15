@@ -23,6 +23,7 @@ telinha is MIT (see [LICENSE](LICENSE)). It uses these projects:
 | [NASM](https://www.nasm.us) 2.16.03 | build only: assembles the openh264 SIMD assembly | BSD 2-Clause | fetched by `build.zig.zon` |
 | [Inter](https://rsms.me/inter/) | interface font | SIL Open Font License 1.1 | `src/assets/Inter-*.ttf` |
 | [Fira Code](https://github.com/tonsky/FiraCode) | font of the pwnd themes (400/600/700 instances of the variable font, Latin alphabet only) | SIL Open Font License 1.1 | `src/assets/FiraCode-*.ttf` |
+| [Atkinson Hyperlegible Next](https://github.com/googlefonts/atkinson-hyperlegible-next) | easy-to-read font (for low vision): text of the pwnd themes and the "Atkinson" choice in Appearance (400/600/700 instances of the variable font, Latin alphabet only) | SIL Open Font License 1.1 | `src/assets/AtkinsonHyperlegible-*.ttf` |
 | [Font Awesome Free](https://fontawesome.com) 6.7 | icons | font: SIL OFL 1.1; icons: CC BY 4.0 | `src/assets/fa-solid-900.ttf` |
 
 ¹ Portions of this software are copyright © 2024 The FreeType Project

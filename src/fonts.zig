@@ -10,6 +10,11 @@ const fa_solid = @embedFile("assets/fa-solid-900.ttf");
 const fira_regular = @embedFile("assets/FiraCode-400.ttf");
 const fira_semibold = @embedFile("assets/FiraCode-600.ttf");
 const fira_bold = @embedFile("assets/FiraCode-700.ttf");
+// Atkinson Hyperlegible Next (Braille Institute): feita pra baixa visão, letras
+// que não se confundem (I/l/1, O/0). Instâncias fixas, só o alfabeto latino
+const atk_regular = @embedFile("assets/AtkinsonHyperlegible-400.ttf");
+const atk_semibold = @embedFile("assets/AtkinsonHyperlegible-600.ttf");
+const atk_bold = @embedFile("assets/AtkinsonHyperlegible-700.ttf");
 
 pub const Set = struct { regular: *c.ImFont, semibold: *c.ImFont, bold: *c.ImFont };
 
@@ -37,6 +42,15 @@ pub fn loadMono(atlas: *c.ImFontAtlas, size: f32) Set {
         .regular = loadFont(atlas, fira_regular, size),
         .semibold = loadFont(atlas, fira_semibold, size),
         .bold = loadFont(atlas, fira_bold, size),
+    };
+}
+
+/// A mais fácil de ler (acessibilidade; o texto do tema pwnd).
+pub fn loadAtkinson(atlas: *c.ImFontAtlas, size: f32) Set {
+    return .{
+        .regular = loadFont(atlas, atk_regular, size),
+        .semibold = loadFont(atlas, atk_semibold, size),
+        .bold = loadFont(atlas, atk_bold, size),
     };
 }
 

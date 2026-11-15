@@ -21,7 +21,7 @@ pub const version: u16 = 7;
 /// O anterior (servidor e app ainda falam com ele; o servidor pode recusar).
 pub const version_old: u16 = 6;
 /// Versão do app (vai no hello/welcome/members pra avisar quem está desatualizado).
-pub const app_version = "3.10.4";
+pub const app_version = "3.11.0";
 pub const max_msg = 32 * 1024 * 1024;
 /// Marcador em claro no lugar do tamanho: "senha errada" (o servidor não
 /// conseguiu decifrar a primeira mensagem).
@@ -178,6 +178,31 @@ pub const log_refused_busy: u8 = 2; // já está mandando um
 pub const log_refused_old: u8 = 3; // app anterior à 3.10.0, que não sabe mandar (texto = nome e versão)
 pub const log_refused_soon: u8 = 4; // o servidor recusou: grande demais, ou um por minuto sem ninguém pedir
 
+/// "3.10.4" (ou "v3.10.4", "3.10") → {3, 10, 4}. null = não é versão (bot, navegador, vazio).
+pub fn parseVersion(v: []const u8) ?[3]u32 {
+    var t = std.mem.trim(u8, v, " \t\r\n");
+    if (t.len > 0 and (t[0] == 'v' or t[0] == 'V')) t = t[1..];
+    var out: [3]u32 = .{ 0, 0, 0 };
+    var it = std.mem.splitScalar(u8, t, '.');
+    var i: usize = 0;
+    while (it.next()) |part| : (i += 1) {
+        if (i == 3) break;
+        var end: usize = 0;
+        while (end < part.len and std.ascii.isDigit(part[end])) end += 1;
+        if (end == 0) return null;
+        out[i] = std.fmt.parseInt(u32, part[0..end], 10) catch return null;
+        if (end < part.len) break; // "3.10.4-rc1": o resto não conta
+    }
+    if (i < 2) return null;
+    return out;
+}
+
+/// a < b (versões já lidas).
+pub fn versionLess(a: [3]u32, b: [3]u32) bool {
+    for (0..3) |k| if (a[k] != b[k]) return a[k] < b[k];
+    return false;
+}
+
 /// O app atende log_request? (a coleta de logs é da 3.10.0; vazio = antigo)
 pub fn answersLogRequest(version_str: []const u8) bool {
     var it = std.mem.splitScalar(u8, version_str, '.');
@@ -252,6 +277,10 @@ pub const deny_link_closed: u8 = 4; // o link público por onde a pessoa entrou 
 pub const deny_locked: u8 = 5;
 pub const deny_full: u8 = 6;
 pub const deny_bots: u8 = 7; // bot numa sala que não aceita bots (ou com o token de bot errado)
+/// App mais velho que a versão mínima da sala (--versao-minima). O motivo diz
+/// a versão pedida e onde baixar (o app antigo só mostra o texto); o app que
+/// conhece o código mostra o botão de atualizar.
+pub const deny_outdated: u8 = 8;
 
 /// admin: ações
 pub const admin_kick: u8 = 1;
@@ -278,6 +307,10 @@ pub const notice_dm: u8 = 10; // a mensagem privada não foi (o texto diz por qu
 pub const notice_file_gone: u8 = 11; // o arquivo pedido não está mais na sala
 pub const notice_chat_cleared: u8 = 12; // um admin limpou o chat da sala (o app apaga o que mostra)
 pub const notice_log_refused: u8 = 13; // o log que você pediu não vem (extra = log_refused_*; texto = nome)
+/// Seu app é mais velho que o da sala (texto: o aviso, que o app antigo mostra
+/// como está). O app que conhece o tipo procura a versão nova na hora e mostra
+/// o botão de atualizar em vez do aviso.
+pub const notice_outdated: u8 = 14;
 /// notice_channel com extra = 1: o canal pede senha (o app pergunta)
 pub const notice_channel_needs_password: u8 = 1;
 /// Só no app (não vem do servidor): chegou um log mandado pela sala (texto = nome + caminho).

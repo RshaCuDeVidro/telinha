@@ -1,0 +1,42 @@
+// Nord: convertido do tema embutido da 3.10 (mesmas cores)
+theme "nord" name="Nord" name-en="Nord" author="telinha" mode=dark \
+    description="Gelo do norte: azuis frios e calmos." \
+    description-en="Arctic ice: calm, cold blues."
+
+colors {
+    bg             "#242933"
+    panel          "#2E3440"
+    surface        "#3B4252"
+    elevated       "#292E39"
+    float          "#1F232B"
+    input          "#2E3440"
+    chat-input     "#434C5E"
+    hover          "#434C5E"
+    selected       "#4C566A"
+    text           "#E5E9F0"
+    muted          "#A3ADBF"
+    faint          "#7B88A1"
+    heading        "#ECEFF4"
+    accent         "#5E81AC"
+    accent-hover   "#6C8EBA"
+    accent-active  "#4C6F99"
+    success        "#A3BE8C"
+    success-hover  "#93AE7C"
+    success-active "#84A06D"
+    danger         "#BF616A"
+    danger-hover   "#A9545C"
+    danger-active  "#94484F"
+    leave          "#4A3A44"
+    warning        "#EBCB8B"
+    button         "#4C566A"
+    button-hover   "#5B657B"
+    button-active  "#697388"
+    check          "#88C0D0"
+    scroll         "#4C566A"
+    scroll-hover   "#5E81AC"
+    accent-2       "#8FBCBB"
+    border         "alpha(#ECEFF4, 0.07)"
+}
+background gradient="#242933 #2B3445 #242933 #20242D"
+fonts ui="Inter" heading="Inter" mono="Fira Code"
+effects glow=0.4

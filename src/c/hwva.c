@@ -452,8 +452,9 @@ static void parse_vui(br *b, h264_sps *s) {
         br_ue(b);
         br_ue(b);
         br_ue(b);
-        s->vui_reorder = (int)br_ue(b);
-        s->vui_max_dec = (int)br_ue(b);
+        const uint32_t reorder = br_ue(b), max_dec = br_ue(b);
+        s->vui_reorder = reorder > 16 ? -1 : (int)reorder;
+        s->vui_max_dec = max_dec > 16 ? -1 : (int)max_dec;
     }
 }
 
@@ -476,8 +477,10 @@ static int parse_sps(br *b, h264_sps *s) {
         s->chroma_format_idc = (int)br_ue(b);
         if (s->chroma_format_idc > 3) return -1;
         if (s->chroma_format_idc == 3) s->separate_colour_plane = (int)br_u(b, 1);
-        s->bit_depth_luma = 8 + (int)br_ue(b);
-        s->bit_depth_chroma = 8 + (int)br_ue(b);
+        const uint32_t bdl = br_ue(b), bdc = br_ue(b);
+        if (bdl > 6 || bdc > 6) return -1; // até 14 bits (e a conta do qp não estoura)
+        s->bit_depth_luma = 8 + (int)bdl;
+        s->bit_depth_chroma = 8 + (int)bdc;
         br_u(b, 1); // qpprime_y_zero_transform_bypass_flag
         s->scaling_present = (int)br_u(b, 1);
         if (s->scaling_present) {
@@ -531,11 +534,20 @@ static int parse_sps(br *b, h264_sps *s) {
     s->direct_8x8 = (int)br_u(b, 1);
     if (br_u(b, 1)) {
         // unidades de corte: 2 pixels na horizontal, 2 (ou 4 com campos) na vertical (4:2:0)
-        const int cx = 2, cy = 2 * (2 - s->frame_mbs_only);
-        s->crop_l = cx * (int)br_ue(b);
-        s->crop_r = cx * (int)br_ue(b);
-        s->crop_t = cy * (int)br_ue(b);
-        s->crop_b = cy * (int)br_ue(b);
+        // o br_ue vai até 2^32-1: virado int direto dava corte negativo, que
+        // passava na conta abaixo e virava deslocamento fora da imagem no Map
+        // (quem transmite podia derrubar quem assiste pelo VA-API). Limita antes
+        // de multiplicar: a imagem tem no máximo 1024 macroblocos (16384 px)
+        const unsigned cx = 2u, cy = 2u * (2u - (unsigned)s->frame_mbs_only);
+        uint32_t crop[4];
+        for (int k = 0; k < 4; k++) {
+            crop[k] = br_ue(b);
+            if (crop[k] > 8192) return -1;
+        }
+        s->crop_l = (int)(cx * crop[0]);
+        s->crop_r = (int)(cx * crop[1]);
+        s->crop_t = (int)(cy * crop[2]);
+        s->crop_b = (int)(cy * crop[3]);
         if (s->crop_l + s->crop_r >= s->mb_w * 16 || s->crop_t + s->crop_b >= s->map_h * 16 * (2 - s->frame_mbs_only)) return -1;
     }
     if (b->err) return -1;
@@ -1479,7 +1491,7 @@ static void handle_nal(vadec *d, const uint8_t *nal, int len, int *err) {
         }
     }
     if (!d->in_pic) {
-        const r = pic_start(d, sh);
+        const int r = pic_start(d, sh);
         if (r < 0) {
             // -2: perdeu referência (rede) ou ainda esperando o IDR: só pedir um
             // IDR, não é defeito do decoder
@@ -2381,6 +2393,36 @@ int hwva_test_headers(char *err, int errlen) {
         for (int i = 4; i + 2 < n; i++) T_CHECK(!(nal[i] == 0 && nal[i + 1] == 0 && nal[i + 2] <= 2), "sequência proibida 00 00 0%d no NAL", nal[i + 2]);
         const int m = first_nal_rbsp(nal, n, back);
         T_CHECK(m == (int)sizeof payload + 1 && !memcmp(back + 1, payload, sizeof payload), "prevenção de emulação não voltou igual");
+    }
+    // SPS malicioso: corte enorme (perto de 2^32) virava negativo no int e
+    // passava na conta do tamanho; tem que ser recusado (e o normal, aceito)
+    for (int evil = 0; evil < 2; evil++) {
+        bw w;
+        memset(&w, 0, sizeof w);
+        bw_u(&w, 8, 66);   // profile_idc (baseline)
+        bw_u(&w, 8, 0xC0); // constraint
+        bw_u(&w, 8, 31);   // level_idc
+        bw_ue(&w, 0);      // seq_parameter_set_id
+        bw_ue(&w, 0);      // log2_max_frame_num_minus4
+        bw_ue(&w, 2);      // pic_order_cnt_type
+        bw_ue(&w, 1);      // max_num_ref_frames
+        bw_u(&w, 1, 0);    // gaps
+        bw_ue(&w, 9);      // 160 px
+        bw_ue(&w, 8);      // 144 px
+        bw_u(&w, 1, 1);    // frame_mbs_only
+        bw_u(&w, 1, 1);    // direct_8x8
+        bw_u(&w, 1, 1);    // frame_cropping_flag
+        bw_ue(&w, evil ? 0xFFFFFFFEu : 0); // esquerda
+        bw_ue(&w, evil ? 0x80000001u : 8); // direita
+        bw_ue(&w, 0);
+        bw_ue(&w, 0);
+        bw_u(&w, 1, 0); // sem VUI
+        bw_u(&w, 1, 1); // bit de parada
+        br b = {w.buf, (w.bits + 7) / 8, 0, 0};
+        h264_sps s;
+        const int r = parse_sps(&b, &s);
+        if (evil) T_CHECK(r != 0, "SPS com corte enorme passou (esquerda %d, direita %d)", s.crop_l, s.crop_r);
+        else T_CHECK(r == 0 && s.crop_r == 16 && s.mb_w * 16 - s.crop_l - s.crop_r == 144, "SPS com corte normal não passou");
     }
     // SPS/PPS do encoder lidos pelo parser do decoder, conferidos com os parâmetros do driver
     static const struct {

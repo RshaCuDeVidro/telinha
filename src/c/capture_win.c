@@ -44,6 +44,13 @@ struct cap_ctx {
     struct gpu_path *gpu; // caminho pela placa (cap_gpu_enable); NULL = pela CPU
     HWND hwnd;              // janela (KIND_WGC / KIND_PRINT)
     struct wgc_state *wgc;
+    // a janela fechou ou trocou (o jogo fecha a janela no fim da partida, o
+    // launcher se esconde quando o jogo abre): segue o programa em vez de
+    // derrubar a transmissão. Ver follow_window
+    WCHAR exe[64];   // executável da janela (minúsculo, sem o caminho)
+    WCHAR title[128];
+    int family;      // grupo conhecido (LoL: cliente e jogo); 0 = só ela mesma
+    ULONGLONG gone_since, follow_at;
     RECT rc;
     int w, h;
     uint8_t *clean; // tela sem cursor
@@ -852,9 +859,11 @@ static int next_dxgi(struct cap_ctx *c, cap_frame *out, int timeout_ms, char *er
     IDXGIResource *res = NULL;
     HRESULT hr = IDXGIOutputDuplication_AcquireNextFrame(c->dupl, (UINT)timeout_ms, &fi, &res);
     if (hr == DXGI_ERROR_WAIT_TIMEOUT) return 0;
-    if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_INVALID_CALL || hr == E_ACCESSDENIED) {
+    if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_INVALID_CALL || hr == E_ACCESSDENIED || hr == DXGI_ERROR_DEVICE_REMOVED ||
+        hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG) {
         // alt-tab pra jogo em tela cheia, mudou resolução, UAC, tela de
-        // bloqueio...: recria (agora ou nas próximas chamadas)
+        // bloqueio, o driver da placa reiniciou (jogo pesado, dois monitores
+        // com taxas diferentes): recria (agora ou nas próximas chamadas)
         fprintf(stderr, "[telinha] perdi o acesso à tela (DXGI 0x%08lx), tentando de novo\n", (unsigned long)hr);
         release_dxgi(c);
         c->lost_since = GetTickCount64();
@@ -1013,10 +1022,14 @@ static int next_gdi(struct cap_ctx *c, cap_frame *out, char *err, int errlen) {
     return 1;
 }
 
+// Pode chamar de novo (zera o que soltou).
 static void close_gdi(struct cap_ctx *c) {
     if (c->dib) DeleteObject(c->dib);
     if (c->mem_dc) DeleteDC(c->mem_dc);
     if (c->screen_dc) ReleaseDC(NULL, c->screen_dc);
+    c->dib = NULL;
+    c->mem_dc = NULL;
+    c->screen_dc = NULL;
 }
 
 // ---------------------------------------------------------------------------
@@ -1280,16 +1293,180 @@ static int wgc_cursor(struct cap_ctx *c, cap_frame *out) {
     return moved;
 }
 
-static int next_wgc(struct cap_ctx *c, cap_frame *out, int timeout_ms, char *err, int errlen) {
-    struct wgc_state *g = c->wgc;
-    if (!IsWindow(c->hwnd)) {
+// ---------------------------------------------------------------------------
+// Seguir a janela: jogos que trocam de janela no meio (a partida do LoL abre
+// uma janela nova e fecha no fim, e o cliente se esconde enquanto isso).
+
+// Programas que passam a vez entre janelas. rank 0 é o jogo (preferido
+// enquanto estiver aberto), 1 o launcher/cliente. "class:..." é a classe da
+// janela, pra quando o anti-cheat não deixa ler o executável (ver exe_of).
+static const struct {
+    const WCHAR *name;
+    int family, rank;
+} families[] = {
+    {L"league of legends.exe", 1, 0},
+    {L"class:riotwindowclass", 1, 0},
+    {L"leagueclientux.exe", 1, 1},
+    {L"leagueclientuxrender.exe", 1, 1},
+    {L"class:rclient", 1, 1},
+    {L"valorant-win64-shipping.exe", 2, 0},
+    {L"riotclientux.exe", 2, 1},
+};
+
+// Executável da janela: minúsculo, só o nome ("league of legends.exe"). Se o
+// processo não deixa (anti-cheat), "class:" + a classe da janela.
+static int exe_of(HWND h, WCHAR *out, int cap) {
+    out[0] = 0;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(h, &pid);
+    HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (proc) {
+        WCHAR path[MAX_PATH];
+        DWORD len = MAX_PATH;
+        if (QueryFullProcessImageNameW(proc, 0, path, &len)) {
+            WCHAR *base = path;
+            for (WCHAR *p = path; *p; p++)
+                if (*p == L'\\' || *p == L'/') base = p + 1;
+            lstrcpynW(out, base, cap);
+        }
+        CloseHandle(proc);
+    }
+    if (!out[0]) {
+        WCHAR cls[48];
+        if (cap < 56 || !GetClassNameW(h, cls, 48)) return 0;
+        lstrcpyW(out, L"class:");
+        lstrcatW(out, cls);
+    }
+    CharLowerW(out);
+    return 1;
+}
+
+// Em que família esse executável está (0 = nenhuma) e a posição nela.
+static int family_of(const WCHAR *exe, int *rank) {
+    for (size_t i = 0; i < sizeof families / sizeof families[0]; i++)
+        if (lstrcmpW(exe, families[i].name) == 0) {
+            if (rank) *rank = families[i].rank;
+            return families[i].family;
+        }
+    return 0;
+}
+
+typedef struct {
+    struct cap_ctx *c;
+    HWND best;
+    int best_rank;
+    LONG best_area;
+} follow_search;
+
+static BOOL CALLBACK follow_enum(HWND h, LPARAM lp) {
+    follow_search *fs = (follow_search *)lp;
+    if (h == fs->c->hwnd || !shareable(h) || IsIconic(h)) return TRUE;
+    WCHAR exe[64];
+    if (!exe_of(h, exe, 64)) return TRUE;
+    int rank = 0;
+    if (fs->c->family) {
+        if (family_of(exe, &rank) != fs->c->family) return TRUE;
+    } else {
+        // fora das famílias conhecidas: só o mesmo programa com o mesmo título
+        // (trocar pra outra janela qualquer podia mostrar o que não foi escolhido)
+        WCHAR title[128];
+        if (lstrcmpW(exe, fs->c->exe) != 0 || !GetWindowTextW(h, title, 128) || lstrcmpW(title, fs->c->title) != 0) return TRUE;
+    }
+    RECT r;
+    GetWindowRect(h, &r);
+    LONG area = (r.right - r.left) * (r.bottom - r.top);
+    if (!fs->best || rank < fs->best_rank || (rank == fs->best_rank && area > fs->best_area)) {
+        fs->best = h;
+        fs->best_rank = rank;
+        fs->best_area = area;
+    }
+    return TRUE;
+}
+
+// Troca a captura pra outra janela (mesmo programa ou mesma família).
+static int switch_window(struct cap_ctx *c, HWND h) {
+    char from8[80] = "", to8[80] = "";
+    WCHAR exe[64];
+    exe_of(h, exe, 64);
+    WideCharToMultiByte(CP_UTF8, 0, c->exe, -1, from8, sizeof from8, NULL, NULL);
+    WideCharToMultiByte(CP_UTF8, 0, exe, -1, to8, sizeof to8, NULL, NULL);
+    if (c->kind == KIND_WGC) {
+        HRESULT hr = E_FAIL;
+        struct wgc_state *n = wgc_open(h, c->show_cursor, &hr);
+        if (!n) {
+            fprintf(stderr, "[telinha] seguir a janela: não consegui capturar a nova (%s, 0x%08lx)\n", to8, (unsigned long)hr);
+            return 0;
+        }
+        wgc_close(c->wgc);
+        c->wgc = n;
+    } else {
+        // PrintWindow: o próximo quadro refaz o bitmap no tamanho da janela nova
+        close_gdi(c);
+    }
+    fprintf(stderr, "[telinha] a janela transmitida mudou: %s -> %s (seguindo)\n", from8, to8);
+    c->hwnd = h;
+    lstrcpynW(c->exe, exe, 64);
+    GetWindowTextW(h, c->title, 128);
+    c->gone_since = 0;
+    return 1;
+}
+
+// Uma vez por segundo: a janela ainda está lá? Na família de um jogo, o jogo
+// abriu (e estamos no launcher)? Sem janela, espera até 10 min por ela (ou
+// outra da família) com a transmissão de pé. 1 = segue capturando a de agora
+// (ou a nova); 0 = esperando; -1 = desistiu.
+static int follow_window(struct cap_ctx *c, char *err, int errlen) {
+    const ULONGLONG now = GetTickCount64();
+    const int alive = IsWindow(c->hwnd);
+    if (alive && now < c->follow_at) return 1;
+    if (!alive && c->gone_since && now < c->follow_at) return 0;
+    c->follow_at = now + 1000;
+    if (alive && !c->family) {
+        c->gone_since = 0;
+        return 1;
+    }
+    if (alive) {
+        // família: estamos no launcher e o jogo abriu? vai pro jogo. Já no
+        // jogo, fica nele (minimizado no alt-tab inclusive: quem assiste vê o
+        // último quadro, não o cliente)
+        int rank = 0;
+        family_of(c->exe, &rank);
+        if (rank == 0) return 1;
+        follow_search fs = {c, NULL, 99, 0};
+        EnumWindows(follow_enum, (LPARAM)&fs);
+        if (fs.best && fs.best_rank < rank) switch_window(c, fs.best);
+        return 1;
+    }
+    follow_search fs = {c, NULL, 99, 0};
+    EnumWindows(follow_enum, (LPARAM)&fs);
+    if (fs.best && switch_window(c, fs.best)) return 1;
+    if (!c->gone_since) {
+        c->gone_since = now;
+        fprintf(stderr, "[telinha] a janela transmitida fechou: esperando ela (ou outra do mesmo jogo) voltar\n");
+    }
+    if (now - c->gone_since > 10 * 60 * 1000) {
         set_err(err, errlen, "a janela foi fechada", 0);
         return -1;
     }
+    return 0;
+}
+
+static int next_wgc(struct cap_ctx *c, cap_frame *out, int timeout_ms, char *err, int errlen) {
+    const int fw = follow_window(c, err, errlen);
+    if (fw < 0) return -1;
+    if (fw == 0) {
+        out->source_wait = 1;
+        Sleep((DWORD)(timeout_ms > 0 && timeout_ms < 250 ? timeout_ms : 250));
+        return 0;
+    }
+    struct wgc_state *g = c->wgc;
     CaptureFrame *frame = NULL;
-    // sem evento: confere a cada 2 ms (a janela só manda quadro quando muda)
-    for (int waited = 0; waited <= timeout_ms; waited += 2) {
+    // sem evento: confere a cada 2 ms (a janela só manda quadro quando muda).
+    // Prazo de relógio: com o timer em 15,6 ms cada Sleep(2) dormia 8x mais
+    const ULONGLONG t0 = GetTickCount64();
+    for (;;) {
         if (SUCCEEDED(g->pool->v->TryGetNextFrame(g->pool, (void **)&frame)) && frame) break;
+        if (GetTickCount64() - t0 >= (ULONGLONG)(timeout_ms > 0 ? timeout_ms : 0)) break;
         Sleep(2);
     }
     if (!frame) {
@@ -1368,9 +1545,12 @@ static int next_wgc(struct cap_ctx *c, cap_frame *out, int timeout_ms, char *err
 // Reserva: PrintWindow (pede pra janela se desenhar num bitmap; funciona com
 // ela coberta, mas custa mais CPU e não acorda sozinho quando muda).
 static int next_print(struct cap_ctx *c, cap_frame *out, char *err, int errlen) {
-    if (!IsWindow(c->hwnd)) {
-        set_err(err, errlen, "a janela foi fechada", 0);
-        return -1;
+    const int fw = follow_window(c, err, errlen);
+    if (fw < 0) return -1;
+    if (fw == 0) {
+        out->source_wait = 1;
+        Sleep(250);
+        return 0;
     }
     if (IsIconic(c->hwnd)) return 0;
     RECT r;
@@ -1379,9 +1559,6 @@ static int next_print(struct cap_ctx *c, cap_frame *out, char *err, int errlen) 
     if (w < 16 || h < 16) return 0;
     if (!c->mem_dc || w != c->w || h != c->h) {
         close_gdi(c);
-        c->dib = NULL;
-        c->mem_dc = NULL;
-        c->screen_dc = NULL;
         if (ensure_out(c, w, h) < 0) return -1;
         free(c->clean);
         c->clean = calloc((size_t)w * h, 4);
@@ -1420,6 +1597,10 @@ static cap_ctx *open_window(HWND hwnd, int show_cursor, char *err, int errlen) {
     if (!c) return NULL;
     c->show_cursor = show_cursor;
     c->hwnd = hwnd;
+    // de que programa é (pra seguir se a janela fechar ou o jogo trocar de janela)
+    exe_of(hwnd, c->exe, 64);
+    GetWindowTextW(hwnd, c->title, 128);
+    c->family = family_of(c->exe, NULL);
     HRESULT hr = E_FAIL;
     c->wgc = getenv("TELINHA_SEM_WGC") ? NULL : wgc_open(hwnd, show_cursor, &hr);
     if (c->wgc) {

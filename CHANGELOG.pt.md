@@ -2,6 +2,32 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.11.0
+
+Cara nova, temas em arquivo, mais fácil de ler e de atualizar. Mesmo protocolo (7); atualize o servidor também: ele ganha o `--versao-minima` e avisa quem está com o app atrasado.
+
+### Destaques
+
+- 🎨 **Cara nova, com movimento que para sozinho**: botões com degradê e brilho neon, interruptores no lugar das caixinhas, abas que deslizam, barra do topo e de controles de vidro com a borda neon, telas com sombra e brilho, avisos que entram deslizando. Nada fica animando: o telinha parado não redesenha (Reduzir movimento e o modo econômico desligam tudo).
+- 📁 **Temas são arquivos `.kdl`**: 9 embutidos (Escuro, Neon, pwnd, Aurora, Alto contraste, Claro, pwnd claro, Nord, Drácula) e os seus na pasta `temas`. **Criar o meu a partir deste** escreve o tema de agora num arquivo; salvou, o telinha aplica na hora. Guia em docs/THEMES.pt.md.
+- 👓 **Mais fácil de ler**: a Atkinson Hyperlegible (feita pra baixa visão) vem junto, o pwnd usa ela no texto e guarda a Fira Code pros títulos, e cada um escolhe a fonte e o tamanho da letra só pra si.
+- ⏹️ **Botão de parar**: ao vivo, a barra de controles mostra "Ao vivo · 12 min" e um botão vermelho de parar do lado.
+- ⬆️ **Atualizar é um botão**: saiu versão nova, aparece um botão Atualizar lá em cima (na sala e na tela inicial). Um clique baixa (o progresso enche o botão), outro reinicia já na versão nova e volta pra mesma sala.
+- 🎮 **Transmitir o LoL não cai mais**: a captura de janela segue o jogo do cliente pra partida e de volta; janela que fechou espera até 10 minutos com a transmissão de pé em vez de encerrar.
+
+<!-- detalhes -->
+
+### Todas as mudanças
+
+- **Temas** (`theme.zig`, `kdl.zig`, `src/assets/temas/`): leitor de KDL (nós, propriedades, blocos, comentários, textos crus, escapes), temas com cores em expressão (`alpha`, `mix`, `lighten`, `darken` e referência a outra cor do tema), degradê e desenho parado de fundo (grade, pontos, linhas), fontes (texto, títulos, código, tamanho), cantos, espessura das bordas e força do brilho. Os temas da 3.10 viraram arquivo com as mesmas cores. Pasta `temas/` na configuração, botão de recarregar, o arquivo do tema em uso é conferido quando o telinha volta ao foco (e a cada 2 s com a Aparência aberta; fora isso, nada fica olhando), erro diz o arquivo e a linha.
+- **Fontes** (`fonts.zig`): Atkinson Hyperlegible Next (400/600/700, latim). Configurações → Aparência: Fonte do texto (a do tema, Inter, Atkinson, Fira Code), Tamanho da letra (90% a 140%), Reduzir movimento.
+- **Interface** (`fx.zig`, `ui.zig`): animações que vão até o alvo e param (a interface só pede quadro enquanto algo se mexe), degradês com cantos, sombras e brilho suaves; botões, interruptores, seleção em abas e anéis de foco novos, galeria de temas com miniatura, barra do topo, de controles, painel e controles das telas de vidro, configurações e avisos animados.
+- **Atualização**: botão Atualizar no topo (sala e tela inicial), reiniciar volta pra sala (ou hospeda de novo); sala numa versão mais nova faz o app procurar a atualização na hora.
+- **Servidor**: `--versao-minima VERSÃO` (`$TELINHA_VERSAO_MINIMA`): app mais velho é recusado com a versão pedida e onde baixar (`deny_outdated`, o app novo mostra o botão de atualizar); app mais velho que o servidor recebe um aviso (`notice_outdated`).
+- **Captura no Windows**: janela que fechou é seguida (jogos da Riot: cliente ↔ partida, a partida preferida; outros programas só pra uma janela do mesmo executável e com o mesmo título) e esperada por até 10 min; o DXGI também volta de um reset do driver (`DEVICE_REMOVED/RESET/HUNG`). Dica no compartilhar pros jogos da Riot (Sem bordas com dois monitores).
+- **Da revisão**: o corte do SPS no VA-API lia valores enormes como int negativo e passava na conta do tamanho (quem transmite podia derrubar quem assiste pelo VA-API); o esforço (Leve/Equilibrado/Qualidade) agora chega no encoder do Media Foundation (ficava fixo no preset mais lento do AMF); o intervalo do vsync arredonda pra baixo (165 Hz não corta mais o vídeo de 60 pra 55, o modo econômico não corta o vídeo pela metade); esperas por relógio no encoder do MF e na captura WGC; threads do pool na prioridade normal; a taxa no MF/VA segue o fps de verdade.
+- **Testes**: KDL, temas (todos os embutidos carregam e ficam legíveis, expressões, referências, exportar e ler de volta), fx, versão mínima e aviso de desatualizado; testes de interface `parar_pelo_dock`, `temas_da_pasta`, `fonte_acessivel`, `versao_minima`.
+
 ## 3.10.4
 
 Transmissão que não perde a resolução, e pedido de log que sempre responde. Mesmo protocolo (7); atualize o servidor também: ele para de tratar o decoder de quem assiste começando como "não dá conta", responde pelos apps antigos no pedido de log e ganha o `--exigir-logs`.

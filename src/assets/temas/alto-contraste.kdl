@@ -1,0 +1,38 @@
+// alto contraste: pra quem enxerga pouco ou joga com a tela no sol. Preto e
+// branco puros, amarelo de destaque, bordas visíveis, fonte Atkinson Hyperlegible
+// (feita pra baixa visão) e letra maior.
+theme "alto-contraste" name="Alto contraste" name-en="High contrast" author="telinha" mode=dark \
+    description="Preto e branco puros, amarelo de destaque, bordas fortes e letra maior." \
+    description-en="Pure black and white, yellow accent, strong borders and bigger text."
+
+colors {
+    bg            "#000000"
+    panel         "#000000"
+    accent        "#FFE600"
+    accent-hover  "#FFF266"
+    accent-active "#E6CF00"
+    accent-2      "#FFFFFF"
+    text          "#FFFFFF"
+    success       "#00FF6A"
+    danger        "#FF4D4D"
+
+    surface       "#000000"
+    elevated      "#111111"
+    float         "#000000"
+    input         "#000000"
+    heading       "#FFFFFF"
+    muted         "#E0E0E0"
+    faint         "#BDBDBD"
+    border        "#FFFFFF"
+    hover         "#222222"
+    selected      "#333300"
+    button        "#1A1A1A"
+    button-hover  "#2E2E2E"
+    button-active "#444444"
+    warning       "#FFE600"
+    live          "#FF4D4D"
+}
+background gradient="#000000 #000000 #000000 #000000"
+fonts ui="Atkinson Hyperlegible" heading="Atkinson Hyperlegible" mono="Fira Code" size=17
+metrics radius=4 border=2
+effects glow=0

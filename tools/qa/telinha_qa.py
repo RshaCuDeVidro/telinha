@@ -29,7 +29,10 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 APP = os.path.join(ROOT, "zig-out", "bin", "telinha")
 EXE = os.path.join(ROOT, "zig-out", "bin", "telinha.exe")
 # prefixo do wine só dos testes (nunca o de outro programa)
-WINEPREFIX = os.environ.get("QA_WINEPREFIX", os.path.join(tempfile.gettempdir(), "telinha-qa-wineprefix"))
+# dentro de uma pasta nossa: o wine novo não cria o prefixo numa pasta de outro
+# dono ("'/tmp' is not owned by you, refusing to create a configuration directory")
+WINEPREFIX = os.environ.get("QA_WINEPREFIX", os.path.join(tempfile.gettempdir(), f"telinha-qa-{os.getuid()}", "wineprefix"))
+os.makedirs(os.path.dirname(WINEPREFIX), mode=0o700, exist_ok=True)
 
 
 def winpath(p):

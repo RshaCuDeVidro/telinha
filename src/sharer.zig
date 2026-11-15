@@ -321,6 +321,9 @@ pub const Sharer = struct {
     auto_from: std.atomic.Value(u32) = .init(0),
     /// A última mudança desfez uma descida que não baixou o tempo por quadro.
     auto_reverted: std.atomic.Value(bool) = .init(false),
+    /// A janela transmitida fechou e a captura está esperando ela (ou outra do
+    /// mesmo jogo) voltar: quem assiste fica com a última imagem.
+    source_wait: std.atomic.Value(bool) = .init(false),
     /// fps automático em 30 porque 60 não cabia (a qualidade automática).
     auto_fps30: std.atomic.Value(bool) = .init(false),
     preview_tex: u32 = 0, // só a UI mexe
@@ -997,6 +1000,11 @@ const Pipeline = struct {
             const t_cap = sync.nowUs();
             const r = p.cap.?.next(&f, 50, &p.err);
             if (r < 0) return error.Capture;
+            // janela transmitida fechou: a captura espera ela (ou o jogo) voltar
+            if ((f.source_wait != 0) != s.source_wait.load(.monotonic)) {
+                s.source_wait.store(f.source_wait != 0, .release);
+                s.client.wake();
+            }
             if (f.preview != null) p.takePreview(&f);
             if (r == 2) {
                 // só o cursor mexeu (fora do vídeo): manda a posição, nada de quadro

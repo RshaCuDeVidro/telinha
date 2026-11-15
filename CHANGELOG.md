@@ -2,6 +2,32 @@
 
 <sub>[🇺🇸 English](CHANGELOG.md) · [🇧🇷 Português](CHANGELOG.pt.md)</sub>
 
+## 3.11.0
+
+A new look, themes as files, easier to read and to update. Same protocol (7); update the server too: it gains `--versao-minima` and tells outdated apps to update.
+
+### Highlights
+
+- 🎨 **A new look, with motion that stops by itself**: buttons with gradients and a neon glow, switches instead of checkboxes, sliding tabs, glass top bar and control bar with a neon edge, screens with shadow and glow, notices that slide in. Nothing keeps animating: an idle telinha doesn't redraw (Reduce motion and economy mode turn it all off).
+- 📁 **Themes are `.kdl` files**: 9 built in (Dark, Neon, pwnd, Aurora, High contrast, Light, pwnd light, Nord, Dracula) and your own in the `temas` folder. **Make my own from this one** writes the current theme to a file; save it and telinha applies it right away. Guide in docs/THEMES.md.
+- 👓 **Easier to read**: Atkinson Hyperlegible (made for low vision) built in, pwnd uses it for body text and keeps Fira Code for titles, and anyone can pick the text font and size just for themselves.
+- ⏹️ **Stop button**: while live, the control bar shows "Live · 12 min" and a red stop button right next to it.
+- ⬆️ **Updating is one button**: when a new version is out, an Update button shows up at the top (room and home screen). One click downloads it (progress inside the button), another restarts on the new version and goes back to the same room.
+- 🎮 **Sharing League of Legends no longer dies**: window capture follows the game from the client to the match and back; a closed window waits up to 10 minutes with the stream up instead of ending it.
+
+<!-- detalhes -->
+
+### All changes
+
+- **Themes** (`theme.zig`, `kdl.zig`, `src/assets/temas/`): KDL reader (nodes, properties, blocks, comments, raw strings, escapes), themes with colors as expressions (`alpha`, `mix`, `lighten`, `darken` and references to other colors of the theme), background gradient and still pattern (grid, dots, scanlines), fonts (text, titles, code, size), corners, border thickness and glow strength. The 3.10 themes were converted with the same colors. Folder `temas/` in the configuration, reload button, the active theme file is checked when telinha gets focus back (and every 2 s with Appearance open; no polling otherwise), errors show the file and line.
+- **Fonts** (`fonts.zig`): Atkinson Hyperlegible Next (400/600/700, Latin). Settings → Appearance: Text font (theme's, Inter, Atkinson, Fira Code), Text size (90% to 140%), Reduce motion.
+- **Interface** (`fx.zig`, `ui.zig`): animations that ease to their target and stop (the UI only asks for frames while something moves), rounded gradients, soft shadows and glow; new buttons, switches, segmented control, focus rings, theme gallery with previews, glass top bar/control bar/panel/screen controls, animated settings and notices.
+- **Update**: Update button at the top (room and home), restart goes back to the room (or hosts it again); a room on a newer version makes the app look for the update right away.
+- **Server**: `--versao-minima VERSION` (`$TELINHA_VERSAO_MINIMA`): older apps are refused with the required version and where to download (`deny_outdated`, the new app shows the update button); apps older than the server get a notice (`notice_outdated`).
+- **Windows capture**: a closed window is followed (Riot games: client ↔ match, the match preferred; other programs only to a window with the same executable and title) and waited for up to 10 min; DXGI also recovers from a driver reset (`DEVICE_REMOVED/RESET/HUNG`). Share dialog tip for Riot games (Borderless with two monitors).
+- **Review fixes**: VA-API SPS cropping read huge values as negative ints and passed the size check (a streamer could crash VA-API viewers); effort (Light/Balanced/Quality) now reaches Media Foundation encoders (it was fixed at the slowest AMF preset); swap interval rounds down (165 Hz no longer cut 60 fps video to 55, economy mode no longer halves video); clock-based waits in the MF encoder and WGC capture; pool threads at normal priority; MF/VA bitrate follows the real frame rate.
+- **Tests**: KDL, themes (all built-ins load and stay legible, expressions, references, export round trip), fx, minimum version and outdated notice; UI tests `parar_pelo_dock`, `temas_da_pasta`, `fonte_acessivel`, `versao_minima`.
+
 ## 3.10.4
 
 Streams that keep their resolution, and log requests that always answer. Same protocol (7); update the server too: it stops treating a viewer's decoder starting up as "can't keep up", answers log requests to old apps and gains `--exigir-logs`.

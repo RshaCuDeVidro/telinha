@@ -1501,6 +1501,63 @@ test "coleta de logs: app antigo, recusa com motivo, pedido fura o um por minuto
     try testing.expect(!proto.answersLogRequest("3.9.2") and !proto.answersLogRequest(""));
 }
 
+test "versão mínima: app velho é recusado com o motivo e onde baixar; o um pouco atrasado é avisado; bot entra" {
+    net.init();
+    const port = freshPort();
+    const srv = try Server.start(.{ .port = port, .min_version = "3.10.0", .releases = "https://exemplo/releases" });
+    defer srv.stop();
+    // 3.1.0: recusado, com o código novo (o app novo mostra o botão de atualizar)
+    var velho = try TestClient.connectVersion(port, "Velho", "", "", 0, 0, null, 0, "3.1.0");
+    defer velho.close();
+    {
+        var r: proto.Reader = .{ .data = try velho.expect(.denied) };
+        const reason = try r.str();
+        try testing.expectEqual(proto.deny_outdated, try r.u8_());
+        try testing.expect(std.mem.indexOf(u8, reason, "3.1.0") != null);
+        try testing.expect(std.mem.indexOf(u8, reason, "3.10.0") != null);
+        try testing.expect(std.mem.indexOf(u8, reason, "https://exemplo/releases") != null);
+    }
+    // sem versão nenhuma (app de antes da 3.0): também não entra
+    var sem = try TestClient.connectVersion(port, "Sem", "", "", 0, 0, null, 0, "");
+    defer sem.close();
+    {
+        var r: proto.Reader = .{ .data = try sem.expect(.denied) };
+        _ = try r.str();
+        try testing.expectEqual(proto.deny_outdated, try r.u8_());
+    }
+    // acima da mínima mas atrás do servidor: entra e recebe o aviso
+    var quase = try TestClient.connectVersion(port, "Quase", "", "", 0, 0, null, 0, "3.10.0");
+    defer quase.close();
+    try quase.welcome();
+    const mine = proto.parseVersion(proto.app_version).?;
+    if (proto.versionLess(.{ 3, 10, 0 }, mine)) {
+        for (0..20) |_| {
+            var r: proto.Reader = .{ .data = try quase.expect(.notice) };
+            if (try r.u8_() != proto.notice_outdated) continue;
+            const text = try r.str();
+            try testing.expect(std.mem.indexOf(u8, text, proto.app_version) != null);
+            break;
+        }
+    }
+    // a versão do servidor: entra (o aviso de desatualizado não vem pra ele)
+    var novo = try TestClient.connect(port, "Novo", "", "");
+    defer novo.close();
+    try novo.welcome();
+    try pingPong(&novo);
+    // bot (versão do SDK, não é de app): entra
+    var bot = try TestClient.connectBot(port, "Robô", "", "", "");
+    defer bot.close();
+    try bot.welcome();
+    // leitura de versões
+    try testing.expectEqual(@as(?[3]u32, .{ 3, 10, 4 }), proto.parseVersion("3.10.4"));
+    try testing.expectEqual(@as(?[3]u32, .{ 3, 10, 0 }), proto.parseVersion("v3.10"));
+    try testing.expectEqual(@as(?[3]u32, .{ 3, 11, 0 }), proto.parseVersion("3.11.0-rc1"));
+    try testing.expect(proto.parseVersion("sdk-python/0.5.1") == null);
+    try testing.expect(proto.parseVersion("") == null);
+    try testing.expect(proto.versionLess(.{ 3, 9, 9 }, .{ 3, 10, 0 }));
+    try testing.expect(!proto.versionLess(.{ 3, 10, 0 }, .{ 3, 10, 0 }));
+}
+
 fn sendLog(c: *TestClient, id: u32, data: []const u8, chunk: usize) !void {
     var off: usize = 0;
     while (off < data.len) {

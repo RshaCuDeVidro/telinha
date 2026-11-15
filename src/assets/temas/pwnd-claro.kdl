@@ -1,0 +1,42 @@
+// pwnd claro: convertido do tema embutido da 3.10 (mesmas cores)
+theme "pwnd-claro" name="pwnd claro" name-en="pwnd light" author="telinha" mode=light \
+    description="O pwnd de dia: branco, violeta e verde." \
+    description-en="pwnd by day: white, violet and green."
+
+colors {
+    bg             "#F1F5F9"
+    panel          "#F8FAFC"
+    surface        "#FFFFFF"
+    elevated       "#EEF2F6"
+    float          "#F8FAFC"
+    input          "#E5E7EB"
+    chat-input     "#F1F5F9"
+    hover          "#EDE9FE"
+    selected       "#DDD6FE"
+    text           "#111827"
+    muted          "#4B5563"
+    faint          "#6B7280"
+    heading        "#1E1036"
+    accent         "#7C3AED"
+    accent-hover   "#6D28D9"
+    accent-active  "#5B21B6"
+    success        "#15803D"
+    success-hover  "#166534"
+    success-active "#14532D"
+    danger         "#DC2626"
+    danger-hover   "#B91C1C"
+    danger-active  "#991B1B"
+    leave          "#FDE2E4"
+    warning        "#92400E"
+    button         "#64748B"
+    button-hover   "#475569"
+    button-active  "#334155"
+    check          "#7C3AED"
+    scroll         "#D1D5DB"
+    scroll-hover   "#7C3AED"
+    accent-2       "#C026D3"
+    border         "alpha(#7C3AED, 0.16)"
+}
+fonts ui="Atkinson Hyperlegible" heading="Fira Code" mono="Fira Code" size=15
+metrics radius=2
+effects glow=0.25

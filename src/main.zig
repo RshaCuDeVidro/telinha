@@ -61,8 +61,11 @@ fn swapIntervalFor(win: *c.GLFWwindow, cap: u64) c_int {
         }
     }
     if (refresh <= 0) return 1;
+    // pra baixo: arredondado, 165 Hz com limite 60 dava 3 vsyncs (55 q/s, o
+    // vídeo de 60 perdia quadro) e 100 Hz dava 2 (50 q/s). Pra baixo nunca
+    // fica abaixo do limite: 165 → 2 (82 q/s), 100 → 1, 144 → 2 (72)
     const ratio = @as(f64, @floatFromInt(refresh)) / @as(f64, @floatFromInt(cap));
-    return @intCast(std.math.clamp(@as(i64, @intFromFloat(@round(ratio))), 1, 4));
+    return @intCast(std.math.clamp(@as(i64, @intFromFloat(@floor(ratio))), 1, 4));
 }
 
 fn onGlfwError(code: c_int, desc: [*c]const u8) callconv(.c) void {
@@ -129,7 +132,9 @@ pub fn main(init: std.process.Init) !void {
     var emoji_loaded = false;
     ui.fonts_sans = fonts.load(io.*.Fonts, base);
     ui.fonts_mono = fonts.loadMono(io.*.Fonts, base);
+    ui.fonts_atk = fonts.loadAtkinson(io.*.Fonts, base);
     ui.useFonts(ui.fonts_sans, 1.0);
+    ui.loadThemes(); // os embutidos e os da pasta temas/ (antes de aplicar o tema)
     ui.applyStyle();
 
     // eventos da janela contam pra "refazer a interface" (o ImGui encadeia os
@@ -193,7 +198,10 @@ pub fn main(init: std.process.Init) !void {
         // meio (o Sleep do Windows perderia o vsync e o vídeo tremeria)
         if (c.glfwGetTime() >= pacing_check_at) {
             pacing_check_at = c.glfwGetTime() + 2;
-            const want = swapIntervalFor(win, ui.frame_cap_fps);
+            // com vídeo na tela o limite é pelo menos 60 (o modo econômico
+            // promete o vídeo no fps da transmissão: a 30 o vídeo de 60 caía pra 30)
+            const cap = ui.frame_cap_fps;
+            const want = swapIntervalFor(win, if (cap != 0 and app.watchingVideo()) @max(cap, 60) else cap);
             if (want != swap_interval) {
                 swap_interval = want;
                 c.glfwSwapInterval(want);
@@ -257,7 +265,7 @@ pub fn main(init: std.process.Init) !void {
         // primeiro emoji na tela: carrega a fonte de emoji (uma vez)
         if (ui.emoji_wanted and !emoji_loaded) {
             emoji_loaded = true;
-            const ok = fonts.addEmoji(io.*.Fonts, ui.fonts_sans, base) and fonts.addEmoji(io.*.Fonts, ui.fonts_mono, base);
+            const ok = fonts.addEmoji(io.*.Fonts, ui.fonts_sans, base) and fonts.addEmoji(io.*.Fonts, ui.fonts_mono, base) and fonts.addEmoji(io.*.Fonts, ui.fonts_atk, base);
             debuglog.line("emoji: {s}", .{if (ok) "fonte do sistema carregada" else "nenhuma fonte de emoji no sistema"});
         }
         const t_build = sync.nowUs();

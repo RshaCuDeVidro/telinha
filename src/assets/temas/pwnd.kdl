@@ -1,0 +1,44 @@
+// pwnd: convertido do tema embutido da 3.10 (mesmas cores)
+theme "pwnd" name="pwnd" name-en="pwnd" author="telinha" mode=dark \
+    description="Preto, fúcsia e roxo neon, verde de terminal. Texto na Atkinson (dá pra ler), títulos na Fira Code." \
+    description-en="Black, fuchsia and neon purple, terminal green. Body text in Atkinson (readable), titles in Fira Code."
+
+colors {
+    bg             "#050505"
+    panel          "#0A050F"
+    surface        "#0D0716"
+    elevated       "#07030C"
+    float          "#030208"
+    input          "#050505"
+    chat-input     "#140A20"
+    hover          "#1A0F29"
+    selected       "#2A1442"
+    text           "#E5E7EB"
+    muted          "#9D8CB3"
+    faint          "#6B7280"
+    heading        "#F5F3FF"
+    accent         "#9333EA"
+    accent-hover   "#C026D3"
+    accent-active  "#7E22CE"
+    success        "#22C55E"
+    success-hover  "#16A34A"
+    success-active "#15803D"
+    danger         "#F43F5E"
+    danger-hover   "#E11D48"
+    danger-active  "#BE123C"
+    leave          "#2A0A16"
+    warning        "#FACC15"
+    button         "#1F1030"
+    button-hover   "#2E1747"
+    button-active  "#3B1D5C"
+    check          "#D946EF"
+    scroll         "#9333EA"
+    scroll-hover   "#D946EF"
+    accent-2       "#D946EF"
+    border         "alpha(#9333EA, 0.22)"
+    live           "#F43F5E"
+}
+background gradient="#050505 #14061F #050505 #030208" pattern=grid pattern-color="alpha(#9333EA, 0.06)" pattern-size=28
+fonts ui="Atkinson Hyperlegible" heading="Fira Code" mono="Fira Code" size=15
+metrics radius=2
+effects glow=0.9
